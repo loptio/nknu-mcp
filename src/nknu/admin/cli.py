@@ -149,3 +149,103 @@ def alerts(
     where = "" if all_ else "WHERE resolved_at IS NULL"
     for r in conn.execute(f"SELECT id, created_at, level, adapter, code, message FROM alert {where} ORDER BY id"):
         typer.echo(f"#{r['id']} {r['created_at']} [{r['level']}] {r['adapter'] or '-'} {r['code']}: {r['message']}")
+
+
+@app.command()
+def review(no_build: bool = typer.Option(False, "--no-build", help="审核完不重建 serve.db")) -> None:
+    """逐条查看待审变更（场馆时段、闭馆、行事历改期），核准后才生效。"""
+    from nknu.admin.review import decide, list_pending, render_item
+    from nknu.build.templates import load_templates
+    from nknu.core.factsdb import connect, migrate
+    from nknu.core.timeutil import iso_now, today_tpe
+
+    s = _settings()
+    if s.readonly:
+        typer.echo("NKNU_READONLY=1：审核已停用")
+        raise typer.Exit(1)
+    conn = connect(s.facts_path)
+    migrate(conn)
+    tpl = load_templates(s.config_dir / "templates.yaml")
+    items = list_pending(conn)
+    if not items:
+        typer.echo("没有待审项目。")
+        return
+    for it in items:
+        typer.echo(render_item(conn, it, today_tpe(), tpl))
+        typer.echo("-" * 60)
+    choice = typer.prompt(f"共 {len(items)} 条。[y] 全部核准 / [e] 逐条处理 / [q] 离开", default="q").strip().lower()
+    decided = 0
+    if choice == "y":
+        for it in items:
+            decide(conn, it.id, "approve", iso_now())
+            decided += 1
+    elif choice == "e":
+        for it in items:
+            typer.echo(f"#{it.id} {it.record_key}\n{it.diff}")
+            a = typer.prompt("[a] 核准 [r] 驳回 [s] 略过", default="s").strip().lower()
+            if a in ("a", "r"):
+                decide(conn, it.id, "approve" if a == "a" else "reject", iso_now())
+                decided += 1
+    conn.close()
+    typer.echo(f"已处理 {decided} 条。")
+    if decided and not no_build:
+        _build_now(s)
+
+
+add_app = typer.Typer(help="手动录入事实（只有图片的公告、现场确认）")
+app.add_typer(add_app, name="add")
+
+
+@add_app.command("hours")
+def add_hours_cmd(
+    place: str = typer.Option(..., help="地点：实体 id 或别名（有歧义会报错）"),
+    from_: str = typer.Option(..., "--from", help="开始日期 YYYY-MM-DD"),
+    to: str = typer.Option(None, help="结束日期（含当天），默认同开始日期"),
+    opens: str = typer.Option(None, help="开放时间 HH:MM"),
+    closes: str = typer.Option(None, help="结束时间 HH:MM（早于开放时间表示跨午夜）"),
+    closed: bool = typer.Option(False, "--closed", help="这段期间不开放"),
+    reason: str = typer.Option(..., help="原因，例如「期中考周延長開館」"),
+    source_url: str = typer.Option(..., help="原公告网址"),
+    publisher: str = typer.Option(..., help="发布单位的实体 id，例如 nknu.org.lis"),
+    title: str = typer.Option(None, help="公告标题"),
+    site_visit: bool = typer.Option(False, "--site-visit", help="维护者现场确认（来源等级 4）"),
+    no_build: bool = typer.Option(False, "--no-build"),
+) -> None:
+    """录入一段特殊开放时间或闭馆（specificity=2），直接写入为 verified。"""
+    from datetime import date
+
+    from nknu.admin.manual import PlaceError, add_hours
+    from nknu.core.factsdb import connect, migrate
+    from nknu.core.timeutil import iso_now
+
+    s = _settings()
+    if s.readonly:
+        typer.echo("NKNU_READONLY=1：录入已停用")
+        raise typer.Exit(1)
+    conn = connect(s.facts_path)
+    migrate(conn)
+    try:
+        fid = add_hours(conn, place=place, from_=date.fromisoformat(from_), to=date.fromisoformat(to) if to else None,
+                        opens=opens, closes=closes, closed=closed, reason=reason, source_url=source_url, publisher=publisher,
+                        title=title, site_visit=site_visit, now=iso_now())
+    except (PlaceError, ValueError) as exc:
+        typer.echo(f"错误：{exc}")
+        raise typer.Exit(2) from exc
+    finally:
+        conn.close()
+    typer.echo(f"已写入 fact {fid}")
+    if not no_build:
+        _build_now(s)
+
+
+@app.command()
+def check() -> None:
+    """授权扫描、个资扫描、禁止关闭 TLS 验证、启动断言。"""
+    from nknu.admin.checks import run_all_checks
+
+    problems = run_all_checks(_settings())
+    for p in problems:
+        typer.echo(p)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("all checks passed")
