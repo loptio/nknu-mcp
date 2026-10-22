@@ -206,3 +206,10 @@ def test_event_written_then_unchanged_noop(tmp_path):
     run(c, FakeAdapter([TERM_BEGIN]))
     assert data_version(c) == n
 
+
+
+def test_list_rerun_after_detail_is_noop(conn):
+    run(conn, FakeAdapter([DOC, replace(DOC, partial=True, excerpt="停修申請期間為11月3日至16日")], name="sso_news"))
+    assert conn.execute("SELECT excerpt FROM doc").fetchone()[0]
+    res = run(conn, FakeAdapter([DOC], name="sso_news"))
+    assert res.n_written == 0 and conn.execute("SELECT excerpt FROM doc").fetchone()[0]

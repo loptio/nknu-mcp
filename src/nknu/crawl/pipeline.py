@@ -213,7 +213,8 @@ def _apply_doc(conn, name, rec, res, now) -> None:
         conn.execute("UPDATE record_state SET status='retired' WHERE adapter=? AND record_key=?", (name, rec.key))
         res.n_written += 1
         return
-    h = content_hash(rec)
+    # list-level identity: excerpt/attachments come from detail pages and are updated only when those are fetched
+    h = content_hash(replace(rec, excerpt=None, attachments=()))
     state = _state(conn, name, rec.key)
     if not rec.partial and state is not None and state["content_hash"] == h and state["status"] == "active":
         return
