@@ -1,0 +1,128 @@
+from datetime import date, timedelta
+
+import pytest
+
+from nknu.server.envelope import (
+    BUDGET,
+    ERROR_BUDGET,
+    NOTICE_LABEL,
+    approx_tokens,
+    count_tokens,
+    error_result,
+    fit_budget,
+    make_envelope,
+    render_text,
+    to_tool_result,
+)
+from nknu.server.query import get_calendar, get_hours
+from nknu.server.servedb_reader import ServeDB
+from tests.server.conftest import NOW
+
+TODAY = {"date": "2026-10-22", "weekday": "週四", "time": "14:05"}
+
+
+def leaf_values(obj):
+    """Every str/int leaf of an envelope (bools and None skipped)."""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from leaf_values(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from leaf_values(v)
+    elif obj is not None and not isinstance(obj, bool):
+        yield obj
+
+
+def covered_days(days):
+    """Days listed, counting a merged run {date, to} as every day in it."""
+    return sum((date.fromisoformat(d.get("to", d["date"])) - date.fromisoformat(d["date"])).days + 1 for d in days)
+
+
+def test_make_envelope_omits_none_and_empty():
+    env = make_envelope(kb="k", today=TODAY, found=False, status="no_data", match=None, answer="", facts=[],
+                        recent_notices=None, caveat="查無資料，請勿推測", similar=[])
+    assert env == {"kb": "k", "today": TODAY, "found": False, "status": "no_data", "caveat": "查無資料，請勿推測"}
+
+
+def test_render_text_order_and_labels():
+    env = make_envelope(kb="k1", today=TODAY, found=True, status="current", match="entity", answer="甲館開放。來源：乙。",
+                        facts=[{"id": "f1", "valid": ["2026-09-07", "2027-01-08"],
+                                "rules": [{"dows": [1, 2], "opens": "08:00", "closes": "12:00"}]}],
+                        caveat="注意事項", open_now=False)
+    lines = render_text(env).splitlines()
+    assert lines[0] == "甲館開放。來源：乙。"
+    assert "f1" in lines[1] and "2026-09-07～2027-01-08" in lines[1] and "週1,2 08:00–12:00" in lines[1]
+    assert any("current" in ln for ln in lines[2:]) and any(ln.endswith("否") for ln in lines)
+
+
+def test_text_equivalent_to_structured(sample_envelopes):
+    for name, env in sample_envelopes.items():
+        t = render_text(env)
+        missing = [v for v in leaf_values(env) if str(v) not in t]
+        assert not missing, (name, missing)
+
+
+def test_samples_cover_the_statuses(sample_envelopes):
+    s = sample_envelopes
+    assert [s[k]["status"] for k in ("current", "conflict", "stale", "no_data")] == ["current", "conflict", "stale", "no_data"]
+    assert len(s["conflict"]["alternatives"]) == 3 and covered_days(s["days14"]["days"]) == 14 and s["notices"]["recent_notices"]
+
+
+def test_envelope_token_budget(sample_envelopes):
+    for name, env in sample_envelopes.items():  # current, conflict (3 alternatives), days=14, stale, no_data, notices
+        assert count_tokens(env) <= BUDGET, (name, count_tokens(env))
+        assert env["status"] and (env["status"] == "current" or env.get("caveat")), name
+    assert count_tokens(error_result("bad_date", "date 格式應為 YYYY-MM-DD").structured_content or {}) <= ERROR_BUDGET
+
+
+def test_budget_holds_for_every_place_and_span(world):
+    db = ServeDB(world[1])
+    places = [r[0] for r in db.conn().execute("SELECT DISTINCT entity_id FROM answer_card WHERE intent='hours'")]
+    envs = [get_hours(db, p, d, days=n, now=NOW) for p in places for d in ("2026-10-22", "2026-12-24", "2027-02-01")
+            for n in (1, 7, 14)]
+    envs += [get_hours(db, q, "2026-10-22", now=NOW) for q in ("重訓室", "圖書館", "愛閱館", "室外運動場地")]
+    envs += [get_calendar(db, "2026-09-01", "2027-01-31", now=NOW, limit=50)]
+    for env in envs:
+        real = count_tokens(env)
+        assert real <= BUDGET, (env.get("answer"), real)
+        assert approx_tokens(env) >= real  # the serving-side estimate never undercounts
+
+
+def test_fit_budget_trims_in_order_and_keeps_status_and_caveat():
+    notices = [{"title": "公" * 80, "published_on": "2026-10-20", "url": "https://example.test/" + "x" * 60,
+                "label": NOTICE_LABEL} for _ in range(3)]
+    days = [{"date": (date(2026, 10, 22) + timedelta(days=i)).isoformat(), "weekday": "週四", "status": "current", "open": True,
+             "segments": ["19:00–21:00"]} for i in range(7)]
+    env = make_envelope(kb="k", today=TODAY, found=True, status="current", match="entity", answer="甲" * 60 + "附註：" + "乙" * 60,
+                        facts=[{"id": "f", "valid": ["2026-09-07", "2027-01-08"], "source": {"title": "表", "url": "u"}}],
+                        recent_notices=notices, caveat="請勿推測", days=days)
+    out = fit_budget(env, 300)
+    assert approx_tokens(out) <= 300 and out["status"] == "current" and out["caveat"] == "請勿推測"
+    assert covered_days(out["days"]) == 7 and out["days"][0]["segments"] == ["19:00–21:00"]
+    assert out["answer"].startswith("甲" * 60)
+    assert env["recent_notices"][0]["title"] == "公" * 80  # the input is not mutated
+
+
+def test_fit_budget_truncates_notice_titles_first():
+    notices = [{"title": "公" * 80, "published_on": "2026-10-20", "url": "u", "label": NOTICE_LABEL}]
+    env = make_envelope(kb="k", today=TODAY, found=True, status="current", answer="甲", recent_notices=notices,
+                        days=[{"date": "2026-10-22", "weekday": "週四", "status": "current", "open": True}])
+    out = fit_budget(env, approx_tokens(env) - 10)
+    assert len(out["recent_notices"][0]["title"]) <= 41 and out["days"][0]["weekday"] == "週四"
+
+
+def test_error_result_is_short_error():
+    r = error_result("bad_days", "days 應為 1–14")
+    assert r.is_error and r.structured_content == {"code": "bad_days", "message": "days 應為 1–14"}
+    assert "bad_days" in r.content[0].text and count_tokens(r.content[0].text) <= ERROR_BUDGET
+
+
+def test_to_tool_result_carries_both_forms(sample_envelopes):
+    env = sample_envelopes["current"]
+    r = to_tool_result(env)
+    assert r.structured_content == env and r.content[0].text == render_text(env) and not r.is_error
+
+
+@pytest.mark.parametrize("obj", ["和平校區", {"a": [1, 2]}, [{"x": "y"}]])
+def test_count_tokens_accepts_any_json(obj):
+    assert count_tokens(obj) > 0
