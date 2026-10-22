@@ -50,3 +50,8 @@ def test_generic_words_before_honorific_untouched():
 
 def test_department_prefix_stripped():
     assert mask_honor_names("賀資訊教育系陳宥余同學獲獎") == "賀資訊教育系陳O余同學獲獎"
+
+
+def test_generated_ids_are_not_emails():
+    assert find_pii("UID:0l8dnv5qpj1p4871b3bf62b8vu@google.com") == []
+    assert find_pii("someone.name@google.com")

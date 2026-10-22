@@ -88,6 +88,8 @@ def _email_is_personal(addr: str) -> bool:
     local, _, domain = addr.lower().partition("@")
     if local in ("noreply", "no-reply") or domain in ("example.com", "example.org"):
         return False
+    if len(local) >= 20 and local.isalnum():
+        return False  # machine-generated ids such as ICS UIDs (…@google.com)
     if domain.endswith("nknu.edu.tw"):
         return local.isdigit()  # student mailboxes are numeric; unit mailboxes are public contacts
     return True
