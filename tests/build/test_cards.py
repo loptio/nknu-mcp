@@ -155,3 +155,16 @@ def test_cli_build(world):
     r = CliRunner().invoke(app, ["build", "--today", "2026-10-22"], env={"NKNU_DATA_DIR": str(world)})
     assert r.exit_code == 0, r.output
     assert (world / "serve.db").exists()
+
+
+def test_source_notes_rendered():
+    from nknu.build.cards import hours_sentence
+    from nknu.build.templates import load_templates
+
+    res = {"status": "current", "winner": {
+        "valid": ["2026-09-07", "2027-01-09"], "source": {"publisher": "nknu.org.pe", "title": "場地開放時間", "url": "u"},
+        "value": {"closed": False, "notes": ["1.國定及連續假日、運動會停課、招生考試,各運動場地不予開放。"]},
+        "rules": [{"dows": [1, 2, 3, 4, 5], "opens": "17:30", "closes": "21:50"}]}}
+    s = hours_sentence(WR, res, {WR: "和平校區重量訓練室", "nknu.org.pe": "體育室"}, "體育室", load_templates(TPL),
+                       date(2026, 10, 22), date(2026, 10, 23))
+    assert s.endswith("附註：1.國定及連續假日、運動會停課、招生考試,各運動場地不予開放。")

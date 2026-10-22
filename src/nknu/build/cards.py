@@ -72,6 +72,13 @@ def _weekdays_in(lo: date, hi: date) -> set[int]:
 
 def hours_sentence(entity: str, result: dict, names: dict[str, str], contact: str, tpl: Templates, seg_lo: date,
                    seg_hi: date) -> str:
+    sentence = _hours_sentence(entity, result, names, contact, tpl, seg_lo, seg_hi)
+    notes = (result.get("winner") or {}).get("value", {}).get("notes") if result["status"] == "current" else None
+    return sentence + ("附註：" + "".join(notes) if notes else "")
+
+
+def _hours_sentence(entity: str, result: dict, names: dict[str, str], contact: str, tpl: Templates, seg_lo: date,
+                    seg_hi: date) -> str:
     name = names.get(entity, entity)
     status = result["status"]
     if status == "current":
