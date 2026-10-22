@@ -49,3 +49,6 @@ asyncio_mode = "auto"
 line-length = 120
 target-version = "py313"
 extend-exclude = ["prototypes"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]

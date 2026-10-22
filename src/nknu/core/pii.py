@@ -104,3 +104,10 @@ def find_pii(text: str) -> list[str]:
                 continue
             hits.append(f"{kind}:{m.group().strip()}")
     return hits
+
+
+def redact(text: str) -> str:
+    """Replace every find_pii hit with [MASKED] (logs, alerts, the found=false query log)."""
+    for hit in find_pii(text):
+        text = text.replace(hit.split(":", 1)[1], "[MASKED]")
+    return text
