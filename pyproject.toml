@@ -41,6 +41,8 @@ packages = ["src/nknu"]
 addopts = "-m 'not live'"
 markers = ["live: 会连到真实网站"]
 testpaths = ["tests"]
+# pytest skips dirs named "build" by default; tests/build holds the serve.db tests
+norecursedirs = [".*", "*.egg", "dist", "node_modules", "venv", "prototypes"]
 asyncio_mode = "auto"
 
 [tool.ruff]
