@@ -1,0 +1,101 @@
+# Curated vocabulary (not facts): entities, place hierarchy, managing units and aliases.
+# Entity id rule: nknu.<campus>.<type>.<slug> — the campus is in the id so same-named places never merge.
+# `nknu seed` upserts this file; an alias shared by several entities is flagged ambiguous automatically.
+entities:
+  - {id: nknu, type: CollegeOrUniversity, name_zh: 國立高雄師範大學, name_en: National Kaohsiung Normal University, wikidata_qid: Q703930}
+  - {id: nknu.heping, type: Campus, name_zh: 和平校區, name_en: Heping Campus, wikidata_qid: Q127164121}
+  - {id: nknu.yanchao, type: Campus, name_zh: 燕巢校區, name_en: Yanchao Campus, wikidata_qid: Q99285624}
+  - {id: nknu.org.pe, type: Organization, name_zh: 體育室, name_en: Office of Physical Education}
+  - {id: nknu.org.lis, type: Organization, name_zh: 圖書資訊處, name_en: Office of Library and Information Services}
+  - {id: nknu.org.aca, type: Organization, name_zh: 教務處, name_en: Office of Academic Affairs}
+  - {id: nknu.heping.gym.main, type: ExerciseGym, name_zh: 和平校區體育館, name_en: Heping Gymnasium}
+  - {id: nknu.heping.gym.outdoor, type: Place, name_zh: 和平校區室外運動場地, name_en: Heping outdoor sports grounds}
+  - {id: nknu.heping.gym.weight-room, type: ExerciseGym, name_zh: 和平校區重量訓練室, name_en: Heping weight room}
+  - {id: nknu.heping.gym.pool, type: Place, name_zh: 和平校區游泳池, name_en: Heping swimming pool}
+  - {id: nknu.yanchao.gym.outdoor, type: Place, name_zh: 燕巢校區室外運動場地, name_en: Yanchao outdoor sports grounds}
+  - {id: nknu.yanchao.gym.table-tennis, type: Place, name_zh: 燕巢校區桌球、撞球室, name_en: Yanchao table tennis and billiards room}
+  - {id: nknu.yanchao.gym.weight-room, type: ExerciseGym, name_zh: 燕巢校區重量訓練室（歸燕食巢3樓）, name_en: Yanchao weight room}
+  - {id: nknu.heping.library.main, type: Library, name_zh: 和平圖書館, name_en: Heping Library}
+  - {id: nknu.yanchao.library.main, type: Library, name_zh: 燕巢圖書館, name_en: Yanchao Library}
+
+relations:
+  - {subject: nknu.heping.gym.main, predicate: containedInPlace, object: nknu.heping}
+  - {subject: nknu.heping.gym.outdoor, predicate: containedInPlace, object: nknu.heping}
+  - {subject: nknu.heping.gym.pool, predicate: containedInPlace, object: nknu.heping}
+  - {subject: nknu.heping.gym.weight-room, predicate: containedInPlace, object: nknu.heping.gym.main,
+     note: 體育館概況把重量訓練室列在體育館之下}
+  - {subject: nknu.heping.library.main, predicate: containedInPlace, object: nknu.heping}
+  - {subject: nknu.yanchao.gym.outdoor, predicate: containedInPlace, object: nknu.yanchao}
+  - {subject: nknu.yanchao.gym.table-tennis, predicate: containedInPlace, object: nknu.yanchao}
+  - {subject: nknu.yanchao.gym.weight-room, predicate: containedInPlace, object: nknu.yanchao}
+  - {subject: nknu.yanchao.library.main, predicate: containedInPlace, object: nknu.yanchao}
+  - {subject: nknu.heping.gym.main, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.heping.gym.outdoor, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.heping.gym.weight-room, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.heping.gym.pool, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.yanchao.gym.outdoor, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.yanchao.gym.table-tennis, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.yanchao.gym.weight-room, predicate: managedBy, object: nknu.org.pe}
+  - {subject: nknu.heping.library.main, predicate: managedBy, object: nknu.org.lis}
+  - {subject: nknu.yanchao.library.main, predicate: managedBy, object: nknu.org.lis}
+  - {subject: nknu.org.pe, predicate: parentOrganization, object: nknu}
+  - {subject: nknu.org.lis, predicate: parentOrganization, object: nknu}
+  - {subject: nknu.org.aca, predicate: parentOrganization, object: nknu}
+
+attribute_authority:
+  - {attribute: holiday, entity_id: nknu, org_id: nknu.org.aca}
+  - {attribute: term, entity_id: nknu, org_id: nknu.org.aca}
+  - {attribute: calendar, entity_id: nknu, org_id: nknu.org.aca}
+
+# kind: official / short / colloquial / historical / en / typo
+aliases:
+  - {entity_id: nknu, alias: 高師大, kind: short}
+  - {entity_id: nknu, alias: 高雄師大, kind: short}
+  - {entity_id: nknu, alias: 高雄師範大學, kind: short}     # Wikidata Q703930 alias
+  - {entity_id: nknu, alias: NKNU, kind: en}
+  - {entity_id: nknu.heping, alias: 和平, kind: short}
+  - {entity_id: nknu.yanchao, alias: 燕巢, kind: short}
+  - {entity_id: nknu.org.pe, alias: 體育室, kind: official}
+  - {entity_id: nknu.org.lis, alias: 圖資處, kind: short}
+  - {entity_id: nknu.org.lis, alias: 圖書資訊處, kind: official}
+  - {entity_id: nknu.org.aca, alias: 教務處, kind: official}
+  - {entity_id: nknu.heping.gym.main, alias: 體育館, kind: short}
+  - {entity_id: nknu.heping.gym.main, alias: 和平體育館, kind: official}
+  - {entity_id: nknu.heping.gym.main, alias: gymnasium, kind: en}
+  - {entity_id: nknu.heping.gym.weight-room, alias: 和平重訓室, kind: colloquial}
+  - {entity_id: nknu.heping.gym.weight-room, alias: 和平重量訓練室, kind: official}
+  - {entity_id: nknu.heping.gym.weight-room, alias: 和平健身房, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 燕巢重訓室, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 燕巢重量訓練室, kind: official}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 燕巢健身房, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 歸燕食巢重訓室, kind: colloquial}
+  # shared by both weight rooms -> ambiguous: answer lists both campuses
+  - {entity_id: nknu.heping.gym.weight-room, alias: 重訓室, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 重訓室, kind: colloquial}
+  - {entity_id: nknu.heping.gym.weight-room, alias: 重量訓練室, kind: short}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 重量訓練室, kind: short}
+  - {entity_id: nknu.heping.gym.weight-room, alias: 健身房, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: 健身房, kind: colloquial}
+  - {entity_id: nknu.heping.gym.weight-room, alias: gym, kind: en}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: gym, kind: en}
+  - {entity_id: nknu.heping.gym.weight-room, alias: weight room, kind: en}
+  - {entity_id: nknu.yanchao.gym.weight-room, alias: weight room, kind: en}
+  - {entity_id: nknu.heping.gym.pool, alias: 游泳池, kind: short}
+  - {entity_id: nknu.heping.gym.pool, alias: 泳池, kind: colloquial}
+  - {entity_id: nknu.heping.gym.pool, alias: 游泳館, kind: colloquial}
+  - {entity_id: nknu.heping.gym.pool, alias: swimming pool, kind: en}
+  - {entity_id: nknu.heping.gym.outdoor, alias: 和平室外運動場地, kind: official}
+  - {entity_id: nknu.yanchao.gym.outdoor, alias: 燕巢室外運動場地, kind: official}
+  - {entity_id: nknu.heping.gym.outdoor, alias: 室外運動場地, kind: short}
+  - {entity_id: nknu.yanchao.gym.outdoor, alias: 室外運動場地, kind: short}
+  - {entity_id: nknu.heping.gym.outdoor, alias: 操場, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.outdoor, alias: 操場, kind: colloquial}
+  - {entity_id: nknu.yanchao.gym.table-tennis, alias: 桌球室, kind: short}
+  - {entity_id: nknu.yanchao.gym.table-tennis, alias: 撞球室, kind: short}
+  - {entity_id: nknu.yanchao.gym.table-tennis, alias: table tennis, kind: en}
+  - {entity_id: nknu.heping.library.main, alias: 和平圖書館, kind: official}
+  - {entity_id: nknu.yanchao.library.main, alias: 燕巢圖書館, kind: official}
+  - {entity_id: nknu.heping.library.main, alias: 圖書館, kind: short}
+  - {entity_id: nknu.yanchao.library.main, alias: 圖書館, kind: short}
+  - {entity_id: nknu.heping.library.main, alias: library, kind: en}
+  - {entity_id: nknu.yanchao.library.main, alias: library, kind: en}
