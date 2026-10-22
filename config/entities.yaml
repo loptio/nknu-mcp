@@ -17,6 +17,8 @@ entities:
   - {id: nknu.yanchao.gym.weight-room, type: ExerciseGym, name_zh: 燕巢校區重量訓練室（歸燕食巢3樓）, name_en: Yanchao weight room}
   - {id: nknu.heping.library.main, type: Library, name_zh: 和平圖書館, name_en: Heping Library}
   - {id: nknu.yanchao.library.main, type: Library, name_zh: 燕巢圖書館, name_en: Yanchao Library}
+  - {id: nknu.heping.library.iread, type: Library, name_zh: 和平愛閱館, name_en: Heping I-Read Space}
+  - {id: nknu.yanchao.library.iread, type: Library, name_zh: 燕巢愛閱館, name_en: Yanchao I-Read Space}
 
 relations:
   - {subject: nknu.heping.gym.main, predicate: containedInPlace, object: nknu.heping}
@@ -29,6 +31,8 @@ relations:
   - {subject: nknu.yanchao.gym.table-tennis, predicate: containedInPlace, object: nknu.yanchao}
   - {subject: nknu.yanchao.gym.weight-room, predicate: containedInPlace, object: nknu.yanchao}
   - {subject: nknu.yanchao.library.main, predicate: containedInPlace, object: nknu.yanchao}
+  - {subject: nknu.heping.library.iread, predicate: containedInPlace, object: nknu.heping}
+  - {subject: nknu.yanchao.library.iread, predicate: containedInPlace, object: nknu.yanchao}
   - {subject: nknu.heping.gym.main, predicate: managedBy, object: nknu.org.pe}
   - {subject: nknu.heping.gym.outdoor, predicate: managedBy, object: nknu.org.pe}
   - {subject: nknu.heping.gym.weight-room, predicate: managedBy, object: nknu.org.pe}
@@ -38,6 +42,8 @@ relations:
   - {subject: nknu.yanchao.gym.weight-room, predicate: managedBy, object: nknu.org.pe}
   - {subject: nknu.heping.library.main, predicate: managedBy, object: nknu.org.lis}
   - {subject: nknu.yanchao.library.main, predicate: managedBy, object: nknu.org.lis}
+  - {subject: nknu.heping.library.iread, predicate: managedBy, object: nknu.org.lis}
+  - {subject: nknu.yanchao.library.iread, predicate: managedBy, object: nknu.org.lis}
   - {subject: nknu.org.pe, predicate: parentOrganization, object: nknu}
   - {subject: nknu.org.lis, predicate: parentOrganization, object: nknu}
   - {subject: nknu.org.aca, predicate: parentOrganization, object: nknu}
@@ -99,3 +105,13 @@ aliases:
   - {entity_id: nknu.yanchao.library.main, alias: 圖書館, kind: short}
   - {entity_id: nknu.heping.library.main, alias: library, kind: en}
   - {entity_id: nknu.yanchao.library.main, alias: library, kind: en}
+  - {entity_id: nknu.heping.library.iread, alias: 和平愛閱館, kind: official}
+  - {entity_id: nknu.yanchao.library.iread, alias: 燕巢愛閱館, kind: official}
+  - {entity_id: nknu.heping.library.iread, alias: 愛閱館, kind: short}
+  - {entity_id: nknu.yanchao.library.iread, alias: 愛閱館, kind: short}
+  - {entity_id: nknu.heping.library.iread, alias: K書中心, kind: colloquial}
+  - {entity_id: nknu.yanchao.library.iread, alias: K書中心, kind: colloquial}
+  - {entity_id: nknu.heping.library.iread, alias: 自習室, kind: colloquial}
+  - {entity_id: nknu.yanchao.library.iread, alias: 自習室, kind: colloquial}
+  - {entity_id: nknu.heping.library.iread, alias: I-Read Space, kind: en}
+  - {entity_id: nknu.yanchao.library.iread, alias: I-Read Space, kind: en}
