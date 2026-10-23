@@ -49,10 +49,9 @@ def resolve(backend, entity, attribute, t: date, qualifier='', as_of: str | None
         past = [c for c in cands if c['hi'] <= t]
         base = [c for c in past if c['specificity'] < 2]   # last *schedule*, never a holiday row
         last = max(base, key=lambda c: c['hi']) if base else None
+        # last_known is a full brief: a stale answer states the last known hours with their validity and source (U3)
         return {'found': False, 'status': 'stale' if last else 'no_data', 'decided_by': 'R1', 'conflict': False,
-                't': t.isoformat(), 'trace': trace,
-                'last_known': ({'valid': [last['lo'].isoformat(), last['hi'].isoformat()],
-                                'source': {'url': last['source_url'], 'publisher': last['publisher']}} if last else None)}
+                't': t.isoformat(), 'trace': trace, 'last_known': _brief(last) if last else None}
     decided = 'R1'
 
     # R2 specificity (exception > term table > regular)

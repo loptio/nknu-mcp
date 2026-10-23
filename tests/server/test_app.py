@@ -118,6 +118,7 @@ def test_instructions_first_paragraph():
     p = INSTRUCTIONS.split("\n\n")[0]
     assert len(p) <= 500 and all(w in p for w in ("高師大", "和平", "燕巢", "current"))
     assert all(w in p for w in ("caveat", "公告", "有效期", "來源"))
+    assert "stale" in p and "可能已變動" in p  # U3: a stale answer gives the last known data with its date
     second = INSTRUCTIONS.split("\n\n")[1]
     assert all(t in second for t in TOOLS)
 

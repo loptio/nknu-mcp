@@ -75,6 +75,15 @@ def test_after_term_is_stale_not_old_value(be):
     assert r(be, WR, date(2027, 2, 1))["last_known"]["valid"] == ["2026-09-07", "2027-01-09"]
 
 
+def test_stale_last_known_carries_its_values(be):
+    """U3: a stale answer states the last known hours, so last_known is a full brief (values, source title)."""
+    lk = r(be, WR, date(2027, 2, 1))["last_known"]
+    assert lk["fact_id"] and lk["value"] == {"closed": False} and lk["specificity"] == 1
+    assert lk["rules"] == [{"dows": [1, 2, 3, 5], "opens": "19:00", "closes": "21:00"},
+                           {"dows": [4], "opens": "18:00", "closes": "20:00"}]
+    assert lk["source"] == {"url": PE_TABLE.url, "title": "場地開放時間", "publisher": "nknu.org.pe"}
+
+
 def test_stale_last_known_skips_exceptions(conn, be):
     apply_fact(conn, fact("late-closure", WR, PE_TABLE, (date(2027, 1, 20), date(2027, 1, 22)), spec=2, closed=True,
                           reason="維修"), adapter="pe_open_hours", review="verified", now=T0)

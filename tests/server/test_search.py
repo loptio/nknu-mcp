@@ -1,23 +1,22 @@
-import json
-import re
+import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
 import yaml
 
-from nknu.server.envelope import BUDGET, NOTICE_LABEL, approx_tokens, count_tokens
+from nknu.server.envelope import NOTICE_LABEL
 from nknu.server.linking import detect_intent, expand, link_entities
-from nknu.server.query import CAVEATS, get_hours
-from nknu.server.search import CAVEAT_WEAK, T_HIGH, T_LOW, search
+from nknu.server.query import CAVEATS, CURRENT_DOC_SQL, current_doc_params, get_hours
+from nknu.server.search import CAVEAT_OLD_NOTICES, CAVEAT_WEAK, T_HIGH, T_LOW, search
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, WITHDRAWAL_UID, WR
+from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, OLD_WITHDRAWAL, OLD_XUECE, WITHDRAWAL_UID, WR
 
 YWR = "nknu.yanchao.gym.weight-room"
 HLIB, YLIB = "nknu.heping.library.main", "nknu.yanchao.library.main"
 SEARCH_DIR = Path(__file__).parents[1] / "search"
 ALL_QUERIES = [q["q"] for name in ("queries.yaml", "calibration.yaml")
                for q in yaml.safe_load((SEARCH_DIR / name).read_text())]
-_CLOCK = re.compile(r"(?<!\d)\d{1,2}[:：]\d{2}(?!\d)")
 
 
 @pytest.fixture
@@ -46,10 +45,63 @@ def test_english_alias(db):
     assert search(db, "weight room hours", campus="heping", now=NOW)["facts"][0]["entity_id"] == WR
 
 
-def test_2022_doc_never_returned(db):
-    hits = [d for q in ALL_QUERIES for d in search(db, q, limit=10, now=NOW).get("facts", []) if d.get("label")]
-    assert hits
-    assert not any("Nid=800" in d["url"] or (d.get("published_on") or "").startswith("2022") for d in hits)
+def test_2022_doc_never_returned_as_current(db):
+    """C5: a notice over a year old is never current; search returns one only when nothing current matches, labelled
+    with its date, and the envelope is then stale and found=false."""
+    envs = [search(db, q, limit=10, now=NOW) for q in ALL_QUERIES]
+    assert any(d.get("label") == NOTICE_LABEL for e in envs for d in e.get("facts", []))
+    for e in envs:
+        for d in e.get("facts", []):
+            if d.get("label") and (d.get("published_on") or "") < "2025-10-22":
+                assert d["label"] != NOTICE_LABEL and d["published_on"] in d["label"] and "可能已變動" in d["label"], d
+                assert e["status"] == "stale" and e["found"] is False and CAVEAT_OLD_NOTICES in e["caveat"], e
+
+
+def _current(rows: list[tuple], today: date) -> list[str]:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE doc(title, published_on, announce_until, withdrawn_at)")
+    conn.executemany("INSERT INTO doc VALUES (?, ?, ?, ?)", rows)
+    return [r[0] for r in conn.execute(f"SELECT title FROM doc WHERE {CURRENT_DOC_SQL} ORDER BY title",
+                                       current_doc_params(today))]
+
+
+def test_current_notice_rule():
+    """C5: inside its posting period AND published within 365 days; with no period, published within 180 days."""
+    rows = [("a far end date, 2017", "2017-01-19", "2030-12-31", None),
+            ("b far end date, 366 days", "2025-10-21", "2030-12-31", None),
+            ("c far end date, 365 days", "2025-10-22", "2030-12-31", None),
+            ("d period over", "2026-10-01", "2026-10-21", None),
+            ("e no period, 180 days", "2026-04-25", None, None),
+            ("f no period, 181 days", "2026-04-24", None, None),
+            ("g withdrawn", "2026-10-20", "2026-11-30", "2026-10-21T00:00:00Z"),
+            ("h undated, far end date", None, "2030-12-31", None)]
+    assert _current(rows, date(2026, 10, 22)) == ["c far end date, 365 days", "e no period, 180 days"]
+
+
+def test_old_notice_answers_only_as_an_old_notice(world_old_notices):
+    """F-stale-sso-notices: 學測 matches only a 2017 notice whose SSO end date is 2030-12-31."""
+    e = search(world_old_notices, "學測", now=NOW)
+    assert e["status"] == "stale" and e["found"] is False and CAVEAT_OLD_NOTICES in e["caveat"]
+    top = e["facts"][0]
+    assert top["title"] == OLD_XUECE and top["published_on"] == "2017-01-19"
+    assert top["label"] == "舊公告（2017-01-19 發布），內容可能已變動" and NOTICE_LABEL not in top["label"]
+
+
+def test_old_notice_never_beside_current_results(world_old_notices):
+    e = search(world_old_notices, "停修", limit=10, now=NOW)
+    assert e["found"] is True and e["status"] == "current" and "舊公告" not in (e.get("caveat") or "")
+    assert not any(f.get("title") == OLD_WITHDRAWAL for f in e["facts"])
+    assert any(f.get("label") == NOTICE_LABEL for f in e["facts"])
+
+
+def test_old_notices_only_for_notice_questions(world_old_notices):
+    """A years-old notice states past hours and dates: it never answers an hours or calendar question."""
+    for q, kind in (("學測", "hours"), ("學測", "calendar"), ("學測 開放時間", "any")):
+        e = search(world_old_notices, q, kind=kind, now=NOW)
+        assert e["found"] is False and e["status"] == "no_data" and "facts" not in e, (q, kind)
+    e = search(world_old_notices, "學測 考試 日期", now=NOW)  # a calendar question: current events or nothing
+    assert not any("舊公告" in f.get("label", "") for f in e.get("facts", [])) and e["status"] != "stale"
+    assert search(world_old_notices, "學測", kind="announcement", now=NOW)["facts"][0]["title"] == OLD_XUECE
 
 
 def test_noans_found_false(db):
@@ -166,10 +218,10 @@ def test_on_date_answer_for_one_place(db):
     assert e["match"] == "entity" and "暫停開放" in e["answer"]
 
 
-def test_stale_entity_match_has_no_hours(db):
+def test_stale_entity_match_gives_last_known_hours(db):
     e = search(db, "和平重訓室 開放時間", on_date="2027-02-01", now=NOW)
-    body = {k: v for k, v in e.items() if k != "today"}
-    assert e["status"] == "stale" and not _CLOCK.search(json.dumps(body, ensure_ascii=False))
+    assert e["status"] == "stale" and e["found"] is False and e["last_known"]["valid"] == ["2026-09-07", "2027-01-08"]
+    assert "19:00–21:00" in e["answer"] and "可能已變動" in e["answer"] and e["caveat"] == CAVEATS["stale"]
 
 
 def test_text_match_status_follows_its_hours_facts(db):
@@ -261,7 +313,7 @@ def test_ambiguous_candidates_carry_their_next_change(db):
     assert e["match"] == "ambiguous" and [f["entity_id"] for f in e["facts"]] == [HLIB, YLIB]
     assert all(f["next_change"]["from"] == "2026-10-24" and "延長開館" in f["next_change"]["answer"] for f in e["facts"])
     g = get_hours(db, "圖書館", now=NOW)  # get_hours lists the same candidates the same way
-    assert g["facts"] == e["facts"] and count_tokens(e) <= BUDGET
+    assert g["facts"] == e["facts"]
 
 
 def test_text_match_lists_the_dated_card_the_query_points_at(db):
@@ -288,8 +340,17 @@ def test_bad_arguments(db):
         search(db, "   ", now=NOW)
 
 
-def test_every_search_envelope_within_budget(db):
+def test_search_keeps_titles_and_sentences_whole(db):
+    """U1: notice titles and card sentences are served as stored (no 40-character titles, no stripped 附註 or 來源)."""
+    conn = db.conn()
+    titles = {r[0]: r[1] for r in conn.execute("SELECT url, title FROM doc")}
+    cards = {r[0] for r in conn.execute("SELECT answer_zh FROM answer_card")}
     for q in ALL_QUERIES:
-        for limit in (5, 10):
-            e = search(db, q, limit=limit, now=NOW)
-            assert approx_tokens(e) <= BUDGET and count_tokens(e) <= BUDGET, q
+        e = search(db, q, limit=10, now=NOW)
+        for f in e.get("facts", []):
+            if f.get("label"):
+                assert f["title"] == titles[f["url"]], q
+            if f.get("answer"):
+                assert f["answer"] in cards, q
+            if isinstance(f.get("next_change"), dict):
+                assert f["next_change"]["answer"] in cards, q

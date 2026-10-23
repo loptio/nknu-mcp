@@ -13,7 +13,7 @@ from nknu.core.textnorm import fts_query, tokenize
 from nknu.core.writer import apply_fact
 from nknu.settings import REPO_ROOT
 from tests.factories import PE_URL, T0, WR_TERM
-from tests.scenario import WR, build
+from tests.scenario import POOL, WR, build
 
 TPL = REPO_ROOT / "config" / "templates.yaml"
 TODAY = date(2026, 10, 22)
@@ -68,11 +68,40 @@ def test_closure_segment_cut_and_merged(world):
     assert "暫停開放（臺灣光復紀念日連假）" in card_on(world, WR, date(2026, 10, 25))["answer_zh"]
 
 
-def test_stale_card_has_no_hours(world):
+def test_stale_card_gives_the_last_known_hours_with_dates(world):
+    """U3: the last known table, its source and validity, and that the hours after it are not out yet."""
     make(world, today=date(2027, 1, 25))
     c = card_on(world, WR, date(2027, 2, 1))
-    assert c["status"] == "stale" and "請勿推測" in c["answer_zh"] and "體育室" in c["answer_zh"]
-    assert "19:00" not in c["answer_zh"] + c["payload_json"]
+    a = c["answer_zh"]
+    assert c["status"] == "stale" and a.startswith("和平校區重量訓練室 最近一筆官方資料（體育室《場地開放時間》，")
+    assert "2026-09-07～2027-01-08" in a and "週一、二、三、五 19:00–21:00；週四 18:00–20:00；週六、日不開放" in a
+    assert "2027-01-09 起的時段尚未公布，可能已變動" in a and "可洽體育室" in a
+    assert json.loads(c["payload_json"])["last_known"]["rules"]
+
+
+def test_stale_card_after_a_closure_says_closed(world):
+    conn = connect(world / "facts.db")
+    apply_fact(conn, replace(WR_TERM, key="pool-closed", entity_id=POOL, value={"closed": True, "reason": "整修"}, rules=()),
+               adapter="pe_open_hours", review="verified", now=T0)
+    conn.commit()
+    make(world, today=date(2027, 1, 25))
+    a = card_on(world, POOL, date(2027, 2, 1))["answer_zh"]
+    assert "最近一筆官方資料" in a and "：暫停開放（整修）。" in a and "可能已變動" in a
+
+
+def test_current_card_from_a_source_over_a_year_old_says_its_date(world):
+    """U3: content whose source date is more than a year old carries that date and 可能已變動."""
+    conn = connect(world / "facts.db")
+    old = SourceRef("https://c.nknu.edu.tw/reality/NewsView.aspx?Nid=9500", "測試公告：游泳池整修期間暫停開放", "nknu.org.pe",
+                    "announcement", "sha-9500", published_on=date(2025, 6, 1))
+    apply_fact(conn, replace(WR_TERM, key="pool-renovation", entity_id=POOL, source=old, valid_from=date(2025, 6, 1),
+                             valid_to=date(2027, 7, 1), specificity=2, value={"closed": True, "reason": "整修"}, rules=()),
+               adapter="pe_news", review="verified", now=T0)
+    conn.commit()
+    make(world)
+    a = card_on(world, POOL, TODAY)["answer_zh"]
+    assert "暫停開放（整修）" in a and "來源發布於 2025-06-01，已超過一年，可能已變動" in a
+    assert "超過一年" not in card_on(world, WR, date(2026, 10, 25))["answer_zh"]  # Nid=460 is from 2025-12-26
 
 
 def test_conflict_card_and_alert(world):
@@ -85,7 +114,7 @@ def test_conflict_card_and_alert(world):
     c = card_on(world, WR, TODAY)
     assert c["status"] == "conflict" and "場地開放時間(另一版本)" in c["answer_zh"] and "請以現場公告為準" in c["answer_zh"]
     # F-conflict-template-promise: nothing is queued for review; the maintainer is notified (C4)
-    assert "已通知維護者" in c["answer_zh"] and "審核" not in c["answer_zh"] and c["template_ver"] == 2
+    assert "已通知維護者" in c["answer_zh"] and "審核" not in c["answer_zh"] and c["template_ver"] == 3
     assert connect(world / "facts.db").execute("SELECT count(*) FROM alert WHERE code='conflict'").fetchone()[0] >= 1
 
 
@@ -169,7 +198,7 @@ def test_meta_records_facts_version(world):
     info = make(world)
     meta = dict(ro(world).execute("SELECT key, value FROM meta").fetchall())
     assert meta["facts_version"] == str(data_version(connect(world / "facts.db"))) and meta["build_id"] == info.build_id
-    assert meta["today"] == "2026-10-22" and json.loads(meta["template_ver"]) == 2
+    assert meta["today"] == "2026-10-22" and json.loads(meta["template_ver"]) == 3
 
 
 def test_cli_build(world):

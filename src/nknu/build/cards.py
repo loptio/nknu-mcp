@@ -15,6 +15,7 @@ from nknu.core.vocab import managing_org
 
 WINDOW_BEFORE = 7
 WINDOW_AFTER = 180
+OLD_SOURCE_DAYS = 365  # U3: a source published longer ago than this is dated in the answer
 
 
 @dataclass(frozen=True)
@@ -70,40 +71,71 @@ def _weekdays_in(lo: date, hi: date) -> set[int]:
     return {(lo + timedelta(days=i)).isoweekday() for i in range(min((hi - lo).days, 7))}
 
 
+def _schedule(w: dict) -> tuple[str, str]:
+    """A brief's weekly rules as printed, and the weekdays of its validity it leaves closed (；週六、日不開放)."""
+    rules = w.get("rules") or []
+    schedule = "；".join(f"{dows_zh(r['dows'])} {r['opens']}–{r['closes']}" for r in rules) or "時段未載明"
+    open_days = {d for r in rules for d in r["dows"]}
+    lo, hi = date.fromisoformat(w["valid"][0]), date.fromisoformat(w["valid"][1])
+    closed = sorted(d for d in _weekdays_in(lo, hi) if d not in open_days) if rules else []
+    return schedule, f"；{dows_zh(closed)}不開放" if closed else ""
+
+
+def _stated(w: dict) -> str:
+    """What a (last known) brief says, for the stale sentence: 暫停開放（reason）, or its hours."""
+    value = w.get("value") or {}
+    if value.get("closed"):
+        return f"暫停開放（{value.get('reason') or '公告停開'}）"
+    schedule, closed_days = _schedule(w)
+    return schedule + closed_days + (f"（{value['reason']}）" if value.get("reason") else "")
+
+
+def _old_source(w: dict, tpl: Templates, today: date | None) -> str:
+    """U3: a current answer from a source published more than OLD_SOURCE_DAYS before today says that date."""
+    published = w.get("published_on")
+    if today is None or not published or date.fromisoformat(published) >= today - timedelta(days=OLD_SOURCE_DAYS):
+        return ""
+    return tpl.render("old_source", published_on=published)
+
+
 def hours_sentence(entity: str, result: dict, names: dict[str, str], contact: str, tpl: Templates, seg_lo: date,
-                   seg_hi: date) -> str:
+                   seg_hi: date, today: date | None = None) -> str:
+    """The answer for one place over [seg_lo, seg_hi): a current sentence (plus the source date when it is over a year
+    old), a conflict, the last known statement when stale, or no_data; the stated fact's 附註 follow."""
     sentence = _hours_sentence(entity, result, names, contact, tpl, seg_lo, seg_hi)
-    notes = (result.get("winner") or {}).get("value", {}).get("notes") if result["status"] == "current" else None
+    stated = {"current": result.get("winner"), "stale": result.get("last_known")}.get(result["status"]) or {}
+    if result["status"] == "current":
+        sentence += _old_source(stated, tpl, today)
+    notes = (stated.get("value") or {}).get("notes")
     return sentence + ("附註：" + "".join(notes) if notes else "")
 
 
 def _hours_sentence(entity: str, result: dict, names: dict[str, str], contact: str, tpl: Templates, seg_lo: date,
                     seg_hi: date) -> str:
+    # seg_lo/seg_hi only date a conflict; a current or stale sentence states its source's own validity
     name = names.get(entity, entity)
     status = result["status"]
     if status == "current":
         w = result["winner"]
-        w_lo, w_hi = date.fromisoformat(w["valid"][0]), date.fromisoformat(w["valid"][1])
-        span = span_zh(w_lo, w_hi)  # the source's validity, not the card segment
+        span = span_zh(date.fromisoformat(w["valid"][0]), date.fromisoformat(w["valid"][1]))  # the source's validity
         publisher, title = _source_label(w["source"], names)
         if w["value"].get("closed"):
             return tpl.render("hours_closed", name=name, span=span, reason=w["value"].get("reason") or "公告停開",
                               publisher=publisher, title=title)
-        rules = w["rules"]
-        schedule = "；".join(f"{dows_zh(r['dows'])} {r['opens']}–{r['closes']}" for r in rules) or "時段未載明"
-        open_days = {d for r in rules for d in r["dows"]}
-        closed = sorted(d for d in _weekdays_in(w_lo, w_hi) if d not in open_days) if rules else []
+        schedule, closed_days = _schedule(w)
         reason = w["value"].get("reason")
         return tpl.render("hours_open", name=name, span=span, note=f"（{reason}）" if reason else "", schedule=schedule,
-                          closed_days=f"；{dows_zh(closed)}不開放" if closed else "", publisher=publisher, title=title)
+                          closed_days=closed_days, publisher=publisher, title=title)
     span = span_zh(seg_lo, seg_hi)
     if status == "conflict":
         sources = "；".join("{}《{}》".format(*_source_label(a["source"], names)) for a in result["alternatives"])
         return tpl.render("hours_conflict", name=name, span=span, n=len(result["alternatives"]), sources=sources)
     lk = result.get("last_known")
-    if status == "stale" and lk:
-        last_to = date.fromisoformat(lk["valid"][1]) - timedelta(days=1)
-        return tpl.render("hours_stale", name=name, from_=seg_lo, last_to=last_to, contact=contact)
+    if status == "stale" and lk:  # U3: the last known statement, dated, and said to be possibly out of date
+        publisher, title = _source_label(lk["source"], names)
+        lk_span = span_zh(date.fromisoformat(lk["valid"][0]), date.fromisoformat(lk["valid"][1]))
+        return tpl.render("hours_stale", name=name, publisher=publisher, title=title, span=lk_span, value=_stated(lk),
+                          from_=lk["valid"][1], contact=contact)  # the first day the last statement no longer covers
     return tpl.render("hours_no_data", name=name, contact=contact)
 
 
@@ -133,7 +165,7 @@ def hours_card_rows(conn: sqlite3.Connection, tpl: Templates, today: date) -> li
             fids = [x for x in [(res.get("winner") or {}).get("fact_id"), *(x["fact_id"] for x in res.get("alternatives", []))]
                     if x]
             out.append(CardRow(uuid7(), entity, "hours", "", a.isoformat(), b.isoformat(), res["status"], res["decided_by"],
-                               hours_sentence(entity, res, names, contact, tpl, a, b),
+                               hours_sentence(entity, res, names, contact, tpl, a, b, today),
                                json.dumps(_payload(res), ensure_ascii=False), json.dumps(fids), tpl.ver))
     return out
 

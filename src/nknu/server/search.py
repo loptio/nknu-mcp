@@ -13,6 +13,11 @@
    coverage decides: below T_LOW nothing is returned (found=false, 「請勿推測」); between T_LOW and T_HIGH the hits come
    back as match=weak.
 4. A place the query names only on another campus (燕巢 游泳池) is not there: found=false, with the places of that name.
+5. Old notices (C5: posted over a year ago, or past their posting period) are never current. When nothing current is
+   returned to a notice search, or to a kind=any question with no hours or calendar intent, the notices are searched
+   again among the old ones; hits that clear the same thresholds come back labelled with their date
+   (old_notice_label), newest first among equally covered, with status=stale, found=false and CAVEAT_OLD_NOTICES.
+   Envelopes are never trimmed (U1): `limit` is the only cut.
 
 The topic leaves out what says nothing about what is asked: the places the query names (a place's name is in its own
 cards; the name only picks which cards), words that only say what kind of answer is wanted (開放 and 時間 are in every
@@ -33,7 +38,7 @@ from typing import Literal
 
 from nknu.build.templates import Templates
 from nknu.core.textnorm import fts_query, norm_text, tokenize
-from nknu.server.envelope import NOTICE_LABEL, fit_budget, make_envelope
+from nknu.server.envelope import NOTICE_LABEL, make_envelope
 from nknu.server.linking import (
     CAMPUS_WORDS,
     KIND_TOKENS,
@@ -51,8 +56,10 @@ from nknu.server.query import (
     CAVEAT_TENTATIVE,
     CAVEATS,
     CURRENT_DOC_SQL,
+    OLD_DOC_SQL,
     current_doc_params,
     hours_envelope,
+    old_notice_label,
     parse_date_arg,
     place_candidates,
     today_info,
@@ -74,6 +81,7 @@ CAVEAT_NOT_FOUND = "查無相關資料，請勿推測"
 CAVEAT_NOT_ON_CAMPUS = "{campus}查無此地點，請勿推測"
 CAMPUS_ZH = {"heping": "和平校區", "yanchao": "燕巢校區"}
 CAVEAT_WEAK = "只有部分字詞相符，請先確認內容是否回答問題，請勿推測"
+CAVEAT_OLD_NOTICES = "沒有現行資料符合；以下是一年以上或已過公告期的舊公告，內容可能已變動，請勿當作現行資料，並以學校最新公告為準"
 
 Strength = Literal["none", "weak", "text"]
 
@@ -195,17 +203,19 @@ def _calendar_hits(conn: sqlite3.Connection, match: str, on: dt.date, n: int) ->
     return out
 
 
-def _doc_hits(conn: sqlite3.Connection, match: str, today: dt.date, n: int) -> list[_Hit]:
+def _doc_hits(conn: sqlite3.Connection, match: str, today: dt.date, n: int, *, old: bool = False) -> list[_Hit]:
+    """Current notices (C5), or with old=True the others, each labelled as such."""
     rows = conn.execute(
         f"""SELECT d.title, d.unit, d.published_on, d.url, f.tokens, bm25(doc_fts) AS score
               FROM doc_fts f JOIN doc d ON d.id = f.doc_id
-             WHERE doc_fts MATCH :q AND {CURRENT_DOC_SQL}
+             WHERE doc_fts MATCH :q AND {OLD_DOC_SQL if old else CURRENT_DOC_SQL}
              ORDER BY score LIMIT :n""", {"q": match, "n": n, **current_doc_params(today)})
     out = []
     for r in rows:
         view = {"title": r["title"], "unit": r["unit"], "published_on": r["published_on"], "url": r["url"],
-                "label": NOTICE_LABEL}
-        out.append(_Hit(r["score"], 2, frozenset(r["tokens"].split()), {k: v for k, v in view.items() if v}))
+                "label": old_notice_label(r["published_on"]) if old else NOTICE_LABEL}
+        out.append(_Hit(r["score"], 2, frozenset(r["tokens"].split()), {k: v for k, v in view.items() if v},
+                        day_from=(r["published_on"] or "") if old else ""))  # old notices: newest first on ties
     return out
 
 
@@ -280,18 +290,19 @@ def _whole(topic: list[_Clause], places: list[_Place], h: _Hit) -> float:
 
 
 def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: str, on: dt.date, today: dt.date,
-               campus: str | None, limit: int) -> tuple[list[_Hit], float]:
+               campus: str | None, limit: int, old: bool = False) -> tuple[list[_Hit], float]:
+    """Ranked hits and the first one's coverage; old=True searches only the old notices (C5)."""
     tokens = _tokens(expand(_cleaned(query)))
     if not tokens:
         return [], 0.0
     match = fts_query(tokens)
     hits: list[_Hit] = []
-    if kind in ("any", "hours", "place"):
+    if kind in ("any", "hours", "place") and not old:
         hits += _hours_hits(conn, match, on, campus)
-    if kind in ("any", "calendar"):
+    if kind in ("any", "calendar") and not old:
         hits += _calendar_hits(conn, match, on, CANDIDATES)
     if kind in ("any", "announcement"):
-        hits += _doc_hits(conn, match, today, CANDIDATES)
+        hits += _doc_hits(conn, match, today, CANDIDATES, old=old)
     topic = _clauses(linked.rest, topic=True)
     places = _places(linked) if topic else []  # no topic left: every word of the query counts, names included
     topic = topic or _clauses(query, topic=False)
@@ -299,7 +310,11 @@ def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: st
         h.coverage = _coverage(topic, h.tokens)
         h.whole = _whole(topic, places, h)
     hits = _fitting([h for h in hits if h.coverage > 0])
-    hits.sort(key=lambda h: (-h.whole, -h.coverage, h.upcoming, h.score, h.order))
+    if old:  # among equally covered old notices the newest says the most
+        hits.sort(key=lambda h: h.day_from, reverse=True)
+        hits.sort(key=lambda h: (-h.whole, -h.coverage))
+    else:
+        hits.sort(key=lambda h: (-h.whole, -h.coverage, h.upcoming, h.score, h.order))
     return hits[:limit], (hits[0].coverage if hits else 0.0)
 
 
@@ -322,11 +337,19 @@ def retrieve(conn: sqlite3.Connection, tpl: Templates, query: str, *, kind: str,
     intent = detect_intent(query)
     place_only = not _clauses(linked.rest, topic=True)  # nothing but place names, campus, question and when words
     if ids and (kind == "hours" or (kind == "any" and (exact or intent == "hours" or (place_only and intent is None)))):
-        cands = place_candidates(conn, tpl, ids, on)
+        cands = place_candidates(conn, tpl, ids, on, today)
         status = worst_status({c["status"] for c in cands})
         return Retrieval("entity" if len(cands) == 1 else "ambiguous", cands[:limit], status=status, entity_ids=ids)
     hits, cov = _full_text(conn, query, linked, kind=kind, on=on, today=today, campus=campus, limit=limit)
     return Retrieval("text", [h.view for h in hits[:limit]], cov)
+
+
+def retrieve_old(conn: sqlite3.Connection, query: str, *, today: dt.date, campus: str | None, limit: int) -> Retrieval:
+    """The old notices for a query (C5), ranked like the current ones; used only when nothing current is returned."""
+    linked = link_query(conn, query, campus)
+    hits, cov = _full_text(conn, query, linked, kind="announcement", on=today, today=today, campus=campus, limit=limit,
+                           old=True)
+    return Retrieval("text", [h.view for h in hits], cov, status="stale")
 
 
 def _place_views(conn: sqlite3.Connection, ids: list[str]) -> list[dict]:
@@ -353,27 +376,38 @@ def search(db: ServeDB, query: str, kind: str = "any", on_date: str | None = Non
     r = retrieve(conn, db.templates(), query, kind=kind, on=on, today=today, campus=campus, limit=limit)
     if r.match == "absent":
         where = CAMPUS_ZH.get(campus or query_campus(query) or "", "此校區")
-        return fit_budget(make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_ON_CAMPUS.format(
-            campus=where), similar=[v["name"] for v in _place_views(conn, r.entity_ids)]))
+        return make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_ON_CAMPUS.format(campus=where),
+                             similar=[v["name"] for v in _place_views(conn, r.entity_ids)])
     more = len(r.entity_ids) - len(r.facts) if r.entity_ids else 0
     if r.match == "entity" and kind != "place":  # the same fields get_hours answers (next_change, open_now, notices)
         f = r.facts[0]
         env = hours_envelope(conn, db.templates(), f["entity_id"], on, info)
         env["facts"] = [{"entity_id": f["entity_id"], "name": f["name"]}]
-        return fit_budget(make_envelope(**base, **env))
+        return make_envelope(**base, **env)
     if r.match == "ambiguous" and kind != "place":
         found = any(f["status"] in ("current", "conflict") for f in r.facts)
-        return fit_budget(make_envelope(**base, found=found, status=r.status, match="ambiguous", facts=r.facts,
-                                        caveat=CAVEAT_AMBIGUOUS, more=more or None))
+        return make_envelope(**base, found=found, status=r.status, match="ambiguous", facts=r.facts,
+                             caveat=CAVEAT_AMBIGUOUS, more=more or None)
     s = "text" if r.coverage is None else strength(r.coverage)
     if s == "none" or not r.facts:
-        return fit_budget(make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_FOUND))
+        if r.match == "text" and _asks_notices(query, kind):  # C5: old notices only when nothing current answers
+            old = retrieve_old(conn, query, today=today, campus=campus, limit=limit)
+            if old.facts and (s := strength(old.coverage or 0.0)) != "none":
+                caveat = "；".join(c for c in (CAVEAT_WEAK if s == "weak" else None, CAVEAT_OLD_NOTICES) if c)
+                return make_envelope(**base, found=False, status="stale", match=s, facts=old.facts, caveat=caveat)
+        return make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_FOUND)
     match = "entity" if r.match == "entity" else s
     # The hours cards set the status, as on the ambiguous path (the most severe one); events and notices count as found.
     status = worst_status({f.get("status", "current") for f in r.facts if f.get("entity_id")})
     found = any(f.get("status", "current") not in ("stale", "no_data") for f in r.facts)
-    return fit_budget(make_envelope(**base, found=found, status=status, match=match, facts=r.facts,
-                                    caveat=_caveat(match, status, r.facts), more=more or None))
+    return make_envelope(**base, found=found, status=status, match=match, facts=r.facts,
+                         caveat=_caveat(match, status, r.facts), more=more or None)
+
+
+def _asks_notices(query: str, kind: str) -> bool:
+    """Old notices may answer a notice search, or a question that is not about hours or calendar dates: a years-old
+    notice only states past hours and past dates, which the cards and the calendar answer (or say they cannot)."""
+    return kind == "announcement" or (kind == "any" and detect_intent(query) in (None, "doc"))
 
 
 def _caveat(match: str, status: str, facts: list[dict] = ()) -> str | None:

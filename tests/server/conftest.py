@@ -60,12 +60,13 @@ def _notice(nid: str, title: str, published: date) -> SourceRef:
 
 @pytest.fixture(scope="session")
 def conflict_world(world, tmp_path_factory):
-    """Three same-tier announcements disagree about the weight room on 2026-11-14 (none newer than the others)."""
+    """Four same-tier announcements disagree about the weight room on 2026-11-14 (none newer than the others)."""
     def change(conn):
         day = date.fromisoformat(CONFLICT_DAY)
         variants = [("9001", "測試公告：11/14 重量訓練室全日暫停開放", True, ()),
                     ("9002", "測試公告：11/14 重量訓練室上午開放", False, (HoursRule((6,), "09:00", "12:00"),)),
-                    ("9003", "測試公告：11/14 重量訓練室下午開放", False, (HoursRule((6,), "13:00", "17:00"),))]
+                    ("9003", "測試公告：11/14 重量訓練室下午開放", False, (HoursRule((6,), "13:00", "17:00"),)),
+                    ("9004", "測試公告：11/14 重量訓練室晚上開放", False, (HoursRule((6,), "18:00", "21:00"),))]
         for nid, title, closed, rules in variants:
             rec = FactRecord(f"test:conflict:{nid}", WR, "hours", {"closed": closed}, day, date(2026, 11, 15), "explicit", 2,
                              False, _notice(nid, title, date(2026, 11, 1)), title, "rule", rules)
@@ -76,11 +77,16 @@ def conflict_world(world, tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def world_with_pending_closure(world, tmp_path_factory):
-    """A recent 體育室 closure notice whose closure fact still waits in the review queue."""
+    """A recent 體育室 closure notice whose closure fact still waits in the review queue, and three older 體育室 notices
+    that name the gym (every one of them is listed: no cap but the 14 days)."""
     def change(conn):
         title = "測試公告：本校體育館(含室外運動場地)於115年11月7日，全日暫停開放"
         upsert_doc(conn, DocRecord("pe_news:9100", "9100", title, NEWS + "9100", unit="體育室", category="一般公告",
                                    published_on=date(2026, 10, 20)), adapter="pe_news", now="2026-10-22T03:00:00Z")
+        for i, day in ((1, 17), (2, 18), (3, 19)):
+            upsert_doc(conn, DocRecord(f"pe_news:910{i}", f"910{i}", f"測試公告：體育館第{i}次場地調整說明", NEWS + f"910{i}",
+                                       unit="體育室", category="一般公告", published_on=date(2026, 10, day)),
+                       adapter="pe_news", now="2026-10-22T03:00:00Z")
         rec = FactRecord("pe_news:9100:nknu.heping.gym.main", GYM, "hours", {"closed": True, "reason": "測試"},
                          date(2026, 11, 7), date(2026, 11, 8), "explicit", 2, True, _notice("9100", title, date(2026, 10, 20)),
                          title, "rule")
@@ -143,6 +149,50 @@ def world_next_term(world, tmp_path_factory):
         apply_fact(conn, rec, adapter="pe_open_hours", review="verified", now="2026-10-22T03:00:00Z")
 
     return _derive(world, tmp_path_factory, "next_term", change)[0]
+
+
+SSO = "https://sso.nknu.edu.tw/News/lastNews.aspx?UNID="
+OLD_XUECE = "測試公告：高師大辦理大學學測說明"  # published 2017, posting period until 2030 (the real SSO shape)
+OLD_WITHDRAWAL = "測試公告：停修申請舊說明"  # published 2019, posting period until 2030
+
+
+@pytest.fixture(scope="session")
+def world_old_notices(world, tmp_path_factory):
+    """F-stale-sso-notices / C5: SSO units fill far-away end dates (2030-12-31) into years-old notices."""
+    def change(conn):
+        for key, title, unit, published in (("TEST9401", OLD_XUECE, "秘書室", date(2017, 1, 19)),
+                                            ("TEST9402", OLD_WITHDRAWAL, "教務處", date(2019, 3, 1))):
+            upsert_doc(conn, DocRecord(f"sso_news:{key}", key, title, SSO + key, unit=unit, category="SCHOOLADMIN",
+                                       published_on=published, announce_until=date(2030, 12, 31)),
+                       adapter="sso_news", now="2026-10-22T03:00:00Z")
+
+    return _derive(world, tmp_path_factory, "old_notices", change)[0]
+
+
+@pytest.fixture(scope="session")
+def world_displaced(world, tmp_path_factory):
+    """The library's closure table moved 和平's closure to start on 10/24 (C1 closes the 10/25 version), and the
+    maintainer withdrew 燕巢's closure with nknu undo. Returns (db, {"replaced", "replacement", "withdrawn"} fact ids)."""
+    def change(conn):
+        from nknu.admin.undo import undo
+        from nknu.core.timeutil import iso_now
+        from nknu.crawl.adapters.lib_open_time import URL as LIB_URL
+
+        def closure(entity):
+            return conn.execute("SELECT id FROM fact WHERE entity_id=? AND specificity=2 AND recorded_to IS NULL "
+                                "AND valid_from='2026-10-25'", (entity,)).fetchone()[0]
+
+        old_h, old_y = closure("nknu.heping.library.main"), closure("nknu.yanchao.library.main")
+        src = SourceRef(LIB_URL, "詳細開館時間", "nknu.org.lis", "table_page", "sha-test-displaced")
+        rec = FactRecord("lib_open_time:nknu.heping.library.main:closed:2026-10-24", "nknu.heping.library.main", "hours",
+                         {"closed": True, "reason": "測試：提前閉館"}, date(2026, 10, 24), date(2026, 10, 27), "explicit", 2,
+                         False, src, "測試：閉館日 10/24-10/26", "rule")
+        now = iso_now()  # the crawled facts were recorded at the real clock
+        new = apply_fact(conn, rec, adapter="lib_open_time", review="auto_ok", now=now)
+        undo(conn, old_y, now=now)
+        return {"replaced": old_h, "replacement": new, "withdrawn": old_y}
+
+    return _derive(world, tmp_path_factory, "displaced", change)
 
 
 @pytest.fixture(scope="session")

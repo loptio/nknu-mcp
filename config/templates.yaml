@@ -1,10 +1,13 @@
 # Answer sentences (Traditional Chinese). Every sentence states its validity and its source.
 # Bump template_ver whenever wording changes; cards record the version they were rendered with.
-template_ver: 2
+template_ver: 3
 hours_open: "{name} {span}開放{note}：{schedule}{closed_days}。來源：{publisher}《{title}》。"
 hours_closed: "{name} {span}：暫停開放（{reason}）。來源：{publisher}《{title}》。"
 hours_conflict: "{name} {span} 的開放時間有 {n} 個同等級官方來源不一致（{sources}），已通知維護者，請以現場公告為準。"
-hours_stale: "{name} 自 {from_} 起查無有效的開放時間資料；最近一筆官方資料有效至 {last_to}，新時段尚未公布。請勿推測，可洽{contact}。"
+# stale (U3): no current data on that day; the last known statement with its source and validity, said to be possibly out of date
+hours_stale: "{name} 最近一筆官方資料（{publisher}《{title}》，{span}）：{value}。{from_} 起的時段尚未公布，可能已變動，請以現場公告為準，可洽{contact}。"
+# appended to a current answer whose source was published more than a year before the day it is served for (U3)
+old_source: "來源發布於 {published_on}，已超過一年，可能已變動。"
 hours_no_data: "{name} 查無開放時間資料。請勿推測，可洽{contact}。"
 calendar_event: "{span}：{summary}{note}。來源：{publisher}《{title}》。"
 calendar_list: "{span}{kw}行事曆事件共 {n} 筆。來源：{sources}。"

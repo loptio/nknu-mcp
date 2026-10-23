@@ -1,29 +1,24 @@
-"""The output envelope shared by every tool. structuredContent IS the compact payload for the model; the text block is
-rendered from the same dict by render_text (Claude Code / VS Code / Codex read structuredContent, Gemini CLI reads text).
+"""The output envelope shared by every tool. structuredContent IS the payload for the model; the text block is rendered
+from the same dict by render_text (Claude Code / VS Code / Codex read structuredContent, Gemini CLI reads text).
 
-Budget (spec §8): an envelope stays within 400 o200k tokens, an error within 80. tiktoken is a dev dependency, so the
-serving path uses approx_tokens(), a conservative estimate (tests check it never undercounts), and fit_budget() trims in a
-fixed order. status, caveat and the core answer sentence are never removed."""
+Answers are never trimmed (U1, 2026-10-23: the spec §8 400-token budget and its trim ladder are gone): an envelope
+carries every sentence, fact, day and alternative it was built with. What stays bounded is what the caller asks for
+(limit, days), the length of free-text arguments (app.MAX_LEN) and errors: an error stays within ERROR_BUDGET o200k
+tokens, checked without tiktoken (a dev dependency) by approx_tokens(), a conservative estimate."""
 
 from __future__ import annotations
 
-import copy
-import datetime as dt
 import json
 import math
 import re
-from collections.abc import Callable
 
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
 NOTICE_LABEL = "公告摘要，非核實事實"
-BUDGET = 400
 ERROR_BUDGET = 80
 ECHO_BYTES = 24  # user input quoted in an error message (echo)
 ERROR_MESSAGE_MAX = 120
-NOTES_MARK = "附註："
-TITLE_MAX = 40
 
 
 def _empty(v: object) -> bool:
@@ -49,10 +44,10 @@ _LABELS = {
     "caveat": "注意", "days": "逐日", "similar": "相近地點", "history": "版本紀錄", "more": "另有筆數", "sources": "來源",
     "id": "id", "lineage": "系列", "entity_id": "地點", "name": "名稱", "answer": "答", "valid": "有效", "rules": "時段",
     "closed": "停開", "source": "來源", "title": "標題", "url": "網址", "tier": "等級", "published_on": "發布",
-    "from": "自", "valid_to_inclusive": "有效至", "source_url": "來源網址", "date": "日期", "weekday": "星期",
+    "from": "自", "date": "日期", "weekday": "星期",
     "time": "時間", "open": "開放", "segments": "時段", "reason": "原因", "label": "標示", "summary": "事件",
     "category": "類別", "recorded_from": "收錄於", "recorded_to": "取代於", "superseded_by": "現行版本",
-    "code": "代碼", "message": "說明", "to": "至", "more_days": "另有天數",
+    "code": "代碼", "message": "說明", "unit": "單位",
 }
 
 
@@ -136,7 +131,7 @@ def error_result(code: str, message: str) -> ToolResult:
                       is_error=True)
 
 
-# ---------------------------------------------------------------- token budget
+# ---------------------------------------------------------------- token counts (error budget)
 
 def _dump(obj: object) -> str:
     return obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -151,14 +146,15 @@ def count_tokens(obj: object) -> int:
 
 # Pre-tokens split the way o200k does (letter runs incl. CJK with one leading symbol, digit groups of <=3, symbol runs).
 # The per-class weights were fitted (non-negative least squares) on ~13k envelopes from the fixture worlds, then scaled
-# by 1.12 so the estimate stayed 1.03-1.19x the real count there; tests re-check that it never undercounts.
+# by 1.12 so the estimate stayed 1.03-1.19x the real count there. Only errors are bounded now; the error tests check
+# the real count of the cut messages.
 _HAN = "㐀-鿿豈-﫿"
 _PRE = re.compile(rf"[^\r\n A-Za-z0-9{_HAN}]?[A-Za-z{_HAN}]+|\d{{1,3}}| ?[^\sA-Za-z0-9{_HAN}]+|\s+")
 _HAN_CHAR = re.compile(f"[{_HAN}]")
 
 
 def approx_tokens(obj: object) -> int:
-    """Upper estimate of count_tokens() without a tokenizer, for the serving path."""
+    """Upper estimate of count_tokens() without a tokenizer, for cutting error messages on the serving path."""
     n = 0.0
     for m in _PRE.finditer(_dump(obj)):
         p = m.group()
@@ -179,190 +175,3 @@ def approx_tokens(obj: object) -> int:
             wide = sum(not c.isascii() for c in p)
             n += 0.21 + 0.64 * wide + 0.22 * (len(p) - wide)
     return math.ceil(n)
-
-
-def _items(env: dict, *keys: str) -> list[dict]:
-    return [x for k in keys for x in env.get(k) or [] if isinstance(x, dict)]
-
-
-def _short_titles(env: dict) -> None:
-    """Notice titles (recent_notices, and the notices search lists as facts) are cut to TITLE_MAX characters."""
-    for n in [*_items(env, "recent_notices"), *(f for f in _items(env, "facts") if f.get("label"))]:
-        if len(n.get("title", "")) > TITLE_MAX:
-            n["title"] = n["title"][:TITLE_MAX] + "…"
-
-
-def _compact_days(env: dict) -> None:
-    """Days keep date + segments (open is implied) or open=false or status; weekday goes, and so does status=current
-    when a value already shows it (a stale envelope's days carry no values, so their status stays)."""
-    for d in _items(env, "days"):
-        d.pop("weekday", None)
-        if d.get("status") == "current" and ("open" in d or d.get("segments")):
-            del d["status"]
-        if d.get("segments"):
-            d.pop("open", None)
-
-
-def _drop_source_titles(env: dict) -> None:
-    for f in _items(env, "facts", "alternatives"):
-        if isinstance(f.get("source"), dict):
-            f["source"].pop("title", None)
-
-
-def _drop_fact_rules(env: dict) -> None:
-    for f in _items(env, "facts"):
-        if f.get("rules"):  # an empty list costs nothing and says "no hours"
-            del f["rules"]
-
-
-def _drop_fact_validity(env: dict) -> None:
-    """An hours fact's validity is the span its answer states and its tier is internal (calendar events keep `valid`)."""
-    for f in _items(env, "facts"):
-        src = f.get("source")
-        if isinstance(src, dict) and "tier" in src:
-            f.pop("valid", None)
-            src.pop("tier", None)
-
-
-def _drop_next_answer(env: dict) -> None:
-    if isinstance(env.get("next_change"), dict):
-        env["next_change"].pop("answer", None)
-
-
-def _strip_notes_of(holders: list[dict]) -> None:
-    for holder in holders:
-        a = holder.get("answer")
-        if isinstance(a, str) and NOTES_MARK in a:
-            holder["answer"] = a.split(NOTES_MARK, 1)[0]
-
-
-def _next_of(env: dict) -> list[dict]:
-    """next_change of the envelope and of each candidate in an ambiguous list."""
-    return [n for n in (env.get("next_change"), *(f.get("next_change") for f in _items(env, "facts"))) if isinstance(n, dict)]
-
-
-def _strip_fact_notes(env: dict) -> None:
-    """附註 of the candidates in an ambiguous list (and of the next_change sentences still there)."""
-    _strip_notes_of([*_items(env, "facts"), *_next_of(env)])
-
-
-_SOURCE_CLAUSE = re.compile(r"來源：[^《。]*《[^》]*》。")
-
-
-def _drop_fact_sources(env: dict) -> None:
-    """The 來源 clause of the sentences in a list (candidates, text hits, their next_change): an agent picks one and asks
-    get_hours, which keeps it; the main answer keeps its own."""
-    for holder in [*_items(env, "facts"), *(f["next_change"] for f in _items(env, "facts")
-                                            if isinstance(f.get("next_change"), dict))]:
-        if isinstance(holder.get("answer"), str):
-            holder["answer"] = _SOURCE_CLAUSE.sub("", holder["answer"])
-
-
-def _drop_fact_next_answers(env: dict) -> None:
-    """The candidates' next_change sentences go after their 附註: a dated change says more than a standing note."""
-    for f in _items(env, "facts"):
-        if isinstance(f.get("next_change"), dict):
-            f["next_change"].pop("answer", None)
-
-
-def _drop_fact_next(env: dict) -> None:
-    for f in _items(env, "facts"):
-        f.pop("next_change", None)
-
-
-def _strip_answer_notes(env: dict) -> None:
-    """The main answer's 附註 (e.g. 國定假日、運動會停課…不予開放) is the only signal for those days: it goes late."""
-    _strip_notes_of([env])
-
-
-def _drop_day_reasons(env: dict) -> None:
-    for d in _items(env, "days"):
-        d.pop("reason", None)
-
-
-def _merge_day_runs(env: dict) -> None:
-    """Consecutive days with the same (already compacted) content become one entry with an inclusive `to` date."""
-    merged: list[dict] = []
-    for d in _items(env, "days"):
-        prev = merged[-1] if merged else None
-        rest = {k: v for k, v in d.items() if k != "date"}
-        if prev is not None and {k: v for k, v in prev.items() if k not in ("date", "to")} == rest:
-            merged[-1] = {"date": prev["date"], "to": d["date"], **rest}
-        else:
-            merged.append(dict(d))
-    if env.get("days"):
-        env["days"] = merged
-
-
-def _slim_alternatives(env: dict) -> None:
-    """Conflicting sources share a tier by construction (R3 ran first); their own validity is secondary to the day asked."""
-    for a in _items(env, "alternatives"):
-        a.pop("valid", None)
-        if isinstance(a.get("source"), dict):
-            a["source"].pop("tier", None)
-            a["source"].pop("published_on", None)
-
-
-def _drop_alternative_ids(env: dict) -> None:
-    for a in _items(env, "alternatives"):
-        a.pop("id", None)
-
-
-def _one_notice(env: dict) -> None:
-    if env.get("recent_notices"):
-        env["recent_notices"] = env["recent_notices"][:1]
-
-
-def _drop(key: str) -> Callable[[dict], None]:
-    def step(env: dict) -> None:
-        env.pop(key, None)
-    return step
-
-
-def _drop_facts(env: dict) -> None:
-    if env.get("answer"):  # the answer sentence already names the source and validity
-        env.pop("facts", None)
-
-
-_STEPS: list[Callable[[dict], None]] = [
-    _short_titles, _compact_days, _drop_source_titles, _drop_fact_rules, _drop_fact_validity, _drop_next_answer,
-    _strip_fact_notes, _drop_fact_sources, _drop_fact_next_answers, _drop_day_reasons, _slim_alternatives, _merge_day_runs, _one_notice,
-    _drop("next_change"), _drop_fact_next, _drop_alternative_ids,
-]
-_LAST_STEPS: list[Callable[[dict], None]] = [_strip_answer_notes, _drop("recent_notices"), _drop_facts]
-
-
-def _days_in(entry: dict) -> int:
-    """Days covered by a days entry (a merged run {date, to} counts every day in it)."""
-    lo = dt.date.fromisoformat(entry["date"])
-    return (dt.date.fromisoformat(entry.get("to", entry["date"])) - lo).days + 1
-
-
-# list key -> (end that is cut first, counter). history is oldest first, so the oldest versions go first.
-_LISTS = {"history": (0, "more"), "facts": (-1, "more"), "days": (-1, "more_days"), "alternatives": (-1, "more")}
-
-
-def _trim_lists(env: dict, budget: int, keys: tuple[str, ...]) -> None:
-    """Long lists lose items from one end and keep at least one; `more` counts the items cut, `more_days` the days."""
-    for key in keys:
-        end, counter = _LISTS[key]
-        while approx_tokens(env) > budget and len(env.get(key) or []) > 1:
-            item = env[key].pop(end)
-            env[counter] = env.get(counter, 0) + (_days_in(item) if key == "days" else 1)
-
-
-def fit_budget(env: dict, budget: int = BUDGET) -> dict:
-    """Return a copy of env trimmed (in a fixed order) until approx_tokens() fits the budget. The asked-for lists go last:
-    days lose their tail (the asked day stays first), then a conflict keeps fewer alternatives (its answer names all)."""
-    out = copy.deepcopy(env)
-    for step in _STEPS:
-        if approx_tokens(out) <= budget:
-            return out
-        step(out)
-    _trim_lists(out, budget, ("history", "facts"))
-    for step in _LAST_STEPS:
-        if approx_tokens(out) <= budget:
-            return out
-        step(out)
-    _trim_lists(out, budget, ("days", "alternatives"))
-    return out

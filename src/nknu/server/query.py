@@ -19,29 +19,32 @@ from nknu.core.resolve import SQLiteBackend, day_hours, resolve
 from nknu.core.textnorm import alias_norm, norm_text
 from nknu.core.timeutil import TAIPEI, now_utc
 from nknu.core.vocab import ancestors, managing_org, resolve_place
-from nknu.server.envelope import NOTICE_LABEL, echo, fit_budget, make_envelope
-from nknu.server.linking import PLACE_TYPES, link_entities
+from nknu.server.envelope import NOTICE_LABEL, echo, make_envelope
+from nknu.server.linking import PLACE_TYPES, alias_pairs, link_entities
 from nknu.server.servedb_reader import ServeDB
 
 MAX_DAYS = 14
 MAX_CALENDAR_LIMIT = 50
 MAX_CALENDAR_SPAN = 366
 NOTICE_RECENT_DAYS = 14
-NOTICE_MAX = 3
-ALTERNATIVES_MAX = 3
 
-# A notice counts as current while not withdrawn and either inside its posting period, or (no period given) under 180 days
-# old. Search (Task 19) uses the same condition. Parameters: :today, :ttl_from (today - 180 days).
-CURRENT_DOC_SQL = ("withdrawn_at IS NULL AND (announce_until >= :today "
-                   "OR (announce_until IS NULL AND published_on >= :ttl_from))")
+# C5: a notice is current while not withdrawn, published within NOTICE_MAX_AGE_DAYS, and inside its posting period, or
+# (no period given) published within NOTICE_TTL_DAYS. SSO units fill end dates such as 2030-12-31 into years-old news, so
+# the period alone does not make a notice current. Every other notice is old: search returns old ones only when nothing
+# current matches, labelled with their date (old_notice_label). Parameters: current_doc_params(today).
 NOTICE_TTL_DAYS = 180
+NOTICE_MAX_AGE_DAYS = 365
+_CURRENT_DOC = ("published_on >= :year_from AND (announce_until >= :today "
+                "OR (announce_until IS NULL AND published_on >= :ttl_from))")
+CURRENT_DOC_SQL = f"withdrawn_at IS NULL AND {_CURRENT_DOC}"
+OLD_DOC_SQL = f"withdrawn_at IS NULL AND NOT coalesce({_CURRENT_DOC}, 0)"  # an undated notice is old
 
 CAVEAT_NO_PLACE = "查無此地點，請勿推測"
 # calendar events are written without review (U2); serve.db leaves cancelled ones out, tentative ones are listed and said
 CAVEAT_TENTATIVE = "標示 status=tentative 的行事曆事件為暫定，日期可能變動，請以學校公告為準"
 CAVEAT_AMBIGUOUS = "有多個地點符合，請確認校區"
 CAVEATS = {
-    "stale": "最近一筆資料已過期，請勿推測開放時間",
+    "stale": "沒有現行的開放時間資料；answer 是最近一筆官方資料（附有效期與來源），可能已變動，轉告時請說明並建議以現場公告為準",
     "conflict": "官方來源不一致，請勿推測，請以現場公告為準",
     "no_data": "查無開放時間資料，請勿推測",
 }
@@ -82,10 +85,12 @@ def _incl(hi: str) -> str:
 
 
 def _fact_view(b: dict) -> dict:
-    """A resolve() brief (winner or alternative) as an envelope fact."""
-    out = {"id": b["fact_id"], "valid": [b["valid"][0], _incl(b["valid"][1])],
+    """A resolve() brief (winner, alternative or last known) as an envelope fact."""
+    out = {"id": b.get("fact_id"), "valid": [b["valid"][0], _incl(b["valid"][1])],
            "rules": [{"dows": r["dows"], "opens": r["opens"], "closes": r["closes"]} for r in b.get("rules") or []]}
-    if b["value"].get("closed"):
+    if out["id"] is None:  # a card built before last_known became a full brief (template_ver < 3)
+        del out["id"]
+    if (b.get("value") or {}).get("closed"):
         out["closed"] = True
     src = {"title": b["source"].get("title"), "url": b["source"]["url"], "tier": b.get("tier"),
            "published_on": b.get("published_on")}
@@ -104,8 +109,8 @@ class _Day:
 class _Ctx:
     """Per-request lookups: answer cards first, runtime resolve() for days outside the card window."""
 
-    def __init__(self, conn: sqlite3.Connection, tpl: Templates):
-        self.conn, self.tpl = conn, tpl
+    def __init__(self, conn: sqlite3.Connection, tpl: Templates, today: dt.date):
+        self.conn, self.tpl, self.today = conn, tpl, today
         self.names = names_of(conn)
         self._be = SQLiteBackend(conn)
         self._days: dict[tuple[str, dt.date], _Day] = {}
@@ -124,17 +129,17 @@ class _Ctx:
             return _Day(d, json.loads(row["payload_json"]), row["answer_zh"], dt.date.fromisoformat(row["valid_to"]))
         res = resolve(self._be, entity, "hours", d)
         contact = contact_of(self.conn, entity, self.names)
-        return _Day(d, res, hours_sentence(entity, res, self.names, contact, self.tpl, d, d + timedelta(days=1)), None)
+        answer = hours_sentence(entity, res, self.names, contact, self.tpl, d, d + timedelta(days=1), self.today)
+        return _Day(d, res, answer, None)
 
-    def next_change(self, entity: str, first: _Day, *, with_answer: bool) -> dict | None:
+    def next_change(self, entity: str, first: _Day) -> dict | None:
+        """The next answer card's first day and whole sentence (a stale day's next change states its hours too: U3)."""
         if first.card_to is None:
             return None
         row = self.conn.execute(
             "SELECT valid_from, answer_zh FROM answer_card WHERE entity_id=? AND intent='hours' AND valid_from>=? "
             "ORDER BY valid_from LIMIT 1", (entity, first.card_to.isoformat())).fetchone()
-        if row is None:
-            return None
-        return {"from": row["valid_from"], "answer": row["answer_zh"]} if with_answer else {"from": row["valid_from"]}
+        return {"from": row["valid_from"], "answer": row["answer_zh"]} if row is not None else None
 
 
 def _segments(d: _Day) -> list[dict] | None:
@@ -158,10 +163,11 @@ def _open_now(today: _Day, yesterday: _Day, hm: str) -> bool | None:
     return any((s["opens"] <= hm < s["closes"]) if s["opens"] < s["closes"] else hm >= s["opens"] for s in segs)
 
 
-def _day_view(d: _Day, *, values: bool = True) -> dict:
-    """One day of the days list; values=False (a stale envelope) leaves only date, weekday and status."""
+def _day_view(d: _Day) -> dict:
+    """One day of the days list: date, weekday, status and, when current, whether it opens and when (or why not). A day
+    with no current data (stale, conflict, no_data) has no hours of its own: the answer states the last known ones."""
     out = {"date": d.day.isoformat(), "weekday": weekday_zh(d.day), "status": d.res["status"]}
-    if d.res["status"] != "current" or not values:
+    if d.res["status"] != "current":
         return out
     h = day_hours(d.res["winner"], d.day)
     if h["open"] is True:
@@ -187,11 +193,19 @@ def _labels(conn: sqlite3.Connection, ids: list[str]) -> set[str]:
 
 
 def current_doc_params(today: dt.date) -> dict:
-    return {"today": today.isoformat(), "ttl_from": (today - timedelta(days=NOTICE_TTL_DAYS)).isoformat()}
+    return {"today": today.isoformat(), "ttl_from": (today - timedelta(days=NOTICE_TTL_DAYS)).isoformat(),
+            "year_from": (today - timedelta(days=NOTICE_MAX_AGE_DAYS)).isoformat()}
+
+
+def old_notice_label(published_on: str | None) -> str:
+    """The label of a notice that is not current (C5), in place of NOTICE_LABEL: its date and that it may be out of date."""
+    when = f"{published_on} 發布" if published_on else "發布日期不明"
+    return f"舊公告（{when}），內容可能已變動"
 
 
 def _recent_notices(conn: sqlite3.Connection, entity: str, today: dt.date) -> list[dict]:
-    """Current notices from the managing unit, at most 14 days old, that name the place or one of its ancestors."""
+    """Current notices from the managing unit, at most 14 days old, that name the place or one of its ancestors (all of
+    them, newest first)."""
     org = managing_org(conn, entity, "hours", today)
     if org is None:
         return []
@@ -209,18 +223,7 @@ def _recent_notices(conn: sqlite3.Connection, entity: str, today: dt.date) -> li
         text = alias_norm(f"{r['title']} {r['excerpt'] or ''}")
         if any(k in text for k in keys):
             out.append({"title": r["title"], "published_on": r["published_on"], "url": r["url"], "label": NOTICE_LABEL})
-            if len(out) == NOTICE_MAX:
-                break
     return out
-
-
-# Clock times in free text: 09:00, 9：30, 9時, 9點半, 9時30分.
-_TIME_RE = re.compile(r"(?<!\d)\d{1,2}\s*(?:[:：]\s*\d{2}|[時點点](?:\s*\d{1,2}\s*分|半)?)")
-TIME_MASK = "--:--"
-
-
-def mask_times(text: str) -> str:
-    return _TIME_RE.sub(TIME_MASK, text)
 
 
 def _similar(conn: sqlite3.Connection, place: str) -> list[str]:
@@ -251,26 +254,32 @@ def worst_status(statuses: set[str]) -> str:
     return next((s for s in _SEVERITY if s in statuses), "current")
 
 
-def _candidate(ctx: _Ctx, entity: str, d: dt.date) -> dict:
-    """One place of an ambiguous list; its next_change says what comes next (no sentence when stale: no values)."""
+def _candidate(ctx: _Ctx, entity: str, d: dt.date, days: int = 1) -> dict:
+    """One place of an ambiguous list: its answer for day d, its next change as a whole sentence, and (days > 1) its own
+    days list, so a closure on a later day is said for every campus (F-ambiguous-ignores-days)."""
     day = ctx.day(entity, d)
     out = {"entity_id": entity, "name": ctx.names.get(entity, entity), "status": day.res["status"], "answer": day.answer}
-    nxt = ctx.next_change(entity, day, with_answer=day.res["status"] != "stale")
-    return {**out, "next_change": nxt} if nxt else out
+    if nxt := ctx.next_change(entity, day):
+        out["next_change"] = nxt
+    if days > 1:
+        out["days"] = [_day_view(ctx.day(entity, d + timedelta(days=i))) for i in range(days)]
+    return out
 
 
-def place_candidates(conn: sqlite3.Connection, tpl: Templates, ids: list[str], d: dt.date) -> list[dict]:
-    """{entity_id, name, status, answer, next_change?} per place on day d: the answer card, or resolve() outside the
-    card window."""
-    ctx = _Ctx(conn, tpl)
-    return [_candidate(ctx, e, d) for e in ids]
+def place_candidates(conn: sqlite3.Connection, tpl: Templates, ids: list[str], d: dt.date, today: dt.date,
+                     days: int = 1) -> list[dict]:
+    """{entity_id, name, status, answer, next_change?, days?} per place from day d: the answer card, or resolve()
+    outside the card window."""
+    ctx = _Ctx(conn, tpl, today)
+    return [_candidate(ctx, e, d, days) for e in ids]
 
 
 def hours_envelope(conn: sqlite3.Connection, tpl: Templates, entity: str, d0: dt.date, today: dict,
                    days: int = 1) -> dict:
-    """The envelope fields (no kb/today, not yet budgeted) get_hours answers for one place from day d0; `today` is
-    today_info(). nknu_search answers an entity match with the same fields."""
-    return _entity_fields(_Ctx(conn, tpl), entity, d0, dt.date.fromisoformat(today["date"]), today["time"], days)
+    """The envelope fields (no kb/today) get_hours answers for one place from day d0; `today` is today_info().
+    nknu_search answers an entity match with the same fields."""
+    t = dt.date.fromisoformat(today["date"])
+    return _entity_fields(_Ctx(conn, tpl, t), entity, d0, t, today["time"], days)
 
 
 def _entity_fields(ctx: _Ctx, entity: str, d0: dt.date, today: dt.date, hm: str, days: int) -> dict:
@@ -280,18 +289,15 @@ def _entity_fields(ctx: _Ctx, entity: str, d0: dt.date, today: dt.date, hm: str,
     if status == "current":
         env["facts"] = [_fact_view(res["winner"])]
     elif status == "conflict":
-        env["alternatives"] = [_fact_view(a) for a in res["alternatives"][:ALTERNATIVES_MAX]]
-    elif status == "stale" and res.get("last_known"):  # never an expired value: only when it ended and where it came from
-        lk = res["last_known"]
-        env["last_known"] = {"valid_to_inclusive": _incl(lk["valid"][1]), "source_url": lk["source"]["url"]}
+        env["alternatives"] = [_fact_view(a) for a in res["alternatives"]]
+    elif status == "stale" and res.get("last_known"):  # U3: the last known values, dated; the answer says so
+        env["last_known"] = _fact_view(res["last_known"])
     if d0 == today:
         env["open_now"] = _open_now(first, ctx.day(entity, d0 - timedelta(days=1)), hm)
-    stale = status == "stale"  # no hours anywhere: not the next card's, not a later day's, not in a notice title
-    env["next_change"] = ctx.next_change(entity, first, with_answer=not stale)
+    env["next_change"] = ctx.next_change(entity, first)
     if days > 1:
-        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i)), values=not stale) for i in range(days)]
-    notices = _recent_notices(ctx.conn, entity, today)
-    env["recent_notices"] = [{**n, "title": mask_times(n["title"])} for n in notices] if stale else notices
+        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i))) for i in range(days)]
+    env["recent_notices"] = _recent_notices(ctx.conn, entity, today)
     env["caveat"] = CAVEATS.get(status)
     return env
 
@@ -310,21 +316,21 @@ def get_hours(db: ServeDB, place: str, date: str | None = None, days: int = 1, n
     conn = db.conn()
     ids = _find_places(conn, place)
     if not ids:
-        return fit_budget(make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NO_PLACE,
-                                        similar=_similar(conn, place)))
-    ctx = _Ctx(conn, db.templates())
+        return make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NO_PLACE, similar=_similar(conn, place))
+    ctx = _Ctx(conn, db.templates(), today)
     if len(ids) > 1:
-        cands = [_candidate(ctx, e, d0) for e in ids]
+        cands = [_candidate(ctx, e, d0, days) for e in ids]
         statuses = {c["status"] for c in cands}
         status = worst_status(statuses)
-        return fit_budget(make_envelope(**base, found=any(s in ("current", "conflict") for s in statuses), status=status,
-                                        match="ambiguous", facts=cands, caveat=CAVEAT_AMBIGUOUS))
-    return fit_budget(make_envelope(**base, **_entity_fields(ctx, ids[0], d0, today, base["today"]["time"], days)))
+        return make_envelope(**base, found=any(s in ("current", "conflict") for s in statuses), status=status,
+                             match="ambiguous", facts=cands, caveat=CAVEAT_AMBIGUOUS)
+    return make_envelope(**base, **_entity_fields(ctx, ids[0], d0, today, base["today"]["time"], days))
 
 
 def get_calendar(db: ServeDB, from_: str | None = None, to: str | None = None, keyword: str | None = None, limit: int = 10,
                  now: dt.datetime | None = None) -> dict:
-    """Academic-calendar events overlapping [from_, to] (inclusive), optionally filtered by a keyword in the summary."""
+    """Academic-calendar events overlapping [from_, to] (inclusive), optionally filtered by a keyword in the summary: the
+    keyword or, for an alias (midterm, 退課, …), one of its canonical terms (mid-term, 期中; 停修)."""
     if not 1 <= limit <= MAX_CALENDAR_LIMIT:
         raise ValueError(f"limit 應為 1–{MAX_CALENDAR_LIMIT}")
     base, today = _base(db, now)
@@ -341,23 +347,23 @@ def get_calendar(db: ServeDB, from_: str | None = None, to: str | None = None, k
              FROM calendar_event e JOIN source_doc s ON s.id = e.source_doc
             WHERE e.during_to > ? AND e.during_from <= ? ORDER BY e.during_from, e.uid""",
         (lo.isoformat(), hi.isoformat())).fetchall()
-    kw = norm_text(keyword.strip()) if keyword and keyword.strip() else None
-    hits = [r for r in rows if kw is None or kw in norm_text(r["summary"])]
+    kw = keyword.strip() if keyword and keyword.strip() else None
+    also = list(dict.fromkeys(t for _, terms in alias_pairs(kw) for t in terms)) if kw else []
+    terms = [norm_text(t) for t in ([kw, *also] if kw else [])]
+    hits = [r for r in rows if not terms or any(t in norm_text(r["summary"]) for t in terms)]
     span = span_zh(lo, hi + timedelta(days=1))
-    kw_zh = f"符合「{keyword.strip()}」的" if kw else ""
+    kw_zh = (f"符合「{kw}」" + (f"（含{'、'.join(also)}）" if also else "") + "的") if kw else ""
     if not hits:
         org = managing_org(conn, "nknu", "calendar")
         answer = tpl.render("calendar_none", span=span, kw=kw_zh, contact=names.get(org, "學校相關單位") if org else "學校相關單位")
-        return fit_budget(make_envelope(**base, found=False, status="no_data", answer=answer,
-                                        caveat="查無符合的行事曆事件，請勿推測"))
+        return make_envelope(**base, found=False, status="no_data", answer=answer, caveat="查無符合的行事曆事件，請勿推測")
     sources = list(dict.fromkeys((names.get(r["publisher"], r["publisher"]), r["title"] or "教學行事曆", r["url"]) for r in hits))
     answer = tpl.render("calendar_list", span=span, kw=kw_zh, n=len(hits),
                         sources="；".join(f"{p}《{t}》" for p, t, _ in sources))
     facts = [_event_view(r) for r in hits[:limit]]
-    return fit_budget(make_envelope(**base, found=True, status="current", answer=answer, facts=facts,
-                                    sources=[{"title": t, "url": u} for _, t, u in sources],
-                                    more=len(hits) - len(facts) or None,
-                                    caveat=CAVEAT_TENTATIVE if any(r["status"] == "tentative" for r in hits) else None))
+    return make_envelope(**base, found=True, status="current", answer=answer, facts=facts,
+                         sources=[{"title": t, "url": u} for _, t, u in sources], more=len(hits) - len(facts) or None,
+                         caveat=CAVEAT_TENTATIVE if any(r["status"] == "tentative" for r in hits) else None)
 
 
 def _event_view(r: sqlite3.Row) -> dict:
@@ -370,11 +376,34 @@ def _event_view(r: sqlite3.Row) -> dict:
 
 
 _FACT_SQL = """SELECT f.*, s.url, s.title, s.publisher, s.published_on FROM fact f JOIN source_doc s ON s.id = f.source_doc"""
+# The fact that closed a version of another lineage (C1 identity rule): written at that moment, same source URL and slot,
+# overlapping validity. Its lineage's current version is the replacement.
+_DISPLACER_SQL = """SELECT n.id, n.lineage_id FROM fact n JOIN source_doc ns ON ns.id = n.source_doc
+                     WHERE n.recorded_from = :at AND n.lineage_id <> :lineage AND ns.url = :url AND n.entity_id = :entity
+                       AND n.attribute = :attribute AND n.qualifier = :qualifier AND n.specificity = :specificity
+                       AND n.valid_from < :valid_to AND :valid_from < n.valid_to
+                     ORDER BY n.valid_from, n.id LIMIT 1"""
 
 
 def _rules(conn: sqlite3.Connection, fact_id: str) -> list[dict]:
     return [{"dows": json.loads(r["dows"]), "opens": r["opens"], "closes": r["closes"]}
             for r in conn.execute("SELECT dows, opens, closes FROM hours_rule WHERE fact_id=? ORDER BY dows, opens", (fact_id,))]
+
+
+def _current_of(conn: sqlite3.Connection, lineage: str) -> str | None:
+    row = conn.execute("SELECT id FROM fact WHERE lineage_id=? AND recorded_to IS NULL", (lineage,)).fetchone()
+    return row["id"] if row else None
+
+
+def _replacement(conn: sqlite3.Connection, row: sqlite3.Row) -> str | None:
+    """The current version that replaced a closed one: its own lineage's, else (C1) the displacing lineage's."""
+    if (cur := _current_of(conn, row["lineage_id"])) is not None:
+        return cur
+    by = conn.execute(_DISPLACER_SQL, {"at": row["recorded_to"], "lineage": row["lineage_id"], "url": row["url"],
+                                       "entity": row["entity_id"], "attribute": row["attribute"],
+                                       "qualifier": row["qualifier"], "specificity": row["specificity"],
+                                       "valid_from": row["valid_from"], "valid_to": row["valid_to"]}).fetchone()
+    return (_current_of(conn, by["lineage_id"]) or by["id"]) if by else None
 
 
 def _brief_of(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
@@ -395,9 +424,9 @@ def get_fact(db: ServeDB, id: str, include_history: bool = False, now: dt.dateti
     brief = _brief_of(conn, row)
     lo, hi = dt.date.fromisoformat(row["valid_from"]), dt.date.fromisoformat(row["valid_to"])
     publisher, title = names.get(row["publisher"], row["publisher"]), row["title"] or row["url"]
-    current_row = conn.execute("SELECT id FROM fact WHERE lineage_id=? AND recorded_to IS NULL", (row["lineage_id"],)).fetchone()
-    if row["recorded_to"] is not None:
-        why = "已被新版本取代"
+    replaced_by = _replacement(conn, row) if row["recorded_to"] is not None else None
+    if row["recorded_to"] is not None:  # replaced (same lineage, or C1), or taken down (C2 retirement, nknu undo)
+        why = "已被新版本取代" if replaced_by else "已下架"
     elif row["review"] == "rejected" or row["rank"] == "deprecated":
         why = "未通過審核"
     elif hi <= today:
@@ -410,25 +439,24 @@ def get_fact(db: ServeDB, id: str, include_history: bool = False, now: dt.dateti
     if why is None:
         if row["attribute"] == "hours":
             res = {"status": "current", "winner": brief}
-            answer = hours_sentence(row["entity_id"], res, names, contact_of(conn, row["entity_id"], names), tpl, lo, hi)
+            answer = hours_sentence(row["entity_id"], res, names, contact_of(conn, row["entity_id"], names), tpl, lo, hi,
+                                    today)
         else:
             answer = tpl.render("calendar_event", span=span_zh(lo, hi), summary=brief["value"].get("label") or row["quote"],
                                 note="", publisher=publisher, title=title)
         env = {"found": True, "status": "current", "answer": answer, "facts": [fact]}
-    else:  # a version that is not in force: no values outside the explicitly requested history
-        fact.pop("rules", None)
-        fact.pop("closed", None)
+    else:  # a version not in force keeps its values (U3); the answer and caveat say it is not current
         if row["recorded_to"]:
             fact["recorded_to"] = row["recorded_to"]
-        if current_row and current_row["id"] != row["id"]:
-            fact["superseded_by"] = current_row["id"]
+        if replaced_by:
+            fact["superseded_by"] = replaced_by
         answer = tpl.render("fact_stale", span=span_zh(lo, hi), publisher=publisher, title=title, why=why)
         env = {"found": True, "status": "stale", "answer": answer, "facts": [fact], "caveat": f"此筆資料{why}，請勿當作現行資料"}
     if include_history:  # the versions carry the values (and every id of the lineage); the fact keeps its source
         env["history"] = [_version(conn, v) for v in conn.execute(
             f"{_FACT_SQL} WHERE f.lineage_id=? ORDER BY f.recorded_from, f.id", (row["lineage_id"],))]
         env["facts"] = [{k: fact[k] for k in ("id", "source", "superseded_by") if k in fact}]
-    return fit_budget(make_envelope(**base, **env))
+    return make_envelope(**base, **env)
 
 
 def _version(conn: sqlite3.Connection, v: sqlite3.Row) -> dict:
@@ -446,11 +474,11 @@ def _event_fact(conn: sqlite3.Connection, tpl: Templates, base: dict, uid: str) 
         """SELECT e.uid, e.summary, e.during_from, e.during_to, e.category, e.status, s.url, s.title, s.publisher
              FROM calendar_event e JOIN source_doc s ON s.id = e.source_doc WHERE e.uid=?""", (uid,)).fetchone()
     if r is None:
-        return fit_budget(make_envelope(**base, found=False, status="no_data", caveat="查無此 id，請勿推測"))
+        return make_envelope(**base, found=False, status="no_data", caveat="查無此 id，請勿推測")
     names = names_of(conn)
     lo, hi = dt.date.fromisoformat(r["during_from"]), dt.date.fromisoformat(r["during_to"])
     answer = tpl.render("calendar_event", span=span_zh(lo, hi), summary=r["summary"], note=event_note(r["status"]),
                         publisher=names.get(r["publisher"], r["publisher"]), title=r["title"] or "教學行事曆")
     fact = {**_event_view(r), "source": {"title": r["title"], "url": r["url"]}}
-    return fit_budget(make_envelope(**base, found=True, status="current", answer=answer, facts=[fact],
-                                    caveat=CAVEAT_TENTATIVE if r["status"] == "tentative" else None))
+    return make_envelope(**base, found=True, status="current", answer=answer, facts=[fact],
+                         caveat=CAVEAT_TENTATIVE if r["status"] == "tentative" else None)

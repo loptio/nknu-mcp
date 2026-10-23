@@ -1,6 +1,4 @@
-import json
 import os
-import re
 import shutil
 import sqlite3
 import threading
@@ -9,13 +7,12 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from nknu.server import query
-from nknu.server.envelope import BUDGET, NOTICE_LABEL, approx_tokens, count_tokens
-from nknu.server.query import get_calendar, get_fact, get_hours, parse_date_arg, today_info
+from nknu.server.envelope import NOTICE_LABEL
+from nknu.server.query import CAVEATS, get_calendar, get_fact, get_hours, parse_date_arg, today_info
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, WITHDRAWAL_UID, WR, covered_days, tpe
+from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, WITHDRAWAL_UID, WR, tpe
 
-YWR, HLIB = "nknu.yanchao.gym.weight-room", "nknu.heping.library.main"
+YWR, HLIB, YLIB = "nknu.yanchao.gym.weight-room", "nknu.heping.library.main", "nknu.yanchao.library.main"
 
 
 @pytest.fixture
@@ -40,8 +37,8 @@ def test_hours_current(db):
     assert e["next_change"]["from"] == "2026-10-24" and "暫停開放" in e["next_change"]["answer"]
 
 
-def test_untrimmed_fact_carries_rules_and_source(db, monkeypatch):
-    monkeypatch.setattr(query, "fit_budget", lambda env: env)  # the budget drops what the answer states: rules, validity
+def test_fact_carries_rules_validity_and_source(db):
+    """U1: nothing is trimmed, so the fact keeps what its answer sentence also states (rules, validity, source)."""
     f = get_hours(db, WR, "2026-10-22", now=NOW)["facts"][0]
     assert {"dows": [4], "opens": "18:00", "closes": "20:00"} in f["rules"] and f["source"]["title"] == "場地開放時間"
     assert f["valid"] == ["2026-09-07", "2027-01-08"] and f["source"]["tier"] == 1 and f["source"]["url"].startswith("https://")
@@ -69,43 +66,55 @@ def test_open_now_only_for_today(db):
     assert "open_now" not in get_hours(db, WR, "2026-10-23", now=tpe(2026, 10, 22, 19, 30))
 
 
-def times_in(env: dict) -> list[str]:
-    """Clock times anywhere outside `today` (\\b fails between a CJK character and a digit, so no word boundaries)."""
-    body = {k: v for k, v in env.items() if k != "today"}
-    return re.findall(r"(?<!\d)\d{1,2}[:：]\d{2}(?!\d)", json.dumps(body, ensure_ascii=False))
+PE_TABLE_URL = "https://c.nknu.edu.tw/reality/Page.aspx?PN=8"
 
 
-def test_stale_envelope_has_no_hours_values(db):
+def test_stale_envelope_gives_the_last_known_hours_with_dates(db):
+    """U3: no current data -> the last known values, their validity and source, and 可能已變動; status stays stale."""
     e = get_hours(db, WR, "2027-02-01", now=NOW)
-    body = {k: v for k, v in e.items() if k != "today"}
-    assert e["status"] == "stale" and not re.search(r"\b\d{2}:\d{2}\b", json.dumps(body, ensure_ascii=False))
-    assert times_in(e) == []
-    assert e["last_known"] == {"valid_to_inclusive": "2027-01-08", "source_url": "https://c.nknu.edu.tw/reality/Page.aspx?PN=8"}
-    assert "facts" not in e and e["found"] is False and e["caveat"]
+    assert e["status"] == "stale" and e["found"] is False and "facts" not in e and "open_now" not in e
+    a = e["answer"]
+    assert "最近一筆官方資料" in a and "體育室《場地開放時間》" in a and "2026-09-07～2027-01-08" in a
+    assert "週一、二、三、五 19:00–21:00" in a and "週四 18:00–20:00" in a and "可能已變動" in a and "可洽體育室" in a
+    lk = e["last_known"]
+    assert lk["valid"] == ["2026-09-07", "2027-01-08"] and lk["source"]["url"] == PE_TABLE_URL and lk["id"]
+    assert {"dows": [4], "opens": "18:00", "closes": "20:00"} in lk["rules"] and lk["source"]["title"] == "場地開放時間"
+    assert e["caveat"] == CAVEATS["stale"] and "可能已變動" in e["caveat"]
 
 
 def test_beyond_window_runtime_resolve(db):
-    e = get_hours(db, WR, "2027-06-01", now=NOW)
-    assert e["status"] in {"stale", "no_data"} and "2027-06-01" in e["answer"]
+    e = get_hours(db, WR, "2027-06-01", now=NOW)  # past the card window (2027-04-20): resolve() at query time
+    assert e["status"] == "stale" and "next_change" not in e and e["last_known"]["valid"][1] == "2027-01-08"
+    assert "2027-01-09 起的時段尚未公布，可能已變動" in e["answer"]
 
 
 def test_ambiguous_place_lists_candidates(db):
     e = get_hours(db, "重訓室", "2026-10-22", now=NOW)
     assert e["match"] == "ambiguous" and {f["entity_id"] for f in e["facts"]} == {WR, YWR}
-    assert all(f["answer"] for f in e["facts"]) and e["caveat"]
+    assert all(f["answer"] for f in e["facts"]) and e["caveat"] and all("days" not in f for f in e["facts"])
 
 
-def test_days_list(db):
+def test_ambiguous_candidates_carry_days_and_full_next_change(db):
+    """F-ambiguous-ignores-days: no campus named, days=3 from 10/24 -> each library lists its 3 days (both are closed
+    10/25-26) and its next change as a whole sentence, 附註 and 來源 included."""
+    e = get_hours(db, "圖書館", "2026-10-24", days=3, now=NOW)
+    assert e["match"] == "ambiguous" and [f["entity_id"] for f in e["facts"]] == [HLIB, YLIB]
+    for f in e["facts"]:
+        days = f["days"]
+        assert [d["date"] for d in days] == ["2026-10-24", "2026-10-25", "2026-10-26"] and days[0]["open"] is True
+        assert all(d["open"] is False and "臺灣光復" in d["reason"] for d in days[1:])
+        assert f["next_change"]["from"] == "2026-10-25" and "暫停開放" in f["next_change"]["answer"]
+        assert "來源：圖書資訊處《詳細開館時間》" in f["next_change"]["answer"] and "延長開館" in f["answer"]
+
+
+def test_days_list_has_one_full_entry_per_day(db):
     e = get_hours(db, "和平重訓室", "2026-10-22", days=7, now=NOW)  # bare 重訓室 is ambiguous (Task 5 ruling)
-    assert covered_days(e["days"]) == 7 and [d["date"] for d in e["days"]][:3] == ["2026-10-22", "2026-10-23", "2026-10-24"]
-    assert e["days"][2] == {"date": "2026-10-24", "to": "2026-10-26", "open": False}  # identical days merge into one run
-    assert PE_NOTE in e["answer"]
-
-
-def test_untrimmed_days_list_has_one_entry_per_day(db, monkeypatch):
-    monkeypatch.setattr(query, "fit_budget", lambda env: env)
-    e = get_hours(db, "和平重訓室", "2026-10-22", days=7, now=NOW)
-    assert len(e["days"]) == 7 and e["days"][2]["open"] is False and e["days"][2]["weekday"] == "週六"
+    assert [d["date"] for d in e["days"]] == [f"2026-10-{d}" for d in range(22, 29)]
+    assert e["days"][0] == {"date": "2026-10-22", "weekday": "週四", "status": "current", "open": True,
+                            "segments": ["18:00–20:00"]}
+    closed = {"weekday": "週六", "status": "current", "open": False, "reason": "臺灣光復紀念日連假"}
+    assert e["days"][2] == {"date": "2026-10-24", **closed}  # no merged runs, no dropped reasons
+    assert PE_NOTE in e["answer"] and "暫停開放" in e["next_change"]["answer"]
 
 
 def test_days_out_of_range(db):
@@ -140,7 +149,7 @@ def test_recent_notices_during_pending(world_with_pending_closure):
     db = world_with_pending_closure
     e = get_hours(db, GYM, "2026-10-22", now=NOW)
     assert e["recent_notices"] and all(n["label"] == NOTICE_LABEL for n in e["recent_notices"])
-    assert "9100" in e["recent_notices"][0]["url"]
+    assert [n["url"][-4:] for n in e["recent_notices"]] == ["9100", "9103", "9102", "9101"]  # all of them, newest first
     assert "暫停開放" not in get_hours(db, GYM, "2026-11-07", now=NOW)["answer"]  # still pending: not a fact
 
 
@@ -190,6 +199,14 @@ def test_confirmed_events_carry_no_tentative_caveat(db):
     assert "暫定" not in (e.get("caveat") or "") and all("status" not in f for f in e["facts"])
 
 
+def test_calendar_english_keyword_uses_the_aliases(db):
+    """F-calendar-en-keyword: midterm finds 期中考試Mid-term exam like mid-term and 期中 do."""
+    e = get_calendar(db, "2026-10-01", "2026-11-30", keyword="midterm", now=NOW)
+    assert e["found"] is True and any(f["id"] == MIDTERM_UID for f in e["facts"]) and "midterm" in e["answer"]
+    assert [f["id"] for f in e["facts"]] == [f["id"] for f in get_calendar(db, "2026-10-01", "2026-11-30",
+                                                                            keyword="期中", now=NOW)["facts"]]
+
+
 def test_calendar_no_match(db):
     e = get_calendar(db, "2026-10-01", "2026-11-30", keyword="不存在的活動", now=NOW)
     assert e["found"] is False and e["status"] == "no_data" and "請勿推測" in e["caveat"]
@@ -211,9 +228,22 @@ def test_get_fact_history(world_superseded):
 
 def test_get_fact_by_version_id(world_superseded):
     db, lineage = world_superseded
-    old = get_fact(db, lineage, include_history=True, now=NOW)["history"][0]["id"]
-    e = get_fact(db, old, now=NOW)
+    versions = get_fact(db, lineage, include_history=True, now=NOW)["history"]
+    e = get_fact(db, versions[0]["id"], now=NOW)
     assert e["status"] == "stale" and e["caveat"] and "history" not in e
+    f = e["facts"][0]  # U3: an old version keeps its values; the answer and caveat say it is not current
+    assert f["rules"] == [{"dows": [6], "opens": "09:00", "closes": "12:00"}] and f["superseded_by"] == versions[1]["id"]
+    assert "已被新版本取代" in e["answer"]
+
+
+def test_get_fact_names_the_fact_that_displaced_it(world_displaced):
+    """C1 closes a fact of another lineage (the closure moved to 10/24): get_fact points at the replacement; a fact
+    withdrawn by nknu undo has none and says it was taken down."""
+    db, ids = world_displaced
+    e = get_fact(db, ids["replaced"], now=NOW)
+    assert e["status"] == "stale" and e["facts"][0]["superseded_by"] == ids["replacement"] and "已被新版本取代" in e["answer"]
+    e = get_fact(db, ids["withdrawn"], now=NOW)
+    assert e["status"] == "stale" and "superseded_by" not in e["facts"][0] and "已下架" in e["answer"]
 
 
 def test_get_fact_calendar_event(db):
@@ -227,9 +257,10 @@ def test_get_fact_unknown(db):
     assert e["found"] is False and e["status"] == "no_data" and "請勿推測" in e["caveat"]
 
 
-def test_conflict_lists_alternatives(conflict_world):
+def test_conflict_lists_every_alternative(conflict_world):
     e = get_hours(conflict_world, WR, CONFLICT_DAY, now=NOW)
-    assert e["status"] == "conflict" and len(e["alternatives"]) == 3 and "facts" not in e
+    assert e["status"] == "conflict" and len(e["alternatives"]) == 4 and "facts" not in e
+    assert all(a["id"] and a["valid"] and a["source"]["tier"] for a in e["alternatives"])
 
 
 def test_serve_db_reopened_after_atomic_swap(world, tmp_path):
@@ -286,46 +317,37 @@ PE_NOTE = "附註：1.國定及連續假日、運動會停課、招生考試,各
 
 @pytest.mark.parametrize("place", [WR, GYM, "nknu.heping.gym.outdoor"])
 @pytest.mark.parametrize("day", ["2026-10-22", "2026-11-06"])  # 11-06: 校慶運動會停課; the note is the only signal
-def test_answer_keeps_notes_when_envelope_fits(db, place, day):
-    e = get_hours(db, place, day, now=NOW)
-    assert PE_NOTE in e["answer"] and count_tokens(e) <= BUDGET
+def test_answer_keeps_its_notes(db, place, day):
+    assert PE_NOTE in get_hours(db, place, day, days=14, now=NOW)["answer"]
 
 
 def test_one_day_answers_keep_their_notes(db):
-    """Every single-day answer whose card carries 附註 is served with it (the budget has room once next_change.answer goes)."""
+    """Every answer whose card carries 附註 is served with it, whatever else the envelope holds (U1: no trimming)."""
     conn = db.conn()
     lost = []
     for place, lo, card in conn.execute("SELECT entity_id, valid_from, answer_zh FROM answer_card WHERE intent='hours' "
                                         "AND answer_zh LIKE '%附註：%' ORDER BY entity_id, valid_from"):
         if lo >= "2026-10-15":
-            e = get_hours(db, place, lo, now=NOW)
-            if card.split("附註：", 1)[1] not in e["answer"]:
-                lost.append((place, lo, count_tokens(e)))
+            e = get_hours(db, place, lo, days=14, now=NOW)
+            if e["answer"] != card:
+                lost.append((place, lo))
     assert lost == []
 
 
 @pytest.mark.parametrize("days", [1, 7, 14])
-def test_conflict_with_days_within_budget(conflict_world, days):
+def test_conflict_with_days_keeps_every_day_and_alternative(conflict_world, days):
     e = get_hours(conflict_world, WR, CONFLICT_DAY, days=days, now=NOW)
-    assert count_tokens(e) <= BUDGET and e["status"] == "conflict" and e["caveat"] and len(e["alternatives"]) == 3
-    if days > 1:  # the asked day stays first; days cut from the end are counted in more_days
-        assert e["days"][0] == {"date": CONFLICT_DAY, "status": "conflict"}
-        assert covered_days(e["days"]) + e.get("more_days", 0) == days
+    assert e["status"] == "conflict" and e["caveat"] and len(e["alternatives"]) == 4 and "more" not in e
+    if days > 1:
+        assert len(e["days"]) == days and "more_days" not in e
+        assert e["days"][0] == {"date": CONFLICT_DAY, "weekday": "週六", "status": "conflict"}
 
 
-def test_budget_holds_around_a_conflict_day(conflict_world):
-    for d in ("2026-11-01", "2026-11-08", CONFLICT_DAY):
-        for n in (1, 7, 14):
-            e = get_hours(conflict_world, WR, d, days=n, now=NOW)
-            real = count_tokens(e)
-            assert real <= BUDGET and approx_tokens(e) >= real, (d, n, real)
-            assert covered_days(e.get("days") or [{"date": d}]) + e.get("more_days", 0) == n
-
-
-def test_stale_notice_titles_carry_no_times(world_next_term):
+def test_stale_notice_titles_are_verbatim(world_next_term):
+    """U3 lifts the old rule that a stale envelope carries no clock time anywhere: notice titles are the school's text."""
     e = get_hours(world_next_term, WR, "2027-02-01", now=NOW)
     assert e["status"] == "stale" and "9300" in e["recent_notices"][0]["url"]
-    assert times_in(e) == [] and "重量訓練室" in e["recent_notices"][0]["title"]
+    assert e["recent_notices"][0]["title"] == "測試公告：重量訓練室11月14日上午09:00至12:00開放"
 
 
 def test_current_notice_titles_keep_their_times(world_next_term):
@@ -333,17 +355,12 @@ def test_current_notice_titles_keep_their_times(world_next_term):
     assert e["status"] == "current" and "09:00" in e["recent_notices"][0]["title"]
 
 
-def test_stale_days_list_has_no_values(world_next_term):
+def test_stale_days_list_says_stale_and_next_change_is_a_sentence(world_next_term):
     e = get_hours(world_next_term, WR, "2027-02-15", days=14, now=NOW)
-    assert e["status"] == "stale" and times_in(e) == [] and e["next_change"] == {"from": "2027-02-22"}
-    assert covered_days(e["days"]) + e.get("more_days", 0) == 14
-    assert all(set(d) <= {"date", "to", "weekday", "status"} for d in e["days"])  # no open / segments / reason
-    assert {d["status"] for d in e["days"]} == {"stale", "current"}  # data resumes 02-22: ask again from that date
-
-
-@pytest.mark.parametrize(("text", "masked"), [
-    ("上午09:00至12:00開放", "上午--:--至--:--開放"), ("9：30起", "--:--起"), ("上午9時至12時30分", "上午--:--至--:--"),
-    ("下午1點半", "下午--:--"), ("115年11月14日全日暫停開放", "115年11月14日全日暫停開放"), ("2026時程", "2026時程"),
-])
-def test_mask_times(text, masked):
-    assert query.mask_times(text) == masked
+    assert e["status"] == "stale" and len(e["days"]) == 14 and "19:00–21:00" in e["answer"]  # the last known table
+    assert e["next_change"]["from"] == "2027-02-22" and "19:00–21:00" in e["next_change"]["answer"]
+    stale = [d for d in e["days"] if d["status"] == "stale"]
+    assert [d["date"] for d in stale] == [f"2027-02-{d}" for d in range(15, 22)]
+    assert all(set(d) == {"date", "weekday", "status"} for d in stale)  # a day with no current data has no hours
+    assert e["days"][7] == {"date": "2027-02-22", "weekday": "週一", "status": "current", "open": True,
+                            "segments": ["19:00–21:00"]}

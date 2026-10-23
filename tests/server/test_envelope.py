@@ -1,25 +1,23 @@
-import copy
-from datetime import date, timedelta
+import json
+from datetime import date
 
 import pytest
 
+from nknu.server import envelope
 from nknu.server.envelope import (
-    BUDGET,
     ECHO_BYTES,
     ERROR_BUDGET,
     NOTICE_LABEL,
-    approx_tokens,
     count_tokens,
     echo,
     error_result,
-    fit_budget,
     make_envelope,
     render_text,
     to_tool_result,
 )
 from nknu.server.query import get_calendar, get_hours
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import NOW, covered_days
+from tests.server.conftest import NOW
 
 TODAY = {"date": "2026-10-22", "weekday": "週四", "time": "14:05"}
 
@@ -63,94 +61,59 @@ def test_text_equivalent_to_structured(sample_envelopes):
 def test_samples_cover_the_statuses(sample_envelopes):
     s = sample_envelopes
     assert [s[k]["status"] for k in ("current", "conflict", "stale", "no_data")] == ["current", "conflict", "stale", "no_data"]
-    assert len(s["conflict"]["alternatives"]) == 3 and covered_days(s["days14"]["days"]) == 14 and s["notices"]["recent_notices"]
-
-
-def test_envelope_token_budget(sample_envelopes):
-    for name, env in sample_envelopes.items():  # current, conflict (3 alternatives), days=14, stale, no_data, notices
-        assert count_tokens(env) <= BUDGET, (name, count_tokens(env))
+    assert len(s["conflict"]["alternatives"]) == 4 and len(s["days14"]["days"]) == 14 and s["notices"]["recent_notices"]
+    for name, env in s.items():
         assert env["status"] and (env["status"] == "current" or env.get("caveat")), name
-    assert count_tokens(error_result("bad_date", "date 格式應為 YYYY-MM-DD").structured_content or {}) <= ERROR_BUDGET
 
 
-def test_budget_holds_for_every_place_and_span(world):
+def test_no_answer_budget_is_left():
+    """U1: the 400-token budget and its trim ladder are gone; only the error length is still bounded."""
+    assert not hasattr(envelope, "fit_budget") and not hasattr(envelope, "BUDGET")
+
+
+def test_make_envelope_keeps_long_content():
+    notices = [{"title": "公" * 80, "published_on": "2026-10-20", "url": "https://example.test/" + "x" * 60,
+                "label": NOTICE_LABEL} for _ in range(5)]
+    days = [{"date": f"2026-10-{d}", "weekday": "週四", "status": "current", "open": True, "segments": ["19:00–21:00"]}
+            for d in range(10, 24)]
+    fact = {"id": "f", "valid": ["2026-09-07", "2027-01-08"], "source": {"title": "表", "url": "u", "tier": 1},
+            "rules": [{"dows": [1], "opens": "08:00", "closes": "12:00"}]}
+    fields = {"found": True, "status": "current", "match": "entity", "answer": "甲" * 600 + "附註：" + "乙" * 600,
+              "facts": [fact], "next_change": {"from": "2026-10-24", "answer": "丙" * 300}, "recent_notices": notices,
+              "caveat": "請勿推測"}
+    env = make_envelope(kb="k", today=TODAY, days=days, **fields)
+    assert env == {"kb": "k", "today": TODAY, **fields, "days": days}
+
+
+def _card(db: ServeDB, place: str, d: date) -> str | None:
+    row = db.conn().execute("SELECT answer_zh FROM answer_card WHERE entity_id=? AND intent='hours' AND valid_from<=? "
+                            "AND ?<valid_to", (place, d.isoformat(), d.isoformat())).fetchone()
+    return row[0] if row else None
+
+
+def test_every_hours_envelope_is_complete(world):
+    """Every place x 3 dates x days 1/7/14: the card sentence whole (附註 and 來源 included), one full entry per day, the
+    fact's rules/validity/source, and next_change as a sentence."""
     db = ServeDB(world[1])
     places = [r[0] for r in db.conn().execute("SELECT DISTINCT entity_id FROM answer_card WHERE intent='hours'")]
-    envs = [get_hours(db, p, d, days=n, now=NOW) for p in places for d in ("2026-10-22", "2026-12-24", "2027-02-01")
-            for n in (1, 7, 14)]
-    envs += [get_hours(db, q, "2026-10-22", now=NOW) for q in ("重訓室", "圖書館", "愛閱館", "室外運動場地")]
-    envs += [get_calendar(db, "2026-09-01", "2027-01-31", now=NOW, limit=50)]
-    for env in envs:
-        real = count_tokens(env)
-        assert real <= BUDGET, (env.get("answer"), real)
-        assert approx_tokens(env) >= real  # the serving-side estimate never undercounts
+    for p in places:
+        for d in ("2026-10-22", "2026-12-24", "2027-02-01"):
+            for n in (1, 7, 14):
+                e = get_hours(db, p, d, days=n, now=NOW)
+                assert e["answer"] == _card(db, p, date.fromisoformat(d)), (p, d)
+                assert "…" not in json.dumps(e, ensure_ascii=False) and "more_days" not in e
+                if n > 1:
+                    assert len(e["days"]) == n and all(x["weekday"] and x["status"] for x in e["days"]), (p, d, n)
+                for f in e.get("facts") or []:
+                    assert {"id", "valid", "rules", "source"} <= set(f) and {"url", "tier"} <= set(f["source"]), (p, d)
+                if e.get("next_change"):
+                    assert e["next_change"]["answer"], (p, d)
 
 
-def test_fit_budget_trims_in_order_and_keeps_status_and_caveat():
-    notices = [{"title": "公" * 80, "published_on": "2026-10-20", "url": "https://example.test/" + "x" * 60,
-                "label": NOTICE_LABEL} for _ in range(3)]
-    days = [{"date": (date(2026, 10, 22) + timedelta(days=i)).isoformat(), "weekday": "週四", "status": "current", "open": True,
-             "segments": ["19:00–21:00"]} for i in range(7)]
-    env = make_envelope(kb="k", today=TODAY, found=True, status="current", match="entity", answer="甲" * 60 + "附註：" + "乙" * 60,
-                        facts=[{"id": "f", "valid": ["2026-09-07", "2027-01-08"], "source": {"title": "表", "url": "u"}}],
-                        recent_notices=notices, caveat="請勿推測", days=days)
-    out = fit_budget(env, 300)
-    assert approx_tokens(out) <= 300 and out["status"] == "current" and out["caveat"] == "請勿推測"
-    assert covered_days(out["days"]) == 7 and out["days"][0]["segments"] == ["19:00–21:00"]
-    assert out["answer"].startswith("甲" * 60)
-    assert env["recent_notices"][0]["title"] == "公" * 80  # the input is not mutated
-
-
-def test_fit_budget_truncates_notice_titles_first():
-    notices = [{"title": "公" * 80, "published_on": "2026-10-20", "url": "u", "label": NOTICE_LABEL}]
-    env = make_envelope(kb="k", today=TODAY, found=True, status="current", answer="甲", recent_notices=notices,
-                        days=[{"date": "2026-10-22", "weekday": "週四", "status": "current", "open": True}])
-    out = fit_budget(env, approx_tokens(env) - 10)
-    assert len(out["recent_notices"][0]["title"]) <= 41 and out["days"][0]["weekday"] == "週四"
-
-
-def test_fit_budget_drops_next_answer_before_the_answer_notes():
-    env = make_envelope(kb="k", today=TODAY, found=True, status="current", answer="甲" * 40 + "附註：" + "乙" * 40,
-                        next_change={"from": "2026-10-24", "answer": "丙" * 80 + "附註：" + "丁" * 40})
-    out = fit_budget(env, approx_tokens(env) - 60)
-    assert out["answer"] == env["answer"] and out["next_change"] == {"from": "2026-10-24"}
-
-
-def test_fit_budget_slims_candidates_before_cutting_one():
-    """An ambiguous list loses its candidates' 附註, then their 來源 clauses, then their next_change sentences."""
-    def cand(i: int) -> dict:
-        return {"entity_id": f"e{i}", "name": "館", "status": "current", "answer": "甲" * 50 + "。來源：處《表》。附註：" + "乙" * 60,
-                "next_change": {"from": "2026-10-24", "answer": "丙" * 30 + "。來源：處《" + "丁" * 30 + "》。"}}
-
-    env = make_envelope(kb="k", today=TODAY, found=True, status="current", match="ambiguous", facts=[cand(1), cand(2)],
-                        caveat="請確認校區")
-    no_notes = copy.deepcopy(env)
-    for f in no_notes["facts"]:
-        f["answer"] = f["answer"].split("附註：")[0]
-    out = fit_budget(env, approx_tokens(no_notes))
-    assert [f["answer"] for f in out["facts"]] == ["甲" * 50 + "。來源：處《表》。"] * 2
-    assert all(f["next_change"]["answer"].endswith("》。") for f in out["facts"])
-    no_sources = copy.deepcopy(no_notes)
-    for f in no_sources["facts"]:
-        f["answer"], f["next_change"]["answer"] = "甲" * 50 + "。", "丙" * 30 + "。"
-    out = fit_budget(env, approx_tokens(no_sources))
-    assert len(out["facts"]) == 2 and [f["next_change"]["answer"] for f in out["facts"]] == ["丙" * 30 + "。"] * 2
-    out = fit_budget(env, approx_tokens(no_sources) - 10)
-    assert len(out["facts"]) == 2 and [f["next_change"] for f in out["facts"]] == [{"from": "2026-10-24"}] * 2
-
-
-def test_fit_budget_cuts_days_then_alternatives_last():
-    alts = [{"id": f"a{i}", "rules": [{"dows": [6], "opens": f"0{i + 7}:00", "closes": "12:00"}],
-             "source": {"url": f"https://c.nknu.edu.tw/reality/NewsView.aspx?Nid=900{i}"}} for i in range(3)]
-    days = [{"date": "2026-11-14", "weekday": "週六", "status": "conflict"}] + [
-        {"date": (date(2026, 11, 15) + timedelta(days=i)).isoformat(), "weekday": "週日", "status": "current", "open": True,
-         "segments": [f"{18 + i % 2}:00–21:00"]} for i in range(13)]  # alternating hours: no runs to merge
-    env = make_envelope(kb="k", today=TODAY, found=True, status="conflict", answer="甲" * 150, alternatives=alts,
-                        caveat="請勿推測", days=days)
-    out = fit_budget(env, 300)
-    assert approx_tokens(out) <= 300 and out["answer"] == env["answer"] and out["caveat"] == "請勿推測"
-    assert out["days"] == [{"date": "2026-11-14", "status": "conflict"}] and out["more_days"] == 13
-    assert 1 <= len(out["alternatives"]) < 3 and out["more"] == 3 - len(out["alternatives"])
+def test_every_calendar_event_in_the_limit_is_listed(world):
+    e = get_calendar(ServeDB(world[1]), "2026-09-01", "2027-01-31", now=NOW, limit=50)
+    assert len(e["facts"]) == min(50, int(e["answer"].split("共 ")[1].split(" 筆")[0]))
+    assert e.get("more", 0) + len(e["facts"]) == int(e["answer"].split("共 ")[1].split(" 筆")[0])
 
 
 def test_error_result_is_short_error():
