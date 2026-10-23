@@ -14,7 +14,6 @@ import argparse
 import json
 import re
 import sqlite3
-import statistics
 import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -136,8 +135,9 @@ def _wanted(q: dict, facts: list[dict]) -> str:
 
 
 def calibrate(world, queries: list[dict]) -> tuple[float, float, float, float]:
-    """Grid search (step 0.05): best found-accuracy, then best strength-accuracy; the middle of the best plateau.
-    Returns (t_low, t_high, found_acc, strength_acc)."""
+    """Grid search (step 0.05): best found-accuracy, then best strength-accuracy; the lowest point of the best plateau
+    (U4: among thresholds the calibration set cannot tell apart, the one that answers most). Returns (t_low, t_high,
+    found_acc, strength_acc)."""
     db = _db(world)
     conn, tpl = db.conn(), db.templates()
     rows = []
@@ -155,8 +155,8 @@ def calibrate(world, queries: list[dict]) -> tuple[float, float, float, float]:
             scored.append((found_ok / len(rows), strength_ok / len(rows), lo, hi))
     best = max(s[:2] for s in scored)
     plateau = [s for s in scored if s[:2] == best]
-    lo = statistics.median_low(sorted({s[2] for s in plateau}))
-    hi = statistics.median_low(sorted(s[3] for s in plateau if s[2] == lo))
+    lo = min(s[2] for s in plateau)
+    hi = min(s[3] for s in plateau if s[2] == lo)
     return lo, hi, best[0], best[1]
 
 

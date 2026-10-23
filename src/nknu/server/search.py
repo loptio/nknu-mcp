@@ -8,7 +8,8 @@
    event must not have ended, a notice must be current. A card that starts after on_date (a coming closure or
    extension) is listed only when the query fits it better than that place's card for on_date. Each index gives its
    best CANDIDATES by bm25; the merged list is ordered by coverage (below), then on_date's cards first, then bm25 (bm25
-   of two different indexes is not on one scale; coverage is).
+   of two different indexes is not on one scale; coverage is), except that equally covered calendar events take their
+   places soonest first (the midterm week before a later one-day entry).
 3. Coverage = the share of the query's topic bigrams found in a hit; a hit with none of them is dropped. The first hit's
    coverage decides: below T_LOW nothing is returned (found=false, 「請勿推測」); between T_LOW and T_HIGH the hits come
    back as match=weak.
@@ -20,12 +21,15 @@
    Envelopes are never trimmed (U1): `limit` is the only cut.
 
 The topic leaves out what says nothing about what is asked: the places the query names (a place's name is in its own
-cards; the name only picks which cards), words that only say what kind of answer is wanted (開放 and 時間 are in every
-hours card; 公告), campus names (they only filter), English stop words and Chinese question words. A query with no topic
-left falls back to all its words. A question with several clauses counts its best-covered clause. An alias counts as
-covered when its canonical term is in the hit (退課 is covered by 停修). Hits are ordered by how much of the whole
-question they cover, the named place included (an hours card is credited with a place's name only when it is that
-place's card), then by topic coverage."""
+cards; the name only picks which cards), the school and unit names (高師大, NKNU, 教務組: every notice is the school's,
+and they are not searched for either), words that only say what kind of answer is wanted or when (開放 and 時間 are in
+every hours card; 公告; 下學期), campus names (they only filter), English stop words and Chinese question words, and the
+bigrams that only join two words (修截 in 停修截止: in no candidate hit while the bigrams on both sides are), so a
+question typed without spaces reads as the spaced one. A query with no topic left falls back to all its words but the
+school's names. A question with several clauses counts its best-covered clause. An alias counts as covered when its
+canonical term is in the hit (退課 is covered by 停修). Hits are ordered by how much of the whole question they cover,
+the named places and units included (an hours card is credited with a place's name only when it is that place's card,
+with a unit's when it names the unit), then by topic coverage."""
 
 from __future__ import annotations
 
@@ -34,10 +38,11 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from itertools import groupby
 from typing import Literal
 
 from nknu.build.templates import Templates
-from nknu.core.textnorm import fts_query, norm_text, tokenize
+from nknu.core.textnorm import CJK, fts_query, norm_text, tokenize
 from nknu.server.envelope import NOTICE_LABEL, make_envelope
 from nknu.server.linking import (
     CAMPUS_WORDS,
@@ -67,8 +72,8 @@ from nknu.server.query import (
 )
 from nknu.server.servedb_reader import ServeDB
 
-# Bigram-coverage thresholds, grid-searched (step 0.05) on tests/search/calibration.yaml:
-# `uv run python -m tests.search.evaluate --calibrate`.
+# Bigram-coverage thresholds, grid-searched (step 0.05) on tests/search/calibration.yaml, the lowest point of the best
+# plateau (U4): `uv run python -m tests.search.evaluate --calibrate`.
 T_LOW = 0.35
 T_HIGH = 0.4
 
@@ -101,6 +106,7 @@ _ZH_STOP = tuple(sorted((norm_text(w) for w in (
 _CAMPUS_TEXT = tuple(sorted({norm_text(w) for words in CAMPUS_WORDS.values() for w in words}
                             | {norm_text("和平校區"), norm_text("燕巢校區")}, key=len, reverse=True))
 _CLAUSE = re.compile(r"[?!;,。？！；，]+")
+_CJK_RUN = re.compile(f"[{CJK}]+")
 
 
 def strength(coverage: float, t_low: float = T_LOW, t_high: float = T_HIGH) -> Strength:
@@ -199,7 +205,18 @@ def _calendar_hits(conn: sqlite3.Connection, match: str, on: dt.date, n: int) ->
                 "category": p["category"]}
         if p.get("status", "confirmed") != "confirmed":
             view["status"] = p["status"]
-        out.append(_Hit(r["score"], 1, frozenset(r["tokens"].split()), view))
+        out.append(_Hit(r["score"], 1, frozenset(r["tokens"].split()), view, day_from=p["valid"][0]))
+    return out
+
+
+def _soonest_events_first(hits: list[_Hit]) -> list[_Hit]:
+    """Among equally covered hits the calendar events keep their places but take them in date order: the soonest (or
+    ongoing) first. bm25 favours a short summary, and an agent that reads only the first answers with it."""
+    out = list(hits)
+    for _, group in groupby(range(len(out)), key=lambda i: (out[i].whole, out[i].coverage, out[i].upcoming)):
+        at = [i for i in group if out[i].order == 1]  # the calendar events
+        for i, h in zip(at, sorted((out[i] for i in at), key=lambda h: h.day_from), strict=True):
+            out[i] = h
     return out
 
 
@@ -225,10 +242,22 @@ class _Clause:
     aliases: tuple[tuple[frozenset[str], tuple[frozenset[str], ...]], ...]  # (alias bigrams, each canonical term's)
 
 
-def _clauses(text: str, *, topic: bool) -> list[_Clause]:
+def _joints(text: str, seen: frozenset[str]) -> set[str]:
+    """Bigrams that only join two words: inside a run of CJK characters, in none of the candidate hits, between two
+    bigrams that are (修截 in 停修截止, 風停 in 颱風停課). A word no hit has (學餐 in 學餐菜單) is not between two found
+    bigrams, so it still counts against the hits."""
+    out = set()
+    for run in _CJK_RUN.findall(norm_text(text)):
+        grams = [run[i:i + 2] for i in range(len(run) - 1)]
+        out |= {g for a, g, b in zip(grams, grams[1:], grams[2:]) if g not in seen and a in seen and b in seen}
+    return out
+
+
+def _clauses(text: str, *, topic: bool, seen: frozenset[str] | None = None) -> list[_Clause]:
     """The clauses of a query and their bigrams. topic=True also leaves out the words that only say what kind of answer
     is wanted (開放時間, 公告), and a clause with nothing left is skipped; topic=False keeps a clause's campus name when
-    it is all the clause has (燕巢)."""
+    it is all the clause has (燕巢). With the candidate hits' bigrams (seen), the bigrams that only join two words are
+    left out too (_joints); that never empties a clause."""
     out = []
     for clause in _CLAUSE.split(_cleaned(text)):
         body = _strip(clause, _CAMPUS_TEXT)
@@ -237,9 +266,13 @@ def _clauses(text: str, *, topic: bool) -> list[_Clause]:
             toks = frozenset(t for t in _tokens(body) if t not in KIND_TOKENS)
         else:
             toks = frozenset(_tokens(body) or _tokens(clause))
+        pairs = alias_pairs(body if topic else clause)
+        if seen is not None:  # an alias is found when one of its canonical terms is (退課 by 停修)
+            found = seen.union(*(tokenize(key) for key, terms in pairs if any(set(tokenize(t)) <= seen for t in terms)))
+            toks -= _joints(body if topic else clause, found)
         if toks:
             aliases = tuple((frozenset(tokenize(key)) & toks, tuple(frozenset(tokenize(t)) for t in terms))
-                            for key, terms in alias_pairs(body if topic else clause))
+                            for key, terms in pairs)
             out.append(_Clause(toks, aliases))
     return out
 
@@ -266,17 +299,20 @@ class _Place:
 
 
 def _places(linked: Linked) -> list[_Place]:
-    return [_Place(frozenset(_tokens(text)), frozenset(ids),
+    """The places named, and the units (no ids): neither is the topic, both say whose facts are meant."""
+    named = [(text, frozenset(ids)) for text, ids in linked.mentions] + [(u, frozenset()) for u in linked.units]
+    return [_Place(frozenset(_tokens(text)), ids,
                    tuple(frozenset(tokenize(t)) for _, terms in alias_pairs(text) for t in terms))
-            for text, ids in linked.mentions]
+            for text, ids in named]
 
 
 def _credit(places: list[_Place], h: _Hit) -> frozenset[str]:
     """The named places' bigrams a hit is credited with: an hours card only for its own place (every library card
-    says 圖書資訊處, the canonical term of 圖書館), a notice or event for the name or its canonical term."""
+    says 圖書資訊處, the canonical term of 圖書館), a notice or event for the name or its canonical term; a unit by any
+    hit with its name or canonical term (圖資處 by the library cards, 體育室 by its own cards and notices)."""
     out: set[str] = set()
     for p in places:
-        if h.entity_id is not None:
+        if h.entity_id is not None and p.ids:
             out |= p.tokens if h.entity_id in p.ids else set()
         else:
             out |= p.tokens if any(t <= h.tokens for t in p.canon) else p.tokens & h.tokens
@@ -291,8 +327,12 @@ def _whole(topic: list[_Clause], places: list[_Place], h: _Hit) -> float:
 
 def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: str, on: dt.date, today: dt.date,
                campus: str | None, limit: int, old: bool = False) -> tuple[list[_Hit], float]:
-    """Ranked hits and the first one's coverage; old=True searches only the old notices (C5)."""
-    tokens = _tokens(expand(_cleaned(query)))
+    """Ranked hits and the first one's coverage; old=True searches only the old notices (C5). The school's names are
+    never searched for (every notice is the school's), nor are unit names while a topic is left: notices that only name
+    them would fill the candidates."""
+    has_topic = bool(_clauses(linked.rest, topic=True))
+    text = _strip(norm_text(query), tuple(linked.schools + linked.units if has_topic else linked.schools))
+    tokens = _tokens(expand(_cleaned(text)))
     if not tokens:
         return [], 0.0
     match = fts_query(tokens)
@@ -303,9 +343,10 @@ def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: st
         hits += _calendar_hits(conn, match, on, CANDIDATES)
     if kind in ("any", "announcement"):
         hits += _doc_hits(conn, match, today, CANDIDATES, old=old)
-    topic = _clauses(linked.rest, topic=True)
+    seen = frozenset().union(*(h.tokens for h in hits))
+    topic = _clauses(linked.rest, topic=True, seen=seen)
     places = _places(linked) if topic else []  # no topic left: every word of the query counts, names included
-    topic = topic or _clauses(query, topic=False)
+    topic = topic or _clauses(text, topic=False, seen=seen)
     for h in hits:
         h.coverage = _coverage(topic, h.tokens)
         h.whole = _whole(topic, places, h)
@@ -315,6 +356,7 @@ def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: st
         hits.sort(key=lambda h: (-h.whole, -h.coverage))
     else:
         hits.sort(key=lambda h: (-h.whole, -h.coverage, h.upcoming, h.score, h.order))
+        hits = _soonest_events_first(hits)
     return hits[:limit], (hits[0].coverage if hits else 0.0)
 
 

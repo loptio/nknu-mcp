@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from nknu.server.envelope import NOTICE_LABEL
-from nknu.server.linking import detect_intent, expand, link_entities
+from nknu.server.linking import detect_intent, expand, link_entities, link_query
 from nknu.server.query import CAVEATS, CURRENT_DOC_SQL, current_doc_params, get_hours
 from nknu.server.search import CAVEAT_OLD_NOTICES, CAVEAT_WEAK, T_HIGH, T_LOW, search
 from nknu.server.servedb_reader import ServeDB
@@ -139,6 +139,26 @@ def test_detect_intent():
     assert detect_intent("期中考 圖書館 開放時間") == "hours"  # 期中 names the period, 開放時間 the question
     assert detect_intent("final exam") == "calendar" and detect_intent("最新消息") == "doc"
     assert detect_intent("校長是誰") is None
+
+
+def test_detect_intent_close_words():
+    """F-close-words-intent: asking whether a place is closed asks for its hours."""
+    for q in ("體育館關了嗎", "圖書館今天休息嗎", "What time does the library close today?", "is the gym closed",
+              "体育馆关门了吗", "游泳池休館嗎", "圖書館今天可以去嗎", "library closing time"):
+        assert detect_intent(q) == "hours", q
+    assert detect_intent("圖書館相關公告") == "doc"  # 相關 is not 關門
+    assert detect_intent("停修可以去哪裡申請") == "calendar"  # where to go, not whether it is open
+
+
+def test_link_school_and_unit_names(db):
+    """F-school-name-topic: the university and its units are named, not asked about: link_query blanks them out of
+    rest (as it does places) and lists them in others; a unit is any office a notice comes from (教務處和平教務組 gives
+    教務處 and 教務組)."""
+    linked = link_query(db.conn(), "高雄師大教務組停修")
+    assert linked.ids == [] and linked.schools == ["高雄师大"] and linked.units == ["教务组"]
+    assert linked.rest.split() == ["停修"]
+    linked = link_query(db.conn(), "NKNU 體育室 體育館")
+    assert linked.ids == [GYM] and linked.schools == ["nknu"] and linked.units == ["体育室"] and not linked.rest.strip()
 
 
 def test_expand_appends_canonical_terms():
@@ -294,6 +314,65 @@ def test_named_place_outranks_a_fact_that_does_not_name_it(db):
     e = search(db, "臺灣光復節 圖書館", now=NOW)  # holiday != closure: the library's own closure card comes first
     assert e["facts"][0]["entity_id"] in (HLIB, YLIB) and "暫停開放" in e["facts"][0]["answer"]
     assert not any("PHP" in f.get("title", "") for f in e["facts"])  # a 圖資處 notice that only shares the alias
+
+
+def test_close_words_answer_with_the_place_hours(db):
+    """F-close-words-intent: 關了嗎 / 休息 / close ask for the hours, so the place's card answers with the coming
+    closure in next_change (the gym closes 10-24..10-26), never 查無."""
+    e = search(db, "體育館關了嗎", now=NOW)
+    assert e["match"] == "entity" and e["facts"][0]["entity_id"] == GYM
+    assert "暫停開放（臺灣光復紀念日連假）" in e["next_change"]["answer"]
+    for q in ("圖書館今天休息嗎", "What time does the library close today?"):
+        e = search(db, q, now=NOW)
+        assert e["found"] is True and e["match"] == "ambiguous", q
+        assert {f["entity_id"] for f in e["facts"]} == {HLIB, YLIB}, q
+
+
+@pytest.mark.parametrize("joined, spaced", [("停修截止", "停修 截止"), ("颱風停課", "颱風 停課"), ("退課截止", "退課 截止")])
+def test_joined_words_read_like_spaced_ones(db, joined, spaced):
+    """F-short-calendar-queries: 修截 in 停修截止 only joins two words. It is in no hit while both its neighbours are,
+    so the coverage leaves it out and the question is answered as 停修 截止 is. An alias is found when its canonical
+    term is (退課 by 停修)."""
+    a, b = search(db, joined, now=NOW), search(db, spaced, now=NOW)
+    assert a["found"] is True and (a["match"], a["facts"]) == (b["match"], b["facts"])
+
+
+def test_a_word_absent_from_every_hit_still_counts(db):
+    """Only a bigram between two found ones is a joint: 學餐 (no hit has it) still counts against 學餐菜單."""
+    assert search(db, "學餐菜單", now=NOW)["found"] is False
+
+
+def test_this_or_next_term_only_says_when(db):
+    e = search(db, "下學期什麼時候開學", now=NOW)
+    assert e["found"] is True and e["facts"][0]["category"] == "term_begin"
+    e = search(db, "下學期什麼時候開學？加退選到哪一天？", now=NOW)
+    assert e["found"] is True and e["facts"][0]["category"] == "term_begin"
+
+
+def test_equally_covered_events_soonest_first(db):
+    """F-calendar-order: the midterm week (10-27..10-30) comes before the one-day 11-02 entry and the 11-09 deadline."""
+    e = search(db, "期中考是什麼時候", now=NOW)
+    events = [f for f in e["facts"] if "summary" in f]
+    assert events[0]["valid"] == ["2026-10-27", "2026-10-30"]
+    assert [f["valid"][0] for f in events] == sorted(f["valid"][0] for f in events)
+
+
+def test_school_and_unit_names_are_not_the_topic(db):
+    """F-school-name-topic: every notice is the school's, so 高雄師範大學 says nothing about what is asked, not even when
+    nothing else is left."""
+    assert search(db, "高雄師範大學 停修", now=NOW)["facts"] == search(db, "停修", now=NOW)["facts"]
+    for q in ("高師大有哪些餐廳，幾點開", "致理大樓 教務組", "NKNU 學餐", "高師大", "NKNU"):
+        e = search(db, q, now=NOW)
+        assert e["found"] is False and e["status"] == "no_data", (q, e.get("facts"))
+
+
+def test_a_unit_named_ranks_its_own_facts_first(db):
+    """A unit is not the topic, but like a place it says whose facts are meant: 圖資處 期中考 is the libraries' midterm
+    extension before the midterm itself; a unit alone is searched for (its notices)."""
+    e = search(db, "圖資處 期中考", now=NOW)
+    assert e["facts"][0]["entity_id"] in (HLIB, YLIB) and "延長開館" in e["facts"][0]["answer"]
+    e = search(db, "體育室", kind="announcement", now=NOW)
+    assert e["found"] is True and all(f["unit"] == "體育室" for f in e["facts"])
 
 
 # ---------------------------------------------------------------- dated cards (closures, extensions)

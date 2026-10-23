@@ -30,9 +30,9 @@ def test_thresholds_on_calibration(world):
 
 def test_query_sets_shape():
     queries, calibration = load("queries.yaml"), load("calibration.yaml")
-    assert len(queries) == 80 and Counter(q["type"] for q in queries)["en"] == 10 and len(calibration) == 20
+    assert len(queries) == 88 and Counter(q["type"] for q in queries)["en"] == 11 and len(calibration) == 29
     assert not {q["q"] for q in queries} & {q["q"] for q in calibration}
-    assert len({q["q"] for q in queries}) == 80
+    assert len({q["q"] for q in queries}) == 88 and len({q["q"] for q in calibration}) == 29
     for q in queries + calibration:
         assert (q["type"] == "noans") == (not q["gold"]), q
         assert all(len(g) == 1 and next(iter(g)) in ("card", "calendar", "doc") for g in q["gold"]), q

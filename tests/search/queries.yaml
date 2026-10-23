@@ -1,4 +1,5 @@
-# Search regression set (spec §6.5): 80 queries rewritten from prototypes/search/queries.py, 10 of them English.
+# Search regression set (spec §6.5): 80 queries rewritten from prototypes/search/queries.py, 10 of them English, plus
+# 8 real phrasings that once failed (2026-10-23 local run: close words, words typed without spaces, the school name).
 # gold: any listed item at rank 1 counts for R@1, within the first 5 facts for R@5. Gold kinds:
 #   {card: {entity, intent}}            an answer card of that place (search returns the card for on_date)
 #   {card: {entity?, intent, answer_re}} a card whose sentence matches: a closure or extension question is answered only
@@ -125,3 +126,15 @@
 - {q: when does winter vacation begin, type: en, gold: [{calendar: {category: vacation_begin}}]}
 - {q: table tennis room opening hours, type: en, gold: [{card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}}]}
 - {q: university anniversary sports meet, type: en, gold: [{calendar: {category: other, summary_re: 校慶}}]}
+
+# ---------------- real phrasings (2026-10-23 local run; plan G6)
+- {q: 體育館關了嗎, type: real, gold: [{card: {entity: nknu.heping.gym.main, intent: hours, answer_re: 暫停開放（臺灣光復紀念日連假）}}]}
+- {q: 圖書館今天休息嗎, type: real, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                     {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: "What time does the library close today?", type: en, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                                               {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 停修截止, type: real, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 颱風停課, type: real, gold: [{doc: {title_re: 颱風}}]}  # no notice says 停課: the typhoon notices are what there is
+- {q: 下學期什麼時候開學, type: real, gold: [{calendar: {category: term_begin}}]}
+- {q: 學測, type: noans, gold: []}  # no current notice; an old one may only come back labelled old (stale, found=false)
+- {q: 高師大有哪些餐廳，幾點開, type: noans, gold: []}  # the fixture world has no restaurant notice

@@ -1,7 +1,8 @@
-# Calibration set for the bigram-coverage thresholds T_LOW / T_HIGH (spec §6.5): 20 queries that are not in queries.yaml,
+# Calibration set for the bigram-coverage thresholds T_LOW / T_HIGH (spec §6.5): 29 queries that are not in queries.yaml,
 # in the same mix (short keywords, long questions, English, questions v1 cannot answer). Same format as queries.yaml.
 # The noans include the shapes that once scored high on words every card has: an unknown place + an hours question,
 # a known place + a word its card does not answer, and a place on the other campus.
+# The 9 added in G6 have the shapes of the real phrasings: words typed without spaces, a school or unit name, close words.
 # `uv run python -m tests.search.evaluate --calibrate` grid-searches the thresholds on this set.
 
 - {q: 和平體育館 幾點開, type: place, gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
@@ -25,3 +26,13 @@
 - {q: 成績 查詢 系統, type: noans, gold: []}
 - {q: 請問學生餐廳週末有營業嗎？, type: noans, gold: []}
 - {q: 燕巢 體育館, type: noans, gold: []}
+- {q: 期末考日期, type: joined, gold: [{calendar: {category: final_exam}}]}
+- {q: 退課截止, type: joined, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 颱風假, type: joined, gold: [{doc: {title_re: 颱風}}]}
+- {q: 高師大停修, type: joined, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 圖書館幾點關, type: place, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                   {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 高雄師大宿舍, type: noans, gold: []}
+- {q: NKNU 學餐, type: noans, gold: []}
+- {q: 體育室 電話, type: noans, gold: []}
+- {q: 教務處 成績單申請, type: noans, gold: []}
