@@ -4,7 +4,8 @@
 - Only honor-roll titles get names masked, in the school's own style: 陳宥余 -> 陳O余, 陳余 -> 陳O. A title is honor-roll
   content by its own words (is_honor_title: 恭賀, 榮獲, 名單 …), whatever list it is posted in (F-sso-crosspost-honor).
 - A name is 2-3 characters starting with a common surname (3-4 with a compound one), found right before an honorific
-  (陳宥余同學, 陳宥余 老師, 陳宥余、林宥余同學) or after a role word and before a verb (研究生陳宥余考取, 系友 陳宥余、林宥余參加).
+  (陳宥余同學, 陳宥余 老師, 陳宥余、林宥余同學), after a role word and before a verb (研究生陳宥余考取, 系友 陳宥余、林宥余參加),
+  or, 3 characters only, right after the school's name or a role word (高師大陳宥余挺身傳愛, 碩二生陳宥余林宥余獲…).
   A span that does not look like a name is left as the school wrote it (榮升教授, 歷史系校友, 歡迎同學: F-honor-overmask);
   masking never invents a name.
 """
@@ -21,7 +22,7 @@ _LIST_SEP = "、"  # not ，: a clause before a comma is not a list member (本�
 # the run of characters right before an honorific (one space allowed between), or a list of runs joined by 、
 _HONOR_RE = re.compile(rf"((?:{_N}+{_LIST_SEP}\s*)*)({_N}+?)(\s?)({_HONORIFIC})")
 _ROLE = (r"研究生|畢業生|大學部|學生|同學|校友|老師|教師|教授|博士生|碩士生|博士班|碩士班|學長|學姐|學姊|系友|所友|選手|"
-         r"隊員")
+         r"隊員|大[一二三四五]生?|碩[一二三四]生?|博[一二三四五六七]生?")
 _VERB = r"考取|考上|榮獲|獲|榮升|通過|錄取|榮登|入選|當選|勇奪|奪|參加|參與|榮任|擔任|出任|代表|出席|赴"
 # role word (a space, 、 or ： may follow) + names joined by 、 + verb: 研究生甲乙丙考取, 系友 甲乙丙、丁戊己參加; the names
 # are lazy, so 林宥余榮獲 is 林宥余 + 榮獲, not 林宥余榮 + 獲
@@ -29,8 +30,11 @@ _ROLE_RE = re.compile(rf"({_ROLE})([\s、:：]*)((?:{_N}{{2,4}}?{_LIST_SEP}\s*)*
 # a two-character name only right after one of these (化學系林O老師, 大三陳O同學), never inside a longer word (暨成立校友)
 _BOUNDARY_END = re.compile(r"(?:系|所|班|組|學程|中心|院|生|友|級|屆|大[一二三四五]|碩[一二三]|博[一二三四]|師大|恭賀|恭喜|賀|"
                            r"本校|本系|本所|本院|系上)$")
-# 取得獎勵 (an award scheme) holds 得獎; a 賽事名單 lists events, not people
-HONOR_TITLE = re.compile(r"(?<!賽事)名單|榜單|榮獲|(?<!取)得獎|獲獎|獲頒|獲選|當選|入選|考取|錄取|榮升|榮登|恭賀|恭喜|狂賀|(?:^|[^\w])賀")
+# 取得獎勵 (an award scheme) holds 得獎; a 賽事名單 lists events, not people; 獲…獎 is 獲 and 獎 in one clause
+HONOR_TITLE = re.compile(r"(?<!賽事)名單|榜單|榮獲|(?<!取)得獎|獲獎|獲頒|獲選|當選|入選|考取|錄取|榮升|榮登|恭賀|恭喜|狂賀|"
+                         r"(?:^|[^\w])賀|獲[^，,。！!？?\s]{1,15}?獎")
+# the school's own name, then a name written right after it (高師大陳宥余挺身…, 高師大陳宥余林宥余獲…)
+_LEAD = re.compile(r"高師大|高雄師大|高雄師範大學|本校|" + _ROLE)
 
 # common surnames in Taiwan (traditional, with the simplified forms of the most frequent); characters that mostly start
 # ordinary words (安 全 成 申 時 常 應 華 花 畢 …) are left out on purpose: a name with such a surname stays readable
@@ -51,7 +55,7 @@ _NOT_NAMES = {
     "代表隊", "隊伍", "副", "助理", "全體同", "研究",
     "榮升", "升等", "升任", "榮任", "連任", "新任", "現任", "前任", "卸任", "講座", "特聘", "名譽", "任課", "任教", "全國",
     "高中", "高職", "大學", "高師大", "高師", "師大", "高雄", "金門", "馬祖", "苗栗", "雲林", "陸生", "游泳", "田徑", "金牌",
-    "金獎", "衛生", "管理", "顧問", "紀念", "周年", "週年", "簡報", "代表",
+    "金獎", "衛生", "管理", "顧問", "紀念", "周年", "週年", "簡報", "代表", "甄試", "卓越", "高教", "嚴正", "盛大",
 }
 # a span holding a unit or place word is not a name (歷史系, 高雄市, 國文系王 in 國文系王主任)
 _UNIT_CHARS = set("系所院班組處室館隊團社部局署市縣校會")
@@ -103,6 +107,36 @@ def _tail_name(seg: str) -> tuple[str, str] | None:
     return None
 
 
+def _names_at(text: str, i: int) -> list[tuple[int, int]]:
+    """Names written one after another from text[i] on: 3 characters each (4 with a compound surname), each looking
+    like a name and not starting with a word that is not one (甄試榜單, 高雄市); a name already masked is passed over."""
+    out = []
+    while True:
+        for n in (4, 3):
+            s = text[i:i + n]
+            if len(s) < n or (n == 4 and s[:2] not in _COMPOUND_SURNAMES):
+                continue
+            if _is_masked(s) and s[0] in _SURNAMES:
+                i += n
+                break
+            if _looks_like_name(s) and s[:2] not in _NOT_NAMES:
+                out.append((i, n))
+                i += n
+                break
+        else:
+            return out
+
+
+def _mask_after_lead(title: str) -> str:
+    """Names right after the school's name or a role word, whatever follows them (高師大陳宥余挺身傳愛,
+    研究生陳宥余以腳創作): only 3-character names, a 2-character one cannot be told from the next word."""
+    chars = list(title)
+    for m in _LEAD.finditer(title):
+        for i, n in _names_at(title, m.end()):
+            chars[i:i + n] = mask_name(title[i:i + n])
+    return "".join(chars)
+
+
 def mask_honor_names(title: str) -> str:
     def honor(m: re.Match[str]) -> str:
         parts = re.split(rf"({_LIST_SEP}\s*)", m.group(1) + m.group(2))
@@ -119,7 +153,7 @@ def mask_honor_names(title: str) -> str:
                 parts[i] = mask_name(parts[i])
         return m.group(1) + m.group(2) + "".join(parts)
 
-    return _ROLE_RE.sub(role, _HONOR_RE.sub(honor, title))
+    return _mask_after_lead(_ROLE_RE.sub(role, _HONOR_RE.sub(honor, title)))
 
 
 _GENERIC_LEAVE = {"學生", "学生", "教師", "教师", "職員", "职员", "員工", "员工", "同仁", "教職員", "师生", "師生", "線上",
@@ -127,7 +161,8 @@ _GENERIC_LEAVE = {"學生", "学生", "教師", "教师", "職員", "职员", "�
 _PATTERNS = [
     # no letter or digit right before/after: hex hashes (uv.lock) hold such digit runs; spaced mobiles are common
     ("mobile", re.compile(r"(?<![0-9A-Za-z])09\d{2}[- ]?\d{3}[- ]?\d{3}(?![0-9A-Za-z])")),
-    ("national_id", re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![0-9])")),  # \b fails next to 中文 (F-redact-gaps)
+    # \b fails next to 中文 (F-redact-gaps); a lower-case letter (typed ids) only as a whole word: hex hashes start so
+    ("national_id", re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][12]\d{8}(?![0-9])|[a-z][12]\d{8}(?![0-9A-Za-z]))")),
     ("student_id", re.compile(r"(?<![0-9A-Za-z])4\d{8}(?![0-9A-Za-z])")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("staff_leave", re.compile(rf"(?:^|[\s,，、。:：;；()（）\[\]])([{_HAN}{_MASKED}]{{2,4}})\s*[，,。.．_]?\s*(?:上午|下午)?\s*"
@@ -146,18 +181,23 @@ def _email_is_personal(addr: str) -> bool:
     return True
 
 
+# full-width ASCII (a phone IME's ０９１２…, Ａ１２…) -> ASCII, one character for one, so match positions stay the same
+_FULL_WIDTH = {c: c - 0xFEE0 for c in range(0xFF01, 0xFF5F)}
+
+
 def find_pii(text: str) -> list[str]:
-    """Return 'kind:match' strings for personal data that must not be published."""
+    """Return 'kind:match' strings for personal data that must not be published (the match as written in text)."""
+    probe = text.translate(_FULL_WIDTH)
     hits = []
     for kind, rx in _PATTERNS:
-        for m in rx.finditer(text):
+        for m in rx.finditer(probe):
             if kind == "email" and not _email_is_personal(m.group()):
                 continue
             if kind == "staff_leave" and m.group(1) in _GENERIC_LEAVE:
                 continue
-            if kind == "national_id" and re.search(r"wikidata|qid", text[max(0, m.start() - 24):m.start()], re.IGNORECASE):
+            if kind == "national_id" and re.search(r"wikidata|qid", probe[max(0, m.start() - 24):m.start()], re.IGNORECASE):
                 continue
-            hits.append(f"{kind}:{m.group().strip()}")
+            hits.append(f"{kind}:{text[m.start():m.end()].strip()}")
     return hits
 
 

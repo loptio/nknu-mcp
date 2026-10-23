@@ -142,3 +142,30 @@ def test_hex_hashes_are_not_phone_or_student_numbers():
     # F-check-scope: uv.lock hashes once read as mobiles and student numbers
     assert find_pii("sha256:c7e58ce09192557605d8bbd") == []
     assert find_pii("05221a5d8b3c476330730b3adb4") == []
+
+
+def test_names_after_the_school_or_a_role_word_in_an_honor_title():
+    # review of G4: shapes the honorific and role+verb rules missed on the owner's real titles (names here are synthetic)
+    t = "高師大袁乙丙挺身傳愛 獲頒「2016年全球熱愛生命」獎學金105.11.29"  # school name, a name, then any words
+    assert is_honor_title(t) and mask_honor_names(t) == "高師大袁O丙挺身傳愛 獲頒「2016年全球熱愛生命」獎學金105.11.29"
+    t = "高師大視設系碩二生曾乙丙獲周丁戊熱愛生命獎104.10.15"  # 獲…獎, and a grade word as the role
+    assert is_honor_title(t) and "曾O丙獲" in mask_honor_names(t)
+    t = "高師大王乙丙謝丁戊獲國家新創獎104.12.24"  # two names written together
+    assert is_honor_title(t) and mask_honor_names(t) == "高師大王O丙謝O戊獲國家新創獎104.12.24"
+    t = "高師大腦麻研究生林乙丙以腳創作藝術 獲總統教育獎111.06.07"  # role word, a name, then any words
+    assert is_honor_title(t) and mask_honor_names(t) == "高師大腦麻研究生林O丙以腳創作藝術 獲總統教育獎111.06.07"
+
+
+def test_school_and_role_words_followed_by_ordinary_words_stay():
+    for t in ("[恭賀]115年度物理系教師甄試榜單", "恭賀本校高教深耕計畫榮獲教育部肯定", "高師大高雄市校友會榮獲表揚",
+              "賀 本系學生團隊榮獲金牌", "恭賀研究生學會榮獲優良社團"):
+        assert mask_honor_names(t) == t, t
+    assert not is_honor_title("獲教育部補助經費辦理活動，詳見附件")  # 獲 with no 獎 after it
+
+
+def test_full_width_digits_and_a_lowercase_id_letter_are_found():
+    # review of G7: a phone IME types full-width digits, and an id is often typed in lower case (misses.jsonl)
+    assert redact("我的學號４０００００００１怎麼查成績") == "我的學號[MASKED]怎麼查成績"
+    assert redact("手機０９１２３４５６７８聯絡誰") == "手機[MASKED]聯絡誰"
+    assert redact("身分證a123456789") == "身分證[MASKED]"
+    assert find_pii("sha256:a123456789bcdef0") == []  # a hash that starts like an id is not one

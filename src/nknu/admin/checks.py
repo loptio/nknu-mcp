@@ -20,7 +20,8 @@ _TLS_OFF = re.compile(r"verify\s*=\s*False|" + "CERT_" + "NONE")
 PII_SAMPLES: dict[str, set[str]] = {
     "tests/core/test_pii.py": {"mobile:0912-345-678", "mobile:0912 345 678", "mobile:0912 345678", "national_id:A123456789",
                                "national_id:Q123456789", "student_id:400000000", "email:someone@gmail.com",
-                               "email:someone.name@google.com"},
+                               "email:someone.name@google.com", "student_id:４０００００００１", "mobile:０９１２３４５６７８",
+                               "national_id:a123456789"},
     "tests/admin/test_checks.py": {"mobile:0912-345-678", "mobile:0987-654-321", "student_id:412345678"},
     "tests/server/test_app.py": {"mobile:0912-345-678"},
 }
