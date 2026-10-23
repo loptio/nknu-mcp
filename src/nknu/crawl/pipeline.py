@@ -8,13 +8,17 @@ writes nothing except its crawl_run row and alerts, so the previous values keep 
 Disappearance (C2): only full scans count absences, and only for records the run had the chance to produce
 (Adapter.counts_missing); three in a row retire the record without review. Facts printed on a table page (closure days,
 term tables) are never retired for leaving the page: they carry their own end date and expire on it. An announcement
-whose page answers 404 is withdrawn at once, together with the closures it stated.
+whose page answers 404 is withdrawn at once, together with the closures it stated. A full scan that lists far fewer
+records than the last passed full scan (HOLD_MIN and HOLD_SHARE: a pager that stopped working shows only its first
+page) counts no absence: the records it does not list are held (alert missing_held), kept as they are, and count again
+once a run lists them.
 
 Guard (invariants.standard): any failing list page, missing selector, unreadable 200, date-rate drop, collapse or
-out-of-range count voids the run. Exception (C6): a lower count, with every other check passing, that the two runs
-before counted exactly the same is the new normal: written, and the count baseline restarts there. Void alerts are
-raised again once a day while the adapter stays void. A detail page that fails costs only its own record
-(alert detail_failed) and is asked for after the others next time.
+out-of-range count voids the run. Exceptions (C6): a lower count, with every other check passing, that the two runs
+before counted exactly the same is the new normal: written, and the count baseline restarts there; a higher count whose
+records are nearly all in force already (a pager that works again lists the held records) is the listing back, accepted
+the same way. Void alerts are raised again once a day while the adapter stays void. A detail page that fails costs only
+its own record (alert detail_failed) and is asked for after the others next time.
 """
 
 from __future__ import annotations
@@ -56,6 +60,11 @@ log = logging.getLogger("nknu")
 ORDER = ["aca_calendar_ics", "pe_open_hours", "lib_open_time", "pe_news", "sso_news"]  # calendar first: term dates
 RETIRE_AFTER_FULL_SCANS = 3
 NEW_NORMAL_RUNS = 3  # C6: the same lower count this many runs in a row is accepted
+# a full scan that lists this many records (and this share) fewer than the last passed full scan is a broken listing,
+# not a school that took them down: the absences of that scan are not counted; a higher count with at most as many
+# records new to facts.db is the listing back
+HOLD_MIN, HOLD_SHARE = 10, 0.1
+HELD = -1  # record_state.missing_full_scans of a record held by such a scan, until a run lists it again
 
 
 @dataclass
@@ -100,18 +109,29 @@ def _new_normal(conn, name: str, run_id: int, full_scan: bool, n: int, history: 
     return len(before) == NEW_NORMAL_RUNS - 1 and all(r[0] == n for r in before)
 
 
-def _accept_new_normal(conn, name: str, full_scan: bool, n: int, history: RunHistory, now: str) -> None:
-    med = statistics.median(history.counts_7d)
+def _listing_back(n: int, new: int, history: RunHistory, violations: list[Violation]) -> bool:
+    """A higher count, the only check that failed, whose records are nearly all in force already (new = those that are
+    not): a pager that works again lists the records it held, not a parser that picks up rows it should not."""
+    if not violations or any(v.code != "count_out_of_band" for v in violations) or not history.counts_7d:
+        return False
+    return n > statistics.median(history.counts_7d) and new <= max(HOLD_MIN, HOLD_SHARE * n)
+
+
+def _restart_baseline(conn, name: str, full_scan: bool, now: str) -> None:
     conn.execute("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                  (_baseline_key(name, full_scan), now))
     conn.execute("UPDATE alert SET resolved_at=? WHERE dedup_key=? AND resolved_at IS NULL",
                  (now, f"{name}:count_out_of_band"))
-    # warn, not info: a pager that stopped working looks exactly like a source that shrank, and C2 then retires the
-    # rows no longer listed after three full scans
+
+
+def _accept_new_normal(conn, name: str, full_scan: bool, n: int, history: RunHistory, now: str) -> None:
+    med = statistics.median(history.counts_7d)
+    _restart_baseline(conn, name, full_scan, now)
+    # warn, not info: a pager that stopped working looks exactly like a source that shrank
     add_alert(conn, adapter=name, level="warn", code="count_new_normal",
               message=f"{'全扫' if full_scan else '部分扫描'}条数 {n} 连续 {NEW_NORMAL_RUNS} 轮相同（之前 7 天中位数 {med:g}），"
-                      f"当成新常态接受并写入；之后以 {n} 为基准。不再列出的资料会在 {RETIRE_AFTER_FULL_SCANS} 次全扫后自动下架；"
-                      f"如果其实是网站坏了（例如分页失效），请到来源页面确认，网站修好后资料会再写回", now=now)
+                      f"当成新常态接受并写入；之后以 {n} 为基准。没列出的资料不会因此下架（少了 {HOLD_MIN} 条以上时保留不动，"
+                      f"见告警 missing_held）；请到来源页面确认是不是网站坏了（例如分页失效）", now=now)
 
 
 def _merge(records: list[Record]) -> list[Record]:
@@ -220,6 +240,12 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
     if not readonly and _new_normal(conn, name, run_id, full_scan, n, history, violations):
         _accept_new_normal(conn, name, full_scan, n, history, now)
         violations = []
+    elif not readonly and _listing_back(n, len(_record_keys(records) - known), history, violations):
+        _restart_baseline(conn, name, full_scan, now)
+        add_alert(conn, adapter=name, level="info", code="count_back",
+                  message=f"{'全扫' if full_scan else '部分扫描'}条数回到 {n}（之前 7 天中位数 {statistics.median(history.counts_7d):g}），"
+                          f"列出的几乎都是已有的资料，当成列表恢复正常接受；之后以 {n} 为基准", now=now)
+        violations = []
     if violations:
         band_only = all(v.code == "count_out_of_band" for v in violations)
         return _void(conn, name, run_id, violations, violations[0].message, readonly, n if band_only else 0)
@@ -231,7 +257,7 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
         read = {r.key for r in parsed if isinstance(r, DocRecord) and r.partial}  # detail pages that answered
         seen = _apply_all(conn, adapter, records, res, today, now, known, read)
         if full_scan:
-            _missing(conn, adapter, known - seen, parsed, res, today, now)
+            _missing(conn, adapter, known - seen, parsed, res, today, now, run_id)
         if res.n_written or res.n_retired:
             bump_data_version(conn)
         conn.execute("UPDATE crawl_run SET finished_at=?, n_snapshots=?, n_records=?, passed=1, n_written=? WHERE id=?",
@@ -404,21 +430,49 @@ def _countable(conn, kind: str, key: str) -> tuple[bool, tuple[date, date] | Non
     return True, None
 
 
-def _missing(conn, adapter: Adapter, keys: set[str], parsed: list[Record], res: RunResult, today: date, now: str) -> None:
+def _record_keys(records: list[Record]) -> set[str]:
+    """The keys of the records a run counts (record_count): facts, events and list-page announcements."""
+    return {r.key for r in records
+            if isinstance(r, (FactRecord, EventRecord)) or (isinstance(r, DocRecord) and not r.partial)}
+
+
+def _missing(conn, adapter: Adapter, keys: set[str], parsed: list[Record], res: RunResult, today: date, now: str,
+             run_id: int) -> None:
     """C2: a full scan counts an absence only for a record it had the chance to produce; three in a row retire it,
-    without review."""
+    without review. A scan that lists far fewer records than the last passed full scan holds them instead (_hold)."""
     name = adapter.name
+    absent: list[tuple[str, str]] = []
     for key in sorted(keys):
         st = _state(conn, name, key)
-        if st is None or st["status"] != "active":  # already taken down in this run (C1 displacement, a 404 page)
-            continue
+        if st is None or st["status"] != "active" or st["missing_full_scans"] == HELD:
+            continue  # already taken down in this run (C1 displacement, a 404 page), or held by an earlier short scan
         countable, span = _countable(conn, st["kind"], key)
-        if not countable or not adapter.counts_missing(key, st["kind"], span, parsed, today):
-            continue
+        if countable and adapter.counts_missing(key, st["kind"], span, parsed, today):
+            absent.append((key, st["kind"]))
+    last = conn.execute("SELECT n_records FROM crawl_run WHERE adapter=? AND full_scan=1 AND passed=1 AND id<? "
+                        "ORDER BY id DESC LIMIT 1", (name, run_id)).fetchone()
+    if absent and last is not None and last[0] - res.n_records >= max(HOLD_MIN, HOLD_SHARE * last[0]):
+        _hold(conn, name, [k for k, _ in absent], res.n_records, last[0], now)
+        return
+    for key, kind in absent:
         conn.execute("UPDATE record_state SET missing_full_scans=missing_full_scans+1 WHERE adapter=? AND record_key=?",
                      (name, key))
         if _state(conn, name, key)["missing_full_scans"] >= RETIRE_AFTER_FULL_SCANS:
-            res.n_retired += _retire(conn, name, key, st["kind"], now)
+            res.n_retired += _retire(conn, name, key, kind, now)
+
+
+def _hold(conn, name: str, keys: list[str], listed: int, last: int, now: str) -> None:
+    """A full scan that lists far fewer records than the last one is a broken listing (a pager that stopped working
+    shows only its first page), not a school that took them all down at once: the records it does not list keep
+    serving and their absence never counts until a run lists them again (CLAUDE.md: keep the old values when a crawl
+    fails or the site changes). A source that really shrank keeps them too: `nknu undo` takes one down."""
+    conn.executemany("UPDATE record_state SET missing_full_scans=? WHERE adapter=? AND record_key=?",
+                     [(HELD, name, k) for k in keys])
+    add_alert(conn, adapter=name, level="warn", code="missing_held",
+              message=f"全扫只列出 {listed} 条，上一次通过的全扫列出 {last} 条：像是网站坏了（例如分页失效），不像学校一次删了"
+                      f"这么多。这一轮没列出的 {len(keys)} 条照旧保留、不算缺席，之后重新列出就恢复正常；请到来源页面确认，"
+                      f"如果真的是学校删了，用 nknu undo <key> 撤下",
+              dedup_key=f"{name}:missing_held", now=now)
 
 
 def _full_scan_due(conn: sqlite3.Connection, name: str, today: date) -> bool:

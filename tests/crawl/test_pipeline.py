@@ -134,9 +134,9 @@ def test_a_lower_count_three_runs_in_a_row_is_the_new_normal(conn):
     assert [r.passed for r in results] == [False, False, True] and results[2].n_written == 4
     assert alerts(conn, "count_new_normal")
     assert conn.execute("SELECT resolved_at FROM alert WHERE code='count_out_of_band'").fetchone()[0] is not None
-    # a broken pager looks the same: the alert is a warning and says what follows (C2 retires the rows no longer listed)
+    # a broken pager looks the same: the alert is a warning that asks to check the source page
     level, message = conn.execute("SELECT level, message FROM alert WHERE code='count_new_normal'").fetchone()
-    assert level == "warn" and "3 次全扫后自动下架" in message
+    assert level == "warn" and "分页失效" in message
     # from now on the new count is the baseline: a small change stays in band
     assert run(conn, FakeAdapter(_rows(3))).passed and run(conn, FakeAdapter(_rows(4))).passed
 
@@ -254,6 +254,43 @@ def test_three_full_scans_retire_doc(conn):
         run(conn, FakeAdapter([OTHER_DOC], name="sso_news"))
     row = conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key=?", (DOC.doc_key,)).fetchone()
     assert row[0] is not None
+
+
+def _withdrawn(conn) -> int:
+    return conn.execute("SELECT count(*) FROM doc WHERE withdrawn_at IS NOT NULL").fetchone()[0]
+
+
+def test_a_listing_far_shorter_than_what_is_in_force_retires_nothing(conn):
+    # a pager that stops working lists only the first page: on a fresh install (no count history, no count guard) the
+    # rows it no longer reaches are held, not retired after three full scans, and the maintainer is warned once
+    run(conn, FakeAdapter(_rows(40)))
+    results = [run(conn, FakeAdapter(_rows(15))) for _ in range(5)]
+    assert all(r.passed for r in results) and sum(r.n_retired for r in results) == 0 and _withdrawn(conn) == 0
+    (level, message), = conn.execute("SELECT level, message FROM alert WHERE code='missing_held'").fetchall()
+    assert level == "warn" and "25" in message and "40" in message
+    # the pager works again: a count far above the last week's, but of rows already in force, is the listing back (not
+    # voided for a week like a parser that picks up new rows); from then on an absence counts as before
+    assert run(conn, FakeAdapter(_rows(40))).passed and alerts(conn, "count_back")
+    assert not conn.execute("SELECT count(*) FROM record_state WHERE missing_full_scans <> 0").fetchone()[0]
+    assert [run(conn, FakeAdapter(_rows(39))).n_retired for _ in range(3)] == [0, 0, 1]
+
+
+def test_a_broken_pager_accepted_as_the_new_normal_retires_nothing(conn):
+    # C6 accepts the same lower count three runs in a row; the rows the short listing no longer shows stay
+    seed_history(conn, "fake", [40, 40, 40])
+    run(conn, FakeAdapter(_rows(40)))
+    results = [run(conn, FakeAdapter(_rows(15))) for _ in range(8)]
+    assert [r.passed for r in results][:3] == [False, False, True] and all(r.passed for r in results[2:])
+    assert sum(r.n_retired for r in results) == 0 and _withdrawn(conn) == 0
+    assert alerts(conn, "count_new_normal") and alerts(conn, "missing_held")
+
+
+def test_rows_replaced_by_as_many_new_ones_are_still_retired(conn):
+    # a source that re-creates its rows under new ids (a calendar's UIDs) lists as many as before: not a short listing
+    run(conn, FakeAdapter(_rows(40)))
+    fresh = [replace(DOC, key=f"fake:M{i}", doc_key=f"M{i}") for i in range(40)]
+    assert [run(conn, FakeAdapter(fresh)).n_retired for _ in range(3)] == [0, 0, 40]
+    assert not alerts(conn, "missing_held")
 
 
 def test_doc_404_withdrawn_immediately(conn):
