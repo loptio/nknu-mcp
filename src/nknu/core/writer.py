@@ -6,14 +6,23 @@ import hashlib
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 
 from nknu.core.ids import lineage_id, uuid7
 from nknu.core.notify import notify
-from nknu.core.records import DocRecord, EventRecord, FactRecord, Record, SourceRef, to_json
+from nknu.core.records import DocRecord, EventRecord, FactRecord, HoursRule, Record, SourceRef, to_json
 from nknu.core.vocab import tier
 
 log = logging.getLogger("nknu")
+# record key of the days of a crawled fact that a maintainer's correction (`nknu add hours` citing its page) does not
+# cover: {crawled key}:kept:{first day}:{last day}, written under the crawled adapter so they share its lifecycle
+KEPT = ":kept:"
+
+
+def kept_parent(record_key: str) -> str | None:
+    """The crawled record a kept part was cut from, or None for any other key."""
+    return record_key.split(KEPT, 1)[0] if KEPT in record_key else None
 
 
 def _evidence_group(key: str | None) -> int | None:
@@ -40,16 +49,68 @@ def current_fact(conn: sqlite3.Connection, record_key: str) -> sqlite3.Row | Non
 def displaced_by(conn: sqlite3.Connection, rec: FactRecord) -> list[sqlite3.Row]:
     """Identity rule (C1): the current facts of other lineages that rec restates — same source URL, entity, attribute,
     qualifier and specificity, with overlapping validity. Writing rec closes them (e.g. a closure whose first day moved,
-    a calendar holiday re-created under a new UID, a corrected manual entry)."""
+    a calendar holiday re-created under a new UID, a corrected manual entry). A page's new statement also closes the
+    kept parts of what it said before (KEPT) wherever that earlier statement overlapped rec, as it would have closed
+    the whole uncorrected fact: the library moving its 10/25-10/26 closure to 10/26 takes the kept 10/25 along."""
     if rec.valid_from is None or rec.valid_to is None:
         return []
-    return conn.execute(
+    same = (rec.source.url, rec.entity_id, rec.attribute, rec.qualifier, rec.specificity)
+    lo, hi = rec.valid_from.isoformat(), rec.valid_to.isoformat()
+    out = conn.execute(
         """SELECT f.* FROM fact f JOIN source_doc s ON s.id = f.source_doc
             WHERE f.recorded_to IS NULL AND f.lineage_id <> ? AND s.url = ? AND f.entity_id = ? AND f.attribute = ?
               AND f.qualifier = ? AND f.specificity = ? AND f.valid_from < ? AND ? < f.valid_to
-            ORDER BY f.valid_from, f.record_key""",
-        (lineage_id(rec.key), rec.source.url, rec.entity_id, rec.attribute, rec.qualifier, rec.specificity,
-         rec.valid_to.isoformat(), rec.valid_from.isoformat())).fetchall()
+            ORDER BY f.valid_from, f.record_key""", (lineage_id(rec.key), *same, hi, lo)).fetchall()
+    if rec.extraction == "manual" or KEPT in rec.key:  # a correction cuts kept parts itself (admin.manual)
+        return out
+    ids = {f["id"] for f in out}
+    for f in conn.execute(
+            """SELECT f.* FROM fact f JOIN source_doc s ON s.id = f.source_doc
+                WHERE f.recorded_to IS NULL AND f.lineage_id <> ? AND s.url = ? AND f.entity_id = ? AND f.attribute = ?
+                  AND f.qualifier = ? AND f.specificity = ? AND instr(f.record_key, ?) > 0
+                ORDER BY f.valid_from, f.record_key""", (lineage_id(rec.key), *same, KEPT)).fetchall():
+        whole = last_version(conn, kept_parent(f["record_key"]) or "")
+        if f["id"] not in ids and whole is not None and whole["valid_from"] < hi and lo < whole["valid_to"]:
+            out.append(f)
+    return out
+
+
+def last_version(conn: sqlite3.Connection, record_key: str) -> sqlite3.Row | None:
+    """The most recent version of a lineage, current or not."""
+    return conn.execute("SELECT * FROM fact WHERE lineage_id=? ORDER BY recorded_from DESC, rowid DESC LIMIT 1",
+                        (lineage_id(record_key),)).fetchone()
+
+
+def fact_record(conn: sqlite3.Connection, f: sqlite3.Row) -> FactRecord:
+    """A stored fact row as the record that wrote it (source, rules and all)."""
+    s = conn.execute("SELECT * FROM source_doc WHERE id=?", (f["source_doc"],)).fetchone()
+    src = SourceRef(s["url"], s["title"], s["publisher"], s["kind"], s["warc_sha256"],
+                    date.fromisoformat(s["published_on"]) if s["published_on"] else None)
+    rules = tuple(HoursRule(tuple(json.loads(r["dows"])), r["opens"], r["closes"])
+                  for r in conn.execute("SELECT dows, opens, closes FROM hours_rule WHERE fact_id=? ORDER BY rowid", (f["id"],)))
+    return FactRecord(f["record_key"], f["entity_id"], f["attribute"], json.loads(f["value_json"]),
+                      date.fromisoformat(f["valid_from"]), date.fromisoformat(f["valid_to"]), f["valid_basis"],
+                      f["specificity"], bool(f["propagates"]), src, f["quote"], f["extraction"], rules, f["qualifier"])
+
+
+def kept_parts(conn: sqlite3.Connection, rec: FactRecord) -> list[FactRecord]:
+    """The days of a crawled record that no current manual entry citing its page (same entity, attribute, qualifier
+    and specificity) covers, as records keyed {rec.key}:kept:{first}:{last} with rec's content and source: correcting
+    10/26 of a 10/25-10/26 closure leaves 10/25 as the school stated it (all of it once the correction is undone)."""
+    corrections = conn.execute(
+        """SELECT f.valid_from, f.valid_to FROM fact f JOIN source_doc s ON s.id = f.source_doc
+            WHERE f.recorded_to IS NULL AND f.extraction = 'manual' AND s.url = ? AND f.entity_id = ? AND f.attribute = ?
+              AND f.qualifier = ? AND f.specificity = ? AND f.valid_from < ? AND ? < f.valid_to ORDER BY f.valid_from""",
+        (rec.source.url, rec.entity_id, rec.attribute, rec.qualifier, rec.specificity, rec.valid_to.isoformat(),
+         rec.valid_from.isoformat())).fetchall()
+    spans, lo = [], rec.valid_from
+    for a, b in ((date.fromisoformat(r[0]), date.fromisoformat(r[1])) for r in corrections):
+        if lo < a:
+            spans.append((lo, a))
+        lo = max(lo, b)
+    if lo < rec.valid_to:
+        spans.append((lo, rec.valid_to))
+    return [replace(rec, key=f"{rec.key}{KEPT}{a}:{b - timedelta(days=1)}", valid_from=a, valid_to=b) for a, b in spans]
 
 
 def apply_fact(conn: sqlite3.Connection, rec: FactRecord, *, adapter: str, review: str, now: str) -> str:

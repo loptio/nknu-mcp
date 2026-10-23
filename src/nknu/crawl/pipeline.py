@@ -40,7 +40,10 @@ from nknu.core.vocab import fill_validity
 from nknu.core.writer import (
     add_alert,
     apply_fact,
+    current_fact,
     is_suppressed,
+    kept_parent,
+    kept_parts,
     retire_event,
     retire_fact,
     set_state,
@@ -256,6 +259,9 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
     try:
         read = {r.key for r in parsed if isinstance(r, DocRecord) and r.partial}  # detail pages that answered
         seen = _apply_all(conn, adapter, records, res, today, now, known, read)
+        for key in known - seen:  # the kept parts of a corrected fact are listed while the page states that fact
+            if kept_parent(key) in seen:
+                _seen(conn, name, key, now, seen)
         if full_scan:
             _missing(conn, adapter, known - seen, parsed, res, today, now, run_id)
         if res.n_written or res.n_retired:
@@ -329,14 +335,31 @@ def _unchanged_or_undone(conn, name: str, key: str, h: str) -> bool:
 
 
 def _apply_fact(conn, name, rec, res, now) -> None:
-    """U2: written directly; C1 closes the facts it restates (apply_fact)."""
+    """U2: written directly; C1 closes the facts it restates (apply_fact). Content a maintainer's correction replaced
+    (`nknu add hours` citing this page) is not written back, but its uncorrected days are (_keep_uncorrected)."""
     h = content_hash(rec)
     if _unchanged_or_undone(conn, name, rec.key, h):
+        _keep_uncorrected(conn, name, rec, h, res, now)
         return
     apply_fact(conn, rec, adapter=name, review="auto_ok", now=now)
     set_state(conn, name, rec.key, "fact", h, now)
     supersede_pending(conn, name, rec.key, now=now)
     res.n_written += 1
+
+
+def _keep_uncorrected(conn, name: str, rec: FactRecord, h: str, res: RunResult, now: str) -> None:
+    """The page still states a fact the maintainer corrected for some of its days: its other days stay as the school
+    states them (writer.kept_parts), written again when they are gone (taken down with the page's 404 and the page
+    answers again, or a correction undone) unless the maintainer took that part down (`nknu undo` of its key)."""
+    if conn.execute("SELECT 1 FROM suppressed WHERE adapter=? AND record_key=? AND content_hash=? AND note='manual'",
+                    (name, rec.key, h)).fetchone() is None:
+        return
+    for part in kept_parts(conn, rec):
+        if current_fact(conn, part.key) is None and conn.execute(
+                "SELECT 1 FROM suppressed WHERE adapter=? AND record_key=?", (name, part.key)).fetchone() is None:
+            apply_fact(conn, part, adapter=name, review="auto_ok", now=now)
+            set_state(conn, name, part.key, "fact", content_hash(part), now)
+            res.n_written += 1
 
 
 def _apply_event(conn, name, rec, res, now) -> None:

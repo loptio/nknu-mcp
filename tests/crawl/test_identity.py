@@ -299,6 +299,91 @@ def test_a_detail_page_redesign_keeps_the_closures_and_the_excerpt(tmp_path):
     assert conn.execute("SELECT count(*) FROM alert WHERE code='detail_failed' AND resolved_at IS NULL").fetchone()[0] == 1
 
 
+GYM = "nknu.heping.gym.main"
+
+
+def closed_on(conn, eid: str, d: date) -> bool:
+    r = resolve(SQLiteBackend(conn), eid, "hours", d)
+    return r["status"] == "current" and r["today"]["open"] is False
+
+
+def correct_gym_1026(tmp_path):
+    """The gym's 10/24-10/26 closure (pe_news 460) corrected for 10/26 only, citing the announcement."""
+    conn = make_db(tmp_path)
+    pe_crawl(conn, PE_LIST, PE_CLOSURE)
+    conn.close()
+    r = cli(tmp_path, "add", "hours", "--place", GYM, "--from", "2026-10-26", "--opens", "08:00", "--closes", "17:00",
+            "--reason", "改為開放", "--source-url", pe_detail_url("460"), "--publisher", "nknu.org.pe", "--no-build")
+    assert r.exit_code == 0, r.output
+    conn = connect(tmp_path / "facts.db")
+    assert [closed_on(conn, GYM, date(2026, 10, d)) for d in (24, 25, 26)] == [True, True, False]
+    return conn
+
+
+def test_kept_days_of_a_corrected_closure_stay_while_the_announcement_states_it(tmp_path):
+    conn = correct_gym_1026(tmp_path)
+    for _ in range(4):
+        assert pe_crawl(conn, PE_LIST, PE_CLOSURE).n_retired == 0
+    assert [closed_on(conn, GYM, date(2026, 10, d)) for d in (24, 25, 26)] == [True, True, False]
+    # the correction undone: the school's whole statement is back on the next crawl
+    conn.close()
+    assert cli(tmp_path, "undo", "manual:nknu.heping.gym.main:2026-10-26:2026-10-26", "--no-build").exit_code == 0
+    conn = connect(tmp_path / "facts.db")
+    pe_crawl(conn, PE_LIST, PE_CLOSURE)
+    assert [closed_on(conn, GYM, date(2026, 10, d)) for d in (24, 25, 26)] == [True, True, True]
+
+
+def test_a_kept_part_taken_down_stays_down(tmp_path):
+    conn = correct_gym_1026(tmp_path)
+    kept = conn.execute("SELECT record_key FROM fact WHERE recorded_to IS NULL AND record_key LIKE ?",
+                        (GYM_1024 + ":%",)).fetchone()[0]
+    conn.close()
+    assert cli(tmp_path, "undo", kept, "--no-build").exit_code == 0
+    conn = connect(tmp_path / "facts.db")
+    for _ in range(2):
+        pe_crawl(conn, PE_LIST, PE_CLOSURE)
+        assert not closed_on(conn, GYM, date(2026, 10, 24)) and current_fact(conn, kept) is None
+
+
+def test_kept_days_of_a_corrected_closure_go_when_the_announcement_drops_it(tmp_path):
+    # C2: three full scans read the announcement without the closure; the days the correction kept go with the rest,
+    # they are the school's statement, not the maintainer's
+    conn = correct_gym_1026(tmp_path)
+    without = edited(PE_CLOSURE, "115年10月24日（週六）至10月26日（週一） 臺灣光復紀念日連假", "")
+    for _ in range(3):
+        pe_crawl(conn, PE_LIST, without)
+    assert not closed_on(conn, GYM, date(2026, 10, 24)) and not closed_on(conn, GYM, date(2026, 10, 25))
+    assert not closed_on(conn, "nknu.heping.gym.pool", date(2026, 10, 24))
+
+
+def test_kept_days_of_a_corrected_closure_go_when_its_page_is_gone(tmp_path):
+    conn = correct_gym_1026(tmp_path)
+    pe_crawl(conn, PE_LIST, status=404)
+    assert from_460(conn) == 0
+    assert not closed_on(conn, GYM, date(2026, 10, 24)) and not closed_on(conn, GYM, date(2026, 10, 25))
+    # the page answers again: the school's closure comes back with it, the correction still holds for its day
+    pe_crawl(conn, PE_LIST, PE_CLOSURE)
+    assert [closed_on(conn, GYM, date(2026, 10, d)) for d in (24, 25, 26)] == [True, True, False]
+
+
+def test_kept_day_goes_when_the_table_page_moves_the_closure(tmp_path):
+    # the library corrects its page to (10/26) after the maintainer corrected 10/26: as for the other libraries, the
+    # school's new statement replaces the old closure, the kept 10/25 included
+    conn = make_db(tmp_path)
+    crawl(conn, LibOpenTime(), LIB_PAGE, LIB_URL)
+    conn.close()
+    eid = "nknu.heping.library.main"
+    r = cli(tmp_path, "add", "hours", "--place", eid, "--from", "2026-10-26", "--opens", "08:15", "--closes", "17:00",
+            "--reason", "改為開館", "--source-url", LIB_URL, "--publisher", "nknu.org.lis", "--no-build")
+    assert r.exit_code == 0, r.output
+    conn = connect(tmp_path / "facts.db")
+    assert closed_on(conn, eid, date(2026, 10, 25))
+    crawl(conn, LibOpenTime(), edited(LIB_PAGE, "(10/25-10/26)", "(10/26)"), LIB_URL, full_scan=True)
+    for lib in LIBS:
+        assert not closed_on(conn, lib, date(2026, 10, 25)), lib
+        assert closed_on(conn, lib, date(2026, 10, 26)), lib
+
+
 def test_events_leaving_the_ics_window_are_not_retired(tmp_path):
     # C2: as the parse window moves on, past events stop being produced; they were not deleted from the calendar
     conn = make_db(tmp_path, calendar=False)
