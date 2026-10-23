@@ -18,7 +18,7 @@ LIB_TABLE = SourceRef(LIB_URL, "詳細開館時間", "nknu.org.lis", "table_page
 ICS = SourceRef(ICS_URL, "教學行事曆", "nknu.org.aca", "ics", "sha-ics-1")
 
 WR_TERM = FactRecord(
-    key="pe_open_hours:nknu.heping.gym.weight-room:hours", entity_id="nknu.heping.gym.weight-room", attribute="hours",
+    key="pe_open_hours:nknu.heping.gym.weight-room:hours:2026-09-07", entity_id="nknu.heping.gym.weight-room", attribute="hours",
     value={"closed": False}, valid_from=date(2026, 9, 7), valid_to=date(2027, 1, 9), valid_basis="explicit", specificity=1,
     propagates=False, source=PE_TABLE, quote="重量訓練室 115.09.07至116.01.08 週一、二、三、五 19：00~21：00 週四 18：00~20：00",
     extraction="rule", rules=(HoursRule((1, 2, 3, 5), "19:00", "21:00"), HoursRule((4,), "18:00", "20:00")),
@@ -28,6 +28,12 @@ LIB_REGULAR = FactRecord(
     value={"closed": False}, valid_from=None, valid_to=None, valid_basis="term", specificity=1, propagates=False,
     source=LIB_TABLE, quote="開館時間 Open Hours of Regular Semester 08:15~22:00 08:15~17:00", extraction="rule",
     rules=(HoursRule((1, 2, 3, 4, 5), "08:15", "22:00"), HoursRule((6, 7), "08:15", "17:00")),
+)
+LIB_CLOSED = FactRecord(
+    key="lib_open_time:nknu.heping.library.main:closed:2026-10-25", entity_id="nknu.heping.library.main", attribute="hours",
+    value={"closed": True, "reason": "臺灣光復暨金門古寧頭大捷紀念日及補假"}, valid_from=date(2026, 10, 25),
+    valid_to=date(2026, 10, 27), valid_basis="explicit", specificity=2, propagates=False, source=LIB_TABLE,
+    quote="115年閉館日 臺灣光復暨金門古寧頭大捷紀念日及補假(10/25-10/26)", extraction="rule",
 )
 HOLIDAY = FactRecord(
     key="ics-holiday:hol-1024", entity_id="nknu", attribute="holiday", value={"label": "臺灣光復暨金門古寧頭大捷紀念日放假"},

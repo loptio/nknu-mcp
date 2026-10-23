@@ -36,12 +36,32 @@ def current_fact(conn: sqlite3.Connection, record_key: str) -> sqlite3.Row | Non
     return conn.execute("SELECT * FROM fact WHERE lineage_id=? AND recorded_to IS NULL", (lineage_id(record_key),)).fetchone()
 
 
+def displaced_by(conn: sqlite3.Connection, rec: FactRecord) -> list[sqlite3.Row]:
+    """Identity rule (C1): the current facts of other lineages that rec restates — same source URL, entity, attribute,
+    qualifier and specificity, with overlapping validity. Writing rec closes them (e.g. a closure whose first day moved,
+    a calendar holiday re-created under a new UID, a corrected manual entry)."""
+    if rec.valid_from is None or rec.valid_to is None:
+        return []
+    return conn.execute(
+        """SELECT f.* FROM fact f JOIN source_doc s ON s.id = f.source_doc
+            WHERE f.recorded_to IS NULL AND f.lineage_id <> ? AND s.url = ? AND f.entity_id = ? AND f.attribute = ?
+              AND f.qualifier = ? AND f.specificity = ? AND f.valid_from < ? AND ? < f.valid_to
+            ORDER BY f.valid_from, f.record_key""",
+        (lineage_id(rec.key), rec.source.url, rec.entity_id, rec.attribute, rec.qualifier, rec.specificity,
+         rec.valid_to.isoformat(), rec.valid_from.isoformat())).fetchall()
+
+
 def apply_fact(conn: sqlite3.Connection, rec: FactRecord, *, adapter: str, review: str, now: str) -> str:
-    """Write a new current version of rec's lineage (closing the previous one). Returns the new fact id."""
+    """Write a new current version of rec's lineage, closing the previous version and every fact rec displaces
+    (displaced_by) in the same transaction. Returns the new fact id."""
     if rec.valid_from is None or rec.valid_to is None:
         raise ValueError(f"{rec.key}: validity must be filled before writing")
     sid = ensure_source(conn, rec.source, adapter=adapter, fetched_at=now)
     t = tier(conn, publisher=rec.source.publisher, kind=rec.source.kind, entity_id=rec.entity_id, attribute=rec.attribute)
+    for old in displaced_by(conn, rec):
+        conn.execute("UPDATE fact SET recorded_to=? WHERE id=?", (now, old["id"]))
+        # not 'unchanged' any more: if the source states the old content again, it is written again
+        conn.execute("UPDATE record_state SET status='retired' WHERE record_key=? AND kind='fact'", (old["record_key"],))
     cur = current_fact(conn, rec.key)
     if cur is not None:
         conn.execute("UPDATE fact SET recorded_to=? WHERE id=?", (now, cur["id"]))
@@ -125,6 +145,18 @@ def set_state(conn: sqlite3.Connection, adapter: str, rec_key: str, kind: str, c
              missing_full_scans=0, status='active'""",
         (adapter, rec_key, kind, content_hash, now),
     )
+
+
+def suppress(conn: sqlite3.Connection, *, adapter: str, record_key: str, content_hash: str, kind: str, ref: str | None,
+             note: str, now: str) -> None:
+    """Remember content that the maintainer took down: the crawler never writes this exact content again."""
+    conn.execute("""INSERT INTO suppressed(adapter, record_key, content_hash, kind, ref, note, created_at) VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT DO NOTHING""", (adapter, record_key, content_hash, kind, ref, note, now))
+
+
+def is_suppressed(conn: sqlite3.Connection, adapter: str, record_key: str, content_hash: str) -> bool:
+    return conn.execute("SELECT 1 FROM suppressed WHERE adapter=? AND record_key=? AND content_hash=?",
+                        (adapter, record_key, content_hash)).fetchone() is not None
 
 
 def add_pending(conn: sqlite3.Connection, *, adapter: str, record_key: str, op: str, record: Record | None, content_hash: str,

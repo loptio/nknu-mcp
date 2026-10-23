@@ -120,7 +120,8 @@ def current_term(conn: sqlite3.Connection, on: date) -> tuple[date, date] | None
 
 
 def fill_validity(conn: sqlite3.Connection, rec: FactRecord, today: date) -> FactRecord | None:
-    """TTL rule (spec §6.2): a term-based fact without dates is valid until the current term ends."""
+    """TTL rule (spec §6.2): a term-based fact without dates is valid until the current term ends.
+    Its key gains the term's first day, so each term's table is its own lineage (next term's never closes this one's)."""
     if rec.valid_from is not None and rec.valid_to is not None:
         return rec
     if rec.valid_basis != "term":
@@ -128,7 +129,7 @@ def fill_validity(conn: sqlite3.Connection, rec: FactRecord, today: date) -> Fac
     term = current_term(conn, today)
     if term is None:
         return None
-    return replace(rec, valid_from=term[0], valid_to=term[1])
+    return replace(rec, key=f"{rec.key}:{term[0]}", valid_from=term[0], valid_to=term[1])
 
 
 def resolve_place(conn: sqlite3.Connection, place: str) -> list[str]:

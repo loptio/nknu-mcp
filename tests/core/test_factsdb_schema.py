@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from nknu.core.factsdb import bump_data_version, connect, data_version, migrate
+from nknu.core.factsdb import SCHEMA_VERSION, bump_data_version, connect, data_version, migrate
 
 T0 = "2026-10-22T00:00:00Z"
 
@@ -117,3 +117,27 @@ def test_readonly_connection_cannot_write(db, tmp_path):
     ro = connect(tmp_path / "facts.db", readonly=True)
     with pytest.raises(sqlite3.OperationalError):
         ro.execute("INSERT INTO meta VALUES ('x','y')")
+
+
+def test_v1_database_is_migrated_in_place(tmp_path):
+    # facts.db files written before the undo memory existed (schema 1) gain the table and keep their rows
+    conn = connect(tmp_path / "old.db")
+    migrate(conn)
+    conn.execute("DROP TABLE suppressed")
+    conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+    conn.execute("INSERT INTO entity(id, type, name_zh) VALUES ('nknu.org.pe','Organization','體育室')")
+    conn.commit()
+    for _ in range(2):
+        migrate(conn)
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == SCHEMA_VERSION == "2"
+    assert conn.execute("SELECT count(*) FROM suppressed").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM entity").fetchone()[0] == 1
+
+
+def test_unknown_schema_version_refused(tmp_path):
+    conn = connect(tmp_path / "new.db")
+    migrate(conn)
+    conn.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    conn.commit()
+    with pytest.raises(RuntimeError, match="schema"):
+        migrate(conn)

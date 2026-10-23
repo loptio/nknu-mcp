@@ -1,4 +1,4 @@
-"""`nknu` command line: init, crawl, build, review, add, serve, check, backup."""
+"""`nknu` command line: init, crawl, build, review, changes, undo, add, serve, check, backup."""
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def alerts(
 @app.command()
 def review(no_build: bool = typer.Option(False, "--no-build", help="审核完不重建 serve.db")) -> None:
     """逐条查看待审变更（场馆时段、闭馆、行事历改期），核准后才生效。"""
-    from nknu.admin.review import decide, list_pending, render_item
+    from nknu.admin.review import NotPending, decide, list_pending, render_item
     from nknu.build.templates import load_templates
     from nknu.core.factsdb import connect, migrate
     from nknu.core.timeutil import iso_now, today_tpe
@@ -176,25 +176,115 @@ def review(no_build: bool = typer.Option(False, "--no-build", help="审核完不
     if not items:
         typer.echo("没有待审项目。")
         return
-    for it in items:
-        typer.echo(render_item(conn, it, today_tpe(), tpl))
+    for it in items:  # one item that cannot be shown or applied never stops the others
+        try:
+            typer.echo(render_item(conn, it, today_tpe(), tpl))
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"#{it.id} [{it.adapter}] {it.op} ({it.reason}) {it.record_key}\n{it.diff}\n"
+                       f"  （无法预览：{type(exc).__name__}: {exc}）")
         typer.echo("-" * 60)
     choice = typer.prompt(f"共 {len(items)} 条。[y] 全部核准 / [e] 逐条处理 / [q] 离开", default="q").strip().lower()
-    decided = 0
+    decided, failed = 0, 0
+
+    def _decide(it, decision: str) -> None:
+        nonlocal decided, failed
+        try:
+            decide(conn, it.id, decision, iso_now())
+            decided += 1
+        except NotPending as exc:  # a crawl replaced it while the list was open: the newer version waits for next time
+            typer.echo(f"略过 {exc}；重新执行 nknu review 查看最新版本")
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            typer.echo(f"#{it.id} {it.record_key} 处理失败，已略过（没有写入）：{type(exc).__name__}: {exc}")
+
     if choice == "y":
         for it in items:
-            decide(conn, it.id, "approve", iso_now())
-            decided += 1
+            _decide(it, "approve")
     elif choice == "e":
         for it in items:
             typer.echo(f"#{it.id} {it.record_key}\n{it.diff}")
             a = typer.prompt("[a] 核准 [r] 驳回 [s] 略过", default="s").strip().lower()
             if a in ("a", "r"):
-                decide(conn, it.id, "approve" if a == "a" else "reject", iso_now())
-                decided += 1
+                _decide(it, "approve" if a == "a" else "reject")
     conn.close()
-    typer.echo(f"已处理 {decided} 条。")
+    typer.echo(f"已处理 {decided} 条。" + (f"{failed} 条失败，仍留在待审清单。" if failed else ""))
     if decided and not no_build:
+        _build_now(s)
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def changes(
+    since: str = typer.Option(None, "--since", help="从这一天（台北日期 YYYY-MM-DD）起，默认 7 天前"),
+    docs: bool = typer.Option(False, "--docs", help="逐条列出公告（默认只列条数）"),
+) -> None:
+    """列出最近写入的变更（场馆时段、闭馆、假日、行事历、公告），附上 nknu undo 要用的 id 或 key。"""
+    from datetime import date, timedelta
+
+    from nknu.admin.changes import format_change, list_changes, since_utc
+    from nknu.core.factsdb import connect, migrate
+    from nknu.core.timeutil import today_tpe
+
+    s = _settings()
+    day = date.fromisoformat(since) if since else today_tpe() - timedelta(days=7)
+    conn = connect(s.facts_path)
+    migrate(conn)
+    found = list_changes(conn, since_utc(day))
+    n_pending = conn.execute("SELECT count(*) FROM pending_change WHERE status='pending'").fetchone()[0]
+    conn.close()
+    doc_counts: dict[tuple[str, str], int] = {}
+    for c in found:
+        if c.kind == "doc" and not docs:
+            doc_counts[(c.adapter, c.op)] = doc_counts.get((c.adapter, c.op), 0) + 1
+        else:
+            typer.echo(format_change(c))
+    if doc_counts:
+        from nknu.admin.changes import OPS
+
+        typer.echo("公告：" + "、".join(f"{a} {OPS[op]} {n} 则" for (a, op), n in sorted(doc_counts.items()))
+                   + "（加 --docs 逐条列出）")
+    if not found:
+        typer.echo(f"{day} 以来没有变更。")
+    if n_pending:
+        typer.echo(f"另有 {n_pending} 条待审：nknu review")
+
+
+@app.command()
+def undo(
+    target: str = typer.Argument(..., help="fact id、lineage id 或 record key（见 nknu changes）"),
+    cancel: bool = typer.Option(False, "--cancel", help="取消先前的撤回：忘记记住的内容，下一轮抓取会照常写入"),
+    no_build: bool = typer.Option(False, "--no-build", help="不重建 serve.db"),
+) -> None:
+    """下架一条现行资料（场馆时段、闭馆、假日、行事历事件或公告），并记住这份内容：爬虫之后不会把一模一样的内容
+    写回来，内容变了才会再写。完成后重建 serve.db。"""
+    from nknu.admin.undo import UndoError, cancel_undo
+    from nknu.admin.undo import undo as undo_item
+    from nknu.core.factsdb import connect, migrate
+    from nknu.core.timeutil import iso_now
+
+    s = _settings()
+    if s.readonly:
+        typer.echo("NKNU_READONLY=1：撤回已停用")
+        raise typer.Exit(1)
+    conn = connect(s.facts_path)
+    migrate(conn)
+    try:
+        if cancel:
+            n = cancel_undo(conn, target)
+            typer.echo(f"已忘记 {n} 份撤回的内容；下一轮抓取会照常写入（手动录入的资料请重新 nknu add）" if n
+                       else f"「{target}」没有撤回纪录")
+            return
+        try:
+            done = undo_item(conn, target, now=iso_now())
+        except UndoError as exc:
+            typer.echo(f"错误：{exc}")
+            raise typer.Exit(2) from exc
+    finally:
+        conn.close()
+    typer.echo(f"已撤回 {done.kind} {done.key}（{done.ref}）"
+               + ("；之后抓到一模一样的内容不会再写入" if done.remembered else ""))
+    if not no_build:
         _build_now(s)
 
 
@@ -218,6 +308,7 @@ def add_hours_cmd(
     no_build: bool = typer.Option(False, "--no-build"),
 ) -> None:
     """录入一段特殊开放时间或闭馆（specificity=2），直接写入为 verified。"""
+    import sqlite3
     from datetime import date
 
     from nknu.admin.manual import PlaceError, add_hours
@@ -234,7 +325,7 @@ def add_hours_cmd(
         fid = add_hours(conn, place=place, from_=date.fromisoformat(from_), to=date.fromisoformat(to) if to else None,
                         opens=opens, closes=closes, closed=closed, reason=reason, source_url=source_url, publisher=publisher,
                         title=title, site_visit=site_visit, now=iso_now())
-    except (PlaceError, ValueError) as exc:
+    except (PlaceError, ValueError, sqlite3.IntegrityError) as exc:
         typer.echo(f"错误：{exc}")
         raise typer.Exit(2) from exc
     finally:

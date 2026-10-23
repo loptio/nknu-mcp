@@ -12,12 +12,15 @@ from nknu.core.writer import (
     add_pending,
     apply_fact,
     current_fact,
+    displaced_by,
+    is_suppressed,
     retire_fact,
     set_state,
+    suppress,
     upsert_doc,
     withdraw_doc,
 )
-from tests.factories import DOC, HOLIDAY, LIB_REGULAR, T0, T1, WR_TERM, make_db
+from tests.factories import DOC, HOLIDAY, LIB_CLOSED, LIB_REGULAR, T0, T1, WR_TERM, make_db
 
 
 @pytest.fixture
@@ -78,6 +81,11 @@ def test_fill_validity_term(conn):
     assert (r.valid_from, r.valid_to) == (date(2026, 9, 7), date(2027, 1, 18))
 
 
+def test_term_filled_fact_is_keyed_by_its_term(conn):
+    # each term's table is its own lineage: next term's table never closes this term's (C1)
+    assert fill_validity(conn, LIB_REGULAR, date(2026, 10, 22)).key == LIB_REGULAR.key + ":2026-09-07"
+
+
 def test_fill_validity_unknown_term_returns_none(tmp_path):
     c = make_db(tmp_path, calendar=False)
     assert fill_validity(c, LIB_REGULAR, date(2026, 10, 22)) is None
@@ -136,3 +144,46 @@ def test_fact_rows_still_append_only(conn):
     fid = apply_fact(conn, WR_TERM, adapter="pe_open_hours", review="verified", now=T0)
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("DELETE FROM fact WHERE id=?", (fid,))
+
+
+# C1 identity: one source states one thing about a slot; a new statement replaces the old one in the same transaction
+
+
+def test_write_replaces_overlapping_fact_of_the_same_source(conn):
+    old = apply_fact(conn, LIB_CLOSED, adapter="lib_open_time", review="verified", now=T0)
+    set_state(conn, "lib_open_time", LIB_CLOSED.key, "fact", "h-old", T0)
+    moved = replace(LIB_CLOSED, key=LIB_CLOSED.key.replace("2026-10-25", "2026-10-24"), valid_from=date(2026, 10, 24))
+    assert [r["id"] for r in displaced_by(conn, moved)] == [old]
+    new = apply_fact(conn, moved, adapter="lib_open_time", review="verified", now=T1)
+    assert conn.execute("SELECT recorded_to FROM fact WHERE id=?", (old,)).fetchone()[0] == T1
+    assert current_fact(conn, LIB_CLOSED.key) is None and current_fact(conn, moved.key)["id"] == new
+    # the old key may come back later as a change, never as "unchanged"
+    assert conn.execute("SELECT status FROM record_state WHERE record_key=?", (LIB_CLOSED.key,)).fetchone()[0] == "retired"
+
+
+def test_write_keeps_other_terms_sources_and_specificities(conn):
+    apply_fact(conn, WR_TERM, adapter="pe_open_hours", review="verified", now=T0)
+    next_term = replace(WR_TERM, key="pe_open_hours:nknu.heping.gym.weight-room:hours:2027-02-22",
+                        valid_from=date(2027, 2, 22), valid_to=date(2027, 7, 1))
+    notice = replace(WR_TERM, key="pe_news:1:nknu.heping.gym.weight-room:2026-09-07",
+                     source=replace(WR_TERM.source, url="https://c.nknu.edu.tw/reality/NewsView.aspx?Nid=1", kind="announcement"))
+    exception = replace(WR_TERM, key="pe_open_hours:x", specificity=2, valid_from=date(2026, 10, 24), valid_to=date(2026, 10, 25))
+    for rec in (next_term, notice, exception):
+        assert displaced_by(conn, rec) == []
+        apply_fact(conn, rec, adapter="pe_open_hours", review="verified", now=T1)
+    assert all(current_fact(conn, r.key) for r in (WR_TERM, next_term, notice, exception))
+
+
+def test_holiday_under_a_new_uid_replaces_the_old_one(conn):
+    apply_fact(conn, HOLIDAY, adapter="aca_calendar_ics", review="auto_ok", now=T0)
+    apply_fact(conn, replace(HOLIDAY, key="ics-holiday:hol-new"), adapter="aca_calendar_ics", review="auto_ok", now=T1)
+    assert current_fact(conn, HOLIDAY.key) is None and current_fact(conn, "ics-holiday:hol-new")
+
+
+def test_suppressed_content_is_remembered_by_hash(conn):
+    assert not is_suppressed(conn, "lib_open_time", LIB_CLOSED.key, "h1")
+    for _ in range(2):  # idempotent
+        suppress(conn, adapter="lib_open_time", record_key=LIB_CLOSED.key, content_hash="h1", kind="fact", ref="f1",
+                 note="undo", now=T0)
+    assert is_suppressed(conn, "lib_open_time", LIB_CLOSED.key, "h1")
+    assert not is_suppressed(conn, "lib_open_time", LIB_CLOSED.key, "h2") and not is_suppressed(conn, "manual", LIB_CLOSED.key, "h1")

@@ -11,9 +11,13 @@ from nknu.build.templates import Templates
 from nknu.core.factsdb import bump_data_version
 from nknu.core.records import EventRecord, FactRecord, Record, from_json
 from nknu.core.resolve import SQLiteBackend, resolve
-from nknu.core.writer import apply_fact, retire_event, retire_fact, set_state, upsert_event
+from nknu.core.writer import apply_fact, displaced_by, retire_event, retire_fact, set_state, upsert_event
 
 PREVIEW_DAYS = 14
+
+
+class NotPending(ValueError):
+    """The item is no longer waiting: a newer crawl superseded it, or it was decided elsewhere."""
 
 
 @dataclass(frozen=True)
@@ -36,12 +40,12 @@ def list_pending(conn: sqlite3.Connection) -> list[PendingItem]:
                         r["reason"], r["created_at"]) for r in rows]
 
 
-def _affected(conn: sqlite3.Connection, rec: FactRecord) -> list[str]:
-    if not rec.propagates:
-        return [rec.entity_id]
+def _affected(conn: sqlite3.Connection, entity_id: str, propagates: bool) -> list[str]:
+    if not propagates:
+        return [entity_id]
     rows = conn.execute(
         """WITH RECURSIVE down(id) AS (SELECT ? UNION SELECT r.subject FROM entity_relation r JOIN down d ON r.object=d.id
-                                      WHERE r.predicate='containedInPlace') SELECT id FROM down""", (rec.entity_id,)).fetchall()
+                                      WHERE r.predicate='containedInPlace') SELECT id FROM down""", (entity_id,)).fetchall()
     return [r[0] for r in rows]
 
 
@@ -83,7 +87,11 @@ def render_item(conn: sqlite3.Connection, item: PendingItem, today: date, tpl: T
         lines.append(f"引文：{rec.quote}")
     if isinstance(rec, FactRecord) or (item.op == "retire" and rec is None):
         names = names_of(conn)
-        entities = _affected(conn, rec) if isinstance(rec, FactRecord) else []
+        entities = []
+        if isinstance(rec, FactRecord):  # the places this version changes, and those of the facts it replaces (C1)
+            for eid, prop in [(rec.entity_id, rec.propagates)] + [(d["entity_id"], bool(d["propagates"]))
+                                                                  for d in displaced_by(conn, rec)]:
+                entities += [e for e in _affected(conn, eid, prop) if e not in entities]
         conn.execute("SAVEPOINT preview")
         try:
             before = {e: _sentences(conn, e, tpl, today, names, contact_of(conn, e, names)) for e in entities}
@@ -105,16 +113,19 @@ def render_item(conn: sqlite3.Connection, item: PendingItem, today: date, tpl: T
 
 
 def decide(conn: sqlite3.Connection, item_id: int, decision: str, now: str) -> None:
+    """Approve or reject one item in its own transaction; a failure rolls back everything this item wrote."""
+    if decision not in ("approve", "reject"):
+        raise ValueError(decision)
     item = next((i for i in list_pending(conn) if i.id == item_id), None)
     if item is None:
-        raise ValueError(f"no pending change #{item_id}")
-    if decision == "approve":
-        _apply(conn, item, now)
-        bump_data_version(conn)
-        status = "approved"
-    elif decision == "reject":
-        status = "rejected"
-    else:
-        raise ValueError(decision)
-    conn.execute("UPDATE pending_change SET status=?, decided_at=? WHERE id=?", (status, now, item_id))
-    conn.commit()
+        raise NotPending(f"#{item_id} 已不在待审清单（被较新的抓取结果取代，或已处理）")
+    try:
+        if decision == "approve":
+            _apply(conn, item, now)
+            bump_data_version(conn)
+        conn.execute("UPDATE pending_change SET status=?, decided_at=? WHERE id=?",
+                     ("approved" if decision == "approve" else "rejected", now, item_id))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise

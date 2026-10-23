@@ -1,12 +1,16 @@
+import sqlite3
+from dataclasses import replace
 from datetime import date
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from nknu.admin.cli import app
-from nknu.admin.review import decide, list_pending, render_item
+from nknu.admin.review import NotPending, decide, list_pending, render_item
 from nknu.build.templates import load_templates
 from nknu.core.factsdb import connect, data_version
+from nknu.core.records import HoursRule
 from nknu.core.resolve import SQLiteBackend, resolve
 from nknu.core.writer import current_fact
 from nknu.crawl.pipeline import run_adapter
@@ -118,3 +122,63 @@ def test_add_ambiguous_place_errors(tmp_path):
     r = CliRunner().invoke(app, ["add", "hours", "--place", "圖書館", "--from", "2026-10-24", "--closed", "--reason", "x",
                                  "--source-url", "https://x", "--publisher", "nknu.org.lis", "--no-build"], env=_env(tmp_path))
     assert r.exit_code != 0 and "nknu.heping.library.main" in r.output
+
+
+def _break(conn, item_id):
+    # the record names a place that is not in the vocabulary: writing it fails on the entity foreign key
+    conn.execute("UPDATE pending_change SET record_json=json_set(record_json, '$.entity_id', 'nknu.heping.gym.gone') WHERE id=?",
+                 (item_id,))
+    conn.commit()
+
+
+def test_failed_approval_writes_nothing(conn):
+    item = list_pending(conn)[0]
+    _break(conn, item.id)
+    n, sources = data_version(conn), conn.execute("SELECT count(*) FROM source_doc").fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError):
+        decide(conn, item.id, "approve", now=T0)
+    assert not conn.in_transaction and data_version(conn) == n
+    assert conn.execute("SELECT count(*) FROM source_doc").fetchone()[0] == sources and list_pending(conn)
+
+
+def test_cli_review_survives_a_broken_item(tmp_path):
+    # F-review-crash: one item that cannot be previewed or applied is reported and skipped; the others are approved
+    c = make_db(tmp_path)
+    run_adapter(c, FakeAdapter([WR_TERM, replace(WR_TERM, key="k2", entity_id="nknu.yanchao.gym.weight-room")],
+                               name="pe_open_hours"), None, today=TODAY, full_scan=True, readonly=False)
+    bad, good = list_pending(c)
+    _break(c, bad.id)
+    c.close()
+    r = CliRunner().invoke(app, ["review", "--no-build"], input="y\n", env=_env(tmp_path))
+    assert r.exit_code == 1 and not isinstance(r.exception, sqlite3.Error), r.output
+    assert f"#{bad.id}" in r.output and "失败" in r.output and "已处理 1 条" in r.output
+    c = connect(tmp_path / "facts.db")
+    assert dict(c.execute("SELECT id, status FROM pending_change").fetchall()) == {bad.id: "pending", good.id: "approved"}
+
+
+def test_cli_review_skips_an_item_a_crawl_replaced(conn, tmp_path, monkeypatch):
+    # F-review-race: the 2-hourly crawl supersedes an item while the maintainer is reading the list
+    conn.commit()
+    newer = replace(WR_TERM, rules=(HoursRule((1, 2, 3, 4, 5), "18:00", "21:00"),))
+    prompt = typer.prompt
+
+    def crawl_then_prompt(text, **kw):
+        if "全部核准" in text:
+            other = connect(tmp_path / "facts.db")
+            run_adapter(other, FakeAdapter([newer], name="pe_open_hours"), None, today=TODAY, full_scan=False, readonly=False)
+            other.close()
+        return prompt(text, **kw)
+
+    monkeypatch.setattr(typer, "prompt", crawl_then_prompt)
+    r = CliRunner().invoke(app, ["review", "--no-build"], input="y\n", env=_env(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert "取代" in r.output and "已处理 0 条" in r.output
+    assert ["18:00–21:00" in p.diff for p in list_pending(connect(tmp_path / "facts.db"))] == [True]
+
+
+def test_decide_on_a_superseded_item(conn):
+    item = list_pending(conn)[0]
+    run_adapter(conn, FakeAdapter([replace(WR_TERM, rules=(HoursRule((1,), "18:00", "21:00"),))], name="pe_open_hours"), None,
+                today=TODAY, full_scan=False, readonly=False)
+    with pytest.raises(NotPending):
+        decide(conn, item.id, "approve", now=T0)

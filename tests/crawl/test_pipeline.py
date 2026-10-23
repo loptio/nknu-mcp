@@ -213,3 +213,14 @@ def test_list_rerun_after_detail_is_noop(conn):
     assert conn.execute("SELECT excerpt FROM doc").fetchone()[0]
     res = run(conn, FakeAdapter([DOC], name="sso_news"))
     assert res.n_written == 0 and conn.execute("SELECT excerpt FROM doc").fetchone()[0]
+
+
+def test_term_table_is_not_missing_while_no_term_is_in_force(conn):
+    # during the winter break the library page still shows its table but the calendar has no current term to date it:
+    # the record cannot be written, and the term's lineage must not count as missing either
+    run(conn, FakeAdapter([LIB_REGULAR], name="lib_open_time"))
+    approve_all(conn)
+    for _ in range(3):
+        run(conn, FakeAdapter([LIB_REGULAR], name="lib_open_time"), today=date(2027, 1, 20))
+    assert not pending(conn) and alerts(conn, "no_term_dates")
+    assert current_fact(conn, LIB_REGULAR.key + ":2026-09-07")

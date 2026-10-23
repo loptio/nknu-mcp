@@ -102,6 +102,8 @@ class PeOpenHours(Adapter):
                 out.append(EntityHint(f"pe_open_hours:hint:{alias_norm(campus_txt + venue_txt)}", f"{campus_txt}{venue_txt}",
                                       " | ".join(row), URL))
                 continue
+            # one lineage per venue and term: the key carries the term's first day (a term-long closure without dates
+            # gets it from the academic calendar, pipeline fill_validity), so next term's table never closes this one's
             key, quote = f"pe_open_hours:{eid}:hours", f"{venue_txt} {dates} {hours}"[:200]
             base = {"notes": notes} if notes else {}
             try:
@@ -113,6 +115,7 @@ class PeOpenHours(Adapter):
                 else:
                     out.append(ParseIssue(key, "date", f"{venue_txt}：開放日期「{dates}」無法解析"))
                 continue
+            key = f"{key}:{lo}"
             try:
                 segs = parse_hours_segments(hours)
             except ValueError:

@@ -23,6 +23,8 @@ from nknu.core.writer import (
     add_pending,
     apply_fact,
     current_fact,
+    displaced_by,
+    is_suppressed,
     set_state,
     upsert_doc,
     upsert_event,
@@ -79,12 +81,32 @@ def _merge(records: list[Record]) -> list[Record]:
     return list(full.values())
 
 
-def _hours_diff(old: sqlite3.Row | None, new: FactRecord) -> str:
+def _hours_diff(old: sqlite3.Row | None, new: FactRecord, displaced: list[sqlite3.Row] = ()) -> str:
     rules = "；".join(f"{list(r.dows)} {r.opens}–{r.closes}" for r in new.rules) or json.dumps(new.value, ensure_ascii=False)
     after = f"+ {new.entity_id} [{new.valid_from}, {new.valid_to}) {rules}"
-    if old is None:
-        return after + "（新增）"
-    return f"- {old['entity_id']} [{old['valid_from']}, {old['valid_to']}) {old['value_json']}\n{after}"
+    before = [f"- {r['entity_id']} [{r['valid_from']}, {r['valid_to']}) {r['value_json']}" for r in ([old] if old else [])]
+    before += [f"- {r['entity_id']} [{r['valid_from']}, {r['valid_to']}) {r['value_json']}（{r['record_key']}，連帶下架）"
+               for r in displaced]
+    return "\n".join([*before, after]) if before else after + "（新增）"
+
+
+def _same_source_overlaps(facts: list[FactRecord]) -> dict[int, FactRecord]:
+    """Records of one run that state a slot another record of the same run already states (same source URL, entity,
+    attribute, qualifier, specificity, overlapping validity): id(record) -> the record kept instead. The earliest-starting
+    record is kept, so the choice is the same on every run and the two never replace each other back and forth."""
+    groups: dict[tuple, list[FactRecord]] = {}
+    for f in facts:
+        groups.setdefault((f.source.url, f.entity_id, f.attribute, f.qualifier, f.specificity), []).append(f)
+    out: dict[int, FactRecord] = {}
+    for group in groups.values():
+        kept: list[FactRecord] = []
+        for f in sorted(group, key=lambda f: (f.valid_from, f.valid_to, f.key)):
+            hit = next((k for k in kept if k.valid_from < f.valid_to and f.valid_from < k.valid_to), None)
+            if hit is None:
+                kept.append(f)
+            else:
+                out[id(f)] = hit
+    return out
 
 
 def _state(conn: sqlite3.Connection, name: str, key: str) -> sqlite3.Row | None:
@@ -130,7 +152,7 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
     if readonly:
         return res
     try:
-        seen = _apply_all(conn, adapter, records, res, today, now, webhook)
+        seen = _apply_all(conn, adapter, records, res, today, now, webhook, known)
         if full_scan:
             _missing(conn, name, known - seen, res, now)
         if res.n_written:
@@ -144,22 +166,47 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
     return res
 
 
-def _apply_all(conn, adapter, records, res, today, now, webhook) -> set[str]:
+def _seen(conn, name: str, key: str, now: str, seen: set[str]) -> None:
+    seen.add(key)
+    conn.execute("UPDATE record_state SET missing_full_scans=0, last_seen_at=? WHERE adapter=? AND record_key=?",
+                 (now, name, key))
+
+
+def _apply_all(conn, adapter, records, res, today, now, webhook, known: set[str]) -> set[str]:
     name, seen = adapter.name, set()
+    ready: list[Record] = []
     for rec in records:
         if isinstance(rec, EntityHint):
             add_alert(conn, adapter=name, level="warn", code="new_entity", message=f"未知地点「{rec.name}」：{redact(rec.context)} {rec.url}",
                       dedup_key=f"hint:{rec.name}", now=now, webhook=webhook)
-            continue
-        if isinstance(rec, ParseIssue):
+        elif isinstance(rec, ParseIssue):
             add_alert(conn, adapter=name, level="warn", code="parse_issue", message=redact(rec.message),
                       dedup_key=f"issue:{name}:{rec.key}", now=now, webhook=webhook)
-            continue
-        seen.add(rec.key)
-        conn.execute("UPDATE record_state SET missing_full_scans=0, last_seen_at=? WHERE adapter=? AND record_key=?",
-                     (now, name, rec.key))
+        elif isinstance(rec, FactRecord):
+            # dates first: a term table's record key carries its term's first day (fill_validity)
+            filled = fill_validity(conn, rec, today)
+            if filled is None:
+                add_alert(conn, adapter=name, level="warn", code="no_term_dates",
+                          message=f"{rec.key}: 行事历里找不到目前学期，无法补上有效期，这条先不写入",
+                          dedup_key=f"no_term:{rec.key}", now=now, webhook=webhook)
+                for k in [k for k in known if k == rec.key or k.startswith(rec.key + ":")]:
+                    _seen(conn, name, k, now, seen)  # still on the page: its term lineages are not missing
+                continue
+            ready.append(filled)
+        else:
+            ready.append(rec)
+    overlaps = _same_source_overlaps([r for r in ready if isinstance(r, FactRecord)])
+    for rec in ready:
+        _seen(conn, name, rec.key, now, seen)
         if isinstance(rec, FactRecord):
-            _apply_fact(conn, name, rec, res, today, now, webhook)
+            kept = overlaps.get(id(rec))
+            if kept is not None:
+                add_alert(conn, adapter=name, level="warn" if rec.attribute == "hours" else "info", code="overlap",
+                          message=redact(f"{rec.key} [{rec.valid_from}, {rec.valid_to}) 与同一来源的 {kept.key} "
+                                         f"[{kept.valid_from}, {kept.valid_to}) 有效期重叠，只写入后者；请到来源页面确认"),
+                          dedup_key=f"overlap:{name}:{rec.key}", now=now, webhook=webhook)
+                continue
+            _apply_fact(conn, name, rec, res, now)
         elif isinstance(rec, EventRecord):
             _apply_event(conn, name, rec, res, now)
         elif isinstance(rec, DocRecord):
@@ -167,32 +214,32 @@ def _apply_all(conn, adapter, records, res, today, now, webhook) -> set[str]:
     return seen
 
 
-def _apply_fact(conn, name, rec, res, today, now, webhook) -> None:
-    filled = fill_validity(conn, rec, today)
-    if filled is None:
-        add_alert(conn, adapter=name, level="warn", code="no_term_dates",
-                  message=f"{rec.key}: 行事历里找不到目前学期，无法补上有效期，这条先不写入", dedup_key=f"no_term:{rec.key}",
-                  now=now, webhook=webhook)
-        return
-    h = content_hash(filled)
-    state = _state(conn, name, rec.key)
+def _unchanged_or_undone(conn, name: str, key: str, h: str) -> bool:
+    """Same content as last written (and still in force), or content the maintainer took down with `nknu undo`."""
+    state = _state(conn, name, key)
     if state is not None and state["content_hash"] == h and state["status"] == "active":
+        return True
+    return is_suppressed(conn, name, key, h)
+
+
+def _apply_fact(conn, name, rec, res, now) -> None:
+    h = content_hash(rec)
+    if _unchanged_or_undone(conn, name, rec.key, h):
         return
-    if filled.attribute == "hours":
-        pid = add_pending(conn, adapter=name, record_key=rec.key, op="upsert", record=filled, content_hash=h,
-                          diff=_hours_diff(current_fact(conn, rec.key), filled),
-                          reason="new" if state is None else "changed", now=now)
+    if rec.attribute == "hours":
+        pid = add_pending(conn, adapter=name, record_key=rec.key, op="upsert", record=rec, content_hash=h,
+                          diff=_hours_diff(current_fact(conn, rec.key), rec, displaced_by(conn, rec)),
+                          reason="new" if _state(conn, name, rec.key) is None else "changed", now=now)
         res.n_pending += pid is not None
     else:
-        apply_fact(conn, filled, adapter=name, review="auto_ok", now=now)
+        apply_fact(conn, rec, adapter=name, review="auto_ok", now=now)
         set_state(conn, name, rec.key, "fact", h, now)
         res.n_written += 1
 
 
 def _apply_event(conn, name, rec, res, now) -> None:
     h = content_hash(rec)
-    state = _state(conn, name, rec.key)
-    if state is not None and state["content_hash"] == h and state["status"] == "active":
+    if _unchanged_or_undone(conn, name, rec.key, h):
         return
     old = conn.execute("SELECT during_from, during_to FROM calendar_event WHERE uid=?", (rec.key,)).fetchone()
     moved = old is not None and (old[0], old[1]) != (rec.during_from.isoformat(), rec.during_to.isoformat())
@@ -215,8 +262,7 @@ def _apply_doc(conn, name, rec, res, now) -> None:
         return
     # list-level identity: excerpt/attachments come from detail pages and are updated only when those are fetched
     h = content_hash(replace(rec, excerpt=None, attachments=()))
-    state = _state(conn, name, rec.key)
-    if not rec.partial and state is not None and state["content_hash"] == h and state["status"] == "active":
+    if not rec.partial and _unchanged_or_undone(conn, name, rec.key, h):
         return
     upsert_doc(conn, rec, adapter=name, now=now)
     if not rec.partial:

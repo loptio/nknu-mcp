@@ -66,6 +66,11 @@ CREATE TABLE alert(id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, adapter TEX
   level TEXT NOT NULL CHECK (level IN ('info','warn','error')), code TEXT NOT NULL, message TEXT NOT NULL,
   dedup_key TEXT, resolved_at TEXT) STRICT;
 CREATE UNIQUE INDEX alert_open_dedup ON alert(dedup_key) WHERE resolved_at IS NULL AND dedup_key IS NOT NULL;
+-- `nknu undo` (and a manual entry that replaces crawled content) remembers the content it took down: the crawler
+-- never writes the identical content again; changed content is written as usual
+CREATE TABLE suppressed(adapter TEXT NOT NULL, record_key TEXT NOT NULL, content_hash TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('fact','event','doc')), ref TEXT, note TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (adapter, record_key, content_hash)) STRICT;
 CREATE TABLE crawl_run(id INTEGER PRIMARY KEY, adapter TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
   full_scan INTEGER NOT NULL, n_snapshots INTEGER NOT NULL DEFAULT 0, n_records INTEGER NOT NULL DEFAULT 0,
   passed INTEGER, n_written INTEGER NOT NULL DEFAULT 0, n_pending INTEGER NOT NULL DEFAULT 0, error TEXT) STRICT;
