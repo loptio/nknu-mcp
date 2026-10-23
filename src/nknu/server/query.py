@@ -156,9 +156,10 @@ def _open_now(today: _Day, yesterday: _Day, hm: str) -> bool | None:
     return any((s["opens"] <= hm < s["closes"]) if s["opens"] < s["closes"] else hm >= s["opens"] for s in segs)
 
 
-def _day_view(d: _Day) -> dict:
+def _day_view(d: _Day, *, values: bool = True) -> dict:
+    """One day of the days list; values=False (a stale envelope) leaves only date, weekday and status."""
     out = {"date": d.day.isoformat(), "weekday": weekday_zh(d.day), "status": d.res["status"]}
-    if d.res["status"] != "current":
+    if d.res["status"] != "current" or not values:
         return out
     h = day_hours(d.res["winner"], d.day)
     if h["open"] is True:
@@ -209,6 +210,15 @@ def _recent_notices(conn: sqlite3.Connection, entity: str, today: dt.date) -> li
             if len(out) == NOTICE_MAX:
                 break
     return out
+
+
+# Clock times in free text: 09:00, 9：30, 9時, 9點半, 9時30分.
+_TIME_RE = re.compile(r"(?<!\d)\d{1,2}\s*(?:[:：]\s*\d{2}|[時點点](?:\s*\d{1,2}\s*分|半)?)")
+TIME_MASK = "--:--"
+
+
+def mask_times(text: str) -> str:
+    return _TIME_RE.sub(TIME_MASK, text)
 
 
 def _similar(conn: sqlite3.Connection, place: str) -> list[str]:
@@ -271,10 +281,12 @@ def get_hours(db: ServeDB, place: str, date: str | None = None, days: int = 1, n
         env["last_known"] = {"valid_to_inclusive": _incl(lk["valid"][1]), "source_url": lk["source"]["url"]}
     if d0 == today:
         env["open_now"] = _open_now(first, ctx.day(entity, d0 - timedelta(days=1)), base["today"]["time"])
-    env["next_change"] = ctx.next_change(entity, first, with_answer=status != "stale")
+    stale = status == "stale"  # no hours anywhere: not the next card's, not a later day's, not in a notice title
+    env["next_change"] = ctx.next_change(entity, first, with_answer=not stale)
     if days > 1:
-        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i))) for i in range(days)]
-    env["recent_notices"] = _recent_notices(conn, entity, today)
+        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i)), values=not stale) for i in range(days)]
+    notices = _recent_notices(conn, entity, today)
+    env["recent_notices"] = [{**n, "title": mask_times(n["title"])} for n in notices] if stale else notices
     env["caveat"] = CAVEATS.get(status)
     return fit_budget(make_envelope(**base, **env))
 

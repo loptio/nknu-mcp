@@ -69,10 +69,17 @@ def test_open_now_only_for_today(db):
     assert "open_now" not in get_hours(db, WR, "2026-10-23", now=tpe(2026, 10, 22, 19, 30))
 
 
+def times_in(env: dict) -> list[str]:
+    """Clock times anywhere outside `today` (\\b fails between a CJK character and a digit, so no word boundaries)."""
+    body = {k: v for k, v in env.items() if k != "today"}
+    return re.findall(r"(?<!\d)\d{1,2}[:：]\d{2}(?!\d)", json.dumps(body, ensure_ascii=False))
+
+
 def test_stale_envelope_has_no_hours_values(db):
     e = get_hours(db, WR, "2027-02-01", now=NOW)
     body = {k: v for k, v in e.items() if k != "today"}
     assert e["status"] == "stale" and not re.search(r"\b\d{2}:\d{2}\b", json.dumps(body, ensure_ascii=False))
+    assert times_in(e) == []
     assert e["last_known"] == {"valid_to_inclusive": "2027-01-08", "source_url": "https://c.nknu.edu.tw/reality/Page.aspx?PN=8"}
     assert "facts" not in e and e["found"] is False and e["caveat"]
 
@@ -282,3 +289,30 @@ def test_budget_holds_around_a_conflict_day(conflict_world):
             real = count_tokens(e)
             assert real <= BUDGET and approx_tokens(e) >= real, (d, n, real)
             assert covered_days(e.get("days") or [{"date": d}]) + e.get("more_days", 0) == n
+
+
+def test_stale_notice_titles_carry_no_times(world_next_term):
+    e = get_hours(world_next_term, WR, "2027-02-01", now=NOW)
+    assert e["status"] == "stale" and "9300" in e["recent_notices"][0]["url"]
+    assert times_in(e) == [] and "重量訓練室" in e["recent_notices"][0]["title"]
+
+
+def test_current_notice_titles_keep_their_times(world_next_term):
+    e = get_hours(world_next_term, WR, "2026-10-22", now=NOW)
+    assert e["status"] == "current" and "09:00" in e["recent_notices"][0]["title"]
+
+
+def test_stale_days_list_has_no_values(world_next_term):
+    e = get_hours(world_next_term, WR, "2027-02-15", days=14, now=NOW)
+    assert e["status"] == "stale" and times_in(e) == [] and e["next_change"] == {"from": "2027-02-22"}
+    assert covered_days(e["days"]) + e.get("more_days", 0) == 14
+    assert all(set(d) <= {"date", "to", "weekday", "status"} for d in e["days"])  # no open / segments / reason
+    assert {d["status"] for d in e["days"]} == {"stale", "current"}  # data resumes 02-22: ask again from that date
+
+
+@pytest.mark.parametrize(("text", "masked"), [
+    ("上午09:00至12:00開放", "上午--:--至--:--開放"), ("9：30起", "--:--起"), ("上午9時至12時30分", "上午--:--至--:--"),
+    ("下午1點半", "下午--:--"), ("115年11月14日全日暫停開放", "115年11月14日全日暫停開放"), ("2026時程", "2026時程"),
+])
+def test_mask_times(text, masked):
+    assert query.mask_times(text) == masked

@@ -100,6 +100,22 @@ def world_superseded(world, tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def world_next_term(world, tmp_path_factory):
+    """The weight room's next-term table starts 2027-02-22 (after a stale gap), and a recent 體育室 notice names times."""
+    def change(conn):
+        upsert_doc(conn, DocRecord("pe_news:9300", "9300", "測試公告：重量訓練室11月14日上午09:00至12:00開放", NEWS + "9300",
+                                   unit="體育室", category="一般公告", published_on=date(2026, 10, 20)),
+                   adapter="pe_news", now="2026-10-22T03:00:00Z")
+        table = SourceRef("https://c.nknu.edu.tw/reality/Page.aspx?PN=8", "場地開放時間", "nknu.org.pe", "table_page",
+                          "sha-test-next-term", published_on=date(2026, 10, 21))
+        rec = FactRecord("test:next-term", WR, "hours", {"closed": False}, date(2027, 2, 22), date(2027, 6, 30), "explicit", 1,
+                         False, table, "測試：下學期開放時間", "rule", (HoursRule((1, 2, 3, 4, 5), "19:00", "21:00"),))
+        apply_fact(conn, rec, adapter="pe_open_hours", review="verified", now="2026-10-22T03:00:00Z")
+
+    return _derive(world, tmp_path_factory, "next_term", change)[0]
+
+
+@pytest.fixture(scope="session")
 def cross_midnight_world(tmp_path_factory):
     """tests/scenario.py world: its test-only entity nknu.heping.gym.night-test opens Fridays 22:00–02:00."""
     out = tmp_path_factory.mktemp("night")

@@ -161,10 +161,11 @@ def _short_titles(env: dict) -> None:
 
 
 def _compact_days(env: dict) -> None:
-    """Days keep date + segments (open is implied) or open=false/status; weekday and status=current go."""
+    """Days keep date + segments (open is implied) or open=false or status; weekday goes, and so does status=current
+    when a value already shows it (a stale envelope's days carry no values, so their status stays)."""
     for d in _items(env, "days"):
         d.pop("weekday", None)
-        if d.get("status") == "current":
+        if d.get("status") == "current" and ("open" in d or d.get("segments")):
             del d["status"]
         if d.get("segments"):
             d.pop("open", None)
