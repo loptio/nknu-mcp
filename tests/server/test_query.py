@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 
 import pytest
@@ -203,3 +205,32 @@ def test_serve_db_reopened_after_atomic_swap(world, tmp_path):
 def test_serve_db_is_read_only(db):
     with pytest.raises(sqlite3.OperationalError):
         db.conn().execute("DELETE FROM meta")
+
+
+def test_serve_db_connection_per_thread(db):
+    """FastMCP runs sync tools in worker threads; a sqlite3 connection must never be shared between them."""
+    got: dict[int, list] = {}
+
+    def grab(i):
+        got[i] = [db.conn(), db.conn()]
+
+    threads = [threading.Thread(target=grab, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert got[0][0] is got[0][1] and got[1][0] is got[1][1]  # reused inside a thread
+    assert got[0][0] is not got[1][0] and db.conn() is not got[0][0]
+
+
+def test_concurrent_queries_match_single_threaded(db):
+    places = [WR, YWR, HLIB]
+    expected = {p: get_hours(db, p, "2026-10-22", now=NOW) for p in places}
+
+    def ask(i):
+        p = places[i % len(places)]
+        return p, get_hours(db, p, "2026-10-22", now=NOW)
+
+    with ThreadPoolExecutor(8) as ex:
+        results = list(ex.map(ask, range(600)))
+    assert [p for p, e in results if e != expected[p]] == []

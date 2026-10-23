@@ -1,5 +1,9 @@
 """Read-only access to serve.db. `nknu build` replaces the file atomically (new inode), so every query checks the file's
-identity and reopens when it changed; a connection already handed out keeps reading its own snapshot until dropped."""
+identity and reopens when it changed; a connection already handed out keeps reading its own snapshot until dropped.
+
+FastMCP runs sync tools in worker threads, and a sqlite3 connection must not be used by two threads at once (cursors and
+statements interleave: wrong rows, InterfaceError). Each thread therefore gets its own connection (check_same_thread stays
+on, so a connection that leaks into another thread fails loudly), together with the meta it read from that snapshot."""
 
 from __future__ import annotations
 
@@ -24,21 +28,18 @@ class ServeDB:
     def __init__(self, path: Path, *, templates_path: Path = DEFAULT_TEMPLATES):
         self.path = Path(path)
         self.templates_path = Path(templates_path)
-        self._lock = threading.Lock()
-        self._key: tuple[int, int] | None = None
-        self._conn: sqlite3.Connection | None = None
-        self._meta: dict[str, str] = {}
+        self._local = threading.local()  # per thread: key (st_ino, st_mtime_ns), conn, meta
 
     def _open(self) -> tuple[sqlite3.Connection, dict[str, str]]:
         st = os.stat(self.path)  # FileNotFoundError when serve.db is missing: the caller reports it
         key = (st.st_ino, st.st_mtime_ns)
-        with self._lock:
-            if key != self._key or self._conn is None:
-                conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
-                self._meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
-                self._conn, self._key = conn, key  # the old connection closes when its last user drops it
-            return self._conn, self._meta
+        local = self._local
+        if getattr(local, "key", None) != key:
+            conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            local.meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
+            local.conn, local.key = conn, key  # the old connection closes when its last user drops it
+        return local.conn, local.meta
 
     def conn(self) -> sqlite3.Connection:
         return self._open()[0]
