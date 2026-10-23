@@ -10,10 +10,10 @@ from datetime import UTC, date, datetime
 import pytest
 
 from nknu.server import query
-from nknu.server.envelope import NOTICE_LABEL
+from nknu.server.envelope import BUDGET, NOTICE_LABEL, count_tokens
 from nknu.server.query import get_calendar, get_fact, get_hours, parse_date_arg, today_info
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR, tpe
+from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR, covered_days, tpe
 
 YWR, HLIB = "nknu.yanchao.gym.weight-room", "nknu.heping.library.main"
 
@@ -36,15 +36,15 @@ def test_hours_current(db):
     e = get_hours(db, WR, "2026-10-22", now=NOW)
     assert e["status"] == "current" and e["match"] == "entity" and "來源" in e["answer"]
     assert e["found"] is True and e["kb"] == db.kb and "週四 18:00–20:00" in e["answer"]
-    f = e["facts"][0]
-    assert f["valid"] == ["2026-09-07", "2027-01-08"] and f["source"]["tier"] == 1 and f["source"]["url"].startswith("https://")
+    assert e["facts"][0]["id"] and e["facts"][0]["source"]["url"].startswith("https://")
     assert e["next_change"]["from"] == "2026-10-24" and "暫停開放" in e["next_change"]["answer"]
 
 
 def test_untrimmed_fact_carries_rules_and_source(db, monkeypatch):
-    monkeypatch.setattr(query, "fit_budget", lambda env: env)  # the budget may drop rules: the answer states them
+    monkeypatch.setattr(query, "fit_budget", lambda env: env)  # the budget drops what the answer states: rules, validity
     f = get_hours(db, WR, "2026-10-22", now=NOW)["facts"][0]
     assert {"dows": [4], "opens": "18:00", "closes": "20:00"} in f["rules"] and f["source"]["title"] == "場地開放時間"
+    assert f["valid"] == ["2026-09-07", "2027-01-08"] and f["source"]["tier"] == 1 and f["source"]["url"].startswith("https://")
 
 
 def test_closure_inherited(db):
@@ -90,8 +90,15 @@ def test_ambiguous_place_lists_candidates(db):
 
 def test_days_list(db):
     e = get_hours(db, "和平重訓室", "2026-10-22", days=7, now=NOW)  # bare 重訓室 is ambiguous (Task 5 ruling)
-    assert len(e["days"]) == 7 and [d["date"] for d in e["days"]][:3] == ["2026-10-22", "2026-10-23", "2026-10-24"]
-    assert e["days"][2]["open"] is False
+    assert covered_days(e["days"]) == 7 and [d["date"] for d in e["days"]][:3] == ["2026-10-22", "2026-10-23", "2026-10-24"]
+    assert e["days"][2] == {"date": "2026-10-24", "to": "2026-10-26", "open": False}  # identical days merge into one run
+    assert PE_NOTE in e["answer"]
+
+
+def test_untrimmed_days_list_has_one_entry_per_day(db, monkeypatch):
+    monkeypatch.setattr(query, "fit_budget", lambda env: env)
+    e = get_hours(db, "和平重訓室", "2026-10-22", days=7, now=NOW)
+    assert len(e["days"]) == 7 and e["days"][2]["open"] is False and e["days"][2]["weekday"] == "週六"
 
 
 def test_days_out_of_range(db):
@@ -234,3 +241,26 @@ def test_concurrent_queries_match_single_threaded(db):
     with ThreadPoolExecutor(8) as ex:
         results = list(ex.map(ask, range(600)))
     assert [p for p, e in results if e != expected[p]] == []
+
+
+PE_NOTE = "附註：1.國定及連續假日、運動會停課、招生考試,各運動場地不予開放。"
+
+
+@pytest.mark.parametrize("place", [WR, GYM, "nknu.heping.gym.outdoor"])
+@pytest.mark.parametrize("day", ["2026-10-22", "2026-11-06"])  # 11-06: 校慶運動會停課; the note is the only signal
+def test_answer_keeps_notes_when_envelope_fits(db, place, day):
+    e = get_hours(db, place, day, now=NOW)
+    assert PE_NOTE in e["answer"] and count_tokens(e) <= BUDGET
+
+
+def test_one_day_answers_keep_their_notes(db):
+    """Every single-day answer whose card carries 附註 is served with it (the budget has room once next_change.answer goes)."""
+    conn = db.conn()
+    lost = []
+    for place, lo, card in conn.execute("SELECT entity_id, valid_from, answer_zh FROM answer_card WHERE intent='hours' "
+                                        "AND answer_zh LIKE '%附註：%' ORDER BY entity_id, valid_from"):
+        if lo >= "2026-10-15":
+            e = get_hours(db, place, lo, now=NOW)
+            if card.split("附註：", 1)[1] not in e["answer"]:
+                lost.append((place, lo, count_tokens(e)))
+    assert lost == []

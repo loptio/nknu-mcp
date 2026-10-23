@@ -16,7 +16,7 @@ from nknu.server.envelope import (
 )
 from nknu.server.query import get_calendar, get_hours
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import NOW
+from tests.server.conftest import NOW, covered_days
 
 TODAY = {"date": "2026-10-22", "weekday": "週四", "time": "14:05"}
 
@@ -31,11 +31,6 @@ def leaf_values(obj):
             yield from leaf_values(v)
     elif obj is not None and not isinstance(obj, bool):
         yield obj
-
-
-def covered_days(days):
-    """Days listed, counting a merged run {date, to} as every day in it."""
-    return sum((date.fromisoformat(d.get("to", d["date"])) - date.fromisoformat(d["date"])).days + 1 for d in days)
 
 
 def test_make_envelope_omits_none_and_empty():
@@ -109,6 +104,13 @@ def test_fit_budget_truncates_notice_titles_first():
                         days=[{"date": "2026-10-22", "weekday": "週四", "status": "current", "open": True}])
     out = fit_budget(env, approx_tokens(env) - 10)
     assert len(out["recent_notices"][0]["title"]) <= 41 and out["days"][0]["weekday"] == "週四"
+
+
+def test_fit_budget_drops_next_answer_before_the_answer_notes():
+    env = make_envelope(kb="k", today=TODAY, found=True, status="current", answer="甲" * 40 + "附註：" + "乙" * 40,
+                        next_change={"from": "2026-10-24", "answer": "丙" * 80 + "附註：" + "丁" * 40})
+    out = fit_budget(env, approx_tokens(env) - 60)
+    assert out["answer"] == env["answer"] and out["next_change"] == {"from": "2026-10-24"}
 
 
 def test_error_result_is_short_error():

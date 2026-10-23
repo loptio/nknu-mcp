@@ -31,6 +31,11 @@ def tpe(*args) -> datetime:
     return datetime(*args, tzinfo=TAIPEI)
 
 
+def covered_days(days) -> int:
+    """Days listed, counting a merged run {date, to} as every day in it."""
+    return sum((date.fromisoformat(d.get("to", d["date"])) - date.fromisoformat(d["date"])).days + 1 for d in days)
+
+
 def _derive(world, tmp_path_factory, name, change):
     out = tmp_path_factory.mktemp(name)
     src, dst = sqlite3.connect(world[0]), sqlite3.connect(out / "facts.db")

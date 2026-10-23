@@ -181,17 +181,36 @@ def _drop_fact_rules(env: dict) -> None:
             del f["rules"]
 
 
+def _drop_fact_validity(env: dict) -> None:
+    """An hours fact's validity is the span its answer states and its tier is internal (calendar events keep `valid`)."""
+    for f in _items(env, "facts"):
+        src = f.get("source")
+        if isinstance(src, dict) and "tier" in src:
+            f.pop("valid", None)
+            src.pop("tier", None)
+
+
 def _drop_next_answer(env: dict) -> None:
     if isinstance(env.get("next_change"), dict):
         env["next_change"].pop("answer", None)
 
 
-def _strip_notes(env: dict) -> None:
-    nxt = env.get("next_change")
-    for holder in [env, *_items(env, "facts"), *([nxt] if isinstance(nxt, dict) else [])]:
+def _strip_notes_of(holders: list[dict]) -> None:
+    for holder in holders:
         a = holder.get("answer")
         if isinstance(a, str) and NOTES_MARK in a:
             holder["answer"] = a.split(NOTES_MARK, 1)[0]
+
+
+def _strip_fact_notes(env: dict) -> None:
+    """附註 of the candidates in an ambiguous list (and of next_change, should its answer still be there)."""
+    nxt = env.get("next_change")
+    _strip_notes_of([*_items(env, "facts"), *([nxt] if isinstance(nxt, dict) else [])])
+
+
+def _strip_answer_notes(env: dict) -> None:
+    """The main answer's 附註 (e.g. 國定假日、運動會停課…不予開放) is the only signal for those days: it goes late."""
+    _strip_notes_of([env])
 
 
 def _drop_day_reasons(env: dict) -> None:
@@ -244,10 +263,11 @@ def _drop_facts(env: dict) -> None:
 
 
 _STEPS: list[Callable[[dict], None]] = [
-    _short_titles, _compact_days, _drop_source_titles, _drop_fact_rules, _strip_notes, _drop_next_answer, _drop_day_reasons,
-    _slim_alternatives, _merge_day_runs, _one_notice, _drop("next_change"), _drop_alternative_ids,
+    _short_titles, _compact_days, _drop_source_titles, _drop_fact_rules, _drop_fact_validity, _drop_next_answer,
+    _strip_fact_notes, _drop_day_reasons, _slim_alternatives, _merge_day_runs, _one_notice, _drop("next_change"),
+    _drop_alternative_ids,
 ]
-_LAST_STEPS: list[Callable[[dict], None]] = [_drop("recent_notices"), _drop_facts]
+_LAST_STEPS: list[Callable[[dict], None]] = [_strip_answer_notes, _drop("recent_notices"), _drop_facts]
 
 
 def _trim_lists(env: dict, budget: int) -> None:
