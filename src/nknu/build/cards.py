@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from nknu.build.templates import Templates, dows_zh, span_zh
+from nknu.build.templates import Templates, dows_zh, event_note, span_zh
 from nknu.core.ids import uuid7
 from nknu.core.resolve import SQLiteBackend, resolve
 from nknu.core.vocab import managing_org
@@ -148,7 +148,7 @@ def calendar_card_rows(conn: sqlite3.Connection, tpl: Templates, today: date) ->
     out = []
     for r in rows:
         d0, d1 = date.fromisoformat(r["during_from"]), date.fromisoformat(r["during_to"])
-        answer = tpl.render("calendar_event", span=span_zh(d0, d1), summary=r["summary"],
+        answer = tpl.render("calendar_event", span=span_zh(d0, d1), summary=r["summary"], note=event_note(r["status"]),
                             publisher=names.get(r["publisher"], r["publisher"]), title=r["title"] or "教學行事曆")
         payload = {"uid": r["uid"], "summary": r["summary"], "category": r["category"], "status": r["status"],
                    "valid": [r["during_from"], r["during_to"]], "source": {"url": r["url"], "title": r["title"]}}

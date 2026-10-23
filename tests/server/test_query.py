@@ -13,7 +13,7 @@ from nknu.server import query
 from nknu.server.envelope import BUDGET, NOTICE_LABEL, approx_tokens, count_tokens
 from nknu.server.query import get_calendar, get_fact, get_hours, parse_date_arg, today_info
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR, covered_days, tpe
+from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, WITHDRAWAL_UID, WR, covered_days, tpe
 
 YWR, HLIB = "nknu.yanchao.gym.weight-room", "nknu.heping.library.main"
 
@@ -165,6 +165,29 @@ def test_calendar_range_keyword(db):
     e = get_calendar(db, "2026-10-01", "2026-11-30", keyword="期中", now=NOW)
     assert e["facts"] and all("期中" in f["summary"] for f in e["facts"])
     assert e["facts"][0]["valid"] == ["2026-10-27", "2026-10-30"] and "來源" in e["answer"]
+
+
+def test_tentative_event_is_labelled(world_calendar_status):
+    # written without review since U2: the answer must not present a tentative date as settled
+    db = world_calendar_status
+    e = get_calendar(db, "2026-10-01", "2026-11-30", keyword="期中", now=NOW)
+    midterm = next(f for f in e["facts"] if f["id"] == MIDTERM_UID)
+    assert midterm["status"] == "tentative" and "暫定" in e["caveat"]
+    one = get_fact(db, MIDTERM_UID, now=NOW)
+    assert "（暫定" in one["answer"] and one["facts"][0]["status"] == "tentative" and "暫定" in one["caveat"]
+
+
+def test_cancelled_event_is_not_listed(world_calendar_status, db):
+    assert any(f["id"] == WITHDRAWAL_UID for f in get_calendar(db, "2026-11-01", "2026-11-30", keyword="停修",
+                                                               now=NOW)["facts"])
+    e = get_calendar(world_calendar_status, "2026-11-01", "2026-11-30", keyword="停修", now=NOW)
+    assert e["found"] is False and not e.get("facts")
+    assert get_fact(world_calendar_status, WITHDRAWAL_UID, now=NOW)["found"] is False
+
+
+def test_confirmed_events_carry_no_tentative_caveat(db):
+    e = get_calendar(db, "2026-10-01", "2026-11-30", keyword="期中", now=NOW)
+    assert "暫定" not in (e.get("caveat") or "") and all("status" not in f for f in e["facts"])
 
 
 def test_calendar_no_match(db):

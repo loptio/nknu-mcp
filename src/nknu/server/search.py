@@ -48,6 +48,7 @@ from nknu.server.linking import (
 )
 from nknu.server.query import (
     CAVEAT_AMBIGUOUS,
+    CAVEAT_TENTATIVE,
     CAVEATS,
     CURRENT_DOC_SQL,
     current_doc_params,
@@ -372,9 +373,10 @@ def search(db: ServeDB, query: str, kind: str = "any", on_date: str | None = Non
     status = worst_status({f.get("status", "current") for f in r.facts if f.get("entity_id")})
     found = any(f.get("status", "current") not in ("stale", "no_data") for f in r.facts)
     return fit_budget(make_envelope(**base, found=found, status=status, match=match, facts=r.facts,
-                                    caveat=_caveat(match, status), more=more or None))
+                                    caveat=_caveat(match, status, r.facts), more=more or None))
 
 
-def _caveat(match: str, status: str) -> str | None:
-    """A weak match and a non-current status each need saying; both are kept when both apply."""
-    return "；".join(c for c in (CAVEAT_WEAK if match == "weak" else None, CAVEATS.get(status)) if c) or None
+def _caveat(match: str, status: str, facts: list[dict] = ()) -> str | None:
+    """A weak match, a non-current status and a tentative calendar event each need saying; all are kept together."""
+    tentative = CAVEAT_TENTATIVE if any(f.get("status") == "tentative" for f in facts) else None
+    return "；".join(c for c in (CAVEAT_WEAK if match == "weak" else None, CAVEATS.get(status), tentative) if c) or None

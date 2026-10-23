@@ -10,7 +10,7 @@ from nknu.server.linking import detect_intent, expand, link_entities
 from nknu.server.query import CAVEATS, get_hours
 from nknu.server.search import CAVEAT_WEAK, T_HIGH, T_LOW, search
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR
+from tests.server.conftest import CONFLICT_DAY, GYM, MIDTERM_UID, NOW, WITHDRAWAL_UID, WR
 
 YWR = "nknu.yanchao.gym.weight-room"
 HLIB, YLIB = "nknu.heping.library.main", "nknu.yanchao.library.main"
@@ -121,6 +121,17 @@ def test_expired_calendar_events_filtered(db):
     e = search(db, "期中考試", kind="calendar", on_date="2026-11-05", now=NOW)
     assert all(f["valid"][1] >= "2026-11-05" for f in e.get("facts", []))
     assert not any(f.get("category") == "midterm_exam" for f in e.get("facts", []))
+
+
+def test_tentative_event_found_by_search_is_labelled(world_calendar_status):
+    e = search(world_calendar_status, "期中考試", kind="calendar", now=NOW)
+    hit = [f for f in e["facts"] if f.get("id") == MIDTERM_UID]
+    assert hit and hit[0]["status"] == "tentative" and "暫定" in e["caveat"]
+
+
+def test_cancelled_event_not_found_by_search(world_calendar_status):
+    e = search(world_calendar_status, "申辦停修", kind="calendar", now=NOW)
+    assert not any(f.get("id") == WITHDRAWAL_UID for f in e.get("facts", []))
 
 
 def test_kind_announcement_only_notices(db):

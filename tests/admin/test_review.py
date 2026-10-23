@@ -1,3 +1,6 @@
+"""`nknu review` for items still waiting in the queue: the crawler writes directly since U2, so these are left over from
+an older version (or added by hand); the command must keep working and never put older content back."""
+
 import sqlite3
 from dataclasses import replace
 from datetime import date
@@ -10,9 +13,9 @@ from nknu.admin.cli import app
 from nknu.admin.review import NotPending, decide, list_pending, render_item
 from nknu.build.templates import load_templates
 from nknu.core.factsdb import connect, data_version
-from nknu.core.records import HoursRule
+from nknu.core.records import HoursRule, content_hash
 from nknu.core.resolve import SQLiteBackend, resolve
-from nknu.core.writer import current_fact
+from nknu.core.writer import add_pending, current_fact
 from nknu.crawl.pipeline import run_adapter
 from nknu.settings import REPO_ROOT
 from tests.crawl.test_pipeline import FakeAdapter
@@ -22,10 +25,17 @@ TPL = load_templates(REPO_ROOT / "config" / "templates.yaml")
 TODAY = date(2026, 10, 22)
 
 
+def queue(conn, *recs, adapter="pe_open_hours"):
+    for rec in recs:
+        add_pending(conn, adapter=adapter, record_key=rec.key, op="upsert", record=rec, content_hash=content_hash(rec),
+                    diff=f"+ {rec.key}", reason="new", now=T0)
+    conn.commit()
+
+
 @pytest.fixture
 def conn(tmp_path):
     c = make_db(tmp_path)
-    run_adapter(c, FakeAdapter([WR_TERM], name="pe_open_hours"), None, today=TODAY, full_scan=True, readonly=False)
+    queue(c, WR_TERM)
     yield c
     c.close()
 
@@ -58,8 +68,7 @@ def test_approve_event_and_retire(tmp_path):
     from dataclasses import replace
 
     c = make_db(tmp_path, calendar=False)
-    run_adapter(c, FakeAdapter([replace(TERM_BEGIN, status="tentative")], name="aca_calendar_ics"), None, today=TODAY,
-                full_scan=True, readonly=False)
+    queue(c, replace(TERM_BEGIN, status="tentative"), adapter="aca_calendar_ics")
     decide(c, list_pending(c)[0].id, "approve", now=T0)
     assert c.execute("SELECT status FROM calendar_event").fetchone()[0] == "tentative"
 
@@ -79,9 +88,8 @@ def test_cli_one_by_one(tmp_path):
     c = make_db(tmp_path)
     from dataclasses import replace
 
-    recs = [WR_TERM, replace(WR_TERM, key="k2", entity_id="nknu.yanchao.gym.weight-room"),
-            replace(WR_TERM, key="k3", entity_id="nknu.heping.gym.main")]
-    run_adapter(c, FakeAdapter(recs, name="pe_open_hours"), None, today=TODAY, full_scan=True, readonly=False)
+    queue(c, WR_TERM, replace(WR_TERM, key="k2", entity_id="nknu.yanchao.gym.weight-room"),
+          replace(WR_TERM, key="k3", entity_id="nknu.heping.gym.main"))
     c.close()
     r = CliRunner().invoke(app, ["review", "--no-build"], input="e\na\nr\ns\n", env=_env(tmp_path))
     assert r.exit_code == 0, r.output
@@ -144,8 +152,7 @@ def test_failed_approval_writes_nothing(conn):
 def test_cli_review_survives_a_broken_item(tmp_path):
     # F-review-crash: one item that cannot be previewed or applied is reported and skipped; the others are approved
     c = make_db(tmp_path)
-    run_adapter(c, FakeAdapter([WR_TERM, replace(WR_TERM, key="k2", entity_id="nknu.yanchao.gym.weight-room")],
-                               name="pe_open_hours"), None, today=TODAY, full_scan=True, readonly=False)
+    queue(c, WR_TERM, replace(WR_TERM, key="k2", entity_id="nknu.yanchao.gym.weight-room"))
     bad, good = list_pending(c)
     _break(c, bad.id)
     c.close()
@@ -157,7 +164,8 @@ def test_cli_review_survives_a_broken_item(tmp_path):
 
 
 def test_cli_review_skips_an_item_a_crawl_replaced(conn, tmp_path, monkeypatch):
-    # F-review-race: the 2-hourly crawl supersedes an item while the maintainer is reading the list
+    # F-review-race: the 2-hourly crawl writes that key itself while the maintainer is reading the list; approving the
+    # older item afterwards would put older content back
     conn.commit()
     newer = replace(WR_TERM, rules=(HoursRule((1, 2, 3, 4, 5), "18:00", "21:00"),))
     prompt = typer.prompt
@@ -173,7 +181,10 @@ def test_cli_review_skips_an_item_a_crawl_replaced(conn, tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["review", "--no-build"], input="y\n", env=_env(tmp_path))
     assert r.exit_code == 0, r.output
     assert "取代" in r.output and "已处理 0 条" in r.output
-    assert ["18:00–21:00" in p.diff for p in list_pending(connect(tmp_path / "facts.db"))] == [True]
+    c = connect(tmp_path / "facts.db")
+    assert not list_pending(c)
+    assert c.execute("SELECT opens FROM hours_rule WHERE fact_id=?", (current_fact(c, WR_TERM.key)["id"],)).fetchone()[0] \
+        == "18:00"
 
 
 def test_decide_on_a_superseded_item(conn):

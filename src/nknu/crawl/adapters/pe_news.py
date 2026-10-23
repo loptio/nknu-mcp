@@ -1,7 +1,7 @@
 """體育室最新消息 (c.nknu.edu.tw/reality/Newslist.aspx + NewsView.aspx?Nid=N).
 
 Every list row becomes a DocRecord (document layer, not facts). Detail pages add the excerpt and attachments; an
-announcement that says a venue 暫停開放 on explicitly written dates also yields closure FactRecords (to review).
+announcement that says a venue 暫停開放 on explicitly written dates also yields closure FactRecords (written directly, U2).
 v1 does not extract opening hours from announcements (design §13.4). 暫停借用 (bookings suspended) is not a closure.
 Honor-roll style posts (獲獎名單 …) keep only the masked title: no detail fetch, no excerpt.
 """
@@ -165,6 +165,16 @@ class PeNews(Adapter):
             out.append(DocRecord(f"pe_news:{nid}", nid, mask_honor_names(title) if honor else title, detail_url(nid), UNIT,
                                  cells[2] if len(cells) > 2 else None, published, pii_level="personal" if honor else "none"))
         return out
+
+    def counts_missing(self, key: str, kind: str, span, records: list[Record], today: date) -> bool:
+        """A closure fact counts as missing only when this run read its announcement's detail page in full (no parse
+        issue): a full scan does not re-read every detail page (needs_detail), and a closure stated only in the body
+        is not missing from a run that never looked at the body (F-pe-closure-false-retire)."""
+        if kind != "fact":
+            return True
+        doc = ":".join(key.split(":")[:2])  # pe_news:{nid}:{entity}:{first day} -> pe_news:{nid}
+        read = any(isinstance(r, DocRecord) and r.partial and r.key == doc for r in records)
+        return read and not any(isinstance(r, ParseIssue) and (r.key == doc or r.key.startswith(doc + ":")) for r in records)
 
     def _detail(self, snap: Snapshot) -> list[Record]:
         nid = _nid(snap.target.url) or _nid(snap.url) or ""

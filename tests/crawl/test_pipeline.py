@@ -5,13 +5,13 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from nknu.core.factsdb import data_version
-from nknu.core.records import EntityHint, ParseIssue, from_json
-from nknu.core.writer import apply_fact, current_fact, set_state
+from nknu.core.records import EntityHint, HoursRule, ParseIssue, content_hash
+from nknu.core.writer import add_pending, current_fact, set_state
 from nknu.crawl.adapter import Adapter, Target
 from nknu.crawl.fetch import Snapshot
 from nknu.crawl.pipeline import run_adapter, run_all, run_order
 from nknu.settings import load_settings
-from tests.factories import DOC, HOLIDAY, LIB_REGULAR, TERM_BEGIN, WR_TERM, make_db
+from tests.factories import DOC, HOLIDAY, LIB_CLOSED, LIB_REGULAR, TERM_BEGIN, VACATION, WR_TERM, make_db
 
 TODAY = date(2026, 10, 22)
 OTHER_DOC = replace(DOC, key="sso_news:B2", doc_key="B2", title="其他公告")
@@ -54,15 +54,6 @@ def pending(conn):
     return conn.execute("SELECT * FROM pending_change WHERE status='pending'").fetchall()
 
 
-def approve_all(conn):
-    for p in pending(conn):
-        rec = from_json(p["record_json"])
-        apply_fact(conn, rec, adapter=p["adapter"], review="verified", now="2026-10-22T03:00:00Z")
-        set_state(conn, p["adapter"], rec.key, "fact", p["content_hash"], "2026-10-22T03:00:00Z")
-        conn.execute("UPDATE pending_change SET status='approved' WHERE id=?", (p["id"],))
-    conn.commit()
-
-
 def alerts(conn, code):
     return conn.execute("SELECT message FROM alert WHERE code=?", (code,)).fetchall()
 
@@ -80,9 +71,11 @@ def seed_history(conn, adapter, counts, full_scan=1):
     conn.commit()
 
 
-def test_hours_change_goes_to_pending_not_fact(conn):
-    res = run(conn, FakeAdapter([WR_TERM]))
-    assert res.passed and res.n_pending == 1 and len(pending(conn)) == 1 and current_fact(conn, WR_TERM.key) is None
+def test_hours_written_directly(conn):
+    # U2: venue hours and closures that pass the layout guard are written at once; no review queue
+    res = run(conn, FakeAdapter([WR_TERM, LIB_CLOSED]))
+    assert res.passed and res.n_written == 2 and not pending(conn)
+    assert current_fact(conn, WR_TERM.key)["review"] == "auto_ok" and current_fact(conn, LIB_CLOSED.key)
 
 
 def test_holiday_written_directly(conn):
@@ -92,16 +85,34 @@ def test_holiday_written_directly(conn):
 
 def test_unchanged_is_noop(conn):
     run(conn, FakeAdapter([WR_TERM]))
-    approve_all(conn)
     n = data_version(conn)
     res = run(conn, FakeAdapter([WR_TERM]))
-    assert data_version(conn) == n and res.n_written == 0 and res.n_pending == 0
+    assert data_version(conn) == n and res.n_written == 0 and res.n_retired == 0
 
 
-def test_term_fact_filled_before_pending(conn):
+def test_changed_hours_replace_the_current_version(conn):
+    run(conn, FakeAdapter([WR_TERM]))
+    first = current_fact(conn, WR_TERM.key)["id"]
+    run(conn, FakeAdapter([replace(WR_TERM, rules=(HoursRule((1, 2, 3, 4, 5), "18:00", "21:00"),))]))
+    now = current_fact(conn, WR_TERM.key)
+    assert now["supersedes"] == first and not pending(conn)
+
+
+def test_term_fact_filled_before_write(conn):
     run(conn, FakeAdapter([LIB_REGULAR]))
-    rec = from_json(pending(conn)[0]["record_json"])
-    assert (rec.valid_from, rec.valid_to) == (date(2026, 9, 7), date(2027, 1, 18))
+    f = current_fact(conn, LIB_REGULAR.key + ":2026-09-07")
+    assert (f["valid_from"], f["valid_to"]) == ("2026-09-07", "2027-01-18")
+
+
+def test_direct_write_supersedes_a_waiting_review_item(conn):
+    # an item queued by an older version stays in `nknu review`; once the crawler writes that key itself, approving
+    # the old item would put older content back, so it is marked superseded
+    old = replace(WR_TERM, rules=(HoursRule((1,), "07:00", "08:00"),))
+    add_pending(conn, adapter="fake", record_key=WR_TERM.key, op="upsert", record=old, content_hash=content_hash(old),
+                diff="old", reason="changed", now="2026-10-21T00:00:00Z")
+    conn.commit()
+    run(conn, FakeAdapter([WR_TERM]))
+    assert not pending(conn) and current_fact(conn, WR_TERM.key)
 
 
 def test_collapsed_run_keeps_old_values(conn):
@@ -131,6 +142,50 @@ def test_partial_scan_does_not_count_missing(conn):
     assert conn.execute("SELECT missing_full_scans FROM record_state").fetchone()[0] == 0
 
 
+def test_dated_table_entries_are_not_retired_when_they_leave_the_page(conn):
+    # C2: a closure day or term table printed on a table page expires on its own date; a page that drops it (a past
+    # closure pruned, next term's table posted) is not a retraction
+    run(conn, FakeAdapter([WR_TERM, LIB_CLOSED]))
+    for _ in range(4):
+        res = run(conn, FakeAdapter([LIB_REGULAR]))
+        assert res.n_retired == 0
+    assert current_fact(conn, WR_TERM.key) and current_fact(conn, LIB_CLOSED.key) and not pending(conn)
+
+
+def test_events_missing_three_full_scans_are_retired_directly(tmp_path):
+    # C2: calendar events (and other facts) absent from three full scans that could have produced them are retired
+    # without review
+    c = make_db(tmp_path, calendar=False)
+    run(c, FakeAdapter([TERM_BEGIN, VACATION, HOLIDAY]))
+    results = [run(c, FakeAdapter([VACATION])) for _ in range(3)]
+    assert [r.n_retired for r in results] == [0, 0, 2] and not pending(c)
+    assert c.execute("SELECT status FROM calendar_event WHERE uid=?", (TERM_BEGIN.key,)).fetchone()[0] == "withdrawn"
+    assert current_fact(c, HOLIDAY.key) is None
+    assert c.execute("SELECT status FROM calendar_event WHERE uid=?", (VACATION.key,)).fetchone()[0] == "confirmed"
+    assert {r[0] for r in c.execute("SELECT record_key FROM record_state WHERE status='retired'")} == {TERM_BEGIN.key,
+                                                                                                       HOLIDAY.key}
+
+
+def test_absence_counts_only_when_the_run_could_have_produced_it(tmp_path):
+    # C2: the adapter says whether this run had the chance to produce a record (e.g. a detail page it did not read)
+    c = make_db(tmp_path, calendar=False)
+
+    asked = []
+
+    class Blind(FakeAdapter):
+        def counts_missing(self, key, kind, span, records, today):
+            asked.append((key, kind, span, len(records), today))
+            return False
+
+    run(c, FakeAdapter([TERM_BEGIN, VACATION, HOLIDAY], name="blind"))
+    for _ in range(4):
+        run(c, Blind([VACATION], name="blind"))
+    assert c.execute("SELECT status FROM calendar_event WHERE uid=?", (TERM_BEGIN.key,)).fetchone()[0] == "confirmed"
+    assert current_fact(c, HOLIDAY.key) and not c.execute("SELECT max(missing_full_scans) FROM record_state").fetchone()[0]
+    assert (TERM_BEGIN.key, "event", (date(2026, 9, 7), date(2026, 9, 8)), 1, TODAY) in asked
+    assert (HOLIDAY.key, "fact", (date(2026, 10, 24), date(2026, 10, 27)), 1, TODAY) in asked
+
+
 def test_three_full_scans_retire_doc(conn):
     run(conn, FakeAdapter([DOC, OTHER_DOC], name="sso_news"))
     for _ in range(3):
@@ -141,23 +196,64 @@ def test_three_full_scans_retire_doc(conn):
 
 def test_doc_404_withdrawn_immediately(conn):
     run(conn, FakeAdapter([DOC, OTHER_DOC], name="sso_news"))
-    run(conn, FakeAdapter([replace(DOC, gone=True), OTHER_DOC], name="sso_news"))
+    res = run(conn, FakeAdapter([DOC, replace(DOC, title="", gone=True), OTHER_DOC], name="sso_news"))
     assert conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key=?", (DOC.doc_key,)).fetchone()[0] is not None
+    assert res.n_retired == 1
 
 
-def test_event_date_change_pending(tmp_path):
+class SeesKnown(FakeAdapter):
+    def fetch_all(self, ctx):
+        self.known = set(ctx.known_keys)
+        return super().fetch_all(ctx)
+
+
+def test_a_404_announcement_still_listed_does_not_churn(conn):
+    # F-404-churn: the list row stays while its detail page answers 404; later runs neither write (no rebuild every
+    # 2 hours) nor put the dead notice back, and the adapter is told the key is known (no detail fetch again)
+    run(conn, FakeAdapter([DOC, OTHER_DOC], name="sso_news"))
+    run(conn, FakeAdapter([DOC, replace(DOC, title="", gone=True), OTHER_DOC], name="sso_news"))
+    n = data_version(conn)
+    again = SeesKnown([DOC, replace(DOC, title="", gone=True), OTHER_DOC], name="sso_news")
+    res = run(conn, again)
+    assert (res.n_written, res.n_retired) == (0, 0) and data_version(conn) == n and DOC.key in again.known
+    listed_only = SeesKnown([DOC, OTHER_DOC], name="sso_news")
+    res = run(conn, listed_only, full_scan=False)
+    assert res.n_written == 0 and DOC.key in listed_only.known
+    assert conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key=?", (DOC.doc_key,)).fetchone()[0] is not None
+    # an edited list row is new content: written (and shown) again
+    run(conn, FakeAdapter([replace(DOC, title="115學年度第1學期停修申請（更正）"), OTHER_DOC], name="sso_news"), full_scan=False)
+    assert conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key=?", (DOC.doc_key,)).fetchone()[0] is None
+
+
+def test_undone_announcement_is_known_to_the_adapter(conn):
+    # its detail page is not fetched again on every run (the maintainer took it down)
+    from nknu.admin.undo import undo
+
+    run(conn, FakeAdapter([DOC], name="sso_news"))
+    undo(conn, DOC.key, now="2026-10-22T05:00:00Z")
+    seer = SeesKnown([DOC], name="sso_news")
+    assert run(conn, seer).n_written == 0 and DOC.key in seer.known
+
+
+def test_event_date_change_written_directly(tmp_path):
+    # U2: a rescheduled event is written at once
     c = make_db(tmp_path, calendar=False)
     run(c, FakeAdapter([TERM_BEGIN]))
-    assert c.execute("SELECT count(*) FROM calendar_event").fetchone()[0] == 1 and not pending(c)
     moved = replace(TERM_BEGIN, during_from=date(2026, 9, 14), during_to=date(2026, 9, 15))
-    run(c, FakeAdapter([moved]))
-    assert len(pending(c)) == 1 and c.execute("SELECT during_from FROM calendar_event").fetchone()[0] == "2026-09-07"
+    res = run(c, FakeAdapter([moved]))
+    assert res.n_written == 1 and not pending(c)
+    assert c.execute("SELECT during_from FROM calendar_event").fetchone()[0] == "2026-09-14"
 
 
-def test_tentative_event_pending(tmp_path):
+def test_tentative_and_cancelled_events_written_directly(tmp_path):
     c = make_db(tmp_path, calendar=False)
-    run(c, FakeAdapter([replace(TERM_BEGIN, status="tentative")]))
-    assert len(pending(c)) == 1 and c.execute("SELECT count(*) FROM calendar_event").fetchone()[0] == 0
+    run(c, FakeAdapter([replace(TERM_BEGIN, status="tentative"), VACATION]))
+    assert not pending(c)
+    assert dict(c.execute("SELECT uid, status FROM calendar_event").fetchall()) == {TERM_BEGIN.key: "tentative",
+                                                                                     VACATION.key: "confirmed"}
+    run(c, FakeAdapter([replace(TERM_BEGIN, status="cancelled"), VACATION]))
+    assert c.execute("SELECT status FROM calendar_event WHERE uid=?", (TERM_BEGIN.key,)).fetchone()[0] == "cancelled"
+    assert not pending(c)
 
 
 def test_readonly_writes_nothing(conn):
@@ -169,7 +265,7 @@ def test_readonly_writes_nothing(conn):
 def test_no_term_dates_alert(tmp_path):
     c = make_db(tmp_path, calendar=False)
     run(c, FakeAdapter([LIB_REGULAR]))
-    assert alerts(c, "no_term_dates") and not pending(c)
+    assert alerts(c, "no_term_dates") and not c.execute("SELECT count(*) FROM fact").fetchone()[0]
 
 
 def test_entity_hint_alert(conn):
@@ -219,7 +315,6 @@ def test_term_table_is_not_missing_while_no_term_is_in_force(conn):
     # during the winter break the library page still shows its table but the calendar has no current term to date it:
     # the record cannot be written, and the term's lineage must not count as missing either
     run(conn, FakeAdapter([LIB_REGULAR], name="lib_open_time"))
-    approve_all(conn)
     for _ in range(3):
         run(conn, FakeAdapter([LIB_REGULAR], name="lib_open_time"), today=date(2027, 1, 20))
     assert not pending(conn) and alerts(conn, "no_term_dates")

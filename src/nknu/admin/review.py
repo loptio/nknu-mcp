@@ -1,4 +1,5 @@
-"""`nknu review`: high-impact changes wait here until the maintainer approves them on the lab machine."""
+"""`nknu review`: items still waiting in the review queue. Since U2 the crawler writes directly and queues nothing; the
+queue only holds items an older version left (the maintainer now checks afterwards: `nknu changes`, `nknu undo`)."""
 
 from __future__ import annotations
 

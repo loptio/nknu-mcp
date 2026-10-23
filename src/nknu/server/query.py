@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from nknu.build.cards import contact_of, hours_sentence, names_of
-from nknu.build.templates import DOWZH, Templates, span_zh
+from nknu.build.templates import DOWZH, Templates, event_note, span_zh
 from nknu.core.resolve import SQLiteBackend, day_hours, resolve
 from nknu.core.textnorm import alias_norm, norm_text
 from nknu.core.timeutil import TAIPEI, now_utc
@@ -37,6 +37,8 @@ CURRENT_DOC_SQL = ("withdrawn_at IS NULL AND (announce_until >= :today "
 NOTICE_TTL_DAYS = 180
 
 CAVEAT_NO_PLACE = "查無此地點，請勿推測"
+# calendar events are written without review (U2); serve.db leaves cancelled ones out, tentative ones are listed and said
+CAVEAT_TENTATIVE = "標示 status=tentative 的行事曆事件為暫定，日期可能變動，請以學校公告為準"
 CAVEAT_AMBIGUOUS = "有多個地點符合，請確認校區"
 CAVEATS = {
     "stale": "最近一筆資料已過期，請勿推測開放時間",
@@ -354,7 +356,8 @@ def get_calendar(db: ServeDB, from_: str | None = None, to: str | None = None, k
     facts = [_event_view(r) for r in hits[:limit]]
     return fit_budget(make_envelope(**base, found=True, status="current", answer=answer, facts=facts,
                                     sources=[{"title": t, "url": u} for _, t, u in sources],
-                                    more=len(hits) - len(facts) or None))
+                                    more=len(hits) - len(facts) or None,
+                                    caveat=CAVEAT_TENTATIVE if any(r["status"] == "tentative" for r in hits) else None))
 
 
 def _event_view(r: sqlite3.Row) -> dict:
@@ -410,7 +413,7 @@ def get_fact(db: ServeDB, id: str, include_history: bool = False, now: dt.dateti
             answer = hours_sentence(row["entity_id"], res, names, contact_of(conn, row["entity_id"], names), tpl, lo, hi)
         else:
             answer = tpl.render("calendar_event", span=span_zh(lo, hi), summary=brief["value"].get("label") or row["quote"],
-                                publisher=publisher, title=title)
+                                note="", publisher=publisher, title=title)
         env = {"found": True, "status": "current", "answer": answer, "facts": [fact]}
     else:  # a version that is not in force: no values outside the explicitly requested history
         fact.pop("rules", None)
@@ -446,7 +449,8 @@ def _event_fact(conn: sqlite3.Connection, tpl: Templates, base: dict, uid: str) 
         return fit_budget(make_envelope(**base, found=False, status="no_data", caveat="查無此 id，請勿推測"))
     names = names_of(conn)
     lo, hi = dt.date.fromisoformat(r["during_from"]), dt.date.fromisoformat(r["during_to"])
-    answer = tpl.render("calendar_event", span=span_zh(lo, hi), summary=r["summary"],
+    answer = tpl.render("calendar_event", span=span_zh(lo, hi), summary=r["summary"], note=event_note(r["status"]),
                         publisher=names.get(r["publisher"], r["publisher"]), title=r["title"] or "教學行事曆")
     fact = {**_event_view(r), "source": {"title": r["title"], "url": r["url"]}}
-    return fit_budget(make_envelope(**base, found=True, status="current", answer=answer, facts=[fact]))
+    return fit_budget(make_envelope(**base, found=True, status="current", answer=answer, facts=[fact],
+                                    caveat=CAVEAT_TENTATIVE if r["status"] == "tentative" else None))

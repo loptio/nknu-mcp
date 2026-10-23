@@ -105,8 +105,10 @@ def upsert_event(conn: sqlite3.Connection, rec: EventRecord, *, adapter: str, no
     )
 
 
-def retire_event(conn: sqlite3.Connection, uid: str, *, now: str) -> None:
-    conn.execute("UPDATE calendar_event SET status='withdrawn', last_seen=? WHERE uid=?", (now, uid))
+def retire_event(conn: sqlite3.Connection, uid: str, *, now: str) -> bool:
+    """Withdraw an event; False when it was already withdrawn (or unknown)."""
+    return conn.execute("UPDATE calendar_event SET status='withdrawn', last_seen=? WHERE uid=? AND status <> 'withdrawn'",
+                        (now, uid)).rowcount > 0
 
 
 def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: str) -> None:
@@ -134,8 +136,10 @@ def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: s
     )
 
 
-def withdraw_doc(conn: sqlite3.Connection, adapter: str, doc_key: str, *, now: str) -> None:
-    conn.execute("UPDATE doc SET withdrawn_at=? WHERE adapter=? AND doc_key=? AND withdrawn_at IS NULL", (now, adapter, doc_key))
+def withdraw_doc(conn: sqlite3.Connection, adapter: str, doc_key: str, *, now: str) -> bool:
+    """Withdraw an announcement; False when it was already withdrawn (or unknown)."""
+    return conn.execute("UPDATE doc SET withdrawn_at=? WHERE adapter=? AND doc_key=? AND withdrawn_at IS NULL",
+                        (now, adapter, doc_key)).rowcount > 0
 
 
 def set_state(conn: sqlite3.Connection, adapter: str, rec_key: str, kind: str, content_hash: str, now: str) -> None:
@@ -161,7 +165,8 @@ def is_suppressed(conn: sqlite3.Connection, adapter: str, record_key: str, conte
 
 def add_pending(conn: sqlite3.Connection, *, adapter: str, record_key: str, op: str, record: Record | None, content_hash: str,
                 diff: str, reason: str, now: str) -> int | None:
-    """Queue a change for `nknu review`. Same content already pending or rejected -> None (never re-ask)."""
+    """Queue a change for `nknu review`. Same content already pending or rejected -> None (never re-ask).
+    Since U2 the crawler writes directly and queues nothing; the queue only holds items left by an older version."""
     dup = conn.execute(
         "SELECT 1 FROM pending_change WHERE adapter=? AND record_key=? AND content_hash=? AND status IN ('pending','rejected')",
         (adapter, record_key, content_hash)).fetchone()
@@ -174,6 +179,13 @@ def add_pending(conn: sqlite3.Connection, *, adapter: str, record_key: str, op: 
            VALUES (?,?,?,?,?,?,?,?)""",
         (adapter, record_key, op, to_json(record) if record is not None else "{}", content_hash, diff, reason, now),
     ).lastrowid
+
+
+def supersede_pending(conn: sqlite3.Connection, adapter: str, record_key: str, *, now: str) -> int:
+    """The crawler wrote (or retired) record_key itself: an item still waiting in review for that key is older content,
+    and approving it later would put that back."""
+    return conn.execute("UPDATE pending_change SET status='superseded', decided_at=? WHERE adapter=? AND record_key=? "
+                        "AND status='pending'", (now, adapter, record_key)).rowcount
 
 
 def add_alert(conn: sqlite3.Connection, *, adapter: str | None, level: str, code: str, message: str,

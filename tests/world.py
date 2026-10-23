@@ -1,5 +1,6 @@
-"""A complete fixture world: every adapter's fixtures go through the real pipeline into facts.db, every pending
-change is approved, the image-only library announcement is entered by hand, then serve.db is built."""
+"""A complete fixture world: every adapter's fixtures go through the real pipeline into facts.db (written directly, U2;
+any item still queued for review is approved), the image-only library announcement is entered by hand, then serve.db is
+built."""
 
 from __future__ import annotations
 
@@ -48,6 +49,9 @@ class Replay(Adapter):
 
     def invariants(self, records, history, snaps):
         return self.real.invariants(records, history, snaps)
+
+    def counts_missing(self, key, kind, span, records, today):
+        return self.real.counts_missing(key, kind, span, records, today)
 
 
 def _snapshots():

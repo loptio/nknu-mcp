@@ -1,12 +1,18 @@
-"""One crawl run per adapter: fetch -> parse -> layout guard -> diff -> write directly or queue for review.
+"""One crawl run per adapter: fetch -> parse -> layout guard -> diff -> write.
 
-High-impact changes (venue hours, closures; event deletions/reschedules/tentative) go to pending_change.
-A void run writes nothing except its crawl_run row and alerts, so the previous values keep serving.
+Everything that passes the layout guard is written directly (U2): venue hours, closures, holidays, calendar events
+(rescheduled, tentative and cancelled ones too) and announcements. The maintainer checks afterwards instead of before:
+`nknu changes`, `nknu undo` and the summary each crawl logs and sends (C4, admin.changes.crawl_summary). A void run
+writes nothing except its crawl_run row and alerts, so the previous values keep serving.
+
+Disappearance (C2): only full scans count absences, and only for records the run had the chance to produce
+(Adapter.counts_missing); three in a row retire the record without review. Facts printed on a table page (closure days,
+term tables) are never retired for leaving the page: they carry their own end date and expire on it. An announcement
+whose page answers 404 is withdrawn at once, together with the closures it stated.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import time
@@ -14,18 +20,20 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 
 from nknu.core.factsdb import bump_data_version, connect, migrate
+from nknu.core.ids import lineage_id
 from nknu.core.pii import redact
 from nknu.core.records import DocRecord, EntityHint, EventRecord, FactRecord, ParseIssue, Record, content_hash
 from nknu.core.timeutil import TAIPEI, iso_now
 from nknu.core.vocab import fill_validity
 from nknu.core.writer import (
     add_alert,
-    add_pending,
     apply_fact,
-    current_fact,
-    displaced_by,
     is_suppressed,
+    retire_event,
+    retire_fact,
     set_state,
+    supersede_pending,
+    suppress,
     upsert_doc,
     upsert_event,
     withdraw_doc,
@@ -46,8 +54,8 @@ class RunResult:
     adapter: str
     passed: bool
     n_records: int = 0
-    n_written: int = 0
-    n_pending: int = 0
+    n_written: int = 0  # facts, events and announcements written
+    n_retired: int = 0  # taken down: missing from 3 full scans, or their page answered 404
     violations: list[Violation] = field(default_factory=list)
     error: str | None = None
 
@@ -64,14 +72,22 @@ def _history(conn: sqlite3.Connection, name: str, full_scan: bool, now: str) -> 
 
 
 def _merge(records: list[Record]) -> list[Record]:
-    """Detail-page partial DocRecords are folded into the list-page record with the same key."""
+    """Detail-page partial DocRecords are folded into the list-page record with the same key; a detail page that answered
+    404 marks its list-page record gone (the list fields stay, so its content hash is the list row's)."""
     full: dict[str, Record] = {}
     partials: list[DocRecord] = []
+    gone: set[str] = set()
     for r in records:
         if isinstance(r, DocRecord) and r.partial:
             partials.append(r)
+        elif isinstance(r, DocRecord) and r.gone:
+            gone.add(r.key)
+            full.setdefault(r.key, r)
         else:
             full[r.key] = r
+    for key in gone:
+        if isinstance(full[key], DocRecord):
+            full[key] = replace(full[key], gone=True)
     for p in partials:
         base = full.get(p.key)
         if isinstance(base, DocRecord):
@@ -79,15 +95,6 @@ def _merge(records: list[Record]) -> list[Record]:
         else:
             full[p.key] = p  # existing doc row gets updated
     return list(full.values())
-
-
-def _hours_diff(old: sqlite3.Row | None, new: FactRecord, displaced: list[sqlite3.Row] = ()) -> str:
-    rules = "；".join(f"{list(r.dows)} {r.opens}–{r.closes}" for r in new.rules) or json.dumps(new.value, ensure_ascii=False)
-    after = f"+ {new.entity_id} [{new.valid_from}, {new.valid_to}) {rules}"
-    before = [f"- {r['entity_id']} [{r['valid_from']}, {r['valid_to']}) {r['value_json']}" for r in ([old] if old else [])]
-    before += [f"- {r['entity_id']} [{r['valid_from']}, {r['valid_to']}) {r['value_json']}（{r['record_key']}，連帶下架）"
-               for r in displaced]
-    return "\n".join([*before, after]) if before else after + "（新增）"
 
 
 def _same_source_overlaps(facts: list[FactRecord]) -> dict[int, FactRecord]:
@@ -113,20 +120,20 @@ def _state(conn: sqlite3.Connection, name: str, key: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM record_state WHERE adapter=? AND record_key=?", (name, key)).fetchone()
 
 
-def _void(conn, name, run_id, violations, error, readonly, webhook) -> RunResult:
+def _void(conn, name, run_id, violations, error, readonly) -> RunResult:
     now = iso_now()
     if not readonly:
         for v in violations:
             add_alert(conn, adapter=name, level="error" if v.code in ("fetch_failed", "parse_failed") else "warn", code=v.code,
-                      message=redact(v.message), dedup_key=f"{name}:{v.code}", now=now, webhook=webhook)
+                      message=redact(v.message), dedup_key=f"{name}:{v.code}", now=now)
         conn.execute("UPDATE crawl_run SET finished_at=?, passed=0, error=? WHERE id=?",
                      (now, redact("; ".join(f"{v.code}: {v.message}" for v in violations))[:500], run_id))
         conn.commit()
     return RunResult(name, False, violations=violations, error=error)
 
 
-def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: date, full_scan: bool, readonly: bool,
-                webhook: str | None = None) -> RunResult:
+def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: date, full_scan: bool,
+                readonly: bool) -> RunResult:
     name, now = adapter.name, iso_now()
     run_id = 0
     if not readonly:
@@ -134,31 +141,36 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
                               (name, now, int(full_scan))).lastrowid
         conn.commit()
     known = {r[0] for r in conn.execute("SELECT record_key FROM record_state WHERE adapter=? AND status='active'", (name,))}
-    ctx = RunContext(client, full_scan, today, conn, known, adapter.rate_limit)
+    # announcements whose page answered 404 (or that the maintainer took down) count as known too: their detail page is
+    # not fetched again on every run (F-404-churn)
+    down = {r[0] for r in conn.execute("SELECT record_key FROM suppressed WHERE adapter=? AND kind='doc'", (name,))}
+    ctx = RunContext(client, full_scan, today, conn, known | down, adapter.rate_limit)
     try:
         snaps = adapter.fetch_all(ctx)
     except FetchError as exc:
-        return _void(conn, name, run_id, [Violation("fetch_failed", str(exc))], str(exc), readonly, webhook)
+        return _void(conn, name, run_id, [Violation("fetch_failed", str(exc))], str(exc), readonly)
     try:
-        records = _merge([r for s in snaps for r in adapter.parse(s)])
+        parsed = [r for s in snaps for r in adapter.parse(s)]
+        records = _merge(parsed)
     except Exception as exc:  # noqa: BLE001 - any parser error means the layout changed
         msg = f"{type(exc).__name__}: {exc}"
-        return _void(conn, name, run_id, [Violation("parse_failed", msg)], msg, readonly, webhook)
+        return _void(conn, name, run_id, [Violation("parse_failed", msg)], msg, readonly)
     violations = adapter.invariants(records, _history(conn, name, full_scan, now), snaps)
     if violations:
-        return _void(conn, name, run_id, violations, violations[0].message, readonly, webhook)
+        return _void(conn, name, run_id, violations, violations[0].message, readonly)
 
     res = RunResult(name, True, n_records=record_count(records))
     if readonly:
         return res
     try:
-        seen = _apply_all(conn, adapter, records, res, today, now, webhook, known)
+        read = {r.key for r in parsed if isinstance(r, DocRecord) and r.partial}  # detail pages that answered
+        seen = _apply_all(conn, adapter, records, res, today, now, known, read)
         if full_scan:
-            _missing(conn, name, known - seen, res, now)
-        if res.n_written:
+            _missing(conn, adapter, known - seen, parsed, res, today, now)
+        if res.n_written or res.n_retired:
             bump_data_version(conn)
-        conn.execute("UPDATE crawl_run SET finished_at=?, n_snapshots=?, n_records=?, passed=1, n_written=?, n_pending=? WHERE id=?",
-                     (iso_now(), len(snaps), res.n_records, res.n_written, res.n_pending, run_id))
+        conn.execute("UPDATE crawl_run SET finished_at=?, n_snapshots=?, n_records=?, passed=1, n_written=? WHERE id=?",
+                     (iso_now(), len(snaps), res.n_records, res.n_written + res.n_retired, run_id))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -172,23 +184,23 @@ def _seen(conn, name: str, key: str, now: str, seen: set[str]) -> None:
                  (now, name, key))
 
 
-def _apply_all(conn, adapter, records, res, today, now, webhook, known: set[str]) -> set[str]:
+def _apply_all(conn, adapter, records, res, today, now, known: set[str], read: set[str]) -> set[str]:
     name, seen = adapter.name, set()
     ready: list[Record] = []
     for rec in records:
         if isinstance(rec, EntityHint):
             add_alert(conn, adapter=name, level="warn", code="new_entity", message=f"未知地点「{rec.name}」：{redact(rec.context)} {rec.url}",
-                      dedup_key=f"hint:{rec.name}", now=now, webhook=webhook)
+                      dedup_key=f"hint:{rec.name}", now=now)
         elif isinstance(rec, ParseIssue):
             add_alert(conn, adapter=name, level="warn", code="parse_issue", message=redact(rec.message),
-                      dedup_key=f"issue:{name}:{rec.key}", now=now, webhook=webhook)
+                      dedup_key=f"issue:{name}:{rec.key}", now=now)
         elif isinstance(rec, FactRecord):
             # dates first: a term table's record key carries its term's first day (fill_validity)
             filled = fill_validity(conn, rec, today)
             if filled is None:
                 add_alert(conn, adapter=name, level="warn", code="no_term_dates",
                           message=f"{rec.key}: 行事历里找不到目前学期，无法补上有效期，这条先不写入",
-                          dedup_key=f"no_term:{rec.key}", now=now, webhook=webhook)
+                          dedup_key=f"no_term:{rec.key}", now=now)
                 for k in [k for k in known if k == rec.key or k.startswith(rec.key + ":")]:
                     _seen(conn, name, k, now, seen)  # still on the page: its term lineages are not missing
                 continue
@@ -204,13 +216,13 @@ def _apply_all(conn, adapter, records, res, today, now, webhook, known: set[str]
                 add_alert(conn, adapter=name, level="warn" if rec.attribute == "hours" else "info", code="overlap",
                           message=redact(f"{rec.key} [{rec.valid_from}, {rec.valid_to}) 与同一来源的 {kept.key} "
                                          f"[{kept.valid_from}, {kept.valid_to}) 有效期重叠，只写入后者；请到来源页面确认"),
-                          dedup_key=f"overlap:{name}:{rec.key}", now=now, webhook=webhook)
+                          dedup_key=f"overlap:{name}:{rec.key}", now=now)
                 continue
             _apply_fact(conn, name, rec, res, now)
         elif isinstance(rec, EventRecord):
             _apply_event(conn, name, rec, res, now)
         elif isinstance(rec, DocRecord):
-            _apply_doc(conn, name, rec, res, now)
+            _apply_doc(conn, name, rec, res, now, read)
     return seen
 
 
@@ -223,45 +235,36 @@ def _unchanged_or_undone(conn, name: str, key: str, h: str) -> bool:
 
 
 def _apply_fact(conn, name, rec, res, now) -> None:
+    """U2: written directly; C1 closes the facts it restates (apply_fact)."""
     h = content_hash(rec)
     if _unchanged_or_undone(conn, name, rec.key, h):
         return
-    if rec.attribute == "hours":
-        pid = add_pending(conn, adapter=name, record_key=rec.key, op="upsert", record=rec, content_hash=h,
-                          diff=_hours_diff(current_fact(conn, rec.key), rec, displaced_by(conn, rec)),
-                          reason="new" if _state(conn, name, rec.key) is None else "changed", now=now)
-        res.n_pending += pid is not None
-    else:
-        apply_fact(conn, rec, adapter=name, review="auto_ok", now=now)
-        set_state(conn, name, rec.key, "fact", h, now)
-        res.n_written += 1
-
-
-def _apply_event(conn, name, rec, res, now) -> None:
-    h = content_hash(rec)
-    if _unchanged_or_undone(conn, name, rec.key, h):
-        return
-    old = conn.execute("SELECT during_from, during_to FROM calendar_event WHERE uid=?", (rec.key,)).fetchone()
-    moved = old is not None and (old[0], old[1]) != (rec.during_from.isoformat(), rec.during_to.isoformat())
-    if rec.status != "confirmed" or moved:
-        reason = "date_changed" if moved else rec.status
-        diff = f"{old[0] if old else '-'}..{old[1] if old else '-'} -> {rec.during_from}..{rec.during_to} {rec.summary}"
-        res.n_pending += add_pending(conn, adapter=name, record_key=rec.key, op="upsert", record=rec, content_hash=h, diff=diff,
-                                     reason=reason, now=now) is not None
-        return
-    upsert_event(conn, rec, adapter=name, now=now)
-    set_state(conn, name, rec.key, "event", h, now)
+    apply_fact(conn, rec, adapter=name, review="auto_ok", now=now)
+    set_state(conn, name, rec.key, "fact", h, now)
+    supersede_pending(conn, name, rec.key, now=now)
     res.n_written += 1
 
 
-def _apply_doc(conn, name, rec, res, now) -> None:
-    if rec.gone:
-        withdraw_doc(conn, name, rec.doc_key, now=now)
-        conn.execute("UPDATE record_state SET status='retired' WHERE adapter=? AND record_key=?", (name, rec.key))
-        res.n_written += 1
+def _apply_event(conn, name, rec, res, now) -> None:
+    """U2: new, rescheduled, tentative and cancelled events are all written directly; serve.db leaves cancelled ones out
+    and the answers label tentative ones."""
+    h = content_hash(rec)
+    if _unchanged_or_undone(conn, name, rec.key, h):
         return
+    upsert_event(conn, rec, adapter=name, now=now)
+    set_state(conn, name, rec.key, "event", h, now)
+    supersede_pending(conn, name, rec.key, now=now)
+    res.n_written += 1
+
+
+def _apply_doc(conn, name, rec, res, now, read: set[str]) -> None:
     # list-level identity: excerpt/attachments come from detail pages and are updated only when those are fetched
-    h = content_hash(replace(rec, excerpt=None, attachments=()))
+    h = content_hash(replace(rec, excerpt=None, attachments=(), gone=False))
+    if rec.gone:
+        _gone(conn, name, rec, h, res, now)
+        return
+    if rec.key in read:  # its detail page answered: a page that once answered 404 is back
+        conn.execute("DELETE FROM suppressed WHERE adapter=? AND record_key=? AND note='gone'", (name, rec.key))
     if not rec.partial and _unchanged_or_undone(conn, name, rec.key, h):
         return
     upsert_doc(conn, rec, adapter=name, now=now)
@@ -270,22 +273,61 @@ def _apply_doc(conn, name, rec, res, now) -> None:
     res.n_written += 1
 
 
-def _missing(conn, name, keys: set[str], res: RunResult, now: str) -> None:
-    """Only full scans count absences; three in a row retire the record (facts/events via review)."""
-    for key in keys:
+def _gone(conn, name, rec: DocRecord, h: str, res: RunResult, now: str) -> None:
+    """The announcement's page answered 404: withdraw it now, with the facts it stated (their keys start with its key;
+    C2: a dated closure is taken down when its page is gone). The list row that still shows it is remembered, so later
+    runs neither write it back nor fetch its page again; an edited row is new content and is written as usual."""
+    res.n_retired += withdraw_doc(conn, name, rec.doc_key, now=now)
+    derived = conn.execute("SELECT record_key FROM record_state WHERE adapter=? AND kind='fact' AND status='active' "
+                           "AND substr(record_key, 1, ?) = ?", (name, len(rec.key) + 1, rec.key + ":")).fetchall()
+    for (key,) in derived:
+        res.n_retired += _retire(conn, name, key, "fact", now)
+    conn.execute("UPDATE record_state SET status='retired' WHERE adapter=? AND record_key=?", (name, rec.key))
+    suppress(conn, adapter=name, record_key=rec.key, content_hash=h, kind="doc", ref=rec.doc_key, note="gone", now=now)
+
+
+def _retire(conn, name: str, key: str, kind: str, now: str) -> bool:
+    if kind == "doc":
+        done = withdraw_doc(conn, name, key.split(":", 1)[-1], now=now)
+    elif kind == "event":
+        done = retire_event(conn, key, now=now)
+    else:
+        done = retire_fact(conn, key, now=now) is not None
+    conn.execute("UPDATE record_state SET status='retired' WHERE adapter=? AND record_key=?", (name, key))
+    supersede_pending(conn, name, key, now=now)
+    return done
+
+
+def _countable(conn, kind: str, key: str) -> tuple[bool, tuple[date, date] | None]:
+    """(whether an absence of this record can count at all, its current dates)."""
+    if kind == "fact":
+        f = conn.execute("""SELECT f.valid_from, f.valid_to, s.kind FROM fact f JOIN source_doc s ON s.id = f.source_doc
+                             WHERE f.lineage_id=? AND f.recorded_to IS NULL""", (lineage_id(key),)).fetchone()
+        if f is None or f["kind"] == "table_page":  # nothing in force, or a dated table entry that expires by itself
+            return False, None
+        return True, (date.fromisoformat(f["valid_from"]), date.fromisoformat(f["valid_to"]))
+    if kind == "event":
+        e = conn.execute("SELECT during_from, during_to FROM calendar_event WHERE uid=? AND status <> 'withdrawn'",
+                         (key,)).fetchone()
+        return (e is not None), ((date.fromisoformat(e[0]), date.fromisoformat(e[1])) if e else None)
+    return True, None
+
+
+def _missing(conn, adapter: Adapter, keys: set[str], parsed: list[Record], res: RunResult, today: date, now: str) -> None:
+    """C2: a full scan counts an absence only for a record it had the chance to produce; three in a row retire it,
+    without review."""
+    name = adapter.name
+    for key in sorted(keys):
+        st = _state(conn, name, key)
+        if st is None or st["status"] != "active":  # already taken down in this run (C1 displacement, a 404 page)
+            continue
+        countable, span = _countable(conn, st["kind"], key)
+        if not countable or not adapter.counts_missing(key, st["kind"], span, parsed, today):
+            continue
         conn.execute("UPDATE record_state SET missing_full_scans=missing_full_scans+1 WHERE adapter=? AND record_key=?",
                      (name, key))
-        st = _state(conn, name, key)
-        if st["missing_full_scans"] < RETIRE_AFTER_FULL_SCANS:
-            continue
-        if st["kind"] == "doc":
-            withdraw_doc(conn, name, key.split(":", 1)[-1], now=now)
-            conn.execute("UPDATE record_state SET status='retired' WHERE adapter=? AND record_key=?", (name, key))
-            res.n_written += 1
-        else:
-            res.n_pending += add_pending(conn, adapter=name, record_key=key, op="retire", record=None, content_hash="retire",
-                                         diff=f"- {key}（连续 {RETIRE_AFTER_FULL_SCANS} 次全扫都没出现）",
-                                         reason="missing", now=now) is not None
+        if _state(conn, name, key)["missing_full_scans"] >= RETIRE_AFTER_FULL_SCANS:
+            res.n_retired += _retire(conn, name, key, st["kind"], now)
 
 
 def _full_scan_due(conn: sqlite3.Connection, name: str, today: date) -> bool:
@@ -315,14 +357,13 @@ def run_all(settings: Settings, *, today: date, only: list[str] | None = None, f
             if hasattr(client, "warc") and not settings.readonly:
                 sink = client.warc = WarcSink(settings.warc_dir, a.name, int(time.time()), datetime.now(UTC))
             try:
-                results.append(run_adapter(conn, a, client, today=today, full_scan=fs, readonly=settings.readonly,
-                                           webhook=settings.discord_webhook))
+                results.append(run_adapter(conn, a, client, today=today, full_scan=fs, readonly=settings.readonly))
             except Exception as exc:
                 conn.rollback()
                 log.exception("adapter %s crashed", a.name)
                 if not settings.readonly:
                     add_alert(conn, adapter=a.name, level="error", code="crashed", message=redact(f"{type(exc).__name__}: {exc}"),
-                              dedup_key=f"{a.name}:crashed", now=iso_now(), webhook=settings.discord_webhook)
+                              dedup_key=f"{a.name}:crashed", now=iso_now())
                     conn.execute("UPDATE crawl_run SET finished_at=?, passed=0, error=? WHERE adapter=? AND finished_at IS NULL",
                                  (iso_now(), redact(str(exc))[:500], a.name))
                     conn.commit()

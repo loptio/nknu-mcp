@@ -78,6 +78,12 @@ class Adapter:
 
         return standard(self, records, history, snaps)
 
+    def counts_missing(self, key: str, kind: str, span: tuple[date, date] | None, records: list[Record], today: date) -> bool:
+        """C2: whether this full-scan run had the chance to produce `key` (kind fact/event/doc; span = its current dates),
+        so that its absence counts towards retirement. `records` are this run's parsed records, detail pages unmerged.
+        Facts printed on a table page never get here: they expire on their own date."""
+        return True
+
 
 REGISTRY: dict[str, type[Adapter]] = {}
 

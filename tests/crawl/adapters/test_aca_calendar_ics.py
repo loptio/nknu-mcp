@@ -92,3 +92,13 @@ def test_parse_is_pure():
 
 def test_fixture_only_masked_names():
     assert all("O" in hit for hit in find_pii(RAW.decode()))
+
+
+def test_absence_counts_only_inside_the_parse_window():
+    # C2: an event that ended more than WINDOW_BEFORE ago is no longer parsed; its absence is not a deletion
+    today = date(2026, 10, 22)
+    assert A.counts_missing("uid", "event", (date(2026, 10, 1), date(2026, 10, 2)), [], today)
+    assert A.counts_missing("ics-holiday:uid", "fact", (date(2026, 10, 24), date(2026, 10, 27)), [], today)
+    assert not A.counts_missing("uid", "event", (date(2026, 8, 1), date(2026, 8, 2)), [], today)
+    assert not A.counts_missing("uid", "event", (date(2028, 1, 1), date(2028, 1, 2)), [], today)
+    assert A.counts_missing("uid", "event", None, [], today)

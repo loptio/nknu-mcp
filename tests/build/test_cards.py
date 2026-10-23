@@ -84,13 +84,38 @@ def test_conflict_card_and_alert(world):
     make(world)
     c = card_on(world, WR, TODAY)
     assert c["status"] == "conflict" and "場地開放時間(另一版本)" in c["answer_zh"] and "請以現場公告為準" in c["answer_zh"]
+    # F-conflict-template-promise: nothing is queued for review; the maintainer is notified (C4)
+    assert "已通知維護者" in c["answer_zh"] and "審核" not in c["answer_zh"] and c["template_ver"] == 2
     assert connect(world / "facts.db").execute("SELECT count(*) FROM alert WHERE code='conflict'").fetchone()[0] >= 1
+
+
+def test_build_reports_new_conflicts_once(world):
+    conn = connect(world / "facts.db")
+    other = SourceRef("https://c.nknu.edu.tw/reality/Page.aspx?PN=9", "場地開放時間(另一版本)", "nknu.org.pe", "table_page", "x")
+    apply_fact(conn, replace(WR_TERM, key="v2", source=other, rules=(HoursRule((4,), "18:30", "20:30"),)), adapter="pe_open_hours",
+               review="verified", now=T0)
+    conn.commit()
+    assert make(world).new_conflicts >= 1
+    assert make(world).new_conflicts == 0  # already alerted, not yet resolved
 
 
 def test_calendar_cards(world):
     make(world)
     c = card_on(world, "nknu", date(2027, 1, 18), intent="calendar")
     assert c is not None and "寒假開始" in c["answer_zh"] and "來源：教務處《教學行事曆》" in c["answer_zh"]
+    assert "暫定" not in c["answer_zh"]
+
+
+def test_tentative_calendar_card_says_so(world):
+    from nknu.core.writer import upsert_event
+    from tests.factories import VACATION
+
+    conn = connect(world / "facts.db")
+    upsert_event(conn, replace(VACATION, status="tentative"), adapter="aca_calendar_ics", now=T0)
+    conn.commit()
+    make(world)
+    c = card_on(world, "nknu", date(2027, 1, 18), intent="calendar")
+    assert "寒假開始（暫定，日期可能變動）" in c["answer_zh"] and json.loads(c["payload_json"])["status"] == "tentative"
 
 
 def test_two_char_fts_hit(world):
@@ -144,7 +169,7 @@ def test_meta_records_facts_version(world):
     info = make(world)
     meta = dict(ro(world).execute("SELECT key, value FROM meta").fetchall())
     assert meta["facts_version"] == str(data_version(connect(world / "facts.db"))) and meta["build_id"] == info.build_id
-    assert meta["today"] == "2026-10-22" and json.loads(meta["template_ver"]) == 1
+    assert meta["today"] == "2026-10-22" and json.loads(meta["template_ver"]) == 2
 
 
 def test_cli_build(world):

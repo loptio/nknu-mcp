@@ -80,7 +80,8 @@ def _build_now(s) -> None:
 
     info = build_serve_db(s.facts_path, s.serve_path, today=today_tpe(), templates_path=s.config_dir / "templates.yaml",
                           disabled_sources=s.disabled_sources)
-    typer.echo(f"serve.db built: build_id={info.build_id} cards={info.n_cards}")
+    typer.echo(f"serve.db built: build_id={info.build_id} cards={info.n_cards}"
+               + (f"；新的来源冲突 {info.new_conflicts} 处：nknu alerts" if info.new_conflicts else ""))
 
 
 @app.command()
@@ -89,9 +90,12 @@ def crawl(
     full: bool = typer.Option(None, "--full/--partial", help="强制全扫或只扫前几页（默认：当天第一次全扫）"),
     no_build: bool = typer.Option(False, "--no-build", help="抓完不重建 serve.db"),
 ) -> None:
-    """礼貌抓取全部来源，写入 facts.db；资料有变动就重建 serve.db。"""
+    """礼貌抓取全部来源，通过改版守卫的资料直接写入 facts.db；资料有变动就重建 serve.db。有写入、下架或告警时，
+    把摘要写进 log，并在设了 NKNU_DISCORD_WEBHOOK 时发到 Discord。"""
+    from nknu.admin.changes import crawl_summary
     from nknu.core.factsdb import connect, data_version, migrate
-    from nknu.core.timeutil import today_tpe
+    from nknu.core.notify import notify
+    from nknu.core.timeutil import iso_now, today_tpe
     from nknu.crawl.pipeline import run_all
 
     s = _settings()
@@ -99,16 +103,32 @@ def crawl(
     migrate(conn)
     before = data_version(conn)
     conn.close()
+    started = iso_now()
     results = run_all(s, today=today_tpe(), only=only or None, full_scan=full)
     for r in results:
         state = "ok" if r.passed else "VOID"
-        typer.echo(f"{r.adapter:18} {state:4} records={r.n_records} written={r.n_written} pending={r.n_pending}"
+        typer.echo(f"{r.adapter:18} {state:4} records={r.n_records} written={r.n_written} retired={r.n_retired}"
                    + (f"  {r.error}" if r.error else ""))
     conn = connect(s.facts_path)
     changed = data_version(conn) != before
     conn.close()
+    build_error = None
     if changed and not no_build:
-        _build_now(s)
+        try:
+            _build_now(s)  # its new source conflicts are alerts of this crawl, so the summary carries them
+        except Exception as exc:  # noqa: BLE001 - reported in the summary, then raised
+            build_error = exc
+    if not s.readonly:
+        conn = connect(s.facts_path)
+        summary = crawl_summary(conn, results, started)
+        conn.close()
+        if build_error is not None:
+            summary = (summary or "NKNU 抓取摘要") + (f"\n重建 serve.db 失败（仍在提供上一版答案）：{type(build_error).__name__}: "
+                                                   f"{str(build_error)[:200]}")
+        if summary:
+            notify(summary, s.discord_webhook, label="CRAWL")
+    if build_error is not None:
+        raise build_error
     if any(not r.passed for r in results):
         raise typer.Exit(1)
 
@@ -159,7 +179,7 @@ def alerts(
 
 @app.command()
 def review(no_build: bool = typer.Option(False, "--no-build", help="审核完不重建 serve.db")) -> None:
-    """逐条查看待审变更（场馆时段、闭馆、行事历改期），核准后才生效。"""
+    """处理残留的待审项目（旧版留下的；现在爬虫直接写入，不再新增待审）。日常请用 nknu changes / nknu undo。"""
     from nknu.admin.review import NotPending, decide, list_pending, render_item
     from nknu.build.templates import load_templates
     from nknu.core.factsdb import connect, migrate

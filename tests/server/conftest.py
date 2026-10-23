@@ -13,10 +13,14 @@ from nknu.core.ids import lineage_id
 from nknu.core.records import DocRecord, FactRecord, HoursRule, SourceRef, content_hash
 from nknu.core.timeutil import TAIPEI
 from nknu.core.writer import add_pending, apply_fact, upsert_doc
+from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs
+from nknu.crawl.pipeline import run_adapter
 from nknu.server.query import get_hours
 from nknu.server.servedb_reader import ServeDB
 from nknu.settings import REPO_ROOT
+from tests.crawl.adapters.helpers import FIXTURES, snap
 from tests.scenario import build as build_scenario
+from tests.world import Replay
 
 TPL = REPO_ROOT / "config" / "templates.yaml"
 TODAY = date(2026, 10, 22)
@@ -84,6 +88,32 @@ def world_with_pending_closure(world, tmp_path_factory):
                     diff="+ closed 2026-11-07", reason="new", now="2026-10-22T03:00:00Z")
 
     return _derive(world, tmp_path_factory, "pending", change)[0]
+
+
+MIDTERM_UID = "2ub1uqe5kjr320ihfvggmodtat@google.com"  # 期中考試Mid-term exam 2026-11-02
+WITHDRAWAL_UID = "10kt6s1i12424pqmif1bkmifcm@google.com"  # 申辦停修 2026-11-03
+
+
+def ics_with_status(ics: str, uid: str, status: str) -> str:
+    blocks = ics.split("BEGIN:VEVENT")
+    hit = [i for i, b in enumerate(blocks) if f"UID:{uid}" in b]
+    assert len(hit) == 1 and "STATUS:CONFIRMED" in blocks[hit[0]]
+    blocks[hit[0]] = blocks[hit[0]].replace("STATUS:CONFIRMED", f"STATUS:{status}")
+    return "BEGIN:VEVENT".join(blocks)
+
+
+@pytest.fixture(scope="session")
+def world_calendar_status(world, tmp_path_factory):
+    """The real calendar crawled again after the 11/02 mid-term exam turned TENTATIVE and 申辦停修 was CANCELLED (U2: the
+    crawler writes both changes itself)."""
+    def change(conn):
+        ics = (FIXTURES / "aca_calendar_ics" / "calendar.ics").read_bytes().decode()
+        ics = ics_with_status(ics_with_status(ics, MIDTERM_UID, "TENTATIVE"), WITHDRAWAL_UID, "CANCELLED")
+        res = run_adapter(conn, Replay(AcaCalendarIcs(), [snap(ICS_URL, ics, body=ics.encode())]), None, today=TODAY,
+                          full_scan=False, readonly=False)
+        assert res.passed and res.n_written >= 2, (res.violations, res.error)
+
+    return _derive(world, tmp_path_factory, "calendar_status", change)[0]
 
 
 @pytest.fixture(scope="session")

@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -26,6 +26,7 @@ class BuildInfo:
     built_at: str
     facts_version: int
     n_cards: int
+    new_conflicts: int = 0  # conflict alerts this build raised (an unresolved one is not raised again)
 
 
 _COPY = [
@@ -116,21 +117,24 @@ def build_serve_db(facts_path: Path, out_path: Path, *, today: date, templates_p
         conn.close()
         tmp.unlink(missing_ok=True)
         raise
-    _alert_conflicts(facts_path, cards)
-    return info
+    return replace(info, new_conflicts=_alert_conflicts(facts_path, cards))
 
 
-def _alert_conflicts(facts_path: Path, cards: list[CardRow]) -> None:
+def _alert_conflicts(facts_path: Path, cards: list[CardRow]) -> int:
+    """One alert per conflicting card, written to facts.db (the build itself never calls out: the nightly build runs
+    without network). `nknu crawl` sends the alerts its own rebuild raised in its summary (C4)."""
     conflicts = [c for c in cards if c.status == "conflict"]
     if not conflicts:
-        return
+        return 0
     fconn = connect_facts(facts_path)
+    new = 0
     with fconn:
         for c in conflicts:
-            add_alert(fconn, adapter=None, level="warn", code="conflict",
-                      message=f"{c.entity_id} {c.valid_from}..{c.valid_to}: {c.answer_zh}",
-                      dedup_key=f"conflict:{c.entity_id}:{c.valid_from}", now=iso_now())
+            new += add_alert(fconn, adapter=None, level="warn", code="conflict",
+                             message=f"{c.entity_id} {c.valid_from}..{c.valid_to}: {c.answer_zh}",
+                             dedup_key=f"conflict:{c.entity_id}:{c.valid_from}", now=iso_now()) is not None
     fconn.close()
+    return new
 
 
 def rollback(out_path: Path) -> None:

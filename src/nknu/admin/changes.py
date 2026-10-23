@@ -1,7 +1,8 @@
 """`nknu changes`: what was written to facts.db since a given day — by the crawler, review, manual entry or undo.
 
 Derived from the append-only fact table (every version and when it was closed), calendar_event, doc and the undo
-memory, so it needs no log of its own. Each change carries the id or key that `nknu undo` takes.
+memory, so it needs no log of its own. Each change carries the id or key that `nknu undo` takes. crawl_summary turns the
+changes and alerts of one crawl into the message `nknu crawl` logs and sends to Discord (C4).
 """
 
 from __future__ import annotations
@@ -13,9 +14,14 @@ from datetime import UTC, date, datetime, timedelta
 
 from nknu.build.cards import names_of
 from nknu.build.templates import dows_zh
+from nknu.core.pii import redact
 from nknu.core.timeutil import TAIPEI
 
 OPS = {"new": "新增", "update": "更新", "replaced": "被取代", "retired": "下架", "undone": "撤回"}
+EVENT_STATUS = {"tentative": "暫定", "cancelled": "已取消"}
+SUMMARY_CHANGES = 10  # change lines in one crawl summary (C4)
+SUMMARY_ALERTS = 5
+SUMMARY_CHARS = 1800  # Discord takes 2000; notify() cuts at 1900
 
 
 @dataclass(frozen=True)
@@ -73,14 +79,14 @@ def _fact_changes(conn: sqlite3.Connection, since: str, names: dict[str, str]) -
                           (since,))
     for f in closed:  # closed without a successor of its own lineage
         text = _fact_text(conn, f, names)
+        if _undone(conn, "fact", f["record_key"], f["id"]):  # explicit, so it wins over a write in the same second
+            out.append(Change(f["recorded_to"], "fact", "undone", f["adapter"], f["record_key"], f["id"], text))
+            continue
         by = conn.execute(_DISPLACER, {"at": f["recorded_to"], "lineage": f["lineage_id"], "url": f["url"],
                                        "entity": f["entity_id"], "attribute": f["attribute"], "qualifier": f["qualifier"],
                                        "specificity": f["specificity"], "valid_from": f["valid_from"],
                                        "valid_to": f["valid_to"]}).fetchone()
-        if by is not None:
-            op, text = "replaced", f"{text}（由 {by[0]} 取代）"
-        else:
-            op = "undone" if _undone(conn, "fact", f["record_key"], f["id"]) else "retired"
+        op, text = ("replaced", f"{text}（由 {by[0]} 取代）") if by is not None else ("retired", text)
         out.append(Change(f["recorded_to"], "fact", op, f["adapter"], f["record_key"], f["id"], text))
     return out
 
@@ -96,7 +102,7 @@ def _event_changes(conn: sqlite3.Connection, since: str) -> list[Change]:
             op = "new" if e["first_seen"] == e["last_seen"] else "update"
         last = _last_day(e["during_to"])
         span = e["during_from"] if last == e["during_from"] else f"{e['during_from']}～{last}"
-        status = "" if e["status"] in ("confirmed", "withdrawn") else f"（{e['status']}）"
+        status = f"（{EVENT_STATUS[e['status']]}）" if e["status"] in EVENT_STATUS else ""
         out.append(Change(e["last_seen"], "event", op, e["adapter"], e["uid"], e["uid"], f"{span} {e['summary']}{status}"))
     return out
 
@@ -124,3 +130,51 @@ def format_change(c: Change) -> str:
     at = datetime.strptime(c.at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).astimezone(TAIPEI)
     handle = f"id {c.ref}  key {c.key}" if c.kind == "fact" and c.op in ("new", "update") else f"key {c.key}"
     return f"{at:%m-%d %H:%M} {OPS[c.op]} [{c.adapter}] {c.text}\n            {handle}"
+
+
+def _taipei(ts: str) -> datetime:
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).astimezone(TAIPEI)
+
+
+def crawl_summary(conn: sqlite3.Connection, results: list, since: str) -> str | None:
+    """C4: one message for a crawl that started at `since` (UTC) — per-adapter counts, at most SUMMARY_CHANGES change
+    lines and the alerts raised meanwhile (including source conflicts found by the crawl's own rebuild), within
+    SUMMARY_CHARS so Discord shows it whole. None when nothing was written, taken down or alerted.
+    `results` are the crawl's RunResults (adapter, passed, error)."""
+    changes = list_changes(conn, since)
+    alerts = conn.execute("SELECT level, adapter, code, message FROM alert WHERE created_at >= ? ORDER BY id",
+                          (since,)).fetchall()
+    if not changes and not alerts:
+        return None
+    head = [f"NKNU 抓取摘要 {_taipei(since):%m-%d %H:%M}（台北）"]
+    counts: dict[str, dict[str, int]] = {}
+    for c in changes:
+        per = counts.setdefault(c.adapter, {})
+        per[c.op] = per.get(c.op, 0) + 1
+    for name in dict.fromkeys([r.adapter for r in results] + sorted(counts)):
+        parts = [f"{label} {counts[name][op]}" for op, label in OPS.items() if counts.get(name, {}).get(op)]
+        void = next((r for r in results if r.adapter == name and not r.passed), None)
+        if void is not None:
+            parts.append(f"作废（{redact(void.error or '')[:80]}）")
+        if parts:
+            head.append(f"{name}：" + "、".join(parts))
+    tail = []
+    if alerts:
+        tail.append(f"新告警 {len(alerts)} 条（nknu alerts）：")
+        tail += [f"· [{a['level']}] {a['adapter'] or '-'} {a['code']}: {a['message'][:160]}" for a in alerts[:SUMMARY_ALERTS]]
+    if changes:
+        tail.append("撤回：nknu undo <｜后面的 key>；全部变更：nknu changes")
+    # what the maintainer may want to undo first (writes), then take-downs, then what those writes replaced; hours,
+    # closures and calendar before announcements; time order within each group
+    rank = {"new": 0, "update": 0, "retired": 1, "undone": 1, "replaced": 2}
+    room = SUMMARY_CHARS - sum(len(x) + 1 for x in head + tail) - len("…另有 9999 条") - 1
+    body = []
+    for c in sorted(changes, key=lambda c: (c.kind == "doc", rank[c.op])):
+        line = f"· {OPS[c.op]} [{c.adapter}] {c.text}"[:200] + (f"｜{c.key}" if c.op in ("new", "update") else "")
+        if len(body) == SUMMARY_CHANGES or len(line) + 1 > room:
+            break
+        body.append(line)
+        room -= len(line) + 1
+    if len(body) < len(changes):
+        body.append(f"…另有 {len(changes) - len(body)} 条")
+    return "\n".join(head + body + tail)

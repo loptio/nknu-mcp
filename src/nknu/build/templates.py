@@ -11,6 +11,7 @@ import yaml
 from nknu.core.rocdate import roc_str
 
 DOWZH = "一二三四五六日"
+TENTATIVE_NOTE = "（暫定，日期可能變動）"
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,11 @@ def load_templates(path: Path) -> Templates:
     raw = yaml.safe_load(Path(path).read_text())
     ver = int(raw.pop("template_ver"))
     return Templates(ver, {k: str(v) for k, v in raw.items()})
+
+
+def event_note(status: str | None) -> str:
+    """The calendar_event template's {note}: a tentative event (written without review since U2) says so."""
+    return TENTATIVE_NOTE if status == "tentative" else ""
 
 
 def dows_zh(dows: list[int] | tuple[int, ...]) -> str:

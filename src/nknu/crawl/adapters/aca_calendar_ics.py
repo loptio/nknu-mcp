@@ -93,6 +93,15 @@ class AcaCalendarIcs(Adapter):
     def discover(self, ctx) -> list[Target]:
         return [Target(ICS_URL)]
 
+    def counts_missing(self, key: str, kind: str, span: tuple[date, date] | None, records: list[Record],
+                       today: date) -> bool:
+        """Only events (and holiday facts) inside the window parse() reads count: one that ended more than WINDOW_BEFORE
+        ago simply stopped being parsed. A day of margin at each edge covers a fetch just after midnight."""
+        if span is None:
+            return True
+        lo, hi = span
+        return hi > today - WINDOW_BEFORE + timedelta(days=1) and lo < today + WINDOW_AFTER - timedelta(days=1)
+
     def parse(self, snap: Snapshot) -> list[Record]:
         if snap.status != 200:
             return []

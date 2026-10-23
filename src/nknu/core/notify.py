@@ -9,8 +9,8 @@ import httpx
 log = logging.getLogger("nknu")
 
 
-def notify(message: str, webhook: str | None) -> None:
-    log.warning("ALERT %s", message)
+def notify(message: str, webhook: str | None, *, label: str = "ALERT") -> None:
+    log.warning("%s %s", label, message)
     if not webhook:
         return
     try:
