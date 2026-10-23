@@ -352,15 +352,19 @@ def add_hours_cmd(
     conn = connect(s.facts_path)
     migrate(conn)
     try:
-        fid = add_hours(conn, place=place, from_=date.fromisoformat(from_), to=date.fromisoformat(to) if to else None,
-                        opens=opens, closes=closes, closed=closed, reason=reason, source_url=source_url, publisher=publisher,
-                        title=title, site_visit=site_visit, now=iso_now())
+        added = add_hours(conn, place=place, from_=date.fromisoformat(from_), to=date.fromisoformat(to) if to else None,
+                          opens=opens, closes=closes, closed=closed, reason=reason, source_url=source_url,
+                          publisher=publisher, title=title, site_visit=site_visit, now=iso_now())
     except (PlaceError, ValueError, sqlite3.IntegrityError) as exc:
         typer.echo(f"错误：{exc}")
         raise typer.Exit(2) from exc
     finally:
         conn.close()
-    typer.echo(f"已写入 fact {fid}")
+    typer.echo(f"已写入 fact {added.fid}（{added.key}）")
+    for k in added.replaced:
+        typer.echo(f"  取代了 {k}")
+    for k in added.kept:
+        typer.echo(f"  被取代的爬虫资料其他日期照原内容保留为 {k}（要拿掉用 nknu undo {k}）")
     if not no_build:
         _build_now(s)
 

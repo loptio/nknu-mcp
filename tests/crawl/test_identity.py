@@ -206,6 +206,33 @@ def test_manual_entry_over_crawled_content_sticks(tmp_path):
     assert resolve(SQLiteBackend(conn), "nknu.heping.library.main", "hours", date(2026, 10, 24))["winner"]["tier"] == 2
 
 
+def test_manual_entry_for_one_day_keeps_the_rest_of_a_crawled_closure(tmp_path):
+    # correcting one day of the crawled 10/25-10/26 closure (citing the page, as the README says) replaces that day only:
+    # 10/25 stays closed, also after the next crawl, and the command says what it replaced and what it kept
+    conn = make_db(tmp_path)
+    crawl(conn, LibOpenTime(), LIB_PAGE, LIB_URL)
+    conn.close()
+    eid = "nknu.heping.library.main"
+    r = cli(tmp_path, "add", "hours", "--place", eid, "--from", "2026-10-26", "--opens", "08:15", "--closes", "17:00",
+            "--reason", "改為開館", "--source-url", LIB_URL, "--publisher", "nknu.org.lis", "--no-build")
+    assert r.exit_code == 0, r.output
+    assert f"lib_open_time:{eid}:closed:2026-10-25" in r.output and "2026-10-25" in r.output
+    conn = connect(tmp_path / "facts.db")
+    be = SQLiteBackend(conn)
+    for _ in range(2):
+        day25 = resolve(be, eid, "hours", date(2026, 10, 25))
+        assert day25["status"] == "current" and day25["today"]["open"] is False
+        assert resolve(be, eid, "hours", date(2026, 10, 26))["today"]["open"] is True
+        assert resolve(be, eid, "hours", date(2026, 10, 27))["winner"]["specificity"] < 2
+        res = crawl(conn, LibOpenTime(), LIB_PAGE, LIB_URL, full_scan=True)
+        assert (res.n_written, res.n_retired) == (0, 0)
+    # the page changes the closure: the school's new statement replaces both the correction and the kept day
+    longer = edited(LIB_PAGE, "(10/25-10/26)", "(10/25-10/27)")
+    crawl(conn, LibOpenTime(), longer, LIB_URL)
+    for d in (25, 26, 27):
+        assert resolve(be, eid, "hours", date(2026, 10, d))["today"]["open"] is False, d
+
+
 PE_LIST = read("pe_news", "list.html")
 PE_CLOSURE = read("pe_news", "closure.html")
 GYM_1024 = "pe_news:460:nknu.heping.gym.main:2026-10-24"
