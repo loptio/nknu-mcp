@@ -4,6 +4,10 @@ Paging replays the page's own form state with __EVENTTARGET=gvFull / __EVENTARGU
 Normal runs read the first 3 pages of every category; the first run of each day reads every page, and only those
 full scans count towards "missing 3 times = withdrawn". Rows are keyed by the stable 40-hex UNID.
 GOOD (榮譽典範) keeps only the masked title: no detail fetch, no excerpt.
+
+Detail pages (the excerpt) are read for every listed row that has none stored yet, at most DETAIL_CAP per run: rows
+seen for the first time first, then the backlog newest first (F-excerpt-backlog). A detail page that fails costs only
+its own excerpt (a ParseIssue) and is asked for again after the others; a failing list page still voids the run.
 """
 
 from __future__ import annotations
@@ -30,7 +34,8 @@ HONOR_CATEGORY = "GOOD"
 PARTIAL_PAGES = 3
 MAX_PAGES = 50  # a pager that never ends means the site changed: void the run instead of guessing
 DETAIL_CAP = 30
-DETAIL_META = {"kind": "detail", "selectors": ["#ctl00_phMain_lbContent"]}
+DETAIL_META = {"kind": "detail"}  # no run-voiding selector: _detail checks its own page (F-detail-void-freeze)
+DETAIL_BODY = "#ctl00_phMain_lbContent"
 _UNID = re.compile(r"UNID=([0-9A-Fa-f]{40})")
 
 
@@ -75,10 +80,15 @@ class SsoNews(Adapter):
             else:
                 if ctx.full_scan and s.text and next_page_target(s.text, s.url, cat, page) is not None:
                     raise ParseError(f"{cat}: pager did not end within {MAX_PAGES} pages")
-        rows = [r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)]
-        wanted = [r for r in rows if r.pii_level != "personal" and r.key not in ctx.known_keys][:DETAIL_CAP]
-        snaps += [ctx.fetch(Target(r.url, meta=DETAIL_META)) for r in wanted]
-        return snaps
+        rows: dict[str, DocRecord] = {}
+        for r in (r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)):
+            rows.setdefault(r.key, r)
+        todo = [r for r in rows.values() if r.pii_level != "personal" and r.key not in ctx.down_keys
+                and r.key not in ctx.detailed_keys]
+        # first seen this run, then the backlog, then pages that failed last time; newest first within each
+        todo.sort(key=lambda r: (r.key in ctx.failed_detail_keys, r.key in ctx.known_keys,
+                                 -(r.published_on or date.min).toordinal()))
+        return snaps + ctx.fetch_details([Target(r.url, meta=DETAIL_META) for r in todo[:DETAIL_CAP]])
 
     def parse(self, snap: Snapshot) -> list[Record]:
         if snap.target.meta.get("kind") == "detail":
@@ -120,12 +130,15 @@ class SsoNews(Adapter):
         if snap.status == 404:
             return [DocRecord(key, unid, "", detail_url(unid), gone=True)]
         if snap.status != 200 or not snap.text:
-            return []
+            why = snap.target.meta.get("error") or (f"HTTP {snap.status}" if snap.status != 200 else "空白頁")
+            return [ParseIssue(key, "detail", f"公告詳情頁沒讀到（{why}），摘錄下一輪再抓")]
         tree = LexborHTMLParser(snap.text)
-        body = tree.css_first("#ctl00_phMain_lbContent")
+        body = tree.css_first(DETAIL_BODY)
         if body is None:
-            return []
+            return [ParseIssue(key, "detail", f"公告詳情頁找不到內文欄位 {DETAIL_BODY}（公告已刪除，或詳情頁改版），摘錄下一輪再抓")]
         files = tree.css_first("#ctl00_phMain_lbFileLink")
         text = element_text(body, snap.url).replace("\n", " ")
         attachments = tuple(a.text(strip=True) for a in files.css("a")) if files else ()
-        return [DocRecord(key, unid, "", detail_url(unid), partial=True, excerpt=text[:200] or None, attachments=attachments)]
+        # "" = read, nothing to quote (attachment-only notices): not asked for again
+        return [DocRecord(key, unid, "", detail_url(unid), partial=True, excerpt=text[:200] if text.strip() else "",
+                          attachments=attachments)]

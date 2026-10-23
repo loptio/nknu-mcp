@@ -9,12 +9,20 @@ Disappearance (C2): only full scans count absences, and only for records the run
 (Adapter.counts_missing); three in a row retire the record without review. Facts printed on a table page (closure days,
 term tables) are never retired for leaving the page: they carry their own end date and expire on it. An announcement
 whose page answers 404 is withdrawn at once, together with the closures it stated.
+
+Guard (invariants.standard): any failing list page, missing selector, unreadable 200, date-rate drop, collapse or
+out-of-range count voids the run. Exception (C6): a lower count, with every other check passing, that the two runs
+before counted exactly the same is the new normal: written, and the count baseline restarts there. Void alerts are
+raised again once a day while the adapter stays void. A detail page that fails costs only its own record
+(alert detail_failed) and is asked for after the others next time.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+import statistics
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -38,7 +46,7 @@ from nknu.core.writer import (
     upsert_event,
     withdraw_doc,
 )
-from nknu.crawl.adapter import Adapter, RunContext, RunHistory, Violation
+from nknu.crawl.adapter import Adapter, ParseError, RunContext, RunHistory, Violation
 from nknu.crawl.fetch import FetchError
 from nknu.crawl.invariants import record_count
 from nknu.crawl.warc import WarcSink, gc_warc
@@ -47,6 +55,7 @@ from nknu.settings import Settings
 log = logging.getLogger("nknu")
 ORDER = ["aca_calendar_ics", "pe_open_hours", "lib_open_time", "pe_news", "sso_news"]  # calendar first: term dates
 RETIRE_AFTER_FULL_SCANS = 3
+NEW_NORMAL_RUNS = 3  # C6: the same lower count this many runs in a row is accepted
 
 
 @dataclass
@@ -64,21 +73,55 @@ def run_order(names: list[str]) -> list[str]:
     return sorted(names, key=lambda n: (ORDER.index(n) if n in ORDER else len(ORDER), n))
 
 
+def _baseline_key(name: str, full_scan: bool) -> str:
+    return f"count_baseline:{name}:{int(full_scan)}"
+
+
 def _history(conn: sqlite3.Connection, name: str, full_scan: bool, now: str) -> RunHistory:
+    """Record counts of the passed runs of the last 7 days (same scan mode), from the last accepted new normal on."""
     since = (datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ") - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    base = conn.execute("SELECT value FROM meta WHERE key=?", (_baseline_key(name, full_scan),)).fetchone()
+    since = max(since, base[0]) if base else since
     rows = conn.execute("SELECT n_records FROM crawl_run WHERE adapter=? AND passed=1 AND full_scan=? AND started_at>=? "
                         "ORDER BY id", (name, int(full_scan), since)).fetchall()
     return RunHistory([r[0] for r in rows], rows[-1][0] if rows else None)
+
+
+def _new_normal(conn, name: str, run_id: int, full_scan: bool, n: int, history: RunHistory,
+                violations: list[Violation]) -> bool:
+    """C6: the count is the only check that failed, it is below the 7-day range, and the two runs before this one (same
+    scan mode) counted exactly the same: a source that really shrank, accepted instead of voided for a week."""
+    if not violations or any(v.code != "count_out_of_band" for v in violations) or not history.counts_7d:
+        return False
+    if not 0 < n < statistics.median(history.counts_7d):
+        return False
+    before = conn.execute("SELECT n_records FROM crawl_run WHERE adapter=? AND full_scan=? AND id<? AND finished_at IS NOT "
+                          "NULL ORDER BY id DESC LIMIT ?", (name, int(full_scan), run_id, NEW_NORMAL_RUNS - 1)).fetchall()
+    return len(before) == NEW_NORMAL_RUNS - 1 and all(r[0] == n for r in before)
+
+
+def _accept_new_normal(conn, name: str, full_scan: bool, n: int, history: RunHistory, now: str) -> None:
+    med = statistics.median(history.counts_7d)
+    conn.execute("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (_baseline_key(name, full_scan), now))
+    conn.execute("UPDATE alert SET resolved_at=? WHERE dedup_key=? AND resolved_at IS NULL",
+                 (now, f"{name}:count_out_of_band"))
+    add_alert(conn, adapter=name, level="info", code="count_new_normal",
+              message=f"{'全扫' if full_scan else '部分扫描'}条数 {n} 连续 {NEW_NORMAL_RUNS} 轮相同（之前 7 天中位数 {med:g}），"
+                      f"当成新常态接受并写入；之后以 {n} 为基准", now=now)
 
 
 def _merge(records: list[Record]) -> list[Record]:
     """Detail-page partial DocRecords are folded into the list-page record with the same key; a detail page that answered
     404 marks its list-page record gone (the list fields stay, so its content hash is the list row's)."""
     full: dict[str, Record] = {}
+    notes: list[Record] = []  # issues and hints are kept as they are: one keyed on an announcement must not replace it
     partials: list[DocRecord] = []
     gone: set[str] = set()
     for r in records:
-        if isinstance(r, DocRecord) and r.partial:
+        if isinstance(r, (ParseIssue, EntityHint)):
+            notes.append(r)
+        elif isinstance(r, DocRecord) and r.partial:
             partials.append(r)
         elif isinstance(r, DocRecord) and r.gone:
             gone.add(r.key)
@@ -90,11 +133,12 @@ def _merge(records: list[Record]) -> list[Record]:
             full[key] = replace(full[key], gone=True)
     for p in partials:
         base = full.get(p.key)
-        if isinstance(base, DocRecord):
-            full[p.key] = replace(base, excerpt=p.excerpt or base.excerpt, attachments=p.attachments or base.attachments)
+        if isinstance(base, DocRecord):  # "" is an excerpt too: the page was read and had no text
+            full[p.key] = replace(base, excerpt=p.excerpt if p.excerpt is not None else base.excerpt,
+                                  attachments=p.attachments or base.attachments)
         else:
             full[p.key] = p  # existing doc row gets updated
-    return list(full.values())
+    return list(full.values()) + notes
 
 
 def _same_source_overlaps(facts: list[FactRecord]) -> dict[int, FactRecord]:
@@ -120,14 +164,16 @@ def _state(conn: sqlite3.Connection, name: str, key: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM record_state WHERE adapter=? AND record_key=?", (name, key)).fetchone()
 
 
-def _void(conn, name, run_id, violations, error, readonly) -> RunResult:
+def _void(conn, name, run_id, violations, error, readonly, n_records: int = 0) -> RunResult:
+    """A void run writes only its crawl_run row (n_records only when the count alone failed, for C6) and its alerts,
+    raised again once a day while the adapter stays void (C6)."""
     now = iso_now()
     if not readonly:
         for v in violations:
             add_alert(conn, adapter=name, level="error" if v.code in ("fetch_failed", "parse_failed") else "warn", code=v.code,
-                      message=redact(v.message), dedup_key=f"{name}:{v.code}", now=now)
-        conn.execute("UPDATE crawl_run SET finished_at=?, passed=0, error=? WHERE id=?",
-                     (now, redact("; ".join(f"{v.code}: {v.message}" for v in violations))[:500], run_id))
+                      message=redact(v.message), dedup_key=f"{name}:{v.code}", now=now, remind_daily=True)
+        conn.execute("UPDATE crawl_run SET finished_at=?, passed=0, error=?, n_records=? WHERE id=?",
+                     (now, redact("; ".join(f"{v.code}: {v.message}" for v in violations))[:500], n_records, run_id))
         conn.commit()
     return RunResult(name, False, violations=violations, error=error)
 
@@ -144,22 +190,36 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
     # announcements whose page answered 404 (or that the maintainer took down) count as known too: their detail page is
     # not fetched again on every run (F-404-churn)
     down = {r[0] for r in conn.execute("SELECT record_key FROM suppressed WHERE adapter=? AND kind='doc'", (name,))}
-    ctx = RunContext(client, full_scan, today, conn, known | down, adapter.rate_limit)
+    # announcements whose detail page is stored ("" = read, no text); the others are the detail backlog (F-excerpt-backlog)
+    detailed = {f"{name}:{r[0]}" for r in conn.execute("SELECT doc_key FROM doc WHERE adapter=? AND excerpt IS NOT NULL",
+                                                         (name,))}
+    # detail pages that failed and are still failing (open alert): asked for after the rest (F-detail-void-freeze)
+    failed = {r[0][len(_detail_alert(name, "")):] for r in conn.execute(
+        "SELECT dedup_key FROM alert WHERE adapter=? AND code='detail_failed' AND resolved_at IS NULL", (name,))}
+    ctx = RunContext(client, full_scan, today, conn, known | down, adapter.rate_limit, detailed, down, failed)
     try:
         snaps = adapter.fetch_all(ctx)
     except FetchError as exc:
         return _void(conn, name, run_id, [Violation("fetch_failed", str(exc))], str(exc), readonly)
+    except ParseError as exc:  # a list page the adapter could not follow (a row without its id, a pager that never ends)
+        return _void(conn, name, run_id, [Violation("parse_failed", str(exc))], str(exc), readonly)
     try:
         parsed = [r for s in snaps for r in adapter.parse(s)]
         records = _merge(parsed)
     except Exception as exc:  # noqa: BLE001 - any parser error means the layout changed
         msg = f"{type(exc).__name__}: {exc}"
         return _void(conn, name, run_id, [Violation("parse_failed", msg)], msg, readonly)
-    violations = adapter.invariants(records, _history(conn, name, full_scan, now), snaps)
+    history = _history(conn, name, full_scan, now)
+    violations = adapter.invariants(records, history, snaps)
+    n = record_count(records)
+    if not readonly and _new_normal(conn, name, run_id, full_scan, n, history, violations):
+        _accept_new_normal(conn, name, full_scan, n, history, now)
+        violations = []
     if violations:
-        return _void(conn, name, run_id, violations, violations[0].message, readonly)
+        band_only = all(v.code == "count_out_of_band" for v in violations)
+        return _void(conn, name, run_id, violations, violations[0].message, readonly, n if band_only else 0)
 
-    res = RunResult(name, True, n_records=record_count(records))
+    res = RunResult(name, True, n_records=n)
     if readonly:
         return res
     try:
@@ -191,6 +251,9 @@ def _apply_all(conn, adapter, records, res, today, now, known: set[str], read: s
         if isinstance(rec, EntityHint):
             add_alert(conn, adapter=name, level="warn", code="new_entity", message=f"未知地点「{rec.name}」：{redact(rec.context)} {rec.url}",
                       dedup_key=f"hint:{rec.name}", now=now)
+        elif isinstance(rec, ParseIssue) and rec.code == "detail":  # one announcement's detail page was not read
+            add_alert(conn, adapter=name, level="warn", code="detail_failed", message=redact(f"{rec.key}: {rec.message}"),
+                      dedup_key=_detail_alert(name, rec.key), now=now)
         elif isinstance(rec, ParseIssue):
             add_alert(conn, adapter=name, level="warn", code="parse_issue", message=redact(rec.message),
                       dedup_key=f"issue:{name}:{rec.key}", now=now)
@@ -263,14 +326,36 @@ def _apply_doc(conn, name, rec, res, now, read: set[str]) -> None:
     if rec.gone:
         _gone(conn, name, rec, h, res, now)
         return
-    if rec.key in read:  # its detail page answered: a page that once answered 404 is back
+    if rec.key in read:  # its detail page answered: a page that once answered 404 is back, one that failed works again
         conn.execute("DELETE FROM suppressed WHERE adapter=? AND record_key=? AND note='gone'", (name, rec.key))
-    if not rec.partial and _unchanged_or_undone(conn, name, rec.key, h):
+        conn.execute("UPDATE alert SET resolved_at=? WHERE dedup_key=? AND resolved_at IS NULL",
+                     (now, _detail_alert(name, rec.key)))
+    st = _state(conn, name, rec.key)
+    if rec.partial or (st is not None and st["status"] == "active" and st["content_hash"] == h):
+        # the list row is as stored: only what its detail page brought this run can be new (the detail backlog of
+        # rows read long ago, an edited body); written, and counted, only when it differs from what is stored
+        if rec.key in read and _detail_differs(conn, name, rec):
+            upsert_doc(conn, replace(rec, partial=True), adapter=name, now=now)
+            res.n_written += 1
+        return
+    if is_suppressed(conn, name, rec.key, h):
         return
     upsert_doc(conn, rec, adapter=name, now=now)
-    if not rec.partial:
-        set_state(conn, name, rec.key, "doc", h, now)
+    set_state(conn, name, rec.key, "doc", h, now)
     res.n_written += 1
+
+
+def _detail_alert(name: str, key: str) -> str:
+    return f"detail:{name}:{key}"
+
+
+def _detail_differs(conn, name: str, rec: DocRecord) -> bool:
+    row = conn.execute("SELECT excerpt, attachments_json FROM doc WHERE adapter=? AND doc_key=?",
+                       (name, rec.doc_key)).fetchone()
+    if row is None:
+        return False
+    return ((rec.excerpt is not None and rec.excerpt != row["excerpt"])
+            or (bool(rec.attachments) and list(rec.attachments) != json.loads(row["attachments_json"])))
 
 
 def _gone(conn, name, rec: DocRecord, h: str, res: RunResult, now: str) -> None:
@@ -363,7 +448,7 @@ def run_all(settings: Settings, *, today: date, only: list[str] | None = None, f
                 log.exception("adapter %s crashed", a.name)
                 if not settings.readonly:
                     add_alert(conn, adapter=a.name, level="error", code="crashed", message=redact(f"{type(exc).__name__}: {exc}"),
-                              dedup_key=f"{a.name}:crashed", now=iso_now())
+                              dedup_key=f"{a.name}:crashed", now=iso_now(), remind_daily=True)
                     conn.execute("UPDATE crawl_run SET finished_at=?, passed=0, error=? WHERE adapter=? AND finished_at IS NULL",
                                  (iso_now(), redact(str(exc))[:500], a.name))
                     conn.commit()

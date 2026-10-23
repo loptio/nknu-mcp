@@ -122,6 +122,15 @@ def test_partial_doc_merges(conn):
     assert conn.execute("SELECT excerpt FROM doc").fetchone()[0] == "摘錄"
 
 
+def test_list_row_never_blanks_stored_fields(conn):
+    # F-sso-row-fields-null: a row read without its unit/category/dates keeps what was stored
+    upsert_doc(conn, DOC, adapter="sso_news", now=T0)
+    upsert_doc(conn, replace(DOC, title="停修申請（更正）", unit=None, category=None, published_on=None, announce_until=None),
+               adapter="sso_news", now=T1)
+    row = conn.execute("SELECT title, unit, category, published_on, announce_until FROM doc").fetchone()
+    assert tuple(row) == ("停修申請（更正）", DOC.unit, DOC.category, "2026-10-20", "2026-11-16")
+
+
 def test_withdraw_doc(conn):
     upsert_doc(conn, DOC, adapter="sso_news", now=T0)
     withdraw_doc(conn, "sso_news", DOC.doc_key, now=T1)
@@ -138,6 +147,17 @@ def test_set_state_resets_missing(conn):
 def test_alert_dedup(conn):
     assert add_alert(conn, adapter="x", level="warn", code="c", message="m", dedup_key="k", now=T0)
     assert add_alert(conn, adapter="x", level="warn", code="c", message="m", dedup_key="k", now=T0) is None
+
+
+def test_alert_reminded_at_most_once_a_day(conn):
+    # C6: a condition that persists (an adapter voided run after run) is raised again once a day, not once and never
+    kw = {"adapter": "x", "level": "warn", "code": "c", "dedup_key": "k", "remind_daily": True}
+    aid = add_alert(conn, message="m1", now="2026-10-22T02:00:00Z", **kw)
+    assert add_alert(conn, message="m2", now="2026-10-23T01:59:59Z", **kw) is None
+    assert add_alert(conn, message="m3", now="2026-10-23T02:00:00Z", **kw) == aid
+    assert tuple(conn.execute("SELECT count(*), max(created_at), max(message) FROM alert").fetchone()) == (
+        1, "2026-10-23T02:00:00Z", "m3")
+    assert add_alert(conn, adapter="x", level="warn", code="c", message="m", dedup_key="k", now="2026-10-30T00:00:00Z") is None
 
 
 def test_fact_rows_still_append_only(conn):

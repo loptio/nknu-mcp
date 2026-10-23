@@ -49,11 +49,31 @@ class RunContext:
     full_scan: bool
     today: date
     conn: sqlite3.Connection  # facts.db, read only for adapters
-    known_keys: set[str]
+    known_keys: set[str]  # records in force, plus announcements taken down (down_keys)
     rate: RateLimit
+    detailed_keys: set[str] = field(default_factory=set)  # announcements whose detail page is stored (excerpt read)
+    down_keys: set[str] = field(default_factory=set)  # announcements whose page answered 404, or taken down by nknu undo
+    failed_detail_keys: set[str] = field(default_factory=set)  # detail pages that failed last time: asked for last
 
     def fetch(self, target: Target) -> Snapshot:
         return self.client.fetch(target, self.rate)
+
+    def fetch_details(self, targets: list[Target]) -> list[Snapshot]:
+        """Detail pages cost only their own record when they fail (F-detail-void-freeze): a fetch error comes back as a
+        status-0 snapshot carrying meta['error'], which parse() turns into a ParseIssue, and the list pages stay valid.
+        Once the client closes the host for this run (3 failures in a row, or a Retry-After beyond the cap) the
+        remaining detail pages wait for the next run."""
+        from nknu.crawl.fetch import FetchError, HostCircuitOpen, failed_snapshot
+
+        out = []
+        for t in targets:
+            try:
+                out.append(self.fetch(t))
+            except HostCircuitOpen:
+                break
+            except FetchError as exc:
+                out.append(failed_snapshot(t, str(exc)))
+        return out
 
 
 class Adapter:

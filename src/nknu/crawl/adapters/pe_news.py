@@ -4,6 +4,11 @@ Every list row becomes a DocRecord (document layer, not facts). Detail pages add
 announcement that says a venue 暫停開放 on explicitly written dates also yields closure FactRecords (written directly, U2).
 v1 does not extract opening hours from announcements (design §13.4). 暫停借用 (bookings suspended) is not a closure.
 Honor-roll style posts (獲獎名單 …) keep only the masked title: no detail fetch, no excerpt.
+
+Detail pages, at most DETAIL_CAP per run: rows seen for the first time, then (full scans) announcements titled as
+closures again, then the backlog of rows with no excerpt stored, newest first (F-excerpt-backlog); a page that failed
+last time comes after all of them. A detail page that fails costs only its own record (a ParseIssue keyed on the
+announcement, so its closures are not counted missing).
 """
 
 from __future__ import annotations
@@ -30,7 +35,8 @@ UNIT = "體育室"
 DETAIL_CAP = 15
 MAX_PAGES = 20
 LIST_META = {"kind": "list", "selectors": ["#MasterGrid"]}
-DETAIL_META = {"kind": "detail", "selectors": ["#DataFormView"]}
+DETAIL_META = {"kind": "detail"}  # no run-voiding selector: _detail checks its own page (F-detail-void-freeze)
+DETAIL_BODY = "#DataFormView"
 
 CLOSURE_WORDS = re.compile(r"暫停開放|停止開放|不開放|閉館|不予開放")
 HONOR_TITLE = re.compile(r"名單|榮獲|得獎|獲獎|恭賀|賀[!！]|錄取")
@@ -58,10 +64,12 @@ def _nid(url: str) -> str | None:
     return (parse_qs(urlsplit(url).query).get("Nid") or [None])[0]
 
 
-def needs_detail(title: str, key: str, known: set[str], full_scan: bool) -> bool:
-    if HONOR_TITLE.search(title):
+def needs_detail(title: str, key: str, detailed: set[str], full_scan: bool, down: set[str] = frozenset()) -> bool:
+    """No excerpt stored yet, or (full scan) a closure announcement whose dates may have been edited. Never for honor
+    posts (names) or announcements taken down (404, nknu undo)."""
+    if HONOR_TITLE.search(title) or key in down:
         return False
-    return key not in known or (full_scan and bool(CLOSURE_WORDS.search(title)))
+    return key not in detailed or (full_scan and bool(CLOSURE_WORDS.search(title)))
 
 
 def page_targets(html: str, url: str) -> list[Target]:
@@ -135,10 +143,14 @@ class PeNews(Adapter):
                 if not s.text:
                     break
                 html, url = s.text, s.url
-        rows = [r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)]
-        wanted = [r for r in rows if needs_detail(r.title, r.key, ctx.known_keys, ctx.full_scan)][:DETAIL_CAP]
-        snaps += [ctx.fetch(Target(r.url, meta=DETAIL_META)) for r in wanted]
-        return snaps
+        rows: dict[str, DocRecord] = {}
+        for r in (r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)):
+            rows.setdefault(r.key, r)
+        todo = [r for r in rows.values() if needs_detail(r.title, r.key, ctx.detailed_keys, ctx.full_scan, ctx.down_keys)]
+        todo.sort(key=lambda r: (r.key in ctx.failed_detail_keys,
+                                 0 if r.key not in ctx.known_keys else 1 if CLOSURE_WORDS.search(r.title) else 2,
+                                 -(r.published_on or date.min).toordinal()))
+        return snaps + ctx.fetch_details([Target(r.url, meta=DETAIL_META) for r in todo[:DETAIL_CAP]])
 
     def parse(self, snap: Snapshot) -> list[Record]:
         if snap.target.meta.get("kind") == "detail":
@@ -182,10 +194,11 @@ class PeNews(Adapter):
         if snap.status == 404:
             return [DocRecord(key, nid, "", detail_url(nid), gone=True)]
         if snap.status != 200 or not snap.text:
-            return []
+            why = snap.target.meta.get("error") or (f"HTTP {snap.status}" if snap.status != 200 else "空白頁")
+            return [ParseIssue(key, "detail", f"公告詳情頁沒讀到（{why}），下一輪再抓")]
         tree = LexborHTMLParser(snap.text)
-        if tree.css_first("#DataFormView") is None:
-            return []
+        if tree.css_first(DETAIL_BODY) is None:
+            return [ParseIssue(key, "detail", f"公告詳情頁找不到 {DETAIL_BODY}（公告已刪除，或詳情頁改版），下一輪再抓")]
         title_n, body_n = tree.css_first("#DataFormView_TitleLabel"), tree.css_first("#DataFormView_ContentsLabel")
         when_n, files_n = tree.css_first("#DataFormView_AddTimeLabel"), tree.css_first("#DataFormView_FileLinkLabel")
         title = element_text(title_n, BASE).replace("\n", " ") if title_n else ""
@@ -194,10 +207,10 @@ class PeNews(Adapter):
             published = parse_roc_date((when_n.text(strip=True) if when_n else "").split(" ")[0])
         except ValueError:
             return [ParseIssue(key, "date", "公告日期欄位無法解析"), DocRecord(key, nid, title, detail_url(nid), partial=True,
-                                                                              excerpt=body[:200] or None)]
+                                                                              excerpt=_excerpt(body))]
         files = tuple(re.split(r"\s*\(", unicodedata.normalize("NFKC", a.text(strip=True)))[0] for a in files_n.css("a")) \
             if files_n else ()
-        out: list[Record] = [DocRecord(key, nid, title, detail_url(nid), partial=True, excerpt=body[:200] or None,
+        out: list[Record] = [DocRecord(key, nid, title, detail_url(nid), partial=True, excerpt=_excerpt(body),
                                        attachments=files)]
         if not CLOSURE_WORDS.search(title + body):
             return out
@@ -215,6 +228,11 @@ class PeNews(Adapter):
                 out.append(FactRecord(f"{key}:{eid}:{lo}", eid, "hours", {"closed": True, "reason": reason}, lo, hi,
                                       "explicit", 2, propagates, src, f"{lo}~{hi} {reason}"[:200], "rule"))
         return out
+
+
+def _excerpt(body: str) -> str:
+    """The first 200 characters; "" = read, nothing to quote (not asked for again)."""
+    return body[:200] if body.strip() else ""
 
 
 def table_grid_row(tr) -> list[str]:

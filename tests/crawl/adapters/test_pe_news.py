@@ -4,12 +4,19 @@ import pytest
 
 from nknu.core.pii import find_pii
 from nknu.core.records import DocRecord, FactRecord, ParseIssue
-from nknu.crawl.adapters.pe_news import LIST_URL, PeNews, closure_ranges, detail_url, needs_detail, page_targets
+from nknu.crawl.adapters.pe_news import (
+    DETAIL_META,
+    LIST_META,
+    LIST_URL,
+    PeNews,
+    closure_ranges,
+    detail_url,
+    needs_detail,
+    page_targets,
+)
 from tests.crawl.adapters.helpers import NO_HISTORY, read, snap
 
 A = PeNews()
-LIST_META = {"kind": "list", "selectors": ["#MasterGrid"]}
-DETAIL_META = {"kind": "detail", "selectors": ["#DataFormView"]}
 
 
 def detail(nid, name=None, html=None, status=200):
@@ -39,10 +46,24 @@ def test_honor_list_rows_masked_and_personal():
 
 
 def test_needs_detail_policy():
+    # third argument: announcements whose detail page is already stored (F-excerpt-backlog: not "keys seen before")
     assert needs_detail("115學年度第1學期 共同體育課表", "pe_news:854", set(), False)
     assert not needs_detail("115學年度第1學期 共同體育課表", "pe_news:854", {"pe_news:854"}, True)
     assert needs_detail("本校體育館於10月24至26日暫停開放", "pe_news:460", {"pe_news:460"}, True)
     assert not needs_detail("本校體育館於10月24至26日暫停開放", "pe_news:460", {"pe_news:460"}, False)
+    # a page that answered 404 (or was taken down with nknu undo) is not asked for again
+    assert not needs_detail("本校體育館於10月24至26日暫停開放", "pe_news:460", set(), True, down={"pe_news:460"})
+
+
+def test_failed_detail_page_is_an_issue_not_silence():
+    # F-detail-void-freeze: the run is not voided for one detail page, so the adapter has to say what it lost
+    from nknu.crawl.adapter import Target
+    from nknu.crawl.fetch import failed_snapshot
+
+    assert [r.code for r in A.parse(detail("999", "maintenance.html"))] == ["detail"]
+    assert [r.code for r in A.parse(detail("999", html=""))] == ["detail"]
+    lost = A.parse(failed_snapshot(Target(detail_url("999"), meta=DETAIL_META), "HTTP 503"))
+    assert [(r.key, r.code) for r in lost] == [("pe_news:999", "detail")] and "HTTP 503" in lost[0].message
 
 
 def test_closure_facts():
@@ -67,6 +88,13 @@ def test_suspended_booking_is_not_closure():
 def test_year_inferred_from_published_on():
     assert closure_ranges("體育館於11/3~11/16暫停開放", date(2026, 10, 20))[0][:2] == (date(2026, 11, 3), date(2026, 11, 17))
     assert closure_ranges("1/5(二)暫停開放", date(2026, 12, 20))[0][:2] == (date(2027, 1, 5), date(2027, 1, 6))
+
+
+def test_dash_range_without_weekdays():
+    # F-rocdate-dash: 「10/24-10/26暫停開放」 is a closure, not 民國10年 (which used to become a parse issue)
+    assert closure_ranges("體育館10/24-10/26暫停開放", date(2026, 10, 20)) == [(date(2026, 10, 24), date(2026, 10, 27),
+                                                                              "公告暫停開放")]
+    assert closure_ranges("重量訓練室10/2-10/6暫停開放", date(2026, 9, 25))[0][:2] == (date(2026, 10, 2), date(2026, 10, 7))
 
 
 def test_weekday_mismatch_is_issue():

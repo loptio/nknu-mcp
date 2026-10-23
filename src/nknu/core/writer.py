@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 
 from nknu.core.ids import lineage_id, uuid7
 from nknu.core.notify import notify
@@ -112,6 +113,8 @@ def retire_event(conn: sqlite3.Connection, uid: str, *, now: str) -> bool:
 
 
 def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: str) -> None:
+    """A list row never blanks a stored unit, category or date (a cell that moved reads as None: keep the old value);
+    a detail page (partial) updates only the excerpt and attachments."""
     attachments = json.dumps(list(rec.attachments), ensure_ascii=False)
     if rec.partial:
         conn.execute(
@@ -125,8 +128,10 @@ def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: s
         """INSERT INTO doc(adapter, doc_key, title, unit, category, published_on, announce_until, url, excerpt, attachments_json,
                            pii_level, first_seen, last_seen)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(adapter, doc_key) DO UPDATE SET title=excluded.title, unit=excluded.unit, category=excluded.category,
-             published_on=excluded.published_on, announce_until=excluded.announce_until, url=excluded.url,
+           ON CONFLICT(adapter, doc_key) DO UPDATE SET title=excluded.title, unit=coalesce(excluded.unit, doc.unit),
+             category=coalesce(excluded.category, doc.category),
+             published_on=coalesce(excluded.published_on, doc.published_on),
+             announce_until=coalesce(excluded.announce_until, doc.announce_until), url=excluded.url,
              excerpt=coalesce(excluded.excerpt, doc.excerpt),
              attachments_json=CASE WHEN excluded.attachments_json='[]' THEN doc.attachments_json ELSE excluded.attachments_json END,
              pii_level=excluded.pii_level, last_seen=excluded.last_seen, withdrawn_at=NULL""",
@@ -188,16 +193,37 @@ def supersede_pending(conn: sqlite3.Connection, adapter: str, record_key: str, *
                         "AND status='pending'", (now, adapter, record_key)).rowcount
 
 
+REMIND_AFTER = timedelta(days=1)
+
+
 def add_alert(conn: sqlite3.Connection, *, adapter: str | None, level: str, code: str, message: str,
-              dedup_key: str | None = None, now: str, webhook: str | None = None) -> int | None:
-    if dedup_key and conn.execute("SELECT 1 FROM alert WHERE dedup_key=? AND resolved_at IS NULL", (dedup_key,)).fetchone():
-        return None
+              dedup_key: str | None = None, now: str, webhook: str | None = None, remind_daily: bool = False) -> int | None:
+    """Raise an alert; None when the same alert (dedup_key) is still open. With remind_daily (a condition that keeps an
+    adapter from updating), an open alert last raised a day or more ago is raised again: its created_at becomes now and
+    its message the latest one, so the crawl summary shows it once more (C6: at most once a day)."""
+    if dedup_key:
+        open_ = conn.execute("SELECT id, created_at FROM alert WHERE dedup_key=? AND resolved_at IS NULL",
+                             (dedup_key,)).fetchone()
+        if open_ is not None:
+            if not remind_daily or _ts(now) - _ts(open_[1]) < REMIND_AFTER:
+                return None
+            conn.execute("UPDATE alert SET created_at=?, level=?, message=? WHERE id=?", (now, level, message, open_[0]))
+            _announce(adapter, level, code, message, webhook)
+            return open_[0]
     aid = conn.execute(
         "INSERT INTO alert(created_at, adapter, level, code, message, dedup_key) VALUES (?,?,?,?,?,?)",
         (now, adapter, level, code, message, dedup_key),
     ).lastrowid
+    _announce(adapter, level, code, message, webhook)
+    return aid
+
+
+def _ts(iso: str) -> datetime:
+    return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _announce(adapter: str | None, level: str, code: str, message: str, webhook: str | None) -> None:
     if level in ("warn", "error"):
         notify(f"[{level}] {adapter or '-'} {code}: {message}", webhook)
     else:
         log.info("alert %s %s: %s", adapter, code, message)
-    return aid

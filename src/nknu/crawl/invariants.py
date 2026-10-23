@@ -19,7 +19,10 @@ def selectors_present(snaps: list[Snapshot], default: list[str], pages_are_html:
     out = []
     for s in snaps:
         selectors = s.target.meta.get("selectors", default)
-        if not pages_are_html or s.status != 200 or not s.text or not selectors:
+        if not pages_are_html or s.status != 200 or not selectors:
+            continue
+        if not s.text:  # an empty body, or a 200 that is not a text page at all
+            out.append(Violation("selector_missing", f"{s.url} answered 200 without an HTML page"))
             continue
         tree = LexborHTMLParser(s.text)
         out += [Violation("selector_missing", f"{sel} missing on {s.url}") for sel in selectors if tree.css_first(sel) is None]
@@ -42,10 +45,15 @@ def not_collapsed(n: int, last: int | None) -> list[Violation]:
 
 
 def date_parse_rate(records: list[Record], floor: float = 0.95) -> list[Violation]:
+    """Share of records whose dates were read. A list row (DocRecord) without a publication date counts as a failure
+    even when the adapter raised no ParseIssue: date cells that moved or were renamed leave every row undated
+    (F-sso-row-fields-null)."""
     ok = sum(1 for r in records if isinstance(r, EventRecord)
              or (isinstance(r, FactRecord) and (r.valid_from is not None or r.valid_basis == "term"))
              or (isinstance(r, DocRecord) and not r.partial and r.published_on is not None))
-    bad = sum(1 for r in records if isinstance(r, ParseIssue) and r.code == "date")
+    undated = {r.key for r in records
+               if isinstance(r, DocRecord) and not r.partial and not r.gone and r.published_on is None}
+    bad = len(undated) + sum(1 for r in records if isinstance(r, ParseIssue) and r.code == "date" and r.key not in undated)
     if ok + bad and ok / (ok + bad) < floor:
         return [Violation("date_parse_rate", f"dates parsed {ok}/{ok + bad}")]
     return []

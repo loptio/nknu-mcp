@@ -6,13 +6,12 @@ import pytest
 from nknu.core.pii import find_pii
 from nknu.core.records import DocRecord
 from nknu.crawl.adapter import ParseError
-from nknu.crawl.adapters.sso_news import BASE, CATEGORIES, SsoNews, detail_url, list_meta, next_page_target
+from nknu.crawl.adapters.sso_news import BASE, CATEGORIES, DETAIL_META, SsoNews, detail_url, list_meta, next_page_target
 from nknu.crawl.webforms import postback
 from tests.crawl.adapters.helpers import NO_HISTORY, read, snap
 
 A = SsoNews()
 URL = f"{BASE}?cat=SCHOOLADMIN"
-DETAIL_META = {"kind": "detail", "selectors": ["#ctl00_phMain_lbContent"]}
 
 
 def docs(recs):
@@ -93,6 +92,18 @@ def test_row_without_unid_is_layout_change():
     html = re.sub(r"UNID=[0-9A-F]{40}", "UNID=", read("sso_news", "list_p1.html"))
     with pytest.raises(ParseError):
         A.parse(snap(URL, html, meta=list_meta("SCHOOLADMIN")))
+
+
+def test_renamed_row_fields_void_the_run():
+    # F-sso-row-fields-null: the grid and the title links stay, only the date/unit/category cells are renamed; every
+    # row would lose its date and drop out of search, so the run is void and the stored rows keep their values
+    html = read("sso_news", "list_p1.html")
+    for old, new in (("_StartDate", "_PostDate"), ("_EndDate", "_StopDate"), ("_DeptName", "_Unit"), ("_Category", "_Kind")):
+        html = html.replace(old, new)
+    s = snap(URL, html, meta=list_meta("SCHOOLADMIN"))
+    recs = A.parse(s)
+    assert len(docs(recs)) == 10 and all(d.published_on is None and d.unit is None for d in docs(recs))
+    assert [v.code for v in A.invariants(recs, NO_HISTORY, [s])] == ["date_parse_rate"]
 
 
 def test_maintenance_page_fails_invariants():

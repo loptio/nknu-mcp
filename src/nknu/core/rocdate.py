@@ -39,9 +39,10 @@ def roc_year(y: int) -> int:
     return y + ROC_OFFSET
 
 
-# one date token: (Y)(sep)M(sep)D  or  M/D (year from context)
+# one date token: (Y)(sep)M(sep)D  or  M/D (year from context). A year written with . / - uses the same separator
+# before the day, so in '10/24-10/26' the '10/' is a month, not 民國10年 (F-rocdate-dash)
 _DATE = re.compile(
-    r'(?:(?P<y>\d{2,4})(?:年|\.|/|-))?(?P<m>\d{1,2})(?:月|\.|/|-)(?P<d>\d{1,2})日?'
+    r'(?:(?P<y>\d{2,4})(?:年|(?P<ys>[./-])))?(?P<m>\d{1,2})(?(ys)(?P=ys)|(?:月|\.|/|-))(?P<d>\d{1,2})日?'
     # weekday annotation, e.g. (四) / （週四） / 週四: only with brackets or a 週/星期/周 prefix,
     # so a following word like 一般 is never read as a weekday
     r'(?:[(（](?:週|星期|周)?(?P<w>[一二三四五六日天])[)）]|(?:週|星期|周)(?P<w2>[一二三四五六日天]))?')

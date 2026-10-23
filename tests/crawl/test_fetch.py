@@ -70,6 +70,38 @@ def test_retry_after_honored():
     assert snap.status == 200 and 7 in fake.sleeps and len(calls) == 2
 
 
+def test_retry_after_beyond_cap_gives_up_on_the_host():
+    # F-retry-after-cap: "come back in an hour" is not shortened to 2 minutes and retried; the host is left alone for
+    # the rest of this run (later fetches fail without a request)
+    fake, calls = Fake(), []
+
+    def handler(req):
+        calls.append(1)
+        return html(status=503, headers={"retry-after": "3600"})
+
+    c = client(handler, fake)
+    with pytest.raises(FetchError, match="3600"):
+        c.fetch(Target(URL), RL)
+    assert len(calls) == 1 and not [s for s in fake.sleeps if s > 5]
+    with pytest.raises(HostCircuitOpen):
+        c.fetch(Target("https://c.nknu.edu.tw/reality/Newslist.aspx"), RL)
+    assert len(calls) == 1
+    assert client(lambda req: html(), fake).fetch(Target("https://sso.nknu.edu.tw/News/x"), RL).status == 200
+
+
+def test_no_wait_after_the_last_attempt():
+    fake, calls = Fake(), []
+
+    def handler(req):
+        calls.append(fake.t)
+        return html(status=503, headers={"retry-after": "7"})
+
+    with pytest.raises(FetchError):
+        client(handler, fake).fetch(Target(URL), RL)
+    assert len(calls) == 4 and fake.sleeps.count(7) == 3  # waits between attempts only
+    assert fake.t == calls[-1]  # nothing slept after the final answer
+
+
 def test_404_returns_snapshot():
     assert client(lambda req: html(status=404), Fake()).fetch(Target(URL), RL).status == 404
 

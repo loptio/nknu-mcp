@@ -9,7 +9,7 @@ from nknu.core.records import EntityHint, HoursRule, ParseIssue, content_hash
 from nknu.core.writer import add_pending, current_fact, set_state
 from nknu.crawl.adapter import Adapter, Target
 from nknu.crawl.fetch import Snapshot
-from nknu.crawl.pipeline import run_adapter, run_all, run_order
+from nknu.crawl.pipeline import _merge, run_adapter, run_all, run_order
 from nknu.settings import load_settings
 from tests.factories import DOC, HOLIDAY, LIB_CLOSED, LIB_REGULAR, TERM_BEGIN, VACATION, WR_TERM, make_db
 
@@ -120,6 +120,65 @@ def test_collapsed_run_keeps_old_values(conn):
     res = run(conn, FakeAdapter([DOC, DOC]))
     assert not res.passed and last_run(conn)["passed"] == 0 and alerts(conn, "collapsed")
     assert conn.execute("SELECT count(*) FROM doc").fetchone()[0] == 0
+
+
+def _rows(n):
+    return [replace(DOC, key=f"fake:N{i}", doc_key=f"N{i}") for i in range(n)]
+
+
+def test_a_lower_count_three_runs_in_a_row_is_the_new_normal(conn):
+    # C6 (F-band-lockout): a source that legitimately shrinks (fewer closure days in a new year) is not voided for a
+    # week: the same lower count three runs in a row, with every other check passing, is accepted as the new normal
+    seed_history(conn, "fake", [10, 10, 10])
+    results = [run(conn, FakeAdapter(_rows(4))) for _ in range(3)]
+    assert [r.passed for r in results] == [False, False, True] and results[2].n_written == 4
+    assert alerts(conn, "count_new_normal")
+    assert conn.execute("SELECT resolved_at FROM alert WHERE code='count_out_of_band'").fetchone()[0] is not None
+    # from now on the new count is the baseline: a small change stays in band
+    assert run(conn, FakeAdapter(_rows(3))).passed and run(conn, FakeAdapter(_rows(4))).passed
+
+
+def test_a_count_that_keeps_moving_is_not_accepted(conn):
+    seed_history(conn, "fake", [10, 10, 10])
+    assert [run(conn, FakeAdapter(_rows(n))).passed for n in (4, 3, 4, 4, 4)] == [False, False, False, False, True]
+
+
+def test_a_higher_count_is_not_accepted(conn):
+    # C6 names a lower count only: a sudden doubling (a parser that repeats rows) keeps voiding
+    seed_history(conn, "fake", [10, 10, 10])
+    assert not any(run(conn, FakeAdapter(_rows(25))).passed for _ in range(4))
+
+
+def test_a_lower_count_with_another_violation_is_not_accepted(conn):
+    seed_history(conn, "fake", [10, 10, 10])
+    broken = FakeAdapter(_rows(4), html="<html><body>維護中</body></html>", selectors=["#lbl_Contact"])
+    assert not any(run(conn, broken).passed for _ in range(4))
+
+
+def test_a_void_that_persists_is_reminded_once_a_day(conn):
+    # C6: the same alert at most once a day, instead of once and never again
+    broken = FakeAdapter([HOLIDAY], html="<html><body>維護中</body></html>", selectors=["#lbl_Contact"])
+    run(conn, broken)
+    first = conn.execute("SELECT created_at FROM alert WHERE code='selector_missing'").fetchone()[0]
+    run(conn, broken)
+    assert conn.execute("SELECT count(*), max(created_at) FROM alert WHERE code='selector_missing'").fetchone()[:] == (1, first)
+    conn.execute("UPDATE alert SET created_at='2026-10-20T00:00:00Z'")
+    conn.commit()
+    run(conn, broken)
+    n, at = conn.execute("SELECT count(*), max(created_at) FROM alert WHERE code='selector_missing'").fetchone()
+    assert n == 1 and at >= first
+
+
+def test_list_the_adapter_cannot_follow_voids_instead_of_crashing(conn):
+    # a ParseError while paging (a row without its id, a pager that never ends) is a layout change: void, old values kept
+    from nknu.crawl.adapter import ParseError
+
+    class Lost(FakeAdapter):
+        def fetch_all(self, ctx):
+            raise ParseError("CAMPUS: pager did not end within 50 pages")
+
+    res = run(conn, Lost([]))
+    assert not res.passed and alerts(conn, "parse_failed") and last_run(conn)["passed"] == 0
 
 
 def test_missing_selector_voids_run(conn):
@@ -302,6 +361,14 @@ def test_event_written_then_unchanged_noop(tmp_path):
     run(c, FakeAdapter([TERM_BEGIN]))
     assert data_version(c) == n
 
+
+
+def test_an_issue_keyed_on_an_announcement_keeps_the_announcement():
+    # a detail page that failed (or a list date that did not parse) is reported under the announcement's key; merging
+    # by key must neither drop the list row nor swallow the issue
+    issue = ParseIssue(DOC.key, "detail", "公告詳情頁沒讀到")
+    merged = _merge([DOC, issue, ParseIssue(OTHER_DOC.key, "date", "x"), OTHER_DOC])
+    assert DOC in merged and OTHER_DOC in merged and issue in merged and len(merged) == 4
 
 
 def test_list_rerun_after_detail_is_noop(conn):

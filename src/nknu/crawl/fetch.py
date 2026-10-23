@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from urllib.parse import urlencode, urlsplit
 
@@ -56,6 +56,12 @@ class Snapshot:
     text: str | None
     fetched_at: datetime
     sha256: str
+
+
+def failed_snapshot(target: Target, error: str) -> Snapshot:
+    """What a page that could not be fetched looks like to parse(): status 0, no body, the error in meta['error']."""
+    return Snapshot(target=replace(target, meta={**target.meta, "error": error}), url=target.url, status=0, headers={},
+                    body=b"", text=None, fetched_at=datetime.now(UTC), sha256=hashlib.sha256(b"").hexdigest())
 
 
 def decode_body(body: bytes, content_type: str | None) -> str:
@@ -106,6 +112,7 @@ class Client:
         self._locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
         self._last: dict[str, float] = {}
         self._failures: defaultdict[str, int] = defaultdict(int)
+        self._skip: dict[str, str] = {}  # host -> why it is left alone for the rest of this run
 
     def _wait_polite(self, host: str, rate: RateLimit) -> None:
         if host in self._last:
@@ -119,6 +126,8 @@ class Client:
 
     def fetch(self, target: Target, rate: RateLimit) -> Snapshot:
         host = urlsplit(target.url).hostname or ""
+        if host in self._skip:
+            raise HostCircuitOpen(f"{host}: {self._skip[host]}")
         if self._failures[host] >= BREAKER_THRESHOLD:
             raise HostCircuitOpen(f"{host}: {BREAKER_THRESHOLD} consecutive failures, skipping for this run")
         client = self._nknu if is_nknu_host(host) else self._other
@@ -127,9 +136,12 @@ class Client:
             body = urlencode(target.data).encode()
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         with self._locks[host]:  # per-host concurrency 1
+            retry_at: float | None = None  # the server's Retry-After, waited before the next attempt (never after the last)
             try:
                 for attempt in stamina.retry_context(on=_retryable, attempts=4, timeout=300, wait_initial=2, wait_max=60):
                     with attempt:
+                        if retry_at is not None and (delay := retry_at - self._clock()) > 0:
+                            self._sleep(delay)
                         self._wait_polite(host, rate)
                         try:
                             resp = client.request(target.method, target.url, content=body, headers=headers)
@@ -137,8 +149,12 @@ class Client:
                             self._last[host] = self._clock()
                         if resp.status_code in RETRY_STATUSES:
                             ra = _retry_after(resp)
-                            if ra:
-                                self._sleep(min(ra, MAX_RETRY_AFTER_S))
+                            if ra is not None and ra > MAX_RETRY_AFTER_S:
+                                # asked to stay away longer than a run waits: give up on this host until the next run
+                                why = f"HTTP {resp.status_code} with Retry-After {ra:.0f} s (> {MAX_RETRY_AFTER_S} s)"
+                                self._skip[host] = f"{why}, skipping for this run"
+                                raise FetchError(f"{target.url}: {why}")
+                            retry_at = self._clock() + ra if ra else None
                             raise RetryableStatus(resp.status_code)
             except (RetryableStatus, httpx.HTTPError) as exc:
                 self._fail(host)

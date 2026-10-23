@@ -41,6 +41,21 @@ def test_mmdd_needs_context_year():
         parse_roc_date('10/24')
 
 
+def test_dash_between_two_month_day_dates():
+    # F-rocdate-dash: '10/24-10/26' must not read '10/' as ROC year 10 ('-' then looks like a date separator)
+    assert parse_roc_range('10/24-10/26', default_year=2026) == (date(2026, 10, 24), date(2026, 10, 27))
+    # two-digit month whose day also fits a month: was silently read as 民國10年2月10日
+    assert parse_roc_range('10/2-10/6', default_year=2026) == (date(2026, 10, 2), date(2026, 10, 7))
+    assert parse_roc_range('12/30-1/2', default_year=2026) == (date(2026, 12, 30), date(2027, 1, 3))
+    assert parse_roc_range('11.3-11.16', default_year=2026) == (date(2026, 11, 3), date(2026, 11, 17))
+
+
+def test_dated_forms_keep_their_separator():
+    assert parse_roc_date('115-10-24') == date(2026, 10, 24)
+    assert parse_roc_date('2026-10-22') == date(2026, 10, 22)
+    assert parse_roc_range('115/10/24-115/10/26') == (date(2026, 10, 24), date(2026, 10, 27))
+
+
 def test_gregorian_passthrough_and_compact():
     assert parse_roc_date('2022/9/16') == date(2022, 9, 16)
     assert parse_roc_date('1150907') == date(2026, 9, 7)
