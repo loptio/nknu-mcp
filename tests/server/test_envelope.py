@@ -5,10 +5,12 @@ import pytest
 
 from nknu.server.envelope import (
     BUDGET,
+    ECHO_BYTES,
     ERROR_BUDGET,
     NOTICE_LABEL,
     approx_tokens,
     count_tokens,
+    echo,
     error_result,
     fit_budget,
     make_envelope,
@@ -155,6 +157,24 @@ def test_error_result_is_short_error():
     r = error_result("bad_days", "days 應為 1–14")
     assert r.is_error and r.structured_content == {"code": "bad_days", "message": "days 應為 1–14"}
     assert "bad_days" in r.content[0].text and count_tokens(r.content[0].text) <= ERROR_BUDGET
+
+
+def test_echo_quotes_user_input_cut_by_bytes():
+    assert echo("2026-13-45") == "「2026-13-45」"
+    assert echo("a\nb\x00") == "「a?b?」"  # no line breaks or control characters inside an error
+    cut = echo("㐀" * 100)
+    assert cut.endswith("…」") and len(cut[1:-2].encode()) <= ECHO_BYTES
+    assert count_tokens(echo("𠀀" * 100)) <= ECHO_BYTES + 4  # a token is at least one byte
+
+
+def test_error_result_with_long_cjk_input_stays_short():
+    for msg in ["日期格式應為 YYYY-MM-DD 或民國 115-10-24：" + echo("二〇二六年十月二十二日" * 40),
+                "日期格式應為 YYYY-MM-DD 或民國 115-10-24：" + echo("㐀㐁㐂㐃" * 100),
+                "參數不合法：" + echo("𠀀😀" * 50) + " 不支援此參數", "說明文字" * 300, "x" * 2000]:
+        r = error_result("bad_argument", msg)
+        assert count_tokens(r.content[0].text) <= ERROR_BUDGET and count_tokens(r.structured_content) <= ERROR_BUDGET, msg
+        assert r.content[0].text == f"錯誤 bad_argument：{r.structured_content['message']}"
+    assert error_result("bad_argument", "x" * 2000).structured_content["message"].endswith("…")
 
 
 def test_to_tool_result_carries_both_forms(sample_envelopes):

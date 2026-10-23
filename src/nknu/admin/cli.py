@@ -239,6 +239,22 @@ def add_hours_cmd(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="监听位址（cloudflared 在本机连进来，保持 127.0.0.1）"),
+    port: int = typer.Option(8765, help="监听埠"),
+) -> None:
+    """启动 MCP 服务（/mcp 与 /health）。serve.db 不存在或启动检查失败时拒绝启动。"""
+    import uvicorn
+
+    from nknu.server.app import create_app
+
+    # proxy_headers=False: the rate limit trusts CF-Connecting-IP only from a loopback peer, so the peer must stay the
+    # real TCP peer; access_log=False: no client addresses in the logs
+    uvicorn.run(create_app(_settings()), host=host, port=port, proxy_headers=False, server_header=False,
+                access_log=False)
+
+
+@app.command()
 def check() -> None:
     """授权扫描、个资扫描、禁止关闭 TLS 验证、启动断言。"""
     from nknu.admin.checks import run_all_checks

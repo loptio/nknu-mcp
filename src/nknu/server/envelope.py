@@ -20,6 +20,8 @@ from mcp.types import TextContent
 NOTICE_LABEL = "公告摘要，非核實事實"
 BUDGET = 400
 ERROR_BUDGET = 80
+ECHO_BYTES = 24  # user input quoted in an error message (echo)
+ERROR_MESSAGE_MAX = 120
 NOTES_MARK = "附註："
 TITLE_MAX = 40
 
@@ -98,10 +100,39 @@ def to_tool_result(env: dict) -> ToolResult:
     return ToolResult(content=[TextContent(type="text", text=render_text(env))], structured_content=env)
 
 
+def echo(value: object) -> str:
+    """User input quoted inside an error message. Non-printable characters become ?, and the quote is cut to ECHO_BYTES
+    of UTF-8: a token is at least one byte, so this bounds its real token count, which approx_tokens() can undercount
+    3x for rare characters (㐀 is 3 tokens). Every piece of user input reaches an error message through here."""
+    s = "".join(c if c.isprintable() else "?" for c in str(value))
+    size = 0
+    for i, c in enumerate(s):
+        size += len(c.encode())
+        if size > ECHO_BYTES:
+            return f"「{s[:i]}…」"
+    return f"「{s}」"
+
+
+def _error_text(code: str, message: str) -> str:
+    return f"錯誤 {code}：{message}"
+
+
+def _error_fits(code: str, message: str) -> bool:
+    limit = ERROR_BUDGET - ECHO_BYTES  # room for one echo() whose tokens approx_tokens() undercounts
+    return max(approx_tokens(_error_text(code, message)), approx_tokens({"code": code, "message": message})) <= limit
+
+
 def error_result(code: str, message: str) -> ToolResult:
-    """A short, instruction-free error (Gemini CLI hands isError JSON to the model unwrapped)."""
-    body = {"code": code, "message": message[:120]}
-    return ToolResult(content=[TextContent(type="text", text=f"錯誤 {code}：{body['message']}")], structured_content=body,
+    """A short, instruction-free error (Gemini CLI hands isError JSON to the model unwrapped). The message (our own
+    wording plus at most one echo()) is cut until both forms fit ERROR_BUDGET."""
+    msg = message[:ERROR_MESSAGE_MAX]
+    if msg != message or not _error_fits(code, msg):
+        cut = msg
+        while cut and not _error_fits(code, cut + "…"):
+            cut = cut[:-1]
+        msg = cut + "…"
+    body = {"code": code, "message": msg}
+    return ToolResult(content=[TextContent(type="text", text=_error_text(code, msg))], structured_content=body,
                       is_error=True)
 
 

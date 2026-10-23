@@ -128,6 +128,14 @@ def test_bad_date_arg_raises(db):
         get_hours(db, WR, "下週一")
 
 
+def test_bad_date_arg_echo_is_cut():
+    with pytest.raises(ValueError, match="「2026-13-45」"):
+        parse_date_arg("2026-13-45")
+    with pytest.raises(ValueError) as long:
+        parse_date_arg("下週一" * 200)
+    assert "下週一下週一下週一下週一" not in str(long.value) and len(str(long.value)) < 60
+
+
 def test_recent_notices_during_pending(world_with_pending_closure):
     db = world_with_pending_closure
     e = get_hours(db, GYM, "2026-10-22", now=NOW)

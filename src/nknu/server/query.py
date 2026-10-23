@@ -19,7 +19,7 @@ from nknu.core.resolve import SQLiteBackend, day_hours, resolve
 from nknu.core.textnorm import alias_norm, norm_text
 from nknu.core.timeutil import TAIPEI, now_utc
 from nknu.core.vocab import ancestors, managing_org, resolve_place
-from nknu.server.envelope import NOTICE_LABEL, fit_budget, make_envelope
+from nknu.server.envelope import NOTICE_LABEL, echo, fit_budget, make_envelope
 from nknu.server.linking import PLACE_TYPES, link_entities
 from nknu.server.servedb_reader import ServeDB
 
@@ -67,11 +67,11 @@ def parse_date_arg(s: str) -> dt.date:
     elif m := _ROC.fullmatch(s):
         y, mo, d = int(m[1]) + 1911, int(m[3]), int(m[4])
     else:
-        raise ValueError(f"日期格式應為 YYYY-MM-DD 或民國 115-10-24：{s!r}")
+        raise ValueError(f"日期格式應為 YYYY-MM-DD 或民國 115-10-24：{echo(s)}")
     try:
         return dt.date(y, mo, d)
     except ValueError:
-        raise ValueError(f"不是有效的日期：{s!r}") from None
+        raise ValueError(f"不是有效的日期：{echo(s)}") from None
 
 
 def _incl(hi: str) -> str:
