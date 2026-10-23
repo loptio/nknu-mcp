@@ -106,9 +106,12 @@ def _accept_new_normal(conn, name: str, full_scan: bool, n: int, history: RunHis
                  (_baseline_key(name, full_scan), now))
     conn.execute("UPDATE alert SET resolved_at=? WHERE dedup_key=? AND resolved_at IS NULL",
                  (now, f"{name}:count_out_of_band"))
-    add_alert(conn, adapter=name, level="info", code="count_new_normal",
+    # warn, not info: a pager that stopped working looks exactly like a source that shrank, and C2 then retires the
+    # rows no longer listed after three full scans
+    add_alert(conn, adapter=name, level="warn", code="count_new_normal",
               message=f"{'全扫' if full_scan else '部分扫描'}条数 {n} 连续 {NEW_NORMAL_RUNS} 轮相同（之前 7 天中位数 {med:g}），"
-                      f"当成新常态接受并写入；之后以 {n} 为基准", now=now)
+                      f"当成新常态接受并写入；之后以 {n} 为基准。不再列出的资料会在 {RETIRE_AFTER_FULL_SCANS} 次全扫后自动下架；"
+                      f"如果其实是网站坏了（例如分页失效），请到来源页面确认，网站修好后资料会再写回", now=now)
 
 
 def _merge(records: list[Record]) -> list[Record]:

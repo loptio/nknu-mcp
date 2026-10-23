@@ -134,6 +134,9 @@ def test_a_lower_count_three_runs_in_a_row_is_the_new_normal(conn):
     assert [r.passed for r in results] == [False, False, True] and results[2].n_written == 4
     assert alerts(conn, "count_new_normal")
     assert conn.execute("SELECT resolved_at FROM alert WHERE code='count_out_of_band'").fetchone()[0] is not None
+    # a broken pager looks the same: the alert is a warning and says what follows (C2 retires the rows no longer listed)
+    level, message = conn.execute("SELECT level, message FROM alert WHERE code='count_new_normal'").fetchone()
+    assert level == "warn" and "3 次全扫后自动下架" in message
     # from now on the new count is the baseline: a small change stays in band
     assert run(conn, FakeAdapter(_rows(3))).passed and run(conn, FakeAdapter(_rows(4))).passed
 
