@@ -137,14 +137,14 @@ def detect_intent(query: str) -> Intent | None:
 
 # ---------------------------------------------------------------- alias expansion (full-text path only)
 
-# User wording -> the terms the official text uses. From prototypes/search/common.py, plus the closure word (the closure
-# days sit on the library's 開館時間 page) and English words that the bilingual calendar or Chinese notices spell otherwise.
+# User wording -> the terms the official text uses. From prototypes/search/common.py, plus the closure words (a closure
+# card says 暫停開放) and English words that the bilingual calendar or Chinese notices spell otherwise.
 ALIASES = {
     "健身房": ["重量訓練室"], "重訓": ["重量訓練室"], "游泳館": ["游泳池"], "泳池": ["游泳池"],
     "圖書館": ["圖資處", "圖書資訊處"], "圖資處": ["圖書館"], "接駁車": ["校車", "交通車"], "校車": ["交通車"],
     "交通車": ["校車"], "機車通行證": ["停車證"], "通行證": ["停車證"], "地址": ["校址"], "入住": ["開舍"],
     "運動會": ["校慶"], "K書中心": ["愛閱館"], "自習室": ["愛閱館"], "退課": ["停修"], "高師大": ["國立高雄師範大學"],
-    "閉館": ["開館"], "休館": ["開館"], "開學": ["上課開始"], "期限": ["截止"],
+    "閉館": ["暫停開放"], "休館": ["暫停開放"], "開學": ["上課開始"], "期限": ["截止"],
     "midterm": ["mid-term", "期中"], "withdrawal": ["停修"], "withdraw": ["停修"], "typhoon": ["颱風"],
 }
 _ALIAS_N = [(norm_text(k), [(v, norm_text(v)) for v in vs]) for k, vs in ALIASES.items()]

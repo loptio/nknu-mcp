@@ -1,6 +1,8 @@
 # Search regression set (spec §6.5): 80 queries rewritten from prototypes/search/queries.py, 10 of them English.
 # gold: any listed item at rank 1 counts for R@1, within the first 5 facts for R@5. Gold kinds:
 #   {card: {entity, intent}}            an answer card of that place (search returns the card for on_date)
+#   {card: {entity?, intent, answer_re}} a card whose sentence matches: a closure or extension question is answered only
+#                                       when the envelope states it (the dated card, or the place's next_change)
 #   {calendar: {category, summary_re?}} an academic-calendar event (summary_re narrows category `other`)
 #   {doc: {title_re}}                   a current notice whose title matches
 # type noans + gold []: v1 crawls no source that answers it (bus, student id, parking, donations, …; spec §15.2), so the
@@ -15,10 +17,7 @@
 - {q: 兵役, type: noans, gold: []}
 - {q: 校慶, type: short2, gold: [{calendar: {category: other, summary_re: 校慶}}]}
 - {q: 寒假, type: short2, gold: [{calendar: {category: vacation_begin}}]}
-- {q: 閉館, type: short2, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
-                                {card: {entity: nknu.yanchao.library.main, intent: hours}},
-                                {card: {entity: nknu.heping.library.iread, intent: hours}},
-                                {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: 閉館, type: short2, gold: [{card: {intent: hours, answer_re: 暫停開放}}]}  # no place named: any closure
 - {q: 捐贈, type: noans, gold: []}
 - {q: 泳池, type: short2, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
 - {q: 停車, type: noans, gold: []}
@@ -33,7 +32,7 @@
 - {q: 期中考试 日期, type: simp, gold: [{calendar: {category: midterm_exam}}]}
 - {q: 寒假 什么时候开始, type: simp, gold: [{calendar: {category: vacation_begin}}]}
 - {q: 学生宿舍 开舍, type: noans, gold: []}
-- {q: 体育馆 暂停开放 连假, type: simp, gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
+- {q: 体育馆 暂停开放 连假, type: simp, gold: [{card: {entity: nknu.heping.gym.main, intent: hours, answer_re: 暫停開放（臺灣光復紀念日連假）}}]}
 - {q: 电子烟 回收桶, type: simp, gold: [{doc: {title_re: 電子煙}}]}
 - {q: 燕巢 桌球室 开放时间, type: simp, gold: [{card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}}]}
 
@@ -42,9 +41,8 @@
                                       {card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
 - {q: 燕巢健身房, type: alias, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
 - {q: 游泳館有開嗎, type: alias, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
-- {q: 圖資處 期中考 延長開館, type: alias, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
-                                          {card: {entity: nknu.yanchao.library.main, intent: hours}},
-                                          {calendar: {category: midterm_exam}}]}
+- {q: 圖資處 期中考 延長開館, type: alias, gold: [{card: {entity: nknu.heping.library.main, intent: hours, answer_re: 延長開館}},
+                                          {card: {entity: nknu.yanchao.library.main, intent: hours, answer_re: 延長開館}}]}
 - {q: 高師大地址, type: noans, gold: []}
 - {q: VPN 維修 斷線, type: noans, gold: []}
 - {q: 宿舍什麼時候可以入住, type: noans, gold: []}
@@ -57,9 +55,10 @@
 - {q: 請問這學期和平校區的重量訓練室星期四晚上幾點開到幾點？, type: long,
    gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}}]}
 - {q: 我想知道 10 月 24 日到 26 日連假期間體育館有沒有開放, type: long,
-   gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
+   gold: [{card: {entity: nknu.heping.gym.main, intent: hours, answer_re: 暫停開放（臺灣光復紀念日連假）}}]}
 - {q: 期中考那個週末圖書館有延長開館嗎？和平跟燕巢分別開到幾點, type: long,
-   gold: [{card: {entity: nknu.heping.library.main, intent: hours}}, {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+   gold: [{card: {entity: nknu.heping.library.main, intent: hours, answer_re: 延長開館}},
+          {card: {entity: nknu.yanchao.library.main, intent: hours, answer_re: 延長開館}}]}
 - {q: 如果我想停修一門課，要經過誰同意，最多可以停修幾科？, type: long,
    gold: [{doc: {title_re: 停修}}, {calendar: {category: course_withdrawal}}]}
 - {q: 送出停修申請之後要怎麼確認到底有沒有停修成功？, type: long, gold: [{doc: {title_re: 停修}}]}

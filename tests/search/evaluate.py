@@ -5,7 +5,8 @@
     uv run python -m tests.search.evaluate --write-baseline # rewrite baseline.json (on purpose only: say why in the commit)
 
 R@1 / R@5 count the answerable queries whose gold appears first / within the first five facts of the envelope an agent
-receives (found=false gives no facts); noans_acc is the share of noans queries answered found=false."""
+receives (found=false gives no facts); noans_acc is the share of noans queries answered found=false. A place in an entity
+or ambiguous answer is read with its next_change: the envelope states both (a closure two days ahead is in next_change)."""
 
 from __future__ import annotations
 
@@ -16,14 +17,14 @@ import sqlite3
 import statistics
 import tempfile
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
 from nknu.core.timeutil import TAIPEI
 from nknu.server.query import CURRENT_DOC_SQL, current_doc_params
-from nknu.server.search import retrieve, search, strength
+from nknu.server.search import HORIZON_DAYS, retrieve, search, strength
 from nknu.server.servedb_reader import ServeDB
 
 HERE = Path(__file__).parent
@@ -43,13 +44,31 @@ def _db(world) -> ServeDB:
 def matches(fact: dict, gold: dict) -> bool:
     if "card" in gold:
         g = gold["card"]
-        return g["intent"] == "hours" and fact.get("entity_id") == g["entity"] and "label" not in fact
+        return (g["intent"] == "hours" and "entity_id" in fact and "label" not in fact
+                and fact["entity_id"] == g.get("entity", fact["entity_id"])
+                and (not g.get("answer_re") or re.search(g["answer_re"], fact.get("answer", "")) is not None))
     if "calendar" in gold:
         g = gold["calendar"]
         return ("summary" in fact and fact.get("category") == g["category"]
                 and (not g.get("summary_re") or re.search(g["summary_re"], fact["summary"]) is not None))
     g = gold["doc"]
     return bool(fact.get("label")) and re.search(g["title_re"], fact.get("title", "")) is not None
+
+
+def _said(holder: dict, answer: str | None) -> str:
+    nxt = holder.get("next_change") or {}
+    return " ".join(t for t in (answer, nxt.get("answer")) if t)
+
+
+def answer_items(env: dict) -> list[dict]:
+    """The facts of an envelope in the order an agent reads them; an entity match's place carries the envelope's answer,
+    and every place its next_change."""
+    if not env["found"]:
+        return []
+    facts = env.get("facts") or []
+    if env.get("match") == "entity" and facts:
+        return [{**facts[0], "answer": _said(env, env.get("answer"))}, *facts[1:]]
+    return [{**f, "answer": _said(f, f.get("answer"))} if "entity_id" in f else f for f in facts]
 
 
 def rank_of(facts: list[dict], gold: list[dict]) -> int | None:
@@ -65,7 +84,7 @@ def _envelopes(world, queries: list[dict]) -> list[tuple[dict, dict]]:
 
 
 def _metrics(rows: list[tuple[dict, dict]]) -> dict:
-    ranks = [rank_of(e.get("facts", []) if e["found"] else [], q["gold"]) for q, e in rows if q["gold"]]
+    ranks = [rank_of(answer_items(e), q["gold"]) for q, e in rows if q["gold"]]
     noans = [e["found"] is False for q, e in rows if not q["gold"]]
     return {"r1": sum(r == 1 for r in ranks) / len(ranks) if ranks else 0.0,
             "r5": sum(r is not None and r <= 5 for r in ranks) / len(ranks) if ranks else 0.0,
@@ -83,15 +102,18 @@ def evaluate_found(world, queries: list[dict]) -> float:
 
 
 def gold_exists(world, gold: dict) -> bool:
-    """The gold item is really in the fixture world, and searchable on TODAY."""
+    """The gold item is really in the fixture world, and searchable on TODAY (a card with answer_re may be a dated card
+    that starts within the search horizon)."""
     conn = sqlite3.connect(Path(world[1]).resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         d = TODAY.isoformat()
         if "card" in gold:
             g = gold["card"]
-            return conn.execute("SELECT 1 FROM answer_card WHERE entity_id=? AND intent=? AND valid_from<=? AND ?<valid_to",
-                                (g["entity"], g["intent"], d, d)).fetchone() is not None
+            last = (TODAY + timedelta(days=HORIZON_DAYS)).isoformat() if g.get("answer_re") else d
+            rows = conn.execute("SELECT entity_id, answer_zh FROM answer_card WHERE intent=? AND valid_from<=? AND ?<valid_to",
+                                (g["intent"], last, d))
+            return any(r[0] == g.get("entity", r[0]) and re.search(g.get("answer_re") or "", r[1]) for r in rows)
         if "calendar" in gold:
             g = gold["calendar"]
             rows = conn.execute("SELECT payload_json FROM answer_card WHERE intent='calendar' AND valid_to>?", (d,))
@@ -146,8 +168,7 @@ def report(world, queries: list[dict]) -> str:
     lines = []
     for q, e in rows:
         by_type[q["type"]].append((q, e))
-        facts = e.get("facts", []) if e["found"] else []
-        r = rank_of(facts, q["gold"]) if q["gold"] else None
+        r = rank_of(answer_items(e), q["gold"]) if q["gold"] else None
         ok = (r == 1) if q["gold"] else e["found"] is False
         lines.append(f"{'ok ' if ok else 'MISS'} {q['type']:6} rank={r} found={e['found']} match={e.get('match')} {q['q']}")
     m = _metrics(rows)

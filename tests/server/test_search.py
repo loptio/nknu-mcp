@@ -187,6 +187,42 @@ def test_weak_caveat_is_kept_with_a_status_caveat():
     assert _caveat("text", "current") is None and _caveat("weak", "current") == CAVEAT_WEAK
 
 
+# ---------------------------------------------------------------- dated cards (closures, extensions)
+
+def test_entity_match_is_the_get_hours_envelope(db):
+    """An entity match answers as get_hours does for that place and day, so the coming closure is in next_change."""
+    e = search(db, "体育馆 暂停开放 连假", now=NOW)
+    g = get_hours(db, GYM, now=NOW)
+    assert e["match"] == "entity" and e["facts"] == [{"entity_id": GYM, "name": "和平校區體育館"}]
+    assert e["next_change"]["from"] == "2026-10-24" and "暫停開放（臺灣光復紀念日連假）" in e["next_change"]["answer"]
+    keys = ("found", "status", "answer", "next_change", "open_now")
+    assert {k: e.get(k) for k in keys} == {k: g.get(k) for k in keys} and e["open_now"] is False
+
+
+def test_ambiguous_candidates_carry_their_next_change(db):
+    e = search(db, "期中考那個週末圖書館有延長開館嗎？和平跟燕巢分別開到幾點", now=NOW)
+    assert e["match"] == "ambiguous" and [f["entity_id"] for f in e["facts"]] == [HLIB, YLIB]
+    assert all(f["next_change"]["from"] == "2026-10-24" and "延長開館" in f["next_change"]["answer"] for f in e["facts"])
+    g = get_hours(db, "圖書館", now=NOW)  # get_hours lists the same candidates the same way
+    assert g["facts"] == e["facts"] and count_tokens(e) <= BUDGET
+
+
+def test_text_match_lists_the_dated_card_the_query_points_at(db):
+    e = search(db, "圖資處 期中考 延長開館", now=NOW)
+    top = e["facts"][0]
+    assert top["entity_id"] in (HLIB, YLIB) and "2026-10-24" in top["answer"] and "延長開館" in top["answer"]
+    assert "暫停開放" in search(db, "閉館", now=NOW)["facts"][0]["answer"]
+    e = search(db, "重訓 行憲紀念日", on_date="2026-12-20", now=NOW)  # the 12-25 closure is 5 days after on_date
+    assert "行憲紀念日" in e["facts"][0]["answer"] and e["facts"][0]["entity_id"] == WR
+
+
+def test_upcoming_card_only_when_the_query_fits_it_better(db):
+    e = search(db, "重訓", limit=10, now=NOW)  # the 10-24 closure fits 重訓 no better than today's card does
+    assert [f["entity_id"] for f in e["facts"] if f.get("entity_id")] == [WR, YWR]
+    e = search(db, "重訓 行憲紀念日", limit=10, now=NOW)  # 64 days ahead: beyond the horizon
+    assert not any("行憲" in f.get("answer", "") for f in e.get("facts", []))
+
+
 def test_bad_arguments(db):
     for kwargs in ({"kind": "everything"}, {"campus": "taipei"}, {"limit": 0}, {"limit": 11}, {"on_date": "10/24"}):
         with pytest.raises(ValueError):

@@ -205,10 +205,38 @@ def _strip_notes_of(holders: list[dict]) -> None:
             holder["answer"] = a.split(NOTES_MARK, 1)[0]
 
 
+def _next_of(env: dict) -> list[dict]:
+    """next_change of the envelope and of each candidate in an ambiguous list."""
+    return [n for n in (env.get("next_change"), *(f.get("next_change") for f in _items(env, "facts"))) if isinstance(n, dict)]
+
+
 def _strip_fact_notes(env: dict) -> None:
-    """附註 of the candidates in an ambiguous list (and of next_change, should its answer still be there)."""
-    nxt = env.get("next_change")
-    _strip_notes_of([*_items(env, "facts"), *([nxt] if isinstance(nxt, dict) else [])])
+    """附註 of the candidates in an ambiguous list (and of the next_change sentences still there)."""
+    _strip_notes_of([*_items(env, "facts"), *_next_of(env)])
+
+
+_SOURCE_CLAUSE = re.compile(r"來源：[^《。]*《[^》]*》。")
+
+
+def _drop_fact_sources(env: dict) -> None:
+    """The 來源 clause of the sentences in a list (candidates, text hits, their next_change): an agent picks one and asks
+    get_hours, which keeps it; the main answer keeps its own."""
+    for holder in [*_items(env, "facts"), *(f["next_change"] for f in _items(env, "facts")
+                                            if isinstance(f.get("next_change"), dict))]:
+        if isinstance(holder.get("answer"), str):
+            holder["answer"] = _SOURCE_CLAUSE.sub("", holder["answer"])
+
+
+def _drop_fact_next_answers(env: dict) -> None:
+    """The candidates' next_change sentences go after their 附註: a dated change says more than a standing note."""
+    for f in _items(env, "facts"):
+        if isinstance(f.get("next_change"), dict):
+            f["next_change"].pop("answer", None)
+
+
+def _drop_fact_next(env: dict) -> None:
+    for f in _items(env, "facts"):
+        f.pop("next_change", None)
 
 
 def _strip_answer_notes(env: dict) -> None:
@@ -267,8 +295,8 @@ def _drop_facts(env: dict) -> None:
 
 _STEPS: list[Callable[[dict], None]] = [
     _short_titles, _compact_days, _drop_source_titles, _drop_fact_rules, _drop_fact_validity, _drop_next_answer,
-    _strip_fact_notes, _drop_day_reasons, _slim_alternatives, _merge_day_runs, _one_notice, _drop("next_change"),
-    _drop_alternative_ids,
+    _strip_fact_notes, _drop_fact_sources, _drop_fact_next_answers, _drop_day_reasons, _slim_alternatives, _merge_day_runs, _one_notice,
+    _drop("next_change"), _drop_fact_next, _drop_alternative_ids,
 ]
 _LAST_STEPS: list[Callable[[dict], None]] = [_strip_answer_notes, _drop("recent_notices"), _drop_facts]
 

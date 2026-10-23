@@ -1,12 +1,14 @@
 """Free-text search behind nknu_search (spec §6.5). No LLM anywhere.
 
 1. Entity linking first: a place named in the query plus an hours question (or kind=hours), or a query that is nothing
-   but a place name or id, answers with that place's card for on_date (match=entity); several places are listed, never
-   picked (match=ambiguous).
+   but a place name or id, answers with that place's card for on_date in get_hours's envelope (match=entity: next_change,
+   open_now, recent notices); several places are listed, never picked (match=ambiguous), each with its next_change.
 2. Otherwise bigram full text over the answer cards (card_fts) and the notices (doc_fts), aliases expanded. Expired rows
-   are filtered out before ranking: an hours card must cover on_date, a calendar event must not have ended, a notice
-   must be current. Each index gives its best CANDIDATES by bm25; the merged list is ordered by coverage, then bm25
-   (bm25 of two different indexes is not on one scale; coverage is).
+   are filtered out before ranking: an hours card must cover on_date or start within HORIZON_DAYS of it, a calendar
+   event must not have ended, a notice must be current. A card that starts after on_date (a coming closure or
+   extension) is listed only when the query fits it better than that place's card for on_date. Each index gives its
+   best CANDIDATES by bm25; the merged list is ordered by coverage, then on_date's cards first, then bm25 (bm25 of two
+   different indexes is not on one scale; coverage is).
 3. Coverage = the share of the query's bigrams found in a hit; the first hit has the highest. Below T_LOW nothing is
    returned (found=false, 「請勿推測」); between T_LOW and T_HIGH the hits come back as match=weak.
 
@@ -40,6 +42,7 @@ from nknu.server.query import (
     CAVEATS,
     CURRENT_DOC_SQL,
     current_doc_params,
+    hours_envelope,
     parse_date_arg,
     place_candidates,
     today_info,
@@ -56,6 +59,7 @@ KINDS = ("any", "hours", "calendar", "announcement", "place")
 CAMPUSES = ("heping", "yanchao")
 MAX_LIMIT = 10
 CANDIDATES = 20  # per index, by bm25, before the coverage re-ranking
+HORIZON_DAYS = 14  # an hours card starting this many days after on_date can still answer (a coming closure, extension)
 CAVEAT_NOT_FOUND = "查無相關資料，請勿推測"
 CAVEAT_WEAK = "只有部分字詞相符，請先確認內容是否回答問題，請勿推測"
 
@@ -105,6 +109,8 @@ class _Hit:
     view: dict
     entity_id: str | None = None
     coverage: float = 0.0
+    upcoming: bool = False  # an hours card that starts after on_date
+    day_from: str = ""
 
 
 @dataclass
@@ -122,19 +128,39 @@ def _incl(hi: str) -> str:
     return (dt.date.fromisoformat(hi) - dt.timedelta(days=1)).isoformat()
 
 
-def _hours_hits(conn: sqlite3.Connection, match: str, on: dt.date, campus: str | None, n: int) -> list[_Hit]:
+def _hours_hits(conn: sqlite3.Connection, match: str, on: dt.date, campus: str | None) -> list[_Hit]:
+    """Hours cards covering on_date or starting within HORIZON_DAYS of it. No bm25 cut: a place has a handful of cards
+    in that span, and the cards for on_date must all be there for _fitting() to compare against."""
     rows = conn.execute(
-        """SELECT c.entity_id, c.status, c.answer_zh, f.tokens, bm25(card_fts) AS score
+        """SELECT c.entity_id, c.status, c.answer_zh, c.valid_from, f.tokens, bm25(card_fts) AS score
              FROM card_fts f JOIN answer_card c ON c.id = f.card_id JOIN entity e ON e.id = c.entity_id
-            WHERE card_fts MATCH :q AND c.intent = 'hours' AND c.valid_from <= :d AND :d < c.valid_to
+            WHERE card_fts MATCH :q AND c.intent = 'hours' AND c.valid_from <= :last AND :d < c.valid_to
               AND (:campus IS NULL OR e.campus = :campus)
-            ORDER BY score LIMIT :n""", {"q": match, "d": on.isoformat(), "campus": campus, "n": n})
+            ORDER BY score""",
+        {"q": match, "d": on.isoformat(), "last": (on + dt.timedelta(days=HORIZON_DAYS)).isoformat(), "campus": campus})
     out = []
     for r in rows:
         view = {"entity_id": r["entity_id"], "answer": r["answer_zh"]}
         if r["status"] != "current":
             view["status"] = r["status"]
-        out.append(_Hit(r["score"], 0, frozenset(r["tokens"].split()), view, r["entity_id"]))
+        out.append(_Hit(r["score"], 0, frozenset(r["tokens"].split()), view, r["entity_id"],
+                        upcoming=r["valid_from"] > on.isoformat(), day_from=r["valid_from"]))
+    return out
+
+
+def _fitting(hits: list[_Hit]) -> list[_Hit]:
+    """Cards that start after on_date only where the query fits them better than the place's card for on_date (閉館
+    fits the closure card; 重訓 fits the closure no better than today's card), each sentence once (the earliest)."""
+    today = {h.entity_id: h.coverage for h in hits if h.entity_id and not h.upcoming}
+    seen: set[tuple[str | None, str]] = set()
+    out = []
+    for h in sorted(hits, key=lambda h: h.day_from):
+        if h.upcoming:
+            key = (h.entity_id, h.view["answer"])
+            if h.coverage <= today.get(h.entity_id, 0.0) or key in seen:
+                continue
+            seen.add(key)
+        out.append(h)
     return out
 
 
@@ -207,7 +233,7 @@ def _full_text(conn: sqlite3.Connection, query: str, *, kind: str, on: dt.date, 
     match = fts_query(tokens)
     hits: list[_Hit] = []
     if kind in ("any", "hours", "place"):
-        hits += _hours_hits(conn, match, on, campus, CANDIDATES)
+        hits += _hours_hits(conn, match, on, campus)
     if kind in ("any", "calendar"):
         hits += _calendar_hits(conn, match, on, CANDIDATES)
     if kind in ("any", "announcement"):
@@ -215,7 +241,8 @@ def _full_text(conn: sqlite3.Connection, query: str, *, kind: str, on: dt.date, 
     clauses = _clauses(query)
     for h in hits:
         h.coverage = _coverage(clauses, h.tokens)
-    hits.sort(key=lambda h: (-h.coverage, h.score, h.order))
+    hits = _fitting(hits)
+    hits.sort(key=lambda h: (-h.coverage, h.upcoming, h.score, h.order))
     return hits[:limit], (hits[0].coverage if hits else 0.0)
 
 
@@ -262,13 +289,13 @@ def search(db: ServeDB, query: str, kind: str = "any", on_date: str | None = Non
     conn = db.conn()
     r = retrieve(conn, db.templates(), query, kind=kind, on=on, today=today, campus=campus, limit=limit)
     more = len(r.entity_ids) - len(r.facts) if r.entity_ids else 0
-    if r.match in ("entity", "ambiguous") and kind != "place":
+    if r.match == "entity" and kind != "place":  # the same fields get_hours answers (next_change, open_now, notices)
+        f = r.facts[0]
+        env = hours_envelope(conn, db.templates(), f["entity_id"], on, info)
+        env["facts"] = [{"entity_id": f["entity_id"], "name": f["name"]}]
+        return fit_budget(make_envelope(**base, **env))
+    if r.match == "ambiguous" and kind != "place":
         found = any(f["status"] in ("current", "conflict") for f in r.facts)
-        if r.match == "entity":
-            f = r.facts[0]
-            return fit_budget(make_envelope(**base, found=found, status=r.status, match="entity", answer=f["answer"],
-                                            facts=[{"entity_id": f["entity_id"], "name": f["name"]}],
-                                            caveat=CAVEATS.get(r.status)))
         return fit_budget(make_envelope(**base, found=found, status=r.status, match="ambiguous", facts=r.facts,
                                         caveat=CAVEAT_AMBIGUOUS, more=more or None))
     s = "text" if r.coverage is None else strength(r.coverage)

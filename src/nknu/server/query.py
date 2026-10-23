@@ -250,14 +250,48 @@ def worst_status(statuses: set[str]) -> str:
 
 
 def _candidate(ctx: _Ctx, entity: str, d: dt.date) -> dict:
+    """One place of an ambiguous list; its next_change says what comes next (no sentence when stale: no values)."""
     day = ctx.day(entity, d)
-    return {"entity_id": entity, "name": ctx.names.get(entity, entity), "status": day.res["status"], "answer": day.answer}
+    out = {"entity_id": entity, "name": ctx.names.get(entity, entity), "status": day.res["status"], "answer": day.answer}
+    nxt = ctx.next_change(entity, day, with_answer=day.res["status"] != "stale")
+    return {**out, "next_change": nxt} if nxt else out
 
 
 def place_candidates(conn: sqlite3.Connection, tpl: Templates, ids: list[str], d: dt.date) -> list[dict]:
-    """{entity_id, name, status, answer} per place on day d: the answer card, or resolve() outside the card window."""
+    """{entity_id, name, status, answer, next_change?} per place on day d: the answer card, or resolve() outside the
+    card window."""
     ctx = _Ctx(conn, tpl)
     return [_candidate(ctx, e, d) for e in ids]
+
+
+def hours_envelope(conn: sqlite3.Connection, tpl: Templates, entity: str, d0: dt.date, today: dict,
+                   days: int = 1) -> dict:
+    """The envelope fields (no kb/today, not yet budgeted) get_hours answers for one place from day d0; `today` is
+    today_info(). nknu_search answers an entity match with the same fields."""
+    return _entity_fields(_Ctx(conn, tpl), entity, d0, dt.date.fromisoformat(today["date"]), today["time"], days)
+
+
+def _entity_fields(ctx: _Ctx, entity: str, d0: dt.date, today: dt.date, hm: str, days: int) -> dict:
+    first = ctx.day(entity, d0)
+    res, status = first.res, first.res["status"]
+    env: dict = {"found": status in ("current", "conflict"), "status": status, "match": "entity", "answer": first.answer}
+    if status == "current":
+        env["facts"] = [_fact_view(res["winner"])]
+    elif status == "conflict":
+        env["alternatives"] = [_fact_view(a) for a in res["alternatives"][:ALTERNATIVES_MAX]]
+    elif status == "stale" and res.get("last_known"):  # never an expired value: only when it ended and where it came from
+        lk = res["last_known"]
+        env["last_known"] = {"valid_to_inclusive": _incl(lk["valid"][1]), "source_url": lk["source"]["url"]}
+    if d0 == today:
+        env["open_now"] = _open_now(first, ctx.day(entity, d0 - timedelta(days=1)), hm)
+    stale = status == "stale"  # no hours anywhere: not the next card's, not a later day's, not in a notice title
+    env["next_change"] = ctx.next_change(entity, first, with_answer=not stale)
+    if days > 1:
+        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i)), values=not stale) for i in range(days)]
+    notices = _recent_notices(ctx.conn, entity, today)
+    env["recent_notices"] = [{**n, "title": mask_times(n["title"])} for n in notices] if stale else notices
+    env["caveat"] = CAVEATS.get(status)
+    return env
 
 
 def _base(db: ServeDB, now: dt.datetime | None) -> tuple[dict, dt.date]:
@@ -283,27 +317,7 @@ def get_hours(db: ServeDB, place: str, date: str | None = None, days: int = 1, n
         status = worst_status(statuses)
         return fit_budget(make_envelope(**base, found=any(s in ("current", "conflict") for s in statuses), status=status,
                                         match="ambiguous", facts=cands, caveat=CAVEAT_AMBIGUOUS))
-    entity = ids[0]
-    first = ctx.day(entity, d0)
-    res, status = first.res, first.res["status"]
-    env: dict = {"found": status in ("current", "conflict"), "status": status, "match": "entity", "answer": first.answer}
-    if status == "current":
-        env["facts"] = [_fact_view(res["winner"])]
-    elif status == "conflict":
-        env["alternatives"] = [_fact_view(a) for a in res["alternatives"][:ALTERNATIVES_MAX]]
-    elif status == "stale" and res.get("last_known"):  # never an expired value: only when it ended and where it came from
-        lk = res["last_known"]
-        env["last_known"] = {"valid_to_inclusive": _incl(lk["valid"][1]), "source_url": lk["source"]["url"]}
-    if d0 == today:
-        env["open_now"] = _open_now(first, ctx.day(entity, d0 - timedelta(days=1)), base["today"]["time"])
-    stale = status == "stale"  # no hours anywhere: not the next card's, not a later day's, not in a notice title
-    env["next_change"] = ctx.next_change(entity, first, with_answer=not stale)
-    if days > 1:
-        env["days"] = [_day_view(ctx.day(entity, d0 + timedelta(days=i)), values=not stale) for i in range(days)]
-    notices = _recent_notices(conn, entity, today)
-    env["recent_notices"] = [{**n, "title": mask_times(n["title"])} for n in notices] if stale else notices
-    env["caveat"] = CAVEATS.get(status)
-    return fit_budget(make_envelope(**base, **env))
+    return fit_budget(make_envelope(**base, **_entity_fields(ctx, ids[0], d0, today, base["today"]["time"], days)))
 
 
 def get_calendar(db: ServeDB, from_: str | None = None, to: str | None = None, keyword: str | None = None, limit: int = 10,

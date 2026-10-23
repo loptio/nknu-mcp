@@ -1,3 +1,4 @@
+import copy
 from datetime import date, timedelta
 
 import pytest
@@ -111,6 +112,29 @@ def test_fit_budget_drops_next_answer_before_the_answer_notes():
                         next_change={"from": "2026-10-24", "answer": "丙" * 80 + "附註：" + "丁" * 40})
     out = fit_budget(env, approx_tokens(env) - 60)
     assert out["answer"] == env["answer"] and out["next_change"] == {"from": "2026-10-24"}
+
+
+def test_fit_budget_slims_candidates_before_cutting_one():
+    """An ambiguous list loses its candidates' 附註, then their 來源 clauses, then their next_change sentences."""
+    def cand(i: int) -> dict:
+        return {"entity_id": f"e{i}", "name": "館", "status": "current", "answer": "甲" * 50 + "。來源：處《表》。附註：" + "乙" * 60,
+                "next_change": {"from": "2026-10-24", "answer": "丙" * 30 + "。來源：處《" + "丁" * 30 + "》。"}}
+
+    env = make_envelope(kb="k", today=TODAY, found=True, status="current", match="ambiguous", facts=[cand(1), cand(2)],
+                        caveat="請確認校區")
+    no_notes = copy.deepcopy(env)
+    for f in no_notes["facts"]:
+        f["answer"] = f["answer"].split("附註：")[0]
+    out = fit_budget(env, approx_tokens(no_notes))
+    assert [f["answer"] for f in out["facts"]] == ["甲" * 50 + "。來源：處《表》。"] * 2
+    assert all(f["next_change"]["answer"].endswith("》。") for f in out["facts"])
+    no_sources = copy.deepcopy(no_notes)
+    for f in no_sources["facts"]:
+        f["answer"], f["next_change"]["answer"] = "甲" * 50 + "。", "丙" * 30 + "。"
+    out = fit_budget(env, approx_tokens(no_sources))
+    assert len(out["facts"]) == 2 and [f["next_change"]["answer"] for f in out["facts"]] == ["丙" * 30 + "。"] * 2
+    out = fit_budget(env, approx_tokens(no_sources) - 10)
+    assert len(out["facts"]) == 2 and [f["next_change"] for f in out["facts"]] == [{"from": "2026-10-24"}] * 2
 
 
 def test_fit_budget_cuts_days_then_alternatives_last():
