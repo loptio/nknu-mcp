@@ -49,11 +49,14 @@ class RunContext:
     full_scan: bool
     today: date
     conn: sqlite3.Connection  # facts.db, read only for adapters
-    known_keys: set[str]  # records in force, plus announcements taken down (down_keys)
+    known_keys: set[str]  # records in force, plus announcements taken down (down_keys, gone_keys)
     rate: RateLimit
     detailed_keys: set[str] = field(default_factory=set)  # announcements whose detail page is stored (excerpt read)
-    down_keys: set[str] = field(default_factory=set)  # announcements whose page answered 404, or taken down by nknu undo
+    down_keys: set[str] = field(default_factory=set)  # announcements taken down by nknu undo: never asked for again
     failed_detail_keys: set[str] = field(default_factory=set)  # detail pages that failed last time: asked for last
+    # announcements whose page answered 404: asked for again on full scans only (once a day), so a page that answers
+    # again brings the announcement and its closures back, and one that stays gone costs one request a day
+    gone_keys: set[str] = field(default_factory=set)
 
     def fetch(self, target: Target) -> Snapshot:
         return self.client.fetch(target, self.rate)

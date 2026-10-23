@@ -258,6 +258,20 @@ def test_closure_announcement_answering_404_retires_its_closures(tmp_path):
     assert pe_crawl(conn, PE_LIST, status=404).n_written == 0  # F-404-churn: nothing left to write
 
 
+def test_a_detail_page_redesign_keeps_the_closures_and_the_excerpt(tmp_path):
+    # the body label renamed while #DataFormView stays: that is a page the adapter cannot read (detail_failed), not a page
+    # read with no closures in it, which would retire all 28 after three full scans and blank the stored excerpt
+    # (CLAUDE.md: a site redesign keeps the old values)
+    conn = make_db(tmp_path)
+    pe_crawl(conn, PE_LIST, PE_CLOSURE)
+    before = conn.execute("SELECT excerpt FROM doc WHERE doc_key='460'").fetchone()[0]
+    renamed = edited(PE_CLOSURE, 'id="DataFormView_ContentsLabel"', 'id="DataFormView_BodyLabel"')
+    results = [pe_crawl(conn, PE_LIST, renamed) for _ in range(3)]
+    assert [r.n_retired for r in results] == [0, 0, 0] and from_460(conn) == 28
+    assert conn.execute("SELECT excerpt FROM doc WHERE doc_key='460'").fetchone()[0] == before and before
+    assert conn.execute("SELECT count(*) FROM alert WHERE code='detail_failed' AND resolved_at IS NULL").fetchone()[0] == 1
+
+
 def test_events_leaving_the_ics_window_are_not_retired(tmp_path):
     # C2: as the parse window moves on, past events stop being produced; they were not deleted from the calendar
     conn = make_db(tmp_path, calendar=False)

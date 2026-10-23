@@ -187,16 +187,18 @@ def run_adapter(conn: sqlite3.Connection, adapter: Adapter, client, *, today: da
                               (name, now, int(full_scan))).lastrowid
         conn.commit()
     known = {r[0] for r in conn.execute("SELECT record_key FROM record_state WHERE adapter=? AND status='active'", (name,))}
-    # announcements whose page answered 404 (or that the maintainer took down) count as known too: their detail page is
-    # not fetched again on every run (F-404-churn)
-    down = {r[0] for r in conn.execute("SELECT record_key FROM suppressed WHERE adapter=? AND kind='doc'", (name,))}
+    # announcements the maintainer took down are never fetched again; those whose page answered 404 only on full scans,
+    # so a page that answers again lifts the 'gone' memory (F-404-churn); both count as known
+    marks = conn.execute("SELECT record_key, note FROM suppressed WHERE adapter=? AND kind='doc'", (name,)).fetchall()
+    down = {k for k, note in marks if note != "gone"}
+    gone = {k for k, note in marks if note == "gone"} - down
     # announcements whose detail page is stored ("" = read, no text); the others are the detail backlog (F-excerpt-backlog)
     detailed = {f"{name}:{r[0]}" for r in conn.execute("SELECT doc_key FROM doc WHERE adapter=? AND excerpt IS NOT NULL",
                                                          (name,))}
     # detail pages that failed and are still failing (open alert): asked for after the rest (F-detail-void-freeze)
     failed = {r[0][len(_detail_alert(name, "")):] for r in conn.execute(
         "SELECT dedup_key FROM alert WHERE adapter=? AND code='detail_failed' AND resolved_at IS NULL", (name,))}
-    ctx = RunContext(client, full_scan, today, conn, known | down, adapter.rate_limit, detailed, down, failed)
+    ctx = RunContext(client, full_scan, today, conn, known | down | gone, adapter.rate_limit, detailed, down, failed, gone)
     try:
         snaps = adapter.fetch_all(ctx)
     except FetchError as exc:
@@ -361,7 +363,8 @@ def _detail_differs(conn, name: str, rec: DocRecord) -> bool:
 def _gone(conn, name, rec: DocRecord, h: str, res: RunResult, now: str) -> None:
     """The announcement's page answered 404: withdraw it now, with the facts it stated (their keys start with its key;
     C2: a dated closure is taken down when its page is gone). The list row that still shows it is remembered, so later
-    runs neither write it back nor fetch its page again; an edited row is new content and is written as usual."""
+    runs do not write it back; an edited row is new content and is written as usual. Its page is asked for again on full
+    scans only: when it answers, the memory is lifted and the announcement and its closures are written again."""
     res.n_retired += withdraw_doc(conn, name, rec.doc_key, now=now)
     derived = conn.execute("SELECT record_key FROM record_state WHERE adapter=? AND kind='fact' AND status='active' "
                            "AND substr(record_key, 1, ?) = ?", (name, len(rec.key) + 1, rec.key + ":")).fetchall()

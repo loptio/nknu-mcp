@@ -11,7 +11,7 @@ from nknu.crawl.adapters.pe_news import PeNews
 from nknu.crawl.adapters.sso_news import BASE, SsoNews
 from nknu.crawl.fetch import FetchError
 from nknu.crawl.pipeline import run_adapter
-from tests.crawl.adapters.helpers import FakeClient, read
+from tests.crawl.adapters.helpers import FakeClient, read, snap
 from tests.factories import make_db
 
 TODAY = date(2026, 10, 22)
@@ -181,6 +181,23 @@ def test_detail_pages_that_keep_failing_go_to_the_back_of_the_queue(conn):
     assert conn.execute("SELECT count(*) FROM alert WHERE code='detail_failed' AND resolved_at IS NULL").fetchone()[0] == 0
 
 
+def test_a_gone_announcement_that_answers_again_is_back(conn):
+    # the 'gone' memory of a 404 page is lifted when the page answers again; full scans check it once a day, partial
+    # scans never (F-404-churn)
+    gone = snap(sso_news.detail_url(FIRST), "", status=404, meta=sso_news.DETAIL_META)
+    crawl(conn, SsoNews(), FakeClient(sso_route()))
+    conn.execute("UPDATE doc SET excerpt=NULL WHERE doc_key=?", (FIRST,))
+    conn.commit()
+    crawl(conn, SsoNews(), FakeClient(sso_route({FIRST: gone})))
+    partial = FakeClient(sso_route())
+    crawl(conn, SsoNews(), partial)
+    assert FIRST not in detail_unids(partial)
+    full = FakeClient(sso_route())
+    assert crawl(conn, SsoNews(), full, full_scan=True).passed and FIRST in detail_unids(full)
+    assert conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key=?", (FIRST,)).fetchone()[0] is None and excerpt(conn, FIRST)
+    assert not conn.execute("SELECT 1 FROM suppressed WHERE record_key=?", (f"sso_news:{FIRST}",)).fetchone()
+
+
 def test_list_failure_still_voids(conn):
     def route(t):
         return FetchError("HTTP 503") if t.url.endswith("cat=CAMPUS") else sso_route()(t)
@@ -243,3 +260,32 @@ def test_detail_meta_has_no_run_voiding_selector():
     # the layout guard checks list pages only; a detail page's own check is in the adapter (ParseIssue)
     assert "selectors" not in sso_news.DETAIL_META and "selectors" not in pe_news.DETAIL_META
     assert BASE
+
+
+def pe_closures(conn) -> int:
+    return conn.execute("SELECT count(*) FROM fact WHERE record_key LIKE 'pe_news:460:%' AND recorded_to IS NULL").fetchone()[0]
+
+
+def test_a_closure_announcement_back_after_a_404_gets_its_closures_back(conn, monkeypatch):
+    # C2 withdraws a closure announcement whose page answers 404, with its closures. A transient 404 must not take them
+    # down for good: the page is checked again on the next full scan, and when it answers they are all back
+    monkeypatch.setattr(pe_news, "DETAIL_CAP", 100)
+    closure = read("pe_news", "closure.html")
+    gone = snap(pe_news.detail_url("460"), "", status=404, meta=pe_news.DETAIL_META)
+    crawl(conn, PeNews(), FakeClient(pe_route({"460": closure})), full_scan=True)
+    assert pe_closures(conn) == 28
+    crawl(conn, PeNews(), FakeClient(pe_route({"460": gone})), full_scan=True)
+    assert pe_closures(conn) == 0
+    partial = FakeClient(pe_route({"460": closure}))
+    crawl(conn, PeNews(), partial)
+    assert "460" not in pe_details(partial)
+    full = FakeClient(pe_route({"460": closure}))
+    res = crawl(conn, PeNews(), full, full_scan=True)
+    assert "460" in pe_details(full) and pe_closures(conn) == 28 and res.n_written == 1 + 28
+    assert conn.execute("SELECT withdrawn_at FROM doc WHERE doc_key='460'").fetchone()[0] is None
+    assert not conn.execute("SELECT 1 FROM suppressed WHERE record_key='pe_news:460'").fetchone()
+    # a page that keeps answering 404 is asked once per full scan and changes nothing after the first time
+    crawl(conn, PeNews(), FakeClient(pe_route({"460": gone})), full_scan=True)
+    again = FakeClient(pe_route({"460": gone}))
+    res = crawl(conn, PeNews(), again, full_scan=True)
+    assert "460" in pe_details(again) and (res.n_written, res.n_retired) == (0, 0) and pe_closures(conn) == 0

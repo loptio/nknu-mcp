@@ -85,10 +85,12 @@ class SsoNews(Adapter):
         rows: dict[str, DocRecord] = {}
         for r in (r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)):
             rows.setdefault(r.key, r)
+        # a page that answered 404 is asked for again on full scans only (once a day): when it answers, it is back
         todo = [r for r in rows.values() if r.pii_level != "personal" and r.key not in ctx.down_keys
-                and r.key not in ctx.detailed_keys]
-        # first seen this run, then the backlog, then pages that failed last time; newest first within each
-        todo.sort(key=lambda r: (r.key in ctx.failed_detail_keys, r.key in ctx.known_keys,
+                and (ctx.full_scan if r.key in ctx.gone_keys else r.key not in ctx.detailed_keys)]
+        # first seen this run, then 404 pages checked again, then the backlog, then pages that failed last time; newest
+        # first within each
+        todo.sort(key=lambda r: (r.key in ctx.failed_detail_keys, r.key in ctx.known_keys and r.key not in ctx.gone_keys,
                                  -(r.published_on or date.min).toordinal()))
         return snaps + ctx.fetch_details([Target(r.url, meta=DETAIL_META) for r in todo[:DETAIL_CAP]])
 

@@ -7,8 +7,9 @@ Honor-roll style posts (獲獎名單 …, core.pii.is_honor_title, the rule sso_
 fetch, no excerpt.
 
 Detail pages, at most DETAIL_CAP per run: rows seen for the first time, then (full scans) announcements titled as
-closures again, then the backlog of rows with no excerpt stored, newest first (F-excerpt-backlog); a page that failed
-last time comes after all of them. A detail page that fails costs only its own record (a ParseIssue keyed on the
+closures again and pages that answered 404 (C2 took their closures down; a page that answers again brings them back),
+then the backlog of rows with no excerpt stored, newest first (F-excerpt-backlog); a page that failed last time comes
+after all of them. A detail page that fails costs only its own record (a ParseIssue keyed on the
 announcement, so its closures are not counted missing).
 """
 
@@ -37,7 +38,10 @@ DETAIL_CAP = 15
 MAX_PAGES = 20
 LIST_META = {"kind": "list", "selectors": ["#MasterGrid"]}
 DETAIL_META = {"kind": "detail"}  # no run-voiding selector: _detail checks its own page (F-detail-void-freeze)
-DETAIL_BODY = "#DataFormView"
+# the body label itself, not only its #DataFormView container: a page whose body cannot be found is a page not read
+# (ParseIssue), never a page read with nothing in it, which would blank the excerpt and, after three full scans, retire
+# every closure the announcement states (all 15 detail pages of the 10-23 crawl carry it, one of them empty)
+DETAIL_BODY = "#DataFormView_ContentsLabel"
 
 CLOSURE_WORDS = re.compile(r"暫停開放|停止開放|不開放|閉館|不予開放")
 # venue mentions -> {campus: (entity id, propagates to contained places)}
@@ -64,11 +68,15 @@ def _nid(url: str) -> str | None:
     return (parse_qs(urlsplit(url).query).get("Nid") or [None])[0]
 
 
-def needs_detail(title: str, key: str, detailed: set[str], full_scan: bool, down: set[str] = frozenset()) -> bool:
-    """No excerpt stored yet, or (full scan) a closure announcement whose dates may have been edited. Never for honor
-    posts (names) or announcements taken down (404, nknu undo)."""
+def needs_detail(title: str, key: str, detailed: set[str], full_scan: bool, down: set[str] = frozenset(),
+                 gone: set[str] = frozenset()) -> bool:
+    """No excerpt stored yet, or (full scan) a closure announcement whose dates may have been edited, or (full scan) a
+    page that answered 404 (it may answer again). Never for honor posts (names) or announcements taken down by nknu
+    undo."""
     if is_honor_title(title) or key in down:
         return False
+    if key in gone:
+        return full_scan
     return key not in detailed or (full_scan and bool(CLOSURE_WORDS.search(title)))
 
 
@@ -146,9 +154,11 @@ class PeNews(Adapter):
         rows: dict[str, DocRecord] = {}
         for r in (r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)):
             rows.setdefault(r.key, r)
-        todo = [r for r in rows.values() if needs_detail(r.title, r.key, ctx.detailed_keys, ctx.full_scan, ctx.down_keys)]
+        todo = [r for r in rows.values()
+                if needs_detail(r.title, r.key, ctx.detailed_keys, ctx.full_scan, ctx.down_keys, ctx.gone_keys)]
         todo.sort(key=lambda r: (r.key in ctx.failed_detail_keys,
-                                 0 if r.key not in ctx.known_keys else 1 if CLOSURE_WORDS.search(r.title) else 2,
+                                 0 if r.key not in ctx.known_keys
+                                 else 1 if r.key in ctx.gone_keys or CLOSURE_WORDS.search(r.title) else 2,
                                  -(r.published_on or date.min).toordinal()))
         return snaps + ctx.fetch_details([Target(r.url, meta=DETAIL_META) for r in todo[:DETAIL_CAP]])
 
@@ -197,12 +207,13 @@ class PeNews(Adapter):
             why = snap.target.meta.get("error") or (f"HTTP {snap.status}" if snap.status != 200 else "空白頁")
             return [ParseIssue(key, "detail", f"公告詳情頁沒讀到（{why}），下一輪再抓")]
         tree = LexborHTMLParser(snap.text)
-        if tree.css_first(DETAIL_BODY) is None:
-            return [ParseIssue(key, "detail", f"公告詳情頁找不到 {DETAIL_BODY}（公告已刪除，或詳情頁改版），下一輪再抓")]
-        title_n, body_n = tree.css_first("#DataFormView_TitleLabel"), tree.css_first("#DataFormView_ContentsLabel")
+        body_n = tree.css_first(DETAIL_BODY)
+        if body_n is None:
+            return [ParseIssue(key, "detail", f"公告詳情頁找不到內文欄位 {DETAIL_BODY}（公告已刪除，或詳情頁改版），下一輪再抓")]
+        title_n = tree.css_first("#DataFormView_TitleLabel")
         when_n, files_n = tree.css_first("#DataFormView_AddTimeLabel"), tree.css_first("#DataFormView_FileLinkLabel")
         title = element_text(title_n, BASE).replace("\n", " ") if title_n else ""
-        body = element_text(body_n, BASE).replace("\n", " ") if body_n else ""
+        body = element_text(body_n, BASE).replace("\n", " ")
         try:
             published = parse_roc_date((when_n.text(strip=True) if when_n else "").split(" ")[0])
         except ValueError:
