@@ -59,6 +59,23 @@ def test_good_titles_masked_no_excerpt(good):
     assert all(d.title in t for d in good)  # fixture is already masked; masking again changes nothing
 
 
+def test_honor_title_masked_in_any_category():
+    # F-sso-crosspost-honor: the 恭賀 post cross-posted under 徵才就業 is masked and gets no excerpt, like GOOD
+    old = "【圖資處重要通知】校園資安提醒 PHP緊急安全更新"
+    html = read("sso_news", "list_p1.html").replace(old, "【恭賀】本所研究生謝乙丙考取苗栗縣115學年度國民中學正式教師")
+    recs = docs(A.parse(snap(f"{BASE}?cat=JOB", html, meta=list_meta("JOB"))))
+    d = next(x for x in recs if x.doc_key.startswith("63BBE83D"))
+    assert d.title == "【恭賀】本所研究生謝O丙考取苗栗縣115學年度國民中學正式教師" and d.pii_level == "personal"
+    assert all(x.pii_level == "none" for x in recs if x is not d)
+
+
+def test_honor_rows_get_no_detail_page():
+    old = "【圖資處重要通知】校園資安提醒 PHP緊急安全更新"
+    html = read("sso_news", "list_p1.html").replace(old, "賀 本系學生參加競賽 榮獲金牌")
+    recs = docs(A.parse(snap(f"{BASE}?cat=CAMPUS", html, meta=list_meta("CAMPUS"))))
+    assert next(x for x in recs if x.doc_key.startswith("63BBE83D")).pii_level == "personal"
+
+
 def test_detail_partial_excerpt():
     d = docs(A.parse(snap(detail_url("3E3FDDE24A008A28322CF9E129D050890FBE26AC"), read("sso_news", "detail.html"),
                           meta=DETAIL_META)))[0]

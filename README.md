@@ -51,8 +51,8 @@ MCP（Model Context Protocol）是 AI 助理呼叫外部工具的共通規格。
 ## 隱私
 
 - 公告標題和摘錄一律照抄學校原文；學校已經遮罩的內容保持原樣，不還原也不重複遮罩。
-- 只有榮譽榜這類個人內容，學校沒遮罩的人名會用學校的格式遮成「陳O余」（保留頭尾字，中間換成 O；兩個字遮成「陳O」）。絕不編造名字。
-- 學校誤公開的內部內容（例如行事曆裡的職員請假、組長行程、內部會議）在抓取階段就丟掉，不入資料庫，也不寫進 log。
+- 只有榮譽榜這類個人內容，學校沒遮罩的人名會用學校的格式遮成「陳O余」（保留頭尾字，中間換成 O；兩個字遮成「陳O」）。絕不編造名字。是不是榮譽內容看標題用詞（恭賀、榮獲、考取、錄取名單、榜單……），不看公告放在哪個分類；這類公告只收遮過的標題，不抓內文摘錄。
+- 學校誤公開的內部內容（例如行事曆裡的職員請假、組長行程、內部會議，或「人名＋私人行程」如「林O，看牙」）在抓取階段就丟掉，不入資料庫，也不寫進 log。
 - 公開倉庫裡的測試資料不用假名，人名同樣用 O 遮罩。
 - 伺服器只收到 AI 助理送來的查詢參數（例如「圖書館」「2026-10-24」），看不到你和 AI 的整段對話。不需要帳號，伺服器也不記錄存取紀錄或 IP；限流用的 IP 只放在記憶體裡，最後一次請求後一、兩分鐘就忘掉。（對外網址經過的隧道服務商有它自己的紀錄，不在本服務的控制範圍內。）
 - 查不到答案的問題（`nknu_search`、`nknu_get_hours` 回 `found=false` 時）會記下日期、工具和問題文字，電話、email 等個資先遮罩，不記錄是誰問的。維護者用它來補別名和資料來源，所以請不要在問題裡放個資。
@@ -273,7 +273,7 @@ gemini mcp add --scope user --transport http nknu <對外網址>/mcp
 | `nknu add hours …` | 手動錄入一段特殊開放時間或閉館（只有圖片的公告），要附原公告網址 |
 | `nknu build` | 由 facts.db 重建 serve.db；`--rollback` 換回上一版 |
 | `nknu serve` | 啟動 MCP 服務（`/mcp` 和 `/health`） |
-| `nknu check` | 授權、個資、TLS、啟動檢查。需要開發用套件，所以在 Mac 上用 `uv run nknu check` |
+| `nknu check` | 授權、個資、TLS、啟動檢查。個資掃描涵蓋所有 git 追蹤的文字檔（含 tests），刻意放的假樣例列在 `src/nknu/admin/checks.py` 的 `PII_SAMPLES`；推送前一定要跑。需要開發用套件，所以在 Mac 上用 `uv run nknu check` |
 | `nknu backup` | 把 facts.db 線上備份成 `facts-YYYYmmdd-HHMMSS.db`，只保留最新 14 份；`--to <目錄>`，預設 `NKNU_BACKUP_DIR` |
 | `nknu alerts` | 看告警（改版偵測失敗、新地點、來源衝突）；`--resolve <編號>` 標為已處理 |
 
@@ -317,6 +317,7 @@ sudo bash /opt/nknu/deploy/install.sh
 - log：`sudo journalctl -u nknu-crawl -n 100`、`sudo journalctl -u nknu-mcp -n 100`。
 - `/var/lib/nknu/misses.jsonl` 是查無資料的問題，用來補 `config/entities.yaml` 的別名。改完提交、推送，再到機器上跑一次 install.sh。
 - 新的 serve.db 有問題時：`nknu build --rollback`。
+- 遮名規則更新後，facts.db 裡已存的公告標題要等下一次全掃（每天第一輪抓取）才會用新規則重寫，重寫時順便清掉變成榮譽內容的公告摘錄；某則要立刻下架，用 `nknu undo sso_news:<UNID>`。
 - 緊急開關（在 `/etc/nknu/env`）：`NKNU_READONLY=1` 讓抓取不寫入、審核停用；`NKNU_DISABLED_SOURCES=<來源>` 停用某個來源，接著執行 `nknu build`。
 - 從備份還原 facts.db：
   ```bash

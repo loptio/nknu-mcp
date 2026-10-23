@@ -3,7 +3,9 @@
 Paging replays the page's own form state with __EVENTTARGET=gvFull / __EVENTARGUMENT=Page$N (no browser).
 Normal runs read the first 3 pages of every category; the first run of each day reads every page, and only those
 full scans count towards "missing 3 times = withdrawn". Rows are keyed by the stable 40-hex UNID.
-GOOD (榮譽典範) keeps only the masked title: no detail fetch, no excerpt.
+Honor-roll content keeps only the masked title, no detail fetch, no excerpt: every GOOD (榮譽典範) row, and a row of any
+other category whose title reads as honor content (core.pii.is_honor_title: the same 恭賀 post cross-posted under
+徵才就業, F-sso-crosspost-honor).
 
 Detail pages (the excerpt) are read for every listed row that has none stored yet, at most DETAIL_CAP per run: rows
 seen for the first time first, then the backlog newest first (F-excerpt-backlog). A detail page that fails costs only
@@ -19,7 +21,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.core.pii import mask_honor_names
+from nknu.core.pii import is_honor_title, mask_honor_names
 from nknu.core.records import DocRecord, ParseIssue, Record
 from nknu.core.rocdate import parse_roc_date
 from nknu.crawl.adapter import Adapter, ParseError, RunContext, Target, adapter
@@ -99,7 +101,7 @@ class SsoNews(Adapter):
         grid = tree.css_first("#gvFull")
         if grid is None:
             return []
-        honor = snap.target.meta.get("cat") == HONOR_CATEGORY
+        good = snap.target.meta.get("cat") == HONOR_CATEGORY
         out: list[Record] = []
         for a in grid.css("a[id$='_linkSubject_short']"):
             prefix = a.attributes["id"][: -len("linkSubject_short")]
@@ -114,6 +116,7 @@ class SsoNews(Adapter):
                 raise ParseError(f"row {prefix} has no UNID link: the list layout changed")
             unid = m.group(1).upper()
             title = a.text(strip=True) or (a.attributes.get("title") or "")
+            honor = good or is_honor_title(title)
             key = f"sso_news:{unid}"
             try:
                 published, until = _date(field("StartDate")), _date(field("EndDate"))

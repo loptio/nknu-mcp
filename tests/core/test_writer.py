@@ -122,6 +122,17 @@ def test_partial_doc_merges(conn):
     assert conn.execute("SELECT excerpt FROM doc").fetchone()[0] == "摘錄"
 
 
+def test_row_turning_personal_drops_its_excerpt(conn):
+    # a stored notice re-read as honor content (title rule, G4) keeps no body text, and a detail page cannot add one
+    upsert_doc(conn, DOC, adapter="sso_news", now=T0)
+    upsert_doc(conn, replace(DOC, partial=True, title="", excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T0)
+    upsert_doc(conn, replace(DOC, title="恭賀本系陳O丙同學榮獲佳作", pii_level="personal"), adapter="sso_news", now=T1)
+    row = conn.execute("SELECT title, excerpt, attachments_json, pii_level FROM doc").fetchone()
+    assert (row[0], row[1], json.loads(row[2]), row[3]) == ("恭賀本系陳O丙同學榮獲佳作", None, [], "personal")
+    upsert_doc(conn, replace(DOC, partial=True, title="", excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T1)
+    assert tuple(conn.execute("SELECT excerpt, attachments_json FROM doc").fetchone()) == (None, "[]")
+
+
 def test_list_row_never_blanks_stored_fields(conn):
     # F-sso-row-fields-null: a row read without its unit/category/dates keeps what was stored
     upsert_doc(conn, DOC, adapter="sso_news", now=T0)

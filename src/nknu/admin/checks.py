@@ -1,5 +1,5 @@
-"""`nknu check`: license scan, PII scan of fixtures/config, no disabled TLS verification, startup assertions.
-Runs locally; CI is optional and never on the runtime path."""
+"""`nknu check`: license scan, PII scan of every git-tracked text file (tests and docs included, F-check-scope), no
+disabled TLS verification, startup assertions. Runs locally before a push; CI is optional and never on the runtime path."""
 
 from __future__ import annotations
 
@@ -16,7 +16,15 @@ from nknu.settings import REPO_ROOT, Settings
 LGPL_ALLOWED = ("recurring-ical-events", "x-wr-timezone")
 FORBIDDEN = {"pymupdf", "html2text", "ckip-transformers", "firecrawl", "firecrawl-py", "crawl4ai", "poppler"}
 _TLS_OFF = re.compile(r"verify\s*=\s*False|" + "CERT_" + "NONE")
-_TEXT_SUFFIXES = {".html", ".htm", ".ics", ".yaml", ".yml", ".json", ".txt", ".md", ".csv"}
+# synthetic samples the tests use on purpose, per tracked file (find_pii hits); any other hit in these files still fails
+PII_SAMPLES: dict[str, set[str]] = {
+    "tests/core/test_pii.py": {"mobile:0912-345-678", "mobile:0912 345 678", "mobile:0912 345678", "national_id:A123456789",
+                               "national_id:Q123456789", "student_id:400000000", "email:someone@gmail.com",
+                               "email:someone.name@google.com"},
+    "tests/admin/test_checks.py": {"mobile:0912-345-678", "mobile:0987-654-321", "student_id:412345678"},
+    "tests/server/test_app.py": {"mobile:0912-345-678"},
+}
+_SAMPLES_FILE = "src/nknu/admin/checks.py"  # this file: it spells the samples out above, and only those
 _SELF_TESTS = {"test_checks.py"}  # writes the forbidden strings into temp files on purpose
 
 
@@ -32,16 +40,29 @@ def check_licenses() -> list[str]:
     return out
 
 
-def check_pii(paths: list[Path]) -> list[str]:
+def tracked_files(root: Path = REPO_ROOT) -> list[Path]:
+    """Every file git tracks: exactly what a push publishes (data/, docs/ and the other ignored folders never are)."""
+    r = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], check=True, capture_output=True, text=True)
+    return [root / name for name in r.stdout.split("\0") if name]
+
+
+def check_pii(paths: list[Path], *, root: Path = REPO_ROOT, allow: dict[str, set[str]] | None = None) -> list[str]:
+    """find_pii over every text file (no NUL byte) among paths (files, or folders scanned recursively); a hit listed in
+    allow for that file (path relative to root) is an intended sample."""
+    allow = PII_SAMPLES if allow is None else allow
     out = []
-    for root in paths:
-        for f in sorted(Path(root).rglob("*")):
-            if not f.is_file() or f.suffix.lower() not in _TEXT_SUFFIXES:
-                continue
-            for hit in find_pii(f.read_text(errors="ignore")):
-                if hit.startswith("staff_leave:") and any(c in hit for c in "OＯ○"):
-                    continue  # already masked the school's way
-                out.append(f"pii: {f}: {hit}")
+    files = sorted({f for p in map(Path, paths) for f in (p.rglob("*") if p.is_dir() else [p]) if f.is_file()})
+    for f in files:
+        data = f.read_bytes()
+        if b"\0" in data:
+            continue  # binary
+        rel = f.relative_to(root).as_posix() if f.is_relative_to(root) else str(f)
+        allowed = set().union(*allow.values()) if rel == _SAMPLES_FILE else allow.get(rel, set())
+        for hit in find_pii(data.decode("utf-8", errors="ignore")):
+            if hit.startswith("staff_leave:") and any(c in hit for c in "OＯ○"):
+                continue  # already masked the school's way
+            if hit not in allowed:
+                out.append(f"pii: {rel}: {hit}")
     return out
 
 
@@ -77,5 +98,8 @@ def check_startup(settings: Settings) -> list[str]:
 
 
 def run_all_checks(settings: Settings) -> list[str]:
-    return (check_licenses() + check_pii([REPO_ROOT / "tests" / "fixtures", REPO_ROOT / "config"])
-            + check_no_verify_false([REPO_ROOT / "src", REPO_ROOT / "tests"]) + check_startup(settings))
+    try:
+        pii = check_pii(tracked_files())
+    except (OSError, subprocess.CalledProcessError) as exc:
+        pii = [f"pii: cannot list the git-tracked files to scan ({exc})"]
+    return check_licenses() + pii + check_no_verify_false([REPO_ROOT / "src", REPO_ROOT / "tests"]) + check_startup(settings)

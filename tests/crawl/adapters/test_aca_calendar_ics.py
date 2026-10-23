@@ -2,6 +2,7 @@ import re
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
+import icalendar
 import pytest
 
 from nknu.core.pii import find_pii
@@ -9,7 +10,7 @@ from nknu.core.records import EventRecord, FactRecord
 from nknu.core.vocab import current_term
 from nknu.core.writer import upsert_event
 from nknu.crawl.adapter import ParseError
-from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs, category
+from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs, category, classify
 from tests.crawl.adapters.helpers import FIXTURES, snap
 from tests.factories import T0, make_db
 
@@ -102,3 +103,32 @@ def test_absence_counts_only_inside_the_parse_window():
     assert not A.counts_missing("uid", "event", (date(2026, 8, 1), date(2026, 8, 2)), [], today)
     assert not A.counts_missing("uid", "event", (date(2028, 1, 1), date(2028, 1, 2)), [], today)
     assert A.counts_missing("uid", "event", None, [], today)
+
+
+def vevent(summary, description=None):
+    e = icalendar.Event()
+    e.add("SUMMARY", summary)
+    e.add("DTSTART", date(2026, 11, 3))
+    if description:
+        e.add("DESCRIPTION", description)
+    return e
+
+
+# F-ics-staff-filter: shapes of the staff entries the public calendar carried in 2017-18 (names masked with O), which
+# the leave/meeting vocabulary let through; there is no review any more, so the adapter drops them
+@pytest.mark.parametrize("summary", ["林O去玩", "林O，王O，陳O去爬玉山", "王O教務處餐敘 18:00", "組內聚餐 18:00", "林O休",
+                                     "王O，休大假", "林O，看牙", "週五統一排休", "陳O。公差(某大學)", "林O出國", "王O看牙",
+                                     "林O、陳O，評鑑中心訪視"])
+def test_name_led_personal_entries_dropped(summary):
+    assert classify(vevent(summary)) == "drop"
+
+
+# real academic entries of the same calendar (2017-2027) that start like a name or carry a personal-looking word
+@pytest.mark.parametrize("summary", ["開學，開始上課 Classes begin", "補上課、上班(補10月2日) Make-up work/class date",
+                                     "過年去 China New Year", "辦理休/退學退費2/3期限截止", "萬安40號防空演習", "補上班",
+                                     "英聽考試", "學測", "美術術科", "放暑假了！", "期末考試，若教師另訂其他日期者，從其規定",
+                                     "申辦棄選、研究生申報指導教授", "暑假開始、大學部學生宿舍閉舍", "颱風，停止上課",
+                                     "元旦，放假", "大學部各學系新生、轉學生報到暨親師座談會", "學生出國交換申請截止",
+                                     "恭喜發財過新年Chinese New Year", "課表公告", "畢業典禮"])
+def test_academic_entries_kept(summary):
+    assert classify(vevent(summary)) == "keep"

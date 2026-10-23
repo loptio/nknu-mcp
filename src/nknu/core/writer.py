@@ -114,13 +114,15 @@ def retire_event(conn: sqlite3.Connection, uid: str, *, now: str) -> bool:
 
 def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: str) -> None:
     """A list row never blanks a stored unit, category or date (a cell that moved reads as None: keep the old value);
-    a detail page (partial) updates only the excerpt and attachments."""
-    attachments = json.dumps(list(rec.attachments), ensure_ascii=False)
+    a detail page (partial) updates only the excerpt and attachments. Honor-roll rows (pii_level 'personal') keep no
+    body text: a row that turns personal drops what was stored, and a detail page never adds any (design §3)."""
+    personal = rec.pii_level == "personal"
+    attachments = "[]" if personal else json.dumps(list(rec.attachments), ensure_ascii=False)
     if rec.partial:
         conn.execute(
             """UPDATE doc SET excerpt=coalesce(?, excerpt),
                               attachments_json=CASE WHEN ?='[]' THEN attachments_json ELSE ? END, last_seen=?
-               WHERE adapter=? AND doc_key=?""",
+               WHERE adapter=? AND doc_key=? AND pii_level <> 'personal'""",
             (rec.excerpt, attachments, attachments, now, adapter, rec.doc_key),
         )
         return
@@ -132,11 +134,14 @@ def upsert_doc(conn: sqlite3.Connection, rec: DocRecord, *, adapter: str, now: s
              category=coalesce(excluded.category, doc.category),
              published_on=coalesce(excluded.published_on, doc.published_on),
              announce_until=coalesce(excluded.announce_until, doc.announce_until), url=excluded.url,
-             excerpt=coalesce(excluded.excerpt, doc.excerpt),
-             attachments_json=CASE WHEN excluded.attachments_json='[]' THEN doc.attachments_json ELSE excluded.attachments_json END,
+             excerpt=CASE WHEN excluded.pii_level='personal' THEN NULL ELSE coalesce(excluded.excerpt, doc.excerpt) END,
+             attachments_json=CASE WHEN excluded.pii_level='personal' THEN '[]'
+                                   WHEN excluded.attachments_json='[]' THEN doc.attachments_json
+                                   ELSE excluded.attachments_json END,
              pii_level=excluded.pii_level, last_seen=excluded.last_seen, withdrawn_at=NULL""",
         (adapter, rec.doc_key, rec.title, rec.unit, rec.category, rec.published_on.isoformat() if rec.published_on else None,
-         rec.announce_until.isoformat() if rec.announce_until else None, rec.url, rec.excerpt, attachments, rec.pii_level, now,
+         rec.announce_until.isoformat() if rec.announce_until else None, rec.url, None if personal else rec.excerpt,
+         attachments, rec.pii_level, now,
          now),
     )
 

@@ -3,7 +3,8 @@
 Every list row becomes a DocRecord (document layer, not facts). Detail pages add the excerpt and attachments; an
 announcement that says a venue 暫停開放 on explicitly written dates also yields closure FactRecords (written directly, U2).
 v1 does not extract opening hours from announcements (design §13.4). 暫停借用 (bookings suspended) is not a closure.
-Honor-roll style posts (獲獎名單 …) keep only the masked title: no detail fetch, no excerpt.
+Honor-roll style posts (獲獎名單 …, core.pii.is_honor_title, the rule sso_news uses) keep only the masked title: no detail
+fetch, no excerpt.
 
 Detail pages, at most DETAIL_CAP per run: rows seen for the first time, then (full scans) announcements titled as
 closures again, then the backlog of rows with no excerpt stored, newest first (F-excerpt-backlog); a page that failed
@@ -21,7 +22,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.core.pii import mask_honor_names
+from nknu.core.pii import is_honor_title, mask_honor_names
 from nknu.core.records import DocRecord, FactRecord, ParseIssue, Record, SourceRef
 from nknu.core.rocdate import parse_roc_date, parse_roc_range
 from nknu.crawl.adapter import Adapter, RunContext, Target, adapter
@@ -39,7 +40,6 @@ DETAIL_META = {"kind": "detail"}  # no run-voiding selector: _detail checks its 
 DETAIL_BODY = "#DataFormView"
 
 CLOSURE_WORDS = re.compile(r"暫停開放|停止開放|不開放|閉館|不予開放")
-HONOR_TITLE = re.compile(r"名單|榮獲|得獎|獲獎|恭賀|賀[!！]|錄取")
 # venue mentions -> {campus: (entity id, propagates to contained places)}
 VENUES = [
     ("重量訓練室", {"heping": ("nknu.heping.gym.weight-room", False), "yanchao": ("nknu.yanchao.gym.weight-room", False)}),
@@ -67,7 +67,7 @@ def _nid(url: str) -> str | None:
 def needs_detail(title: str, key: str, detailed: set[str], full_scan: bool, down: set[str] = frozenset()) -> bool:
     """No excerpt stored yet, or (full scan) a closure announcement whose dates may have been edited. Never for honor
     posts (names) or announcements taken down (404, nknu undo)."""
-    if HONOR_TITLE.search(title) or key in down:
+    if is_honor_title(title) or key in down:
         return False
     return key not in detailed or (full_scan and bool(CLOSURE_WORDS.search(title)))
 
@@ -168,7 +168,7 @@ class PeNews(Adapter):
             nid = _nid(urljoin(BASE, a.attributes.get("href") or ""))
             cells = table_grid_row(tr)
             title = a.text(strip=True)
-            honor = bool(HONOR_TITLE.search(title))
+            honor = is_honor_title(title)
             try:
                 published = parse_roc_date(cells[-1]) if cells else None
             except ValueError:

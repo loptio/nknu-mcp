@@ -31,6 +31,12 @@ def docs(recs):
     return [r for r in recs if isinstance(r, DocRecord)]
 
 
+def test_honor_gate_is_the_shared_title_rule():
+    # one rule for both news adapters (core.pii.is_honor_title): a 恭喜 / 考取 post is honor content in pe_news too
+    assert not needs_detail("恭喜本校排球隊陳乙丙考取國手", "pe_news:1", set(), True)
+    assert needs_detail("游泳池暫停開放公告", "pe_news:1", set(), True)
+
+
 def test_list_rows_parsed():
     d = docs(A.parse(snap(LIST_URL, read("pe_news", "list.html"), meta=LIST_META)))
     assert len(d) == 30 and all(not x.partial and x.key == f"pe_news:{x.doc_key}" and x.unit == "體育室" for x in d)
