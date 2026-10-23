@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+import nknu.server.search as S
+from nknu.core.textnorm import norm_text, tokenize
 from nknu.server.envelope import NOTICE_LABEL
 from nknu.server.linking import detect_intent, expand, link_entities, link_query
 from nknu.server.query import CAVEATS, CURRENT_DOC_SQL, current_doc_params, get_hours
@@ -334,7 +336,28 @@ def test_joined_words_read_like_spaced_ones(db, joined, spaced):
     so the coverage leaves it out and the question is answered as 停修 截止 is. An alias is found when its canonical
     term is (退課 by 停修)."""
     a, b = search(db, joined, now=NOW), search(db, spaced, now=NOW)
-    assert a["found"] is True and (a["match"], a["facts"]) == (b["match"], b["facts"])
+    assert a["found"] is True and (a["match"], a["facts"][0]) == (b["match"], b["facts"][0])
+
+
+def test_a_joint_is_left_out_only_for_hits_with_both_words_or_the_rarer_one():
+    """轉系申請 on the real data: 轉系 is in one notice, 申請 in some forty. A hit with only the common 申請 (the
+    leave-of-absence deadline) must not cover half of the question, or it answers as current; the 轉系 notice does,
+    and a hit with both words covers all of it."""
+    common, rare = frozenset(tokenize("學生申請第1學期休學截止")), frozenset(tokenize("大學部申辦轉系、輔系、雙主修"))
+    both = frozenset(tokenize("轉系 申請須知"))
+    counts = {norm_text("轉系"): 1, norm_text("申請"): 46}
+    clauses = S._clauses("轉系申請", topic=True, hits=[common, rare, both], rarity=lambda t: counts.get(t, 0))
+    assert S._coverage(clauses, common) == pytest.approx(1 / 3) and S.strength(1 / 3) == "none"
+    assert S._coverage(clauses, rare) == 0.5 and S._coverage(clauses, both) == 1.0
+    tie = S._clauses("轉系申請", topic=True, hits=[common, rare], rarity=lambda t: 5)  # equally rare: either word answers
+    assert S._coverage(tie, common) == S._coverage(tie, rare) == 0.5
+
+
+def test_joined_words_answer_with_the_rarer_word(db):
+    """開學日期: 日期 is in many events, 開學 (an alias of the term's first day) is not; the answer is the term begin,
+    not the mid-term exam whose summary happens to say 日期."""
+    e = search(db, "開學日期", now=NOW)
+    assert e["found"] is True and e["facts"][0].get("category") == "term_begin", e["facts"][0]
 
 
 def test_a_word_absent_from_every_hit_still_counts(db):
