@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from nknu.server import query
-from nknu.server.envelope import BUDGET, NOTICE_LABEL, count_tokens
+from nknu.server.envelope import BUDGET, NOTICE_LABEL, approx_tokens, count_tokens
 from nknu.server.query import get_calendar, get_fact, get_hours, parse_date_arg, today_info
 from nknu.server.servedb_reader import ServeDB
 from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR, covered_days, tpe
@@ -264,3 +264,21 @@ def test_one_day_answers_keep_their_notes(db):
             if card.split("附註：", 1)[1] not in e["answer"]:
                 lost.append((place, lo, count_tokens(e)))
     assert lost == []
+
+
+@pytest.mark.parametrize("days", [1, 7, 14])
+def test_conflict_with_days_within_budget(conflict_world, days):
+    e = get_hours(conflict_world, WR, CONFLICT_DAY, days=days, now=NOW)
+    assert count_tokens(e) <= BUDGET and e["status"] == "conflict" and e["caveat"] and len(e["alternatives"]) == 3
+    if days > 1:  # the asked day stays first; days cut from the end are counted in more_days
+        assert e["days"][0] == {"date": CONFLICT_DAY, "status": "conflict"}
+        assert covered_days(e["days"]) + e.get("more_days", 0) == days
+
+
+def test_budget_holds_around_a_conflict_day(conflict_world):
+    for d in ("2026-11-01", "2026-11-08", CONFLICT_DAY):
+        for n in (1, 7, 14):
+            e = get_hours(conflict_world, WR, d, days=n, now=NOW)
+            real = count_tokens(e)
+            assert real <= BUDGET and approx_tokens(e) >= real, (d, n, real)
+            assert covered_days(e.get("days") or [{"date": d}]) + e.get("more_days", 0) == n

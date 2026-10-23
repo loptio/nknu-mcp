@@ -113,6 +113,20 @@ def test_fit_budget_drops_next_answer_before_the_answer_notes():
     assert out["answer"] == env["answer"] and out["next_change"] == {"from": "2026-10-24"}
 
 
+def test_fit_budget_cuts_days_then_alternatives_last():
+    alts = [{"id": f"a{i}", "rules": [{"dows": [6], "opens": f"0{i + 7}:00", "closes": "12:00"}],
+             "source": {"url": f"https://c.nknu.edu.tw/reality/NewsView.aspx?Nid=900{i}"}} for i in range(3)]
+    days = [{"date": "2026-11-14", "weekday": "週六", "status": "conflict"}] + [
+        {"date": (date(2026, 11, 15) + timedelta(days=i)).isoformat(), "weekday": "週日", "status": "current", "open": True,
+         "segments": [f"{18 + i % 2}:00–21:00"]} for i in range(13)]  # alternating hours: no runs to merge
+    env = make_envelope(kb="k", today=TODAY, found=True, status="conflict", answer="甲" * 150, alternatives=alts,
+                        caveat="請勿推測", days=days)
+    out = fit_budget(env, 300)
+    assert approx_tokens(out) <= 300 and out["answer"] == env["answer"] and out["caveat"] == "請勿推測"
+    assert out["days"] == [{"date": "2026-11-14", "status": "conflict"}] and out["more_days"] == 13
+    assert 1 <= len(out["alternatives"]) < 3 and out["more"] == 3 - len(out["alternatives"])
+
+
 def test_error_result_is_short_error():
     r = error_result("bad_days", "days 應為 1–14")
     assert r.is_error and r.structured_content == {"code": "bad_days", "message": "days 應為 1–14"}

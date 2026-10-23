@@ -8,6 +8,7 @@ fixed order. status, caveat and the core answer sentence are never removed."""
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import math
 import re
@@ -49,7 +50,7 @@ _LABELS = {
     "from": "自", "valid_to_inclusive": "有效至", "source_url": "來源網址", "date": "日期", "weekday": "星期",
     "time": "時間", "open": "開放", "segments": "時段", "reason": "原因", "label": "標示", "summary": "事件",
     "category": "類別", "recorded_from": "收錄於", "recorded_to": "取代於", "superseded_by": "現行版本",
-    "code": "代碼", "message": "說明", "to": "至",
+    "code": "代碼", "message": "說明", "to": "至", "more_days": "另有天數",
 }
 
 
@@ -270,24 +271,37 @@ _STEPS: list[Callable[[dict], None]] = [
 _LAST_STEPS: list[Callable[[dict], None]] = [_strip_answer_notes, _drop("recent_notices"), _drop_facts]
 
 
-def _trim_lists(env: dict, budget: int) -> None:
-    """Long lists (calendar events, candidates, history) lose items from the end; `more` says how many were cut."""
-    for key, end in (("history", 0), ("facts", -1)):  # history is oldest first: the oldest versions go first
+def _days_in(entry: dict) -> int:
+    """Days covered by a days entry (a merged run {date, to} counts every day in it)."""
+    lo = dt.date.fromisoformat(entry["date"])
+    return (dt.date.fromisoformat(entry.get("to", entry["date"])) - lo).days + 1
+
+
+# list key -> (end that is cut first, counter). history is oldest first, so the oldest versions go first.
+_LISTS = {"history": (0, "more"), "facts": (-1, "more"), "days": (-1, "more_days"), "alternatives": (-1, "more")}
+
+
+def _trim_lists(env: dict, budget: int, keys: tuple[str, ...]) -> None:
+    """Long lists lose items from one end and keep at least one; `more` counts the items cut, `more_days` the days."""
+    for key in keys:
+        end, counter = _LISTS[key]
         while approx_tokens(env) > budget and len(env.get(key) or []) > 1:
-            env[key].pop(end)
-            env["more"] = env.get("more", 0) + 1
+            item = env[key].pop(end)
+            env[counter] = env.get(counter, 0) + (_days_in(item) if key == "days" else 1)
 
 
 def fit_budget(env: dict, budget: int = BUDGET) -> dict:
-    """Return a copy of env trimmed (in a fixed order) until approx_tokens() fits the budget."""
+    """Return a copy of env trimmed (in a fixed order) until approx_tokens() fits the budget. The asked-for lists go last:
+    days lose their tail (the asked day stays first), then a conflict keeps fewer alternatives (its answer names all)."""
     out = copy.deepcopy(env)
     for step in _STEPS:
         if approx_tokens(out) <= budget:
             return out
         step(out)
-    _trim_lists(out, budget)
+    _trim_lists(out, budget, ("history", "facts"))
     for step in _LAST_STEPS:
         if approx_tokens(out) <= budget:
             return out
         step(out)
+    _trim_lists(out, budget, ("days", "alternatives"))
     return out
