@@ -1,0 +1,128 @@
+# Search regression set (spec §6.5): 80 queries rewritten from prototypes/search/queries.py, 10 of them English.
+# gold: any listed item at rank 1 counts for R@1, within the first 5 facts for R@5. Gold kinds:
+#   {card: {entity, intent}}            an answer card of that place (search returns the card for on_date)
+#   {calendar: {category, summary_re?}} an academic-calendar event (summary_re narrows category `other`)
+#   {doc: {title_re}}                   a current notice whose title matches
+# type noans + gold []: v1 crawls no source that answers it (bus, student id, parking, donations, …; spec §15.2), so the
+# right answer is found=false. Every gold item must exist in the fixture world as of 2026-10-22 (test_every_gold_exists).
+
+# ---------------- two-character queries
+- {q: 停修, type: short2, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 校車, type: noans, gold: []}
+- {q: 重訓, type: short2, gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}},
+                                {card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 學號, type: noans, gold: []}
+- {q: 兵役, type: noans, gold: []}
+- {q: 校慶, type: short2, gold: [{calendar: {category: other, summary_re: 校慶}}]}
+- {q: 寒假, type: short2, gold: [{calendar: {category: vacation_begin}}]}
+- {q: 閉館, type: short2, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                {card: {entity: nknu.yanchao.library.main, intent: hours}},
+                                {card: {entity: nknu.heping.library.iread, intent: hours}},
+                                {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: 捐贈, type: noans, gold: []}
+- {q: 泳池, type: short2, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
+- {q: 停車, type: noans, gold: []}
+- {q: 期中, type: short2, gold: [{calendar: {category: midterm_exam}}]}
+- {q: 休學, type: short2, gold: [{calendar: {category: other, summary_re: 休學}}]}
+
+# ---------------- simplified-Chinese input
+- {q: 和平校区 健身房 几点开, type: simp, gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}}]}
+- {q: 图书馆 开馆时间, type: simp, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                     {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 停修 申请 截止日期, type: simp, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 期中考试 日期, type: simp, gold: [{calendar: {category: midterm_exam}}]}
+- {q: 寒假 什么时候开始, type: simp, gold: [{calendar: {category: vacation_begin}}]}
+- {q: 学生宿舍 开舍, type: noans, gold: []}
+- {q: 体育馆 暂停开放 连假, type: simp, gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
+- {q: 电子烟 回收桶, type: simp, gold: [{doc: {title_re: 電子煙}}]}
+- {q: 燕巢 桌球室 开放时间, type: simp, gold: [{card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}}]}
+
+# ---------------- aliases (the query word is not in the official text)
+- {q: 健身房開放時間, type: alias, gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}},
+                                      {card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 燕巢健身房, type: alias, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 游泳館有開嗎, type: alias, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
+- {q: 圖資處 期中考 延長開館, type: alias, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                          {card: {entity: nknu.yanchao.library.main, intent: hours}},
+                                          {calendar: {category: midterm_exam}}]}
+- {q: 高師大地址, type: noans, gold: []}
+- {q: VPN 維修 斷線, type: noans, gold: []}
+- {q: 宿舍什麼時候可以入住, type: noans, gold: []}
+- {q: 運動會那天要上課嗎, type: alias, gold: [{calendar: {category: other, summary_re: 校慶}}]}
+- {q: K書中心 開到幾點, type: alias, gold: [{card: {entity: nknu.heping.library.iread, intent: hours}},
+                                       {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: 退課 申請, type: alias, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+
+# ---------------- long natural-language questions
+- {q: 請問這學期和平校區的重量訓練室星期四晚上幾點開到幾點？, type: long,
+   gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}}]}
+- {q: 我想知道 10 月 24 日到 26 日連假期間體育館有沒有開放, type: long,
+   gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
+- {q: 期中考那個週末圖書館有延長開館嗎？和平跟燕巢分別開到幾點, type: long,
+   gold: [{card: {entity: nknu.heping.library.main, intent: hours}}, {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 如果我想停修一門課，要經過誰同意，最多可以停修幾科？, type: long,
+   gold: [{doc: {title_re: 停修}}, {calendar: {category: course_withdrawal}}]}
+- {q: 送出停修申請之後要怎麼確認到底有沒有停修成功？, type: long, gold: [{doc: {title_re: 停修}}]}
+- {q: 新生的學雜費繳費單會寄到家裡嗎，還是要自己去哪裡下載？, type: long, gold: [{doc: {title_re: 繳費單}}]}
+- {q: 這學期的期末考是哪幾天？考完之後還要上課嗎？, type: long, gold: [{calendar: {category: final_exam}}]}
+- {q: 休學的話學雜費可以退多少？期限是什麼時候, type: long, gold: [{calendar: {category: other, summary_re: 休學}}]}
+- {q: 燕巢校區的圖書館週末幾點開門？, type: long, gold: [{card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 下學期什麼時候開學？加退選到哪一天？, type: long, gold: [{calendar: {category: term_begin}}]}
+- {q: 大一英文可以申請免修嗎，需要多益幾分？, type: noans, gold: []}
+- {q: 學校的電子菸回收桶要拿去哪裡？, type: long, gold: [{doc: {title_re: 電子煙}}]}
+- {q: 燕巢的重量訓練室在哪裡，週六有開嗎？, type: long, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+
+# ---------------- typos and variant characters
+- {q: 重量訓連室 開放時間, type: typo, gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}},
+                                         {card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 停修申情, type: typo, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 圖書舘開館時間, type: typo, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                    {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: 期中考式 日期, type: typo, gold: [{calendar: {category: midterm_exam}}]}
+- {q: 燕巢校去 桌球室, type: typo, gold: [{card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}}]}
+- {q: 校慶運動惠 停課, type: typo, gold: [{calendar: {category: other, summary_re: 校慶}}]}
+- {q: 電子煙 回收, type: typo, gold: [{doc: {title_re: 電子煙}}]}
+
+# ---------------- proper names
+- {q: 歸燕食巢, type: name, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 燕巢, type: name, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}},
+                             {card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}},
+                             {card: {entity: nknu.yanchao.gym.outdoor, intent: hours}},
+                             {card: {entity: nknu.yanchao.library.main, intent: hours}},
+                             {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: 歸燕食巢 3樓 開放時間, type: name, gold: [{card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: 愛閱館, type: name, gold: [{card: {entity: nknu.heping.library.iread, intent: hours}},
+                              {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: I-Read Space 週末, type: name, gold: [{card: {entity: nknu.heping.library.iread, intent: hours}},
+                                         {card: {entity: nknu.yanchao.library.iread, intent: hours}}]}
+- {q: TAICA 停修, type: name, gold: [{doc: {title_re: TAICA}}]}
+- {q: 致理大樓 教務組, type: noans, gold: []}
+- {q: 臺灣光復節 圖書館, type: name, gold: [{calendar: {category: holiday}},
+                                     {card: {entity: nknu.heping.library.main, intent: hours}},
+                                     {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+
+# ---------------- answered only by a notice / not answered by v1 at all
+- {q: 校長是誰, type: noans, gold: []}
+- {q: 獎學金申請截止日, type: doc, gold: [{doc: {title_re: 獎學金}}]}
+- {q: 交換學生甄選, type: noans, gold: []}
+- {q: 籃球校隊招募, type: noans, gold: []}
+- {q: 心理諮商預約, type: noans, gold: []}
+- {q: 畢業紀念冊拍照, type: noans, gold: []}
+- {q: 學餐菜單, type: noans, gold: []}
+- {q: 宿舍冷氣儲值卡, type: noans, gold: []}
+- {q: 健身房 私人教練 費用, type: noans, gold: []}
+- {q: 燕巢校區 夜市 宵夜, type: noans, gold: []}
+
+# ---------------- English
+- {q: weight room hours, type: en, gold: [{card: {entity: nknu.heping.gym.weight-room, intent: hours}},
+                                         {card: {entity: nknu.yanchao.gym.weight-room, intent: hours}}]}
+- {q: library opening hours, type: en, gold: [{card: {entity: nknu.heping.library.main, intent: hours}},
+                                             {card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: Yanchao library hours on weekends, type: en, gold: [{card: {entity: nknu.yanchao.library.main, intent: hours}}]}
+- {q: is the swimming pool open, type: en, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
+- {q: when is the midterm exam, type: en, gold: [{calendar: {category: midterm_exam}}]}
+- {q: course withdrawal deadline, type: en, gold: [{calendar: {category: course_withdrawal}}]}
+- {q: final exams schedule, type: en, gold: [{calendar: {category: final_exam}}]}
+- {q: when does winter vacation begin, type: en, gold: [{calendar: {category: vacation_begin}}]}
+- {q: table tennis room opening hours, type: en, gold: [{card: {entity: nknu.yanchao.gym.table-tennis, intent: hours}}]}
+- {q: university anniversary sports meet, type: en, gold: [{calendar: {category: other, summary_re: 校慶}}]}

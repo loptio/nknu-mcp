@@ -1,0 +1,25 @@
+# Calibration set for the bigram-coverage thresholds T_LOW / T_HIGH (spec §6.5): 20 queries that are not in queries.yaml,
+# in the same mix (short keywords, long questions, English, questions v1 cannot answer). Same format as queries.yaml.
+# `uv run python -m tests.search.evaluate --calibrate` grid-searches the thresholds on this set.
+
+- {q: 和平體育館 幾點開, type: place, gold: [{card: {entity: nknu.heping.gym.main, intent: hours}}]}
+- {q: 操場 開放時間, type: place, gold: [{card: {entity: nknu.heping.gym.outdoor, intent: hours}},
+                                    {card: {entity: nknu.yanchao.gym.outdoor, intent: hours}}]}
+- {q: 游泳池 整修, type: card, gold: [{card: {entity: nknu.heping.gym.pool, intent: hours}}]}
+- {q: 期中考試, type: calendar, gold: [{calendar: {category: midterm_exam}}]}
+- {q: 申辦停修, type: calendar, gold: [{calendar: {category: course_withdrawal}}, {doc: {title_re: 停修}}]}
+- {q: 颱風 注意事項, type: doc, gold: [{doc: {title_re: 颱風}}]}
+- {q: 繳費單 下載, type: doc, gold: [{doc: {title_re: 繳費單}}]}
+- {q: 流感 群聚 防治, type: doc, gold: [{doc: {title_re: 流感}}]}
+- {q: 請問寒假是從哪一天開始放？, type: long, gold: [{calendar: {category: vacation_begin}}]}
+- {q: 我想申請停修，請問線上申請到幾號截止？, type: long, gold: [{doc: {title_re: 停修}}, {calendar: {category: course_withdrawal}}]}
+- {q: 校慶運動會那天是不是全校停課？, type: long, gold: [{calendar: {category: other, summary_re: 校慶}}]}
+- {q: 學生持有電子煙會被罰嗎？要丟到哪裡？, type: long, gold: [{doc: {title_re: 電子煙}}]}
+- {q: when do classes begin next semester, type: en, gold: [{calendar: {category: term_begin}}]}
+- {q: 學校附近租屋資訊, type: noans, gold: []}
+- {q: 學生證遺失補辦, type: noans, gold: []}
+- {q: 畢業典禮 日期, type: noans, gold: []}
+- {q: 校園 wifi 帳號申請, type: noans, gold: []}
+- {q: 成績 查詢 系統, type: noans, gold: []}
+- {q: 請問學生餐廳週末有營業嗎？, type: noans, gold: []}
+- {q: 機車 停車位 在哪裡, type: noans, gold: []}

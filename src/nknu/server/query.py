@@ -20,6 +20,7 @@ from nknu.core.textnorm import alias_norm, norm_text
 from nknu.core.timeutil import TAIPEI, now_utc
 from nknu.core.vocab import ancestors, managing_org, resolve_place
 from nknu.server.envelope import NOTICE_LABEL, fit_budget, make_envelope
+from nknu.server.linking import PLACE_TYPES, link_entities
 from nknu.server.servedb_reader import ServeDB
 
 MAX_DAYS = 14
@@ -28,7 +29,6 @@ MAX_CALENDAR_SPAN = 366
 NOTICE_RECENT_DAYS = 14
 NOTICE_MAX = 3
 ALTERNATIVES_MAX = 3
-PLACE_TYPES = ("ExerciseGym", "Place", "Library")
 
 # A notice counts as current while not withdrawn and either inside its posting period, or (no period given) under 180 days
 # old. Search (Task 19) uses the same condition. Parameters: :today, :ttl_from (today - 180 days).
@@ -240,8 +240,24 @@ def _similar(conn: sqlite3.Connection, place: str) -> list[str]:
 
 
 def _find_places(conn: sqlite3.Connection, place: str) -> list[str]:
-    """Exact id/name/alias lookup (Task 19 adds longest-match entity linking on free text when this finds nothing)."""
-    return resolve_place(conn, place)
+    """Exact id/name/alias lookup; when that finds nothing, longest-match entity linking on the free text."""
+    return resolve_place(conn, place) or link_entities(conn, place)
+
+
+def worst_status(statuses: set[str]) -> str:
+    """The most severe status of several places (conflict, stale, no_data, else current)."""
+    return next((s for s in _SEVERITY if s in statuses), "current")
+
+
+def _candidate(ctx: _Ctx, entity: str, d: dt.date) -> dict:
+    day = ctx.day(entity, d)
+    return {"entity_id": entity, "name": ctx.names.get(entity, entity), "status": day.res["status"], "answer": day.answer}
+
+
+def place_candidates(conn: sqlite3.Connection, tpl: Templates, ids: list[str], d: dt.date) -> list[dict]:
+    """{entity_id, name, status, answer} per place on day d: the answer card, or resolve() outside the card window."""
+    ctx = _Ctx(conn, tpl)
+    return [_candidate(ctx, e, d) for e in ids]
 
 
 def _base(db: ServeDB, now: dt.datetime | None) -> tuple[dict, dt.date]:
@@ -262,10 +278,9 @@ def get_hours(db: ServeDB, place: str, date: str | None = None, days: int = 1, n
                                         similar=_similar(conn, place)))
     ctx = _Ctx(conn, db.templates())
     if len(ids) > 1:
-        cands = [{"entity_id": e, "name": ctx.names.get(e, e), "status": ctx.day(e, d0).res["status"],
-                  "answer": ctx.day(e, d0).answer} for e in ids]
+        cands = [_candidate(ctx, e, d0) for e in ids]
         statuses = {c["status"] for c in cands}
-        status = next((s for s in _SEVERITY if s in statuses), "current")
+        status = worst_status(statuses)
         return fit_budget(make_envelope(**base, found=any(s in ("current", "conflict") for s in statuses), status=status,
                                         match="ambiguous", facts=cands, caveat=CAVEAT_AMBIGUOUS))
     entity = ids[0]

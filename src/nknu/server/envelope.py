@@ -155,7 +155,8 @@ def _items(env: dict, *keys: str) -> list[dict]:
 
 
 def _short_titles(env: dict) -> None:
-    for n in _items(env, "recent_notices"):
+    """Notice titles (recent_notices, and the notices search lists as facts) are cut to TITLE_MAX characters."""
+    for n in [*_items(env, "recent_notices"), *(f for f in _items(env, "facts") if f.get("label"))]:
         if len(n.get("title", "")) > TITLE_MAX:
             n["title"] = n["title"][:TITLE_MAX] + "…"
 
