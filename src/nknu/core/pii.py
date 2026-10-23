@@ -5,9 +5,10 @@
   content by its own words (is_honor_title: 恭賀, 榮獲, 名單 …), whatever list it is posted in (F-sso-crosspost-honor).
 - A name is 2-3 characters starting with a common surname (3-4 with a compound one), found right before an honorific
   (陳宥余同學, 陳宥余 老師, 陳宥余、林宥余同學), after a role word and before a verb (研究生陳宥余考取, 系友 陳宥余、林宥余參加),
-  or, 3 characters only, right after the school's name or a role word (高師大陳宥余挺身傳愛, 碩二生陳宥余林宥余獲…).
-  A span that does not look like a name is left as the school wrote it (榮升教授, 歷史系校友, 歡迎同學: F-honor-overmask);
-  masking never invents a name.
+  or, 3 characters only, right after the school's name (高師大陳宥余挺身傳愛, whatever follows: the school's headlines),
+  or after 本校 or a role word when what follows ends a name (碩二生陳宥余林宥余獲…, 研究生陳宥余以…; not 本校方案獲…).
+  A span that does not look like a name is left as the school wrote it (榮升教授, 歷史系校友, 歡迎同學, 本校許多同學:
+  F-honor-overmask); masking never invents a name.
 """
 
 from __future__ import annotations
@@ -33,8 +34,12 @@ _BOUNDARY_END = re.compile(r"(?:系|所|班|組|學程|中心|院|生|友|級|�
 # 取得獎勵 (an award scheme) holds 得獎; a 賽事名單 lists events, not people; 獲…獎 is 獲 and 獎 in one clause
 HONOR_TITLE = re.compile(r"(?<!賽事)名單|榜單|榮獲|(?<!取)得獎|獲獎|獲頒|獲選|當選|入選|考取|錄取|榮升|榮登|恭賀|恭喜|狂賀|"
                          r"(?:^|[^\w])賀|獲[^，,。！!？?\s]{1,15}?獎")
-# the school's own name, then a name written right after it (高師大陳宥余挺身…, 高師大陳宥余林宥余獲…)
-_LEAD = re.compile(r"高師大|高雄師大|高雄師範大學|本校|" + _ROLE)
+# the school's own name, then a name written right after it, whatever follows (高師大陳宥余挺身…, 高師大陳宥余林宥余獲…)
+_LEAD_SCHOOL = re.compile(r"高師大|高雄師大|高雄師範大學")
+# 本校 or a role word, then a name only when what follows ends one: a verb, an honorific, a word joining it to more
+# (研究生陳宥余以…, …等), or no Chinese character at all (本校陳宥余 榮獲); 本校方案獲教育部, 學生程度優異 are words
+_LEAD_OTHER = re.compile(r"本校|" + _ROLE)
+_NAME_END = re.compile(rf"(?:{_VERB}|{_HONORIFIC}|[以與和及等]|[^{_HAN}{_MASKED}]|$)")
 
 # common surnames in Taiwan (traditional, with the simplified forms of the most frequent); characters that mostly start
 # ordinary words (安 全 成 申 時 常 應 華 花 畢 …) are left out on purpose: a name with such a surname stays readable
@@ -56,6 +61,7 @@ _NOT_NAMES = {
     "榮升", "升等", "升任", "榮任", "連任", "新任", "現任", "前任", "卸任", "講座", "特聘", "名譽", "任課", "任教", "全國",
     "高中", "高職", "大學", "高師大", "高師", "師大", "高雄", "金門", "馬祖", "苗栗", "雲林", "陸生", "游泳", "田徑", "金牌",
     "金獎", "衛生", "管理", "顧問", "紀念", "周年", "週年", "簡報", "代表", "甄試", "卓越", "高教", "嚴正", "盛大",
+    "許多", "曾經", "高等",
 }
 # a span holding a unit or place word is not a name (歷史系, 高雄市, 國文系王 in 國文系王主任)
 _UNIT_CHARS = set("系所院班組處室館隊團社部局署市縣校會")
@@ -128,12 +134,16 @@ def _names_at(text: str, i: int) -> list[tuple[int, int]]:
 
 
 def _mask_after_lead(title: str) -> str:
-    """Names right after the school's name or a role word, whatever follows them (高師大陳宥余挺身傳愛,
-    研究生陳宥余以腳創作): only 3-character names, a 2-character one cannot be told from the next word."""
+    """Names right after the school's name, whatever follows them (高師大陳宥余挺身傳愛), or after 本校 or a role word
+    when what follows the last of them ends a name (研究生陳宥余以腳創作, 本校陳宥余獲…): only 3-character names, a
+    2-character one cannot be told from the next word."""
     chars = list(title)
-    for m in _LEAD.finditer(title):
-        for i, n in _names_at(title, m.end()):
-            chars[i:i + n] = mask_name(title[i:i + n])
+    for lead, anything in ((_LEAD_SCHOOL, True), (_LEAD_OTHER, False)):
+        for m in lead.finditer(title):
+            names = _names_at(title, m.end())
+            if names and (anything or _NAME_END.match(title, sum(names[-1]))):
+                for i, n in names:
+                    chars[i:i + n] = mask_name(title[i:i + n])
     return "".join(chars)
 
 

@@ -163,6 +163,19 @@ def test_school_and_role_words_followed_by_ordinary_words_stay():
     assert not is_honor_title("獲教育部補助經費辦理活動，詳見附件")  # 獲 with no 獎 after it
 
 
+def test_ordinary_words_after_the_school_or_a_role_word_are_not_masked():
+    # review of the lead rule: after 本校 or a role word a 3-character span starting with a surname is a name only when
+    # what follows ends a name (a verb, an honorific, 以/與/和/及/等, or no Chinese character); ordinary words stay
+    for t in ("恭賀本校許多同學榮獲教育部獎學金", "恭賀本校高等教育深耕獲獎", "恭賀研究生曾經獲得之殊榮", "賀本系學生程度優異獲獎",
+              "恭賀本校方案獲教育部肯定", "恭賀本校溫馨關懷獲獎", "恭賀選手周全準備勇奪金牌", "恭賀本校周全計畫獲選",
+              "高師大高等教育深耕計畫獲獎"):
+        assert mask_honor_names(t) == t, t
+    assert mask_honor_names("恭賀本校陳乙丙獲教育部獎學金") == "恭賀本校陳O丙獲教育部獎學金"
+    assert mask_honor_names("恭賀研究生林乙丙以作品獲獎") == "恭賀研究生林O丙以作品獲獎"
+    assert mask_honor_names("恭賀本校陳乙丙 榮獲首獎") == "恭賀本校陳O丙 榮獲首獎"
+    assert mask_honor_names("賀本系學生陳乙丙林丁戊等獲獎") == "賀本系學生陳O丙林O戊等獲獎"
+
+
 def test_full_width_digits_and_a_lowercase_id_letter_are_found():
     # review of G7: a phone IME types full-width digits, and an id is often typed in lower case (misses.jsonl)
     assert redact("我的學號４０００００００１怎麼查成績") == "我的學號[MASKED]怎麼查成績"
