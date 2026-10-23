@@ -3,12 +3,14 @@ keyword lists (spec §6.5).
 
 link_entities() matches every name and alias (after alias_norm) inside the query, longest first and without overlaps,
 so 燕巢健身房 is one place and not 燕巢 + 健身房. Only places come back (gyms, grounds, libraries); a campus name
-(和平/燕巢) narrows the places to that campus instead, and a university or unit name is not a place."""
+(和平/燕巢) narrows the places to that campus instead, and a university or unit name is not a place. link_query() also
+says which places the query names on any campus, and what the query asks once those names are taken out."""
 
 from __future__ import annotations
 
 import re
 import sqlite3
+from dataclasses import dataclass
 from typing import Literal
 
 from nknu.core.textnorm import CJK, norm_text
@@ -20,16 +22,19 @@ CAMPUS_WORDS = {"heping": ("和平", "heping"), "yanchao": ("燕巢", "yanchao")
 _KEEP = re.compile(rf"[{CJK}a-z0-9]")
 
 
-def _keyed(s: str) -> tuple[str, set[int]]:
-    """alias_norm(s), plus the offsets in it where a removed character (space, punctuation) used to be."""
+def _keyed(s: str) -> tuple[str, set[int], list[int]]:
+    """alias_norm(s), the offsets in it where a removed character (space, punctuation) used to be, and the offset in
+    norm_text(s) of each character it kept."""
     out: list[str] = []
     cuts: set[int] = set()
-    for ch in norm_text(s).replace("臺", "台"):
+    pos: list[int] = []
+    for i, ch in enumerate(norm_text(s).replace("臺", "台")):
         if _KEEP.match(ch):
             out.append(ch)
+            pos.append(i)
         else:
             cuts.add(len(out))
-    return "".join(out), cuts
+    return "".join(out), cuts, pos
 
 
 def _word(c: str) -> bool:
@@ -58,8 +63,8 @@ def _alias_table(conn: sqlite3.Connection) -> tuple[dict[str, set[str]], dict[st
     return keys, kinds
 
 
-def _longest_matches(q: str, cuts: set[int], keys: dict[str, set[str]]) -> list[str]:
-    """Keys found in q, longest first (then leftmost), never overlapping; returned in query order."""
+def _longest_matches(q: str, cuts: set[int], keys: dict[str, set[str]]) -> list[tuple[int, int, str]]:
+    """(start, end, key) of the keys found in q, longest first (then leftmost), never overlapping; in query order."""
     found = []
     for key in keys:
         at = q.find(key)
@@ -73,8 +78,8 @@ def _longest_matches(q: str, cuts: set[int], keys: dict[str, set[str]]) -> list[
     for lo, hi, key in found:
         if not any(taken[lo:hi]):
             taken[lo:hi] = [True] * (hi - lo)
-            chosen.append((lo, key))
-    return [key for _, key in sorted(chosen)]
+            chosen.append((lo, hi, key))
+    return sorted(chosen)
 
 
 def query_campus(query: str) -> str | None:
@@ -84,21 +89,40 @@ def query_campus(query: str) -> str | None:
     return named[0] if len(named) == 1 else None
 
 
+@dataclass(frozen=True)
+class Linked:
+    ids: list[str]  # places named, on the campus asked (the `campus` argument, else a campus the query names)
+    named: list[str]  # places named, any campus
+    rest: str  # norm_text(query) with every place name blanked out: what the query asks about those places
+    mentions: list[tuple[str, list[str]]]  # (the name as written, after norm_text; the places it names)
+
+
+def link_query(conn: sqlite3.Connection, query: str, campus: str | None = None) -> Linked:
+    q, cuts, pos = _keyed(query)
+    text = list(norm_text(query))
+    if not q:
+        return Linked([], [], "".join(text), [])
+    keys, kinds = _alias_table(conn)
+    campus = campus or query_campus(query)
+    ids: list[str] = []
+    named: list[str] = []
+    mentions: list[tuple[str, list[str]]] = []
+    for lo, hi, key in _longest_matches(q, cuts, keys):
+        places = [e for e in sorted(keys[key]) if kinds.get(e, ("", None))[0] in PLACE_TYPES]
+        if not places:
+            continue
+        a, b = pos[lo], pos[hi - 1] + 1
+        mentions.append(("".join(text[a:b]), places))
+        text[a:b] = [" "] * (b - a)
+        named += [e for e in places if e not in named]
+        ids += [e for e in places if (campus is None or kinds[e][1] == campus) and e not in ids]
+    return Linked(ids, named, "".join(text), mentions)
+
+
 def link_entities(conn: sqlite3.Connection, query: str, campus: str | None = None) -> list[str]:
     """Places named in free text, in query order. `campus` (or a campus named in the query) keeps that campus only.
     Several ids mean the text is ambiguous: the caller lists them, never picks one."""
-    q, cuts = _keyed(query)
-    if not q:
-        return []
-    keys, kinds = _alias_table(conn)
-    campus = campus or query_campus(query)
-    out: list[str] = []
-    for key in _longest_matches(q, cuts, keys):
-        for eid in sorted(keys[key]):
-            etype, ecampus = kinds.get(eid, ("", None))
-            if etype in PLACE_TYPES and (campus is None or ecampus == campus) and eid not in out:
-                out.append(eid)
-    return out
+    return link_query(conn, query, campus).ids
 
 
 def exact_places(conn: sqlite3.Connection, query: str, campus: str | None = None) -> list[str]:
@@ -133,6 +157,16 @@ def detect_intent(query: str) -> Intent | None:
     if any(w in q for w in _DOC):
         return "doc"
     return None
+
+
+# Words that only say what kind of answer is wanted (opening hours, a notice), not which place or what about it: every
+# hours card has 開放 (its template) and 時間 (its source title), so search leaves them out of the coverage; a lone 開
+# is dropped as a token.
+KIND_WORDS = tuple(sorted((norm_text(w) for w in (
+    "開放", "時間", "時段", "幾點", "營業", "開門", "開到", "有開", "週末", "平日", "今天", "明天", "今晚", "晚上", "早上",
+    "上午", "下午", "中午", "公告", "消息", "通知")), key=len, reverse=True))
+KIND_TOKENS = frozenset((norm_text("開"), "open", "opens", "opening", "hour", "hours", "weekend", "weekends", "today",
+                         "tonight", "tomorrow", "news"))
 
 
 # ---------------------------------------------------------------- alias expansion (full-text path only)

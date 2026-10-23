@@ -7,14 +7,20 @@
    are filtered out before ranking: an hours card must cover on_date or start within HORIZON_DAYS of it, a calendar
    event must not have ended, a notice must be current. A card that starts after on_date (a coming closure or
    extension) is listed only when the query fits it better than that place's card for on_date. Each index gives its
-   best CANDIDATES by bm25; the merged list is ordered by coverage, then on_date's cards first, then bm25 (bm25 of two
-   different indexes is not on one scale; coverage is).
-3. Coverage = the share of the query's bigrams found in a hit; the first hit has the highest. Below T_LOW nothing is
-   returned (found=false, 「請勿推測」); between T_LOW and T_HIGH the hits come back as match=weak.
+   best CANDIDATES by bm25; the merged list is ordered by coverage (below), then on_date's cards first, then bm25 (bm25
+   of two different indexes is not on one scale; coverage is).
+3. Coverage = the share of the query's topic bigrams found in a hit; a hit with none of them is dropped. The first hit's
+   coverage decides: below T_LOW nothing is returned (found=false, 「請勿推測」); between T_LOW and T_HIGH the hits come
+   back as match=weak.
+4. A place the query names only on another campus (燕巢 游泳池) is not there: found=false, with the places of that name.
 
-Coverage ignores what says nothing about the topic: campus names (they only filter), English stop words and Chinese
-question words; a question with several clauses counts its best-covered clause. An alias counts as covered when its
-canonical term is in the hit (退課 is covered by 停修)."""
+The topic leaves out what says nothing about what is asked: the places the query names (a place's name is in its own
+cards; the name only picks which cards), words that only say what kind of answer is wanted (開放 and 時間 are in every
+hours card; 公告), campus names (they only filter), English stop words and Chinese question words. A query with no topic
+left falls back to all its words. A question with several clauses counts its best-covered clause. An alias counts as
+covered when its canonical term is in the hit (退課 is covered by 停修). Hits are ordered by how much of the whole
+question they cover, the named place included (an hours card is credited with a place's name only when it is that
+place's card), then by topic coverage."""
 
 from __future__ import annotations
 
@@ -30,11 +36,14 @@ from nknu.core.textnorm import fts_query, norm_text, tokenize
 from nknu.server.envelope import NOTICE_LABEL, fit_budget, make_envelope
 from nknu.server.linking import (
     CAMPUS_WORDS,
+    KIND_TOKENS,
+    KIND_WORDS,
+    Linked,
     alias_pairs,
     detect_intent,
     exact_places,
     expand,
-    link_entities,
+    link_query,
     query_campus,
 )
 from nknu.server.query import (
@@ -61,6 +70,8 @@ MAX_LIMIT = 10
 CANDIDATES = 20  # per index, by bm25, before the coverage re-ranking
 HORIZON_DAYS = 14  # an hours card starting this many days after on_date can still answer (a coming closure, extension)
 CAVEAT_NOT_FOUND = "查無相關資料，請勿推測"
+CAVEAT_NOT_ON_CAMPUS = "{campus}查無此地點，請勿推測"
+CAMPUS_ZH = {"heping": "和平校區", "yanchao": "燕巢校區"}
 CAVEAT_WEAK = "只有部分字詞相符，請先確認內容是否回答問題，請勿推測"
 
 Strength = Literal["none", "weak", "text"]
@@ -108,15 +119,17 @@ class _Hit:
     tokens: frozenset[str]
     view: dict
     entity_id: str | None = None
-    coverage: float = 0.0
+    coverage: float = 0.0  # of the query's topic
+    whole: float = 0.0  # of the topic and the named places together (the ranking)
     upcoming: bool = False  # an hours card that starts after on_date
     day_from: str = ""
 
 
 @dataclass
 class Retrieval:
-    """What a query found before thresholds and budget: match is entity / ambiguous / text; coverage is None for an
-    entity match (its strength does not depend on wording)."""
+    """What a query found before thresholds and budget: match is entity / ambiguous / text, or absent (the places named
+    are all on another campus; entity_ids lists them); coverage is None for an entity match (its strength does not
+    depend on wording)."""
     match: str
     facts: list[dict]
     coverage: float | None = None
@@ -201,32 +214,72 @@ class _Clause:
     aliases: tuple[tuple[frozenset[str], tuple[frozenset[str], ...]], ...]  # (alias bigrams, each canonical term's)
 
 
-def _clauses(query: str) -> list[_Clause]:
+def _clauses(text: str, *, topic: bool) -> list[_Clause]:
+    """The clauses of a query and their bigrams. topic=True also leaves out the words that only say what kind of answer
+    is wanted (開放時間, 公告), and a clause with nothing left is skipped; topic=False keeps a clause's campus name when
+    it is all the clause has (燕巢)."""
     out = []
-    for clause in _CLAUSE.split(_cleaned(query)):
-        toks = frozenset(_tokens(_strip(clause, _CAMPUS_TEXT)) or _tokens(clause))
+    for clause in _CLAUSE.split(_cleaned(text)):
+        body = _strip(clause, _CAMPUS_TEXT)
+        if topic:
+            body = _strip(body, KIND_WORDS)
+            toks = frozenset(t for t in _tokens(body) if t not in KIND_TOKENS)
+        else:
+            toks = frozenset(_tokens(body) or _tokens(clause))
         if toks:
             aliases = tuple((frozenset(tokenize(key)) & toks, tuple(frozenset(tokenize(t)) for t in terms))
-                            for key, terms in alias_pairs(clause))
+                            for key, terms in alias_pairs(body if topic else clause))
             out.append(_Clause(toks, aliases))
     return out
+
+
+def _covered(c: _Clause, hit: frozenset[str]) -> frozenset[str]:
+    covered = c.tokens & hit
+    for key, terms in c.aliases:
+        if any(t <= hit for t in terms):
+            covered |= key
+    return covered
 
 
 def _coverage(clauses: list[_Clause], hit: frozenset[str]) -> float:
     """Share of the query's topic bigrams found in the hit (an alias counts when one of its canonical terms is wholly
     there), taken over the best-covered clause when a question has several (期末考是哪幾天？考完之後還要上課嗎？)."""
-    best = 0.0
-    for c in clauses:
-        covered = c.tokens & hit
-        for key, terms in c.aliases:
-            if any(t <= hit for t in terms):
-                covered |= key
-        best = max(best, len(covered) / len(c.tokens))
-    return best
+    return max((len(_covered(c, hit)) / len(c.tokens) for c in clauses), default=0.0)
 
 
-def _full_text(conn: sqlite3.Connection, query: str, *, kind: str, on: dt.date, today: dt.date, campus: str | None,
-               limit: int) -> tuple[list[_Hit], float]:
+@dataclass(frozen=True)
+class _Place:
+    tokens: frozenset[str]  # bigrams of the name as the query wrote it
+    ids: frozenset[str]
+    canon: tuple[frozenset[str], ...]  # bigrams of the alias's canonical terms (圖書館 -> 圖資處)
+
+
+def _places(linked: Linked) -> list[_Place]:
+    return [_Place(frozenset(_tokens(text)), frozenset(ids),
+                   tuple(frozenset(tokenize(t)) for _, terms in alias_pairs(text) for t in terms))
+            for text, ids in linked.mentions]
+
+
+def _credit(places: list[_Place], h: _Hit) -> frozenset[str]:
+    """The named places' bigrams a hit is credited with: an hours card only for its own place (every library card
+    says 圖書資訊處, the canonical term of 圖書館), a notice or event for the name or its canonical term."""
+    out: set[str] = set()
+    for p in places:
+        if h.entity_id is not None:
+            out |= p.tokens if h.entity_id in p.ids else set()
+        else:
+            out |= p.tokens if any(t <= h.tokens for t in p.canon) else p.tokens & h.tokens
+    return frozenset(out)
+
+
+def _whole(topic: list[_Clause], places: list[_Place], h: _Hit) -> float:
+    names = frozenset().union(*(p.tokens for p in places))
+    credit = len(_credit(places, h))
+    return max(((len(_covered(c, h.tokens)) + credit) / (len(c.tokens) + len(names)) for c in topic), default=0.0)
+
+
+def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: str, on: dt.date, today: dt.date,
+               campus: str | None, limit: int) -> tuple[list[_Hit], float]:
     tokens = _tokens(expand(_cleaned(query)))
     if not tokens:
         return [], 0.0
@@ -238,11 +291,14 @@ def _full_text(conn: sqlite3.Connection, query: str, *, kind: str, on: dt.date, 
         hits += _calendar_hits(conn, match, on, CANDIDATES)
     if kind in ("any", "announcement"):
         hits += _doc_hits(conn, match, today, CANDIDATES)
-    clauses = _clauses(query)
+    topic = _clauses(linked.rest, topic=True)
+    places = _places(linked) if topic else []  # no topic left: every word of the query counts, names included
+    topic = topic or _clauses(query, topic=False)
     for h in hits:
-        h.coverage = _coverage(clauses, h.tokens)
-    hits = _fitting(hits)
-    hits.sort(key=lambda h: (-h.coverage, h.upcoming, h.score, h.order))
+        h.coverage = _coverage(topic, h.tokens)
+        h.whole = _whole(topic, places, h)
+    hits = _fitting([h for h in hits if h.coverage > 0])
+    hits.sort(key=lambda h: (-h.whole, -h.coverage, h.upcoming, h.score, h.order))
     return hits[:limit], (hits[0].coverage if hits else 0.0)
 
 
@@ -250,19 +306,25 @@ def retrieve(conn: sqlite3.Connection, tpl: Templates, query: str, *, kind: str,
              campus: str | None, limit: int) -> Retrieval:
     """Ranked facts for a query, before thresholds and the token budget (search() and the calibration use it)."""
     exact = exact_places(conn, query, campus)  # a bare place name or id: its card is the answer
-    ids = exact or link_entities(conn, query, campus)
+    linked = link_query(conn, query, campus)
+    ids = exact or linked.ids
+    named = exact_places(conn, query) or linked.named  # on any campus
     campus = campus or query_campus(query)
+    if named and not ids and kind in ("any", "hours", "place"):  # 燕巢 游泳池: the pool is on the other campus
+        return Retrieval("absent", [], 0.0, status="no_data", entity_ids=named)
     if kind == "place":
         if ids:
             return Retrieval("entity", _place_views(conn, ids[:limit]), entity_ids=ids)
-        hits, cov = _full_text(conn, query, kind="place", on=on, today=today, campus=campus, limit=MAX_LIMIT)
+        hits, cov = _full_text(conn, query, linked, kind="place", on=on, today=today, campus=campus, limit=MAX_LIMIT)
         ids = list(dict.fromkeys(h.entity_id for h in hits if h.entity_id))
         return Retrieval("text", _place_views(conn, ids[:limit]), cov, entity_ids=ids)
-    if ids and (kind == "hours" or (kind == "any" and (exact or detect_intent(query) == "hours"))):
+    intent = detect_intent(query)
+    place_only = not _clauses(linked.rest, topic=True)  # nothing but place names, campus, question and when words
+    if ids and (kind == "hours" or (kind == "any" and (exact or intent == "hours" or (place_only and intent is None)))):
         cands = place_candidates(conn, tpl, ids, on)
         status = worst_status({c["status"] for c in cands})
         return Retrieval("entity" if len(cands) == 1 else "ambiguous", cands[:limit], status=status, entity_ids=ids)
-    hits, cov = _full_text(conn, query, kind=kind, on=on, today=today, campus=campus, limit=limit)
+    hits, cov = _full_text(conn, query, linked, kind=kind, on=on, today=today, campus=campus, limit=limit)
     return Retrieval("text", [h.view for h in hits[:limit]], cov)
 
 
@@ -288,6 +350,10 @@ def search(db: ServeDB, query: str, kind: str = "any", on_date: str | None = Non
     base = {"kb": db.kb, "today": info}
     conn = db.conn()
     r = retrieve(conn, db.templates(), query, kind=kind, on=on, today=today, campus=campus, limit=limit)
+    if r.match == "absent":
+        where = CAMPUS_ZH.get(campus or query_campus(query) or "", "此校區")
+        return fit_budget(make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_ON_CAMPUS.format(
+            campus=where), similar=[v["name"] for v in _place_views(conn, r.entity_ids)]))
     more = len(r.entity_ids) - len(r.facts) if r.entity_ids else 0
     if r.match == "entity" and kind != "place":  # the same fields get_hours answers (next_change, open_now, notices)
         f = r.facts[0]

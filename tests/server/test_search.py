@@ -187,6 +187,52 @@ def test_weak_caveat_is_kept_with_a_status_caveat():
     assert _caveat("text", "current") is None and _caveat("weak", "current") == CAVEAT_WEAK
 
 
+# ---------------------------------------------------------------- what coverage counts
+
+OFF_TOPIC = [
+    "學餐開放時間", "影印店開放時間", "停車場 開放時間", "宿舍 開放時間", "籃球場 開放時間",  # unknown place + an hours question
+    "圖書館 借書", "健身房 收費", "燕巢圖書館 地址", "圖書館 館長是誰", "體育館 租借", "重量訓練室 教練",  # place + unsupported word
+]
+
+
+@pytest.mark.parametrize("q", OFF_TOPIC)
+def test_off_topic_query_is_not_found(db, q):
+    """開放/時間 are in every hours card and a place name is in its own card: neither says the question is answered."""
+    e = search(db, q, now=NOW)
+    assert e["found"] is False and e["status"] == "no_data" and "facts" not in e, e.get("facts")
+
+
+@pytest.mark.parametrize("q, kwargs", [("燕巢 游泳池 開放時間", {}), ("游泳池 開放時間", {"campus": "yanchao"}),
+                                       ("燕巢 游泳池", {}), ("游泳池", {"campus": "yanchao", "kind": "place"})])
+def test_place_not_on_that_campus(db, q, kwargs):
+    e = search(db, q, now=NOW, **kwargs)
+    assert e["found"] is False and e["status"] == "no_data" and "facts" not in e
+    assert e["caveat"] == "燕巢校區查無此地點，請勿推測" and e["similar"] == ["和平校區游泳池"]
+
+
+def test_place_questions_the_card_answers_still_found(db):
+    e = search(db, "游泳池 整修", now=NOW)  # 整修 is in the pool's card
+    assert e["found"] is True and e["match"] == "text" and e["facts"][0]["entity_id"] == "nknu.heping.gym.pool"
+    e = search(db, "I-Read Space 週末", now=NOW)  # a place plus when: an hours question
+    assert e["match"] == "ambiguous" and {f["entity_id"] for f in e["facts"]} == {
+        "nknu.heping.library.iread", "nknu.yanchao.library.iread"}
+    e = search(db, "燕巢 桌球室", now=NOW)  # nothing but a campus and a place
+    assert e["match"] == "entity" and e["facts"][0]["entity_id"] == "nknu.yanchao.gym.table-tennis"
+
+
+def test_place_with_a_notice_word_lists_its_notices(db):
+    """公告 says what kind of answer is wanted, like 開放時間: the place is the topic, and the answer is not its hours."""
+    e = search(db, "圖書館 公告", kind="announcement", now=NOW)
+    assert e["facts"][0]["unit"].startswith("圖書資訊處")
+    assert search(db, "體育館 公告", now=NOW).get("match") != "entity"  # not the gym's hours as the answer
+
+
+def test_named_place_outranks_a_fact_that_does_not_name_it(db):
+    e = search(db, "臺灣光復節 圖書館", now=NOW)  # holiday != closure: the library's own closure card comes first
+    assert e["facts"][0]["entity_id"] in (HLIB, YLIB) and "暫停開放" in e["facts"][0]["answer"]
+    assert not any("PHP" in f.get("title", "") for f in e["facts"])  # a 圖資處 notice that only shares the alias
+
+
 # ---------------------------------------------------------------- dated cards (closures, extensions)
 
 def test_entity_match_is_the_get_hours_envelope(db):
