@@ -25,8 +25,9 @@ cards; the name only picks which cards), the school and unit names (高師大, N
 and they are not searched for either), words that only say what kind of answer is wanted or when (開放 and 時間 are in
 every hours card; 公告; 下學期), campus names (they only filter), English stop words and Chinese question words, and the
 bigrams that only join two words (修截 in 停修截止: in no candidate hit while the bigrams on both sides are), for the hits
-that have both words or the rarer one (申辦停修 for 停修截止; not 休學截止 for 轉系申請, which has only the common 申請), so
-a question typed without spaces reads as the spaced one where a hit is about it. A query with no topic left falls back to all its words but the
+that have both words, or the topic when the other word only names a detail of it (DETAIL_WORDS: 申辦停修 for 停修截止;
+not 休學截止 for 轉系申請, which has only 申請; not the mid-term exam, which says 日期, for 招生日期). Two topic words
+typed together (教室借用) need a hit with both. A query with no topic left falls back to all its words but the
 school's names. A question with several clauses counts its best-covered clause. An alias counts as covered when its
 canonical term is in the hit (退課 is covered by 停修). Hits are ordered by how much of the whole question they cover,
 the named places and units included (an hours card is credited with a place's name only when it is that place's card,
@@ -38,7 +39,6 @@ import datetime as dt
 import json
 import re
 import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import groupby
 from typing import Literal
@@ -105,6 +105,15 @@ _ZH_STOP = tuple(sorted((norm_text(w) for w in (
     "那天", "之後", "之前", "幾號", "幾個", "幾次", "幾分", "幾科", "多少", "嗎", "呢", "吧", "啊", "呀", "喔", "的", "了",
     "誰", "是", "要", "這", "那")),
     key=len, reverse=True))
+# Words that only name which detail of a topic is asked (when, where, how to apply, the rules, the chance), or who or
+# which field it is for (學生, 教育: in a tenth of the index): typed together with a topic (招生日期, 轉系申請, 交換學生,
+# 教育實習), the hits about the topic answer, a hit with only such a word (the mid-term exam that says 日期) does not.
+# Whether classes are off (STATUS_WORDS) is a detail of a topic (颱風停課) and the topic of a detail (停課日期).
+DETAIL_WORDS = frozenset(norm_text(w) for w in (
+    "日期", "時程", "期限", "截止", "地點", "地址", "位置", "申請", "報名", "規定", "辦法", "流程", "方式", "資格", "條件",
+    "費用", "名單", "須知", "結果", "機會",
+    "學生", "同學", "教師", "老師", "師生", "教育", "學校", "大學", "研究", "活動", "計畫"))
+STATUS_WORDS = frozenset(norm_text(w) for w in ("停課", "放假"))
 _CAMPUS_TEXT = tuple(sorted({norm_text(w) for words in CAMPUS_WORDS.values() for w in words}
                             | {norm_text("和平校區"), norm_text("燕巢校區")}, key=len, reverse=True))
 _CLAUSE = re.compile(r"[?!;,。？！；，]+")
@@ -242,7 +251,7 @@ def _doc_hits(conn: sqlite3.Connection, match: str, today: dt.date, n: int, *, o
 class _Joint:
     gram: str  # a bigram that only joins two words: in no candidate hit
     sides: frozenset[str]  # the bigrams on both sides of it, each in some candidate hit
-    alone: frozenset[str]  # the side that earns it alone: the rarer of the two in the index (none on a tie)
+    topic: frozenset[str]  # the side that earns it alone, when the other only names a detail of it (_detail)
 
 
 @dataclass(frozen=True)
@@ -252,7 +261,12 @@ class _Clause:
     joints: tuple[_Joint, ...] = ()
 
 
-def _joints(text: str, seen: frozenset[str], rarity: Callable[[str], int]) -> list[_Joint]:
+def _detail(gram: str) -> int:
+    """How much a word only names a detail: 2 for DETAIL_WORDS, 1 for STATUS_WORDS, 0 for a topic word."""
+    return 2 if gram in DETAIL_WORDS else 1 if gram in STATUS_WORDS else 0
+
+
+def _joints(text: str, seen: frozenset[str]) -> list[_Joint]:
     """Bigrams that only join two words: inside a run of CJK characters, in none of the candidate hits, between two
     bigrams that are (修截 in 停修截止, 風停 in 颱風停課). A word no hit has (學餐 in 學餐菜單) is not between two found
     bigrams, so it still counts against the hits. Which hits a joint is left out for is _earned's."""
@@ -261,17 +275,16 @@ def _joints(text: str, seen: frozenset[str], rarity: Callable[[str], int]) -> li
         grams = [run[i:i + 2] for i in range(len(run) - 1)]
         for a, g, b in zip(grams, grams[1:], grams[2:]):
             if g not in seen and a in seen and b in seen and g not in out:
-                ra, rb = rarity(a), rarity(b)
-                out[g] = _Joint(g, frozenset((a, b)), frozenset(x for x, rx, ry in ((a, ra, rb), (b, rb, ra)) if rx <= ry))
+                topic = frozenset(x for x, other in ((a, b), (b, a)) if _detail(x) < _detail(other))
+                out[g] = _Joint(g, frozenset((a, b)), topic)
     return list(out.values())
 
 
-def _clauses(text: str, *, topic: bool, hits: list[frozenset[str]] | None = None,
-             rarity: Callable[[str], int] | None = None) -> list[_Clause]:
+def _clauses(text: str, *, topic: bool, hits: list[frozenset[str]] | None = None) -> list[_Clause]:
     """The clauses of a query and their bigrams. topic=True also leaves out the words that only say what kind of answer
     is wanted (開放時間, 公告), and a clause with nothing left is skipped; topic=False keeps a clause's campus name when
-    it is all the clause has (燕巢). With the candidate hits' bigrams (hits) and the index's word counts (rarity), the
-    bigrams that only join two words are found (_joints)."""
+    it is all the clause has (燕巢). With the candidate hits' bigrams (hits), the bigrams that only join two words are
+    found (_joints)."""
     out = []
     for clause in _CLAUSE.split(_cleaned(text)):
         body = _strip(clause, _CAMPUS_TEXT)
@@ -282,11 +295,10 @@ def _clauses(text: str, *, topic: bool, hits: list[frozenset[str]] | None = None
             toks = frozenset(_tokens(body) or _tokens(clause))
         pairs = alias_pairs(body if topic else clause)
         joints: tuple[_Joint, ...] = ()
-        if hits is not None and rarity is not None:  # an alias is found in a hit with one of its canonical terms (退課 by 停修)
+        if hits is not None:  # an alias is found in a hit with one of its canonical terms (退課 by 停修)
             found = [h.union(*(tokenize(key) for key, terms in pairs if any(set(tokenize(t)) <= h for t in terms)))
                      for h in hits]
-            joints = tuple(j for j in _joints(body if topic else clause, frozenset().union(*found), rarity)
-                           if j.gram in toks)
+            joints = tuple(j for j in _joints(body if topic else clause, frozenset().union(*found)) if j.gram in toks)
         if toks:
             aliases = tuple((frozenset(tokenize(key)) & toks, tuple(frozenset(tokenize(t)) for t in terms))
                             for key, terms in pairs)
@@ -304,13 +316,13 @@ def _covered(c: _Clause, hit: frozenset[str]) -> frozenset[str]:
 
 def _earned(c: _Clause, hit: frozenset[str]) -> int:
     """The joints left out of this hit's topic: a hit with the words on both sides (the 停修 notice that also says
-    截止), or with the rarer of the two (申辦停修 for 停修截止: 截止 is in every deadline). A hit with only the common
-    word does not (休學截止 for 轉系申請 has only 申請): two words typed together are one question about the rarer
-    one, not about whichever word a hit happens to have."""
+    截止), or with the topic when the other word only names a detail of it (申辦停修 for 停修截止). A hit with only the
+    detail word does not (休學截止 for 轉系申請 has only 申請), nor one with only one of two topic words (a notice that
+    says 教室 for 教室借用): two words typed together are one question, not about whichever word a hit happens to have."""
     if not c.joints:
         return 0
     found = hit | _covered(c, hit)
-    return sum(1 for j in c.joints if j.sides <= found or j.alone & found)
+    return sum(1 for j in c.joints if j.sides <= found or j.topic & found)
 
 
 def _topic_size(c: _Clause, hit: frozenset[str]) -> int:
@@ -358,20 +370,6 @@ def _whole(topic: list[_Clause], places: list[_Place], h: _Hit) -> float:
                default=0.0)
 
 
-def _rarity(conn: sqlite3.Connection) -> Callable[[str], int]:
-    """How many answer cards and notices hold a bigram (the whole index, old notices too): which word of two is rarer."""
-    cache: dict[str, int] = {}
-
-    def count(token: str) -> int:
-        if token not in cache:
-            q = fts_query([token])
-            cache[token] = conn.execute("SELECT (SELECT count(*) FROM card_fts WHERE card_fts MATCH ?) + "
-                                        "(SELECT count(*) FROM doc_fts WHERE doc_fts MATCH ?)", (q, q)).fetchone()[0]
-        return cache[token]
-
-    return count
-
-
 def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: str, on: dt.date, today: dt.date,
                campus: str | None, limit: int, old: bool = False) -> tuple[list[_Hit], float]:
     """Ranked hits and the first one's coverage; old=True searches only the old notices (C5). The school's names are
@@ -391,10 +389,9 @@ def _full_text(conn: sqlite3.Connection, query: str, linked: Linked, *, kind: st
     if kind in ("any", "announcement"):
         hits += _doc_hits(conn, match, today, CANDIDATES, old=old)
     seen = [h.tokens for h in hits]
-    rarity = _rarity(conn)
-    topic = _clauses(linked.rest, topic=True, hits=seen, rarity=rarity)
+    topic = _clauses(linked.rest, topic=True, hits=seen)
     places = _places(linked) if topic else []  # no topic left: every word of the query counts, names included
-    topic = topic or _clauses(text, topic=False, hits=seen, rarity=rarity)
+    topic = topic or _clauses(text, topic=False, hits=seen)
     for h in hits:
         h.coverage = _coverage(topic, h.tokens)
         h.whole = _whole(topic, places, h)

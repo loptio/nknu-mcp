@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 import nknu.server.search as S
-from nknu.core.textnorm import norm_text, tokenize
+from nknu.core.textnorm import tokenize
 from nknu.server.envelope import NOTICE_LABEL
 from nknu.server.linking import detect_intent, expand, link_entities, link_query
 from nknu.server.query import CAVEATS, CURRENT_DOC_SQL, current_doc_params, get_hours
@@ -334,30 +334,50 @@ def test_close_words_answer_with_the_place_hours(db):
 def test_joined_words_read_like_spaced_ones(db, joined, spaced):
     """F-short-calendar-queries: 修截 in 停修截止 only joins two words. It is in no hit while both its neighbours are,
     so the coverage leaves it out and the question is answered as 停修 截止 is. An alias is found when its canonical
-    term is (退課 by 停修)."""
+    term is (退課 by 停修). Further down the lists differ on purpose: the joined question does not count a hit with only
+    the detail word (學生申請第1學期休學截止 for 停修截止) as half of it, the spaced one does."""
     a, b = search(db, joined, now=NOW), search(db, spaced, now=NOW)
     assert a["found"] is True and (a["match"], a["facts"][0]) == (b["match"], b["facts"][0])
 
 
-def test_a_joint_is_left_out_only_for_hits_with_both_words_or_the_rarer_one():
-    """轉系申請 on the real data: 轉系 is in one notice, 申請 in some forty. A hit with only the common 申請 (the
-    leave-of-absence deadline) must not cover half of the question, or it answers as current; the 轉系 notice does,
-    and a hit with both words covers all of it."""
-    common, rare = frozenset(tokenize("學生申請第1學期休學截止")), frozenset(tokenize("大學部申辦轉系、輔系、雙主修"))
+def test_a_joint_is_left_out_for_hits_with_both_words_or_the_topic_of_a_detail_word():
+    """轉系申請: 申請 only names what about 轉系 is asked, so the 轉系 notice covers half of the question and a hit with
+    only 申請 (the leave-of-absence deadline) a third: it must not answer as current. Which word is rarer in the index
+    does not matter (招生日期: 日期 is in fewer rows than 招生, and the mid-term exam says 若教師另訂其他日期者)."""
+    only_detail, topic = frozenset(tokenize("學生申請第1學期休學截止")), frozenset(tokenize("大學部申辦轉系、輔系、雙主修"))
     both = frozenset(tokenize("轉系 申請須知"))
-    counts = {norm_text("轉系"): 1, norm_text("申請"): 46}
-    clauses = S._clauses("轉系申請", topic=True, hits=[common, rare, both], rarity=lambda t: counts.get(t, 0))
-    assert S._coverage(clauses, common) == pytest.approx(1 / 3) and S.strength(1 / 3) == "none"
-    assert S._coverage(clauses, rare) == 0.5 and S._coverage(clauses, both) == 1.0
-    tie = S._clauses("轉系申請", topic=True, hits=[common, rare], rarity=lambda t: 5)  # equally rare: either word answers
-    assert S._coverage(tie, common) == S._coverage(tie, rare) == 0.5
+    clauses = S._clauses("轉系申請", topic=True, hits=[only_detail, topic, both])
+    assert S._coverage(clauses, only_detail) == pytest.approx(1 / 3) and S.strength(1 / 3) == "none"
+    assert S._coverage(clauses, topic) == 0.5 and S._coverage(clauses, both) == 1.0
+    exam, enrol = frozenset(tokenize("期中考試，若教師另訂其他日期者")), frozenset(tokenize("寒假轉學招生簡章公告"))
+    clauses = S._clauses("招生日期", topic=True, hits=[exam, enrol])
+    assert S._coverage(clauses, exam) == pytest.approx(1 / 3) and S._coverage(clauses, enrol) == 0.5
+    clauses = S._clauses("申請轉系", topic=True, hits=[only_detail, topic])  # the detail word may come first
+    assert S._coverage(clauses, only_detail) == pytest.approx(1 / 3) and S._coverage(clauses, topic) == 0.5
 
 
-def test_joined_words_answer_with_the_rarer_word(db):
-    """開學日期: 日期 is in many events, 開學 (an alias of the term's first day) is not; the answer is the term begin,
-    not the mid-term exam whose summary happens to say 日期."""
+def test_a_joint_of_two_topic_words_needs_both():
+    """教室借用: neither word only names a detail, so a hit with one of them (a notice that says 教室, the gown loan)
+    is not about the question; reading it as 教室 借用 answered with an unrelated notice as current."""
+    room, gown = frozenset(tokenize("重申本校校園內不得從事未經核准之商業行為，教室")), frozenset(tokenize("學位服借用"))
+    clauses = S._clauses("教室借用", topic=True, hits=[room, gown])
+    assert S._coverage(clauses, room) == S._coverage(clauses, gown) == pytest.approx(1 / 3)
+    both = frozenset(tokenize("教室 借用辦法"))
+    assert S._coverage(S._clauses("教室借用", topic=True, hits=[room, gown, both]), both) == 1.0
+
+
+def test_joined_words_answer_with_the_topic(db):
+    """開學日期 / 停課日期: 日期 is in many events (the mid-term exam says 若教師另訂其他日期者); the answer is the event
+    about the topic (the term begin, the anniversary day without classes), not the exam."""
     e = search(db, "開學日期", now=NOW)
     assert e["found"] is True and e["facts"][0].get("category") == "term_begin", e["facts"][0]
+    e = search(db, "停課日期", now=NOW)
+    assert e["found"] is True and "停課" in e["facts"][0]["summary"], e["facts"][0]
+
+
+def test_joined_topic_words_found_only_apart_are_not_an_answer(db):
+    """期末成績: no hit says both; the grade deadline (成績) and the final exams (期末) are each about something else."""
+    assert search(db, "期末成績", now=NOW)["found"] is False
 
 
 def test_a_word_absent_from_every_hit_still_counts(db):
