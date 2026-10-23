@@ -1,0 +1,48 @@
+# One polite crawl of every source into facts.db; `nknu crawl` rebuilds serve.db itself when facts changed.
+# Started by nknu-crawl.timer; run once by hand with `sudo systemctl start nknu-crawl.service`.
+# Exit status 1 means at least one adapter's run was voided (old values kept, alert written): see `nknu alerts`.
+[Unit]
+Description=NKNU facts crawl (5 school sources, then rebuild serve.db if changed)
+Documentation=https://github.com/loptio/nknu-mcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nknu
+Group=nknu
+EnvironmentFile=/etc/nknu/env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
+WorkingDirectory=/var/lib/nknu
+ExecStart=/opt/nknu/.venv/bin/nknu crawl
+# a full scan takes about 4 minutes; a hung run is stopped so the next timer tick can start
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
+
+# hardening: read-only system, writes only to the data directory (facts.db, serve.db, warc/), no privileges
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nknu
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0027

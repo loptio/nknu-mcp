@@ -1,0 +1,44 @@
+# Nightly rebuild of serve.db from facts.db, so the answer cards' "today" moves on even when no fact changed
+# (/health turns 503 once serve.db is older than 36 hours).
+[Unit]
+Description=NKNU facts nightly rebuild of serve.db
+Documentation=https://github.com/loptio/nknu-mcp
+
+[Service]
+Type=oneshot
+User=nknu
+Group=nknu
+EnvironmentFile=/etc/nknu/env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
+WorkingDirectory=/var/lib/nknu
+ExecStart=/opt/nknu/.venv/bin/nknu build
+TimeoutStartSec=15min
+Nice=10
+
+# hardening: read-only system, writes only to the data directory, no network at all
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nknu
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0027

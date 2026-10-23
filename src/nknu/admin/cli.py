@@ -1,10 +1,16 @@
-"""`nknu` command line: init, crawl, build, review, add, serve, check."""
+"""`nknu` command line: init, crawl, build, review, add, serve, check, backup."""
 
 from __future__ import annotations
+
+import re
 
 import typer
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="NKNU 校园事实层（v1，只读 MCP）")
+
+BACKUP_KEEP = 14
+# the names `nknu backup` gives its copies, and the only files its retention ever deletes
+BACKUP_NAME = re.compile(r"facts-\d{8}-\d{6}\.db")
 
 
 @app.callback()
@@ -252,6 +258,60 @@ def serve(
     # real TCP peer; access_log=False: no client addresses in the logs
     uvicorn.run(create_app(_settings()), host=host, port=port, proxy_headers=False, server_header=False,
                 access_log=False)
+
+
+@app.command()
+def backup(
+    to: str = typer.Option(None, "--to", help="备份目录，默认 NKNU_BACKUP_DIR；最好放在另一颗磁碟或 NAS"),
+) -> None:
+    """把 facts.db 线上备份成 DIR/facts-YYYYmmdd-HHMMSS.db（台北时间），只保留最新 14 份。serve.db 可以重算，不备份。"""
+    import os
+    import sqlite3
+    from pathlib import Path
+
+    from nknu.core.factsdb import connect
+    from nknu.core.timeutil import TAIPEI, now_utc
+
+    s = _settings()
+    target = Path(to) if to else s.backup_dir
+    if target is None:
+        typer.echo("没有备份目录：用 --to DIR 指定，或在 /etc/nknu/env 设定 NKNU_BACKUP_DIR")
+        raise typer.Exit(2)
+    if not s.facts_path.is_file():  # never back up (or create) an empty facts.db, and then prune the good copies
+        typer.echo(f"找不到 facts.db：{s.facts_path}（NKNU_DATA_DIR 设对了吗？）")
+        raise typer.Exit(1)
+    target.mkdir(parents=True, exist_ok=True)
+    out = target / f"facts-{now_utc().astimezone(TAIPEI):%Y%m%d-%H%M%S}.db"
+    if out.exists():
+        typer.echo(f"{out} 已存在，一秒后再试")
+        raise typer.Exit(1)
+    # copy into a hidden temp file first: a half-written copy never carries a backup's name
+    tmp = target / f".{out.name}.tmp-{os.getpid()}"
+    tmp.unlink(missing_ok=True)
+    src = connect(s.facts_path, readonly=True)
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)  # SQLite online backup: a consistent snapshot even while a crawl is writing
+            dst.execute("PRAGMA journal_mode=DELETE")  # one self-contained file, no -wal/-shm beside it
+            check = dst.execute("PRAGMA quick_check").fetchone()[0]
+            n_facts = dst.execute("SELECT count(*) FROM fact").fetchone()[0]
+        finally:
+            dst.close()
+        if check != "ok":
+            raise sqlite3.DatabaseError(f"quick_check: {check}")
+        os.replace(tmp, out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        src.close()
+    typer.echo(f"facts.db backed up: {out} ({n_facts} facts)")
+    # retention runs only after a good copy exists, and only over this command's own file names
+    mine = sorted(p for p in target.iterdir() if BACKUP_NAME.fullmatch(p.name) and p.is_file() and not p.is_symlink())
+    for old in mine[:-BACKUP_KEEP]:
+        old.unlink()
+        typer.echo(f"removed old backup {old.name}")
 
 
 @app.command()

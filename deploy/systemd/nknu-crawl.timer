@@ -1,0 +1,12 @@
+# Crawl every 2 hours at minute 17, Taipei time (00:17, 02:17, ... 22:17), up to 2 minutes late on purpose.
+[Unit]
+Description=NKNU facts crawl every 2 hours (Asia/Taipei)
+Documentation=https://github.com/loptio/nknu-mcp
+
+[Timer]
+OnCalendar=*-*-* 00/2:17:00 Asia/Taipei
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

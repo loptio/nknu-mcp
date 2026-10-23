@@ -1,0 +1,13 @@
+# cloudflared named tunnel -> the NKNU facts MCP on this machine (option A in deploy/tunnel/README.md).
+# Copy to /etc/cloudflared/config.yml, then replace REPLACE-WITH-TUNNEL-UUID (printed by `cloudflared tunnel create`)
+# and mcp.example.org (the public hostname, which must also be in NKNU_ALLOWED_HOSTS in /etc/nknu/env).
+tunnel: REPLACE-WITH-TUNNEL-UUID
+credentials-file: /etc/cloudflared/REPLACE-WITH-TUNNEL-UUID.json
+
+ingress:
+  # The MCP server listens on 127.0.0.1:8765 only. cloudflared keeps the public Host header (no httpHostHeader
+  # override), which the server checks, and Cloudflare sets CF-Connecting-IP, which the per-IP rate limit uses.
+  - hostname: mcp.example.org
+    service: http://127.0.0.1:8765
+  # anything else that reaches this tunnel
+  - service: http_status:404

@@ -1,0 +1,11 @@
+# Daily backup at 03:30 Taipei time (between the 02:17 and 04:17 crawls).
+[Unit]
+Description=NKNU facts daily backup (Asia/Taipei)
+Documentation=https://github.com/loptio/nknu-mcp
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target

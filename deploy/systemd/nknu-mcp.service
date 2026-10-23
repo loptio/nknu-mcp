@@ -1,0 +1,55 @@
+# NKNU facts MCP server: /mcp and /health on 127.0.0.1:8765 only; a tunnel (cloudflared or Tailscale Funnel) publishes it.
+# Installed by deploy/install.sh. It starts only once serve.db exists (first crawl, `nknu review`, build).
+[Unit]
+Description=NKNU facts MCP server (read-only, /mcp and /health)
+Documentation=https://github.com/loptio/nknu-mcp
+After=network.target
+ConditionPathExists=/var/lib/nknu/serve.db
+# never give up restarting a crashed server; RestartSteps below backs off from 5 s to 5 min
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=nknu
+Group=nknu
+EnvironmentFile=/etc/nknu/env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
+WorkingDirectory=/var/lib/nknu
+ExecStart=/opt/nknu/.venv/bin/nknu serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+RestartSteps=6
+RestartMaxDelaySec=5min
+
+# hardening: read-only system, writes only to the data directory (misses.jsonl), no privileges
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nknu
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# the server answers only the local tunnel and never calls out (no LLM, no webhook on the serving path)
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

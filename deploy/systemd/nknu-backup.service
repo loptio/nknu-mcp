@@ -1,0 +1,47 @@
+# Daily online backup of facts.db (serve.db can be rebuilt) to $NKNU_BACKUP_DIR as facts-YYYYmmdd-HHMMSS.db,
+# keeping the newest 14. install.sh adds the backup directory to ReadWritePaths in
+# /etc/systemd/system/nknu-backup.service.d/backup-dir.conf, read from NKNU_BACKUP_DIR in /etc/nknu/env.
+[Unit]
+Description=NKNU facts daily backup of facts.db (newest 14 kept)
+Documentation=https://github.com/loptio/nknu-mcp
+
+[Service]
+Type=oneshot
+User=nknu
+Group=nknu
+EnvironmentFile=/etc/nknu/env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
+WorkingDirectory=/var/lib/nknu
+ExecStart=/opt/nknu/.venv/bin/nknu backup --to ${NKNU_BACKUP_DIR}
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+
+# hardening: read-only system; the data directory stays writable because a read-only open of a WAL database may
+# have to create facts.db-shm there
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nknu -/var/backups/nknu
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+# no sockets of its own (a NAS mount is the kernel's I/O, not this process's)
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0027

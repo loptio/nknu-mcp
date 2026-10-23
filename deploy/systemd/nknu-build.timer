@@ -1,0 +1,11 @@
+# Nightly rebuild at 00:05 Taipei time.
+[Unit]
+Description=NKNU facts nightly rebuild (Asia/Taipei)
+Documentation=https://github.com/loptio/nknu-mcp
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target
