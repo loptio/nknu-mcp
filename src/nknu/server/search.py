@@ -275,5 +275,13 @@ def search(db: ServeDB, query: str, kind: str = "any", on_date: str | None = Non
     if s == "none" or not r.facts:
         return fit_budget(make_envelope(**base, found=False, status="no_data", caveat=CAVEAT_NOT_FOUND))
     match = "entity" if r.match == "entity" else s
-    return fit_budget(make_envelope(**base, found=True, status="current", match=match, facts=r.facts,
-                                    caveat=CAVEAT_WEAK if match == "weak" else None, more=more or None))
+    # The hours cards set the status, as on the ambiguous path (the most severe one); events and notices count as found.
+    status = worst_status({f.get("status", "current") for f in r.facts if f.get("entity_id")})
+    found = any(f.get("status", "current") not in ("stale", "no_data") for f in r.facts)
+    return fit_budget(make_envelope(**base, found=found, status=status, match=match, facts=r.facts,
+                                    caveat=_caveat(match, status), more=more or None))
+
+
+def _caveat(match: str, status: str) -> str | None:
+    """A weak match and a non-current status each need saying; both are kept when both apply."""
+    return "；".join(c for c in (CAVEAT_WEAK if match == "weak" else None, CAVEATS.get(status)) if c) or None

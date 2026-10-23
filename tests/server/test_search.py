@@ -7,10 +7,10 @@ import yaml
 
 from nknu.server.envelope import BUDGET, NOTICE_LABEL, approx_tokens, count_tokens
 from nknu.server.linking import detect_intent, expand, link_entities
-from nknu.server.query import get_hours
-from nknu.server.search import T_HIGH, T_LOW, search
+from nknu.server.query import CAVEATS, get_hours
+from nknu.server.search import CAVEAT_WEAK, T_HIGH, T_LOW, search
 from nknu.server.servedb_reader import ServeDB
-from tests.server.conftest import GYM, NOW, WR
+from tests.server.conftest import CONFLICT_DAY, GYM, NOW, WR
 
 YWR = "nknu.yanchao.gym.weight-room"
 HLIB, YLIB = "nknu.heping.library.main", "nknu.yanchao.library.main"
@@ -159,6 +159,32 @@ def test_stale_entity_match_has_no_hours(db):
     e = search(db, "和平重訓室 開放時間", on_date="2027-02-01", now=NOW)
     body = {k: v for k, v in e.items() if k != "today"}
     assert e["status"] == "stale" and not _CLOCK.search(json.dumps(body, ensure_ascii=False))
+
+
+def test_text_match_status_follows_its_hours_facts(db):
+    """Every hours card the text path returns is stale: the envelope says so (as the entity path does), never current."""
+    e = search(db, "重訓", on_date="2027-01-20", now=NOW)
+    assert e["match"] in ("text", "weak") and e["facts"] and all(f["status"] == "stale" for f in e["facts"])
+    assert e["status"] == "stale" and e["found"] is False and CAVEATS["stale"] in e["caveat"]
+
+
+def test_text_match_conflict_carries_its_caveat(conflict_world):
+    e = search(conflict_world, "重訓", on_date=CONFLICT_DAY, now=NOW)
+    assert e["facts"][0]["status"] == "conflict" and e["status"] == "conflict" and e["found"] is True
+    assert CAVEATS["conflict"] in e["caveat"]
+
+
+def test_text_match_mixing_current_and_stale_takes_the_worst(db):
+    e = search(db, "重訓", on_date="2027-02-08", now=NOW)  # 和平: 春節 closure card (current); 燕巢: stale
+    statuses = {f.get("status", "current") for f in e["facts"] if f.get("entity_id")}
+    assert statuses == {"current", "stale"} and e["status"] == "stale" and e["found"] is True
+
+
+def test_weak_caveat_is_kept_with_a_status_caveat():
+    from nknu.server.search import _caveat
+
+    assert _caveat("weak", "stale") == CAVEAT_WEAK + "；" + CAVEATS["stale"]
+    assert _caveat("text", "current") is None and _caveat("weak", "current") == CAVEAT_WEAK
 
 
 def test_bad_arguments(db):
