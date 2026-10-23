@@ -1,5 +1,5 @@
 # NKNU facts MCP server: /mcp and /health on 127.0.0.1:8765 only; a tunnel (cloudflared or Tailscale Funnel) publishes it.
-# Installed by deploy/install.sh. It starts only once serve.db exists (first crawl, `nknu review`, build).
+# Installed by deploy/install.sh. It starts only once serve.db exists (the first crawl builds it).
 [Unit]
 Description=NKNU facts MCP server (read-only, /mcp and /health)
 Documentation=https://github.com/loptio/nknu-mcp

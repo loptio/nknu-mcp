@@ -87,6 +87,14 @@ def test_void_run_and_its_alert_are_in_the_summary(tmp_path, monkeypatch, posts)
     assert "pe_open_hours：作废" in posts[0][1] and "selector_missing" in posts[0][1]
 
 
+def test_summary_alert_header_covers_daily_reminders(tmp_path):
+    # a void alert left open is raised again once a day (C6): the summary header must not call it new
+    conn = make_db(tmp_path)
+    since = iso_now()
+    add_alert(conn, adapter="sso_news", level="error", code="count_out_of_band", message="x", now=since)
+    text = crawl_summary(conn, [], since)
+    assert "告警 1 条" in text and "新告警" not in text and "每日提醒" in text
+
 def test_summary_lists_at_most_ten_changes(tmp_path):
     from datetime import timedelta
 

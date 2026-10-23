@@ -1,4 +1,4 @@
-"""`nknu` command line: init, crawl, build, review, changes, undo, add, serve, check, backup."""
+"""`nknu` command line: init, crawl, build, review, changes, undo, add, serve, check, backup, notify-failure."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="NKNU 校园�
 BACKUP_KEEP = 14
 # the names `nknu backup` gives its copies, and the only files its retention ever deletes
 BACKUP_NAME = re.compile(r"facts-\d{8}-\d{6}\.db")
+# `nknu notify-failure` gets the failed unit from systemd (%i); anything else is not echoed into a Discord message
+UNIT_NAME = re.compile(r"nknu-[a-z]{1,20}")
+UNIT_FAILED = {"nknu-backup": "facts.db 这次没有备份成功", "nknu-build": "serve.db 没有重建，答案的「今天」停在上一版"}
 
 
 @app.callback()
@@ -66,8 +69,15 @@ def build(
 
     s = _settings()
     if rollback_:
-        rollback(s.serve_path)
-        typer.echo("serve.db rolled back")
+        try:
+            rollback(s.serve_path)
+        except FileNotFoundError:
+            typer.echo("没有上一版可以换回：--rollback 只能退一步（已经退过一次，或还没重建过）。"
+                       "要让某条坏资料不再出现：nknu changes 找到它，再 nknu undo <key>。")
+            raise typer.Exit(1) from None
+        typer.echo("serve.db rolled back：已换回上一版。这是暂时的，下一次重建（每晚 00:05，或下一轮有变动的抓取）"
+                   "会照 facts.db 重新算回来；要长期修正，用 nknu undo <key>（见 nknu changes），"
+                   "或在 /etc/nknu/env 设 NKNU_DISABLED_SOURCES=<来源> 后 nknu build。")
         return
     info = build_serve_db(s.facts_path, s.serve_path, today=date.fromisoformat(today) if today else today_tpe(),
                           templates_path=s.config_dir / "templates.yaml", disabled_sources=s.disabled_sources)
@@ -423,6 +433,38 @@ def backup(
     for old in mine[:-BACKUP_KEEP]:
         old.unlink()
         typer.echo(f"removed old backup {old.name}")
+
+
+@app.command("notify-failure")
+def notify_failure(unit: str = typer.Argument(..., help="失败的服务名，例如 nknu-backup（systemd 的 OnFailure= 传入）")) -> None:
+    """（systemd 用）备份或夜间重建失败时，记一条告警（nknu alerts）并通知维护者（log；设了 NKNU_DISCORD_WEBHOOK
+    也发 Discord）。同一个服务的告警没处理时，一天最多通知一次。"""
+    from nknu.core.factsdb import connect
+    from nknu.core.notify import notify
+    from nknu.core.timeutil import iso_now
+    from nknu.core.writer import add_alert
+
+    s = _settings()
+    unit = unit if UNIT_NAME.fullmatch(unit) else "nknu-?"
+    what = UNIT_FAILED.get(unit, "排程工作没有完成")
+    message = f"{unit}.service 执行失败：{what}。原因：sudo journalctl -u {unit} -n 50；修好后 nknu alerts --resolve <编号>"
+    if s.facts_path.is_file():  # never create an empty facts.db here
+        try:
+            conn = connect(s.facts_path)
+            try:
+                with conn:
+                    aid = add_alert(conn, adapter=None, level="error", code="unit_failed", message=message,
+                                    dedup_key=f"unit_failed:{unit}", now=iso_now(), webhook=s.discord_webhook,
+                                    remind_daily=True)
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - a full disk or a locked facts.db must not swallow the report
+            message += f"（告警写不进 facts.db：{type(exc).__name__}）"
+        else:
+            if aid is None:
+                typer.echo(f"{unit}：同一则告警 24 小时内已通知过，这次不再发通知")
+            return  # add_alert logged it and posted it to the webhook
+    notify(message, s.discord_webhook, label="FAILURE")
 
 
 @app.command()

@@ -3,6 +3,8 @@
 [Unit]
 Description=NKNU facts nightly rebuild of serve.db
 Documentation=https://github.com/loptio/nknu-mcp
+# a failed run raises an alert and posts to NKNU_DISCORD_WEBHOOK (this unit itself has no network)
+OnFailure=nknu-failure@%N.service
 
 [Service]
 Type=oneshot

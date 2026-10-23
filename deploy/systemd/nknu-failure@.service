@@ -1,0 +1,45 @@
+# Reports a failed nknu-backup or nknu-build run: their OnFailure=nknu-failure@%N.service starts this unit with the
+# failed unit's name, and `nknu notify-failure` writes an alert (nknu alerts) and posts it to NKNU_DISCORD_WEBHOOK.
+# The same open alert is posted at most once a day. Not enabled by itself; install.sh only copies it.
+[Unit]
+Description=NKNU facts: report the failed %i run
+Documentation=https://github.com/loptio/nknu-mcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nknu
+Group=nknu
+EnvironmentFile=/etc/nknu/env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
+WorkingDirectory=/var/lib/nknu
+ExecStart=/opt/nknu/.venv/bin/nknu notify-failure %i
+TimeoutStartSec=2min
+
+# hardening: read-only system, writes only the alert into facts.db, network only for the webhook
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nknu
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0027

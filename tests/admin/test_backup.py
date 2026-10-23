@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from nknu.admin.cli import app
 from nknu.core.writer import apply_fact
+from nknu.settings import REPO_ROOT
 from tests.factories import HOLIDAY, T0, T1, WR_TERM, make_db
 
 BACKUP_NAME = re.compile(r"facts-\d{8}-\d{6}\.db")
@@ -99,3 +100,57 @@ def test_no_target_is_refused(tmp_path, monkeypatch):
         assert r.exit_code == 2 and "NKNU_BACKUP_DIR" in r.output, r.output
     assert list(cwd.iterdir()) == []
     assert [p.name for p in data.iterdir() if BACKUP_NAME.fullmatch(p.name)] == []
+
+
+# F-backup-silent: a failed backup (or nightly build) reaches the maintainer through OnFailure= → nknu notify-failure
+
+WEBHOOK = "https://discord.test/api/webhooks/1/x"
+
+
+def _report(data, unit, sent, monkeypatch):
+    monkeypatch.setattr("nknu.core.notify.httpx.post", lambda url, json, timeout: sent.append(json["content"]))
+    return CliRunner().invoke(app, ["notify-failure", unit],
+                              env={"NKNU_DATA_DIR": str(data), "NKNU_DISCORD_WEBHOOK": WEBHOOK})
+
+
+def test_failed_backup_raises_an_alert_and_notifies_once_a_day(tmp_path, monkeypatch):
+    data, _ = _facts_db(tmp_path)
+    sent = []
+    r = _report(data, "nknu-backup", sent, monkeypatch)
+    assert r.exit_code == 0, r.output
+    assert len(sent) == 1 and "nknu-backup" in sent[0] and "备份" in sent[0], sent
+    assert "journalctl -u nknu-backup" in sent[0]
+    conn = sqlite3.connect(data / "facts.db")
+    assert conn.execute("SELECT level, code, resolved_at FROM alert").fetchall() == [("error", "unit_failed", None)]
+    conn.close()
+    assert _report(data, "nknu-backup", sent, monkeypatch).exit_code == 0
+    assert len(sent) == 1  # the same open alert again within a day: no second post
+
+
+def test_failure_is_reported_without_a_facts_db(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    sent = []
+    r = _report(data, "nknu-build", sent, monkeypatch)
+    assert r.exit_code == 0, r.output
+    assert len(sent) == 1 and "nknu-build" in sent[0] and "serve.db" in sent[0]
+    assert not (data / "facts.db").exists()  # never creates one
+
+
+def test_failure_report_never_echoes_an_odd_unit_name(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    sent = []
+    assert _report(data, "x; @everyone\nrm", sent, monkeypatch).exit_code == 0
+    assert len(sent) == 1 and "@everyone" not in sent[0] and "rm" not in sent[0]
+
+
+def test_backup_and_build_units_report_their_failures():
+    units = REPO_ROOT / "deploy" / "systemd"
+    for name in ("nknu-backup.service", "nknu-build.service"):
+        unit_section = (units / name).read_text(encoding="utf-8").split("[Service]")[0]
+        assert "\nOnFailure=nknu-failure@%N.service\n" in unit_section, name
+    handler = (units / "nknu-failure@.service").read_text(encoding="utf-8")
+    assert "\nExecStart=/opt/nknu/.venv/bin/nknu notify-failure %i\n" in handler
+    assert "\nEnvironmentFile=/etc/nknu/env\n" in handler and "\nUser=nknu\n" in handler
+    assert "AF_INET" in handler  # it has to reach the webhook

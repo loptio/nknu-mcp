@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import shutil
 import sqlite3
@@ -14,9 +15,10 @@ from nknu.admin.cli import app as cli_app
 from nknu.build.servedb import build_serve_db
 from nknu.core.timeutil import iso_now, now_utc
 from nknu.server import app as app_module
-from nknu.server.app import INSTRUCTIONS, create_app, create_mcp
+from nknu.server.app import INSTRUCTIONS, MissLog, create_app, create_mcp
 from nknu.server.envelope import ERROR_BUDGET, count_tokens, render_text
 from nknu.server.query import get_calendar, get_fact, get_hours
+from nknu.server.ratelimit import RateLimiter
 from nknu.server.search import search
 from nknu.server.servedb_reader import ServeDB
 from nknu.settings import REPO_ROOT, load_settings
@@ -214,6 +216,21 @@ async def test_missed_place_logged_and_found_not_logged(client, data_dir):
     assert rec["query"] == "不存在的館" and date.fromisoformat(rec["date"])
 
 
+def test_misses_rotate_by_size(tmp_path):
+    log = MissLog(tmp_path / "misses.jsonl", max_bytes=200, keep=3)
+    for i in range(40):
+        log.add("2026-10-23", "nknu_search", f"問題{i:02d}")
+    files = [tmp_path / n for n in ("misses.jsonl.3", "misses.jsonl.2", "misses.jsonl.1", "misses.jsonl")]
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(p.name for p in files)  # 3 old files kept, no .4
+    assert all(0 < p.stat().st_size <= 200 for p in files)
+    queries = [json.loads(x)["query"] for p in files for x in p.read_text(encoding="utf-8").splitlines()]
+    assert queries == [f"問題{i:02d}" for i in range(40 - len(queries), 40)]  # oldest first, nothing out of order
+
+
+def test_misses_default_size_and_copies(tmp_path):
+    log = MissLog(tmp_path / "misses.jsonl")
+    assert (log.max_bytes, log.keep) == (5 * 1024 * 1024, 3)
+
 async def test_unavailable_serve_db_is_a_short_error(client, data_dir):
     (data_dir / "serve.db").unlink()
     r = await client.call_tool("nknu_get_hours", {"place": "和平重訓室"}, raise_on_error=False)
@@ -246,6 +263,17 @@ async def test_allowed_host_and_origin(data_dir):
         assert r.status_code == 200
         assert (await http.post("/mcp", json=LIST, headers={**H, "host": "other.example.org"})).status_code == 421
 
+
+
+async def test_trust_cf_header_setting(data_dir, monkeypatch):
+    # Cloudflare (default): each CF-Connecting-IP is its own client; Tailscale Funnel (0): the header is ignored and
+    # every loopback request shares one budget
+    monkeypatch.setattr(app_module, "RateLimiter", functools.partial(RateLimiter, per_ip=2, shared=2))
+    for trust, limited in (("1", [False, False, False]), ("0", [False, False, True])):
+        s = load_settings({"NKNU_DATA_DIR": str(data_dir), "NKNU_TRUST_CF_HEADER": trust})
+        async for http in _serve(s):
+            rs = [await http.get("/health", headers={"cf-connecting-ip": ip}) for ip in ("1.1.1.1", "2.2.2.2", "3.3.3.3")]
+        assert [r.status_code == 429 for r in rs] == limited, trust
 
 async def test_get_mcp_405(http):
     assert (await http.get("/mcp")).status_code == 405

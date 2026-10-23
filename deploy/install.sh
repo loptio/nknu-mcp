@@ -75,7 +75,7 @@ fi
 if [[ -d $APP_DIR/.git ]]; then
   BRANCH=${NKNU_BRANCH:-$(git_ rev-parse --abbrev-ref HEAD)}
   [[ $BRANCH != HEAD ]] || die "$APP_DIR 不在任何分支上；用 sudo NKNU_BRANCH=main bash $0 指定"
-  say "更新 $APP_DIR（分支 $BRANCH）"
+  say "更新 ${APP_DIR}（分支 ${BRANCH}）"
   git_ fetch --quiet origin
   git_ switch --quiet "$BRANCH"
   git_ merge --ff-only --quiet "origin/$BRANCH"
@@ -83,7 +83,7 @@ else
   [[ ! -e $APP_DIR ]] || die "$APP_DIR 已存在但不是 git 仓库，请先移走"
   BRANCH=${NKNU_BRANCH:-main}
   REPO_URL=${NKNU_REPO_URL:-https://github.com/loptio/nknu-mcp.git}
-  say "下载程式码 $REPO_URL（分支 $BRANCH）到 $APP_DIR"
+  say "下载程式码 ${REPO_URL}（分支 ${BRANCH}）到 $APP_DIR"
   git clone --quiet --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 fi
 
@@ -93,7 +93,7 @@ say "安装 Python 环境（uv sync --frozen --no-dev）"
 [[ -x $APP_DIR/.venv/bin/nknu ]] || die "uv sync 之后找不到 $APP_DIR/.venv/bin/nknu"
 py_real=$(readlink -f "$APP_DIR/.venv/bin/python")
 case $py_real in
-/root/* | /home/*) die "虚拟环境的 Python 在 $py_real，用户 $SVC_USER 读不到；删掉 $APP_DIR/.venv 后重跑" ;;
+/root/* | /home/*) die "虚拟环境的 Python 在 ${py_real}，用户 $SVC_USER 读不到；删掉 $APP_DIR/.venv 后重跑" ;;
 esac
 "$APP_DIR/.venv/bin/python" -m compileall -q "$APP_DIR/src" >/dev/null
 chmod -R go+rX,go-w "$APP_DIR"
@@ -104,9 +104,13 @@ install -d -o "$SVC_USER" -g "$SVC_USER" -m 0750 "$DATA_DIR"
 install -d -o root -g "$SVC_USER" -m 0750 "$ENV_DIR"
 if [[ ! -f $ENV_FILE ]]; then
   install -o root -g "$SVC_USER" -m 0640 "$APP_DIR/deploy/env.example" "$ENV_FILE"
-  say "已建立 $ENV_FILE（从 deploy/env.example 复制）"
+  say "已建立 ${ENV_FILE}（从 deploy/env.example 复制）"
 fi
 bash -n "$ENV_FILE" || die "$ENV_FILE 有语法错误（值里有空格或特殊字元时要加双引号）"
+# settings added to env.example after the first install are not copied over: name them (their defaults apply)
+missing=$(comm -23 <(grep -oE '^[A-Z_]+=' "$APP_DIR/deploy/env.example" | sort -u) \
+  <(grep -oE '^[A-Z_]+=' "$ENV_FILE" | sort -u) | tr -d '=' | paste -sd ' ' -)
+[[ -z $missing ]] || warn "$ENV_FILE 没有这些设定（目前用默认值）：${missing}；说明见 $APP_DIR/deploy/env.example"
 
 # 5. backup directory: created for user nknu and made writable to nknu-backup.service through a drop-in
 backup_dir=$(
@@ -124,7 +128,7 @@ else
     install -d -o "$SVC_USER" -g "$SVC_USER" -m 0750 "$backup_dir"
   fi
   runuser -u "$SVC_USER" -- test -w "$backup_dir" ||
-    warn "用户 $SVC_USER 不能写入 $backup_dir，备份会失败（NAS 请检查挂载的权限）"
+    warn "用户 $SVC_USER 不能写入 ${backup_dir}，备份会失败（NAS 请检查挂载的权限）"
   install -d -m 0755 "$DROPIN_DIR"
   printf '# written by deploy/install.sh from NKNU_BACKUP_DIR in %s\n[Service]\nReadWritePaths=%s\n' \
     "$ENV_FILE" "$backup_dir" >"$DROPIN_DIR/backup-dir.conf"
@@ -154,7 +158,8 @@ systemctl daemon-reload
 say "初始化 facts.db 并载入地点词汇"
 "$WRAPPER" init
 
-# 9. timers now; the MCP service starts once serve.db exists (ConditionPathExists in the unit)
+# 9. timers now; the MCP service starts once serve.db exists (ConditionPathExists in the unit; the first crawl
+#    writes the school's data directly and builds it). nknu-failure@.service is started only by OnFailure=.
 systemctl enable --quiet --now "${TIMERS[@]}"
 systemctl enable --quiet nknu-mcp.service
 first_run=0
@@ -176,8 +181,8 @@ if [[ $first_run == 1 ]]; then
   cat <<'NEXT_EOF'
 
 第一次安装，接下来依序执行：
-  1. sudo systemctl start nknu-crawl.service   # 第一次抓取，约 4 分钟；进度：sudo journalctl -u nknu-crawl -f
-  2. nknu review                               # 第一次约 87 条都是「新增」，看完后按 y 全部核准
+  1. sudo systemctl start nknu-crawl.service   # 第一次抓取（全扫，约 4 分钟），资料直接写入并建好 serve.db；进度：sudo journalctl -u nknu-crawl -f
+  2. nknu changes                              # 看写进了什么：场馆时段和闭馆约 87 条，另有行事历事件和公告条数；有错的用 nknu undo <key>
   3. sudo systemctl start nknu-mcp.service
   4. curl -s http://127.0.0.1:8765/health      # 应该看到 "status":"ok"
   5. systemctl list-timers 'nknu-*'            # 应该看到 3 个 timer

@@ -160,7 +160,7 @@ def crawl_summary(conn: sqlite3.Connection, results: list, since: str) -> str | 
             head.append(f"{name}：" + "、".join(parts))
     tail = []
     if alerts:
-        tail.append(f"新告警 {len(alerts)} 条（nknu alerts）：")
+        tail.append(f"告警 {len(alerts)} 条（新的，或未处理告警的每日提醒；nknu alerts）：")
         tail += [f"· [{a['level']}] {a['adapter'] or '-'} {a['code']}: {a['message'][:160]}" for a in alerts[:SUMMARY_ALERTS]]
     if changes:
         tail.append("撤回：nknu undo <｜后面的 key>；全部变更：nknu changes")

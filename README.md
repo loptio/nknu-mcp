@@ -31,7 +31,7 @@ MCP（Model Context Protocol）是 AI 助理呼叫外部工具的共通規格。
 
 - **每 2 小時抓一次**（台北時間偶數整點的 17 分前後，例如 08:17、10:17），資料有變動就馬上重建答案。SSO 公告每天第一次全部掃過，其餘只看前 3 頁。
 - **每晚 00:05 重建一次**，讓「今天、現在開不開」跟著日期往前走。
-- **場館時段和閉館要人工審核才生效。** 審核前仍回答舊的時段，並附上相關公告，標示「公告摘要，非核實事實」。
+- **抓到就生效。** 從學校網站抓到、通過改版檢查的資料直接寫入，下一次重建就反映在回答裡（場館時段、閉館、行事曆改期都一樣），不等人工審核；維護者每輪收到變更摘要，抓錯的可以一鍵撤回。行事曆標「暫定」的事件照列，並註明「暫定，日期可能變動」。
 - 只有圖片的公告（例如圖書館期中考延長開館）由維護者手動輸入，並附原公告網址。
 - 抓取時對學校網站很客氣：每台主機同時只連 1 條線，每次請求間隔 2–5 秒；不繞過網站的任何保護機制。網站改版、抓取失敗時保留舊資料，不會用錯的資料蓋掉對的。
 
@@ -267,15 +267,18 @@ gemini mcp add --scope user --transport http nknu <對外網址>/mcp
 
 | 指令 | 作用 |
 |---|---|
-| `nknu init` | 建立 facts.db，載入 `config/entities.yaml`（地點、別名、主管單位）；可以重複執行 |
-| `nknu crawl` | 禮貌抓取 5 個來源寫進 facts.db；資料有變動就自動重建 serve.db。`--only <來源>` 只跑一個 |
-| `nknu review` | 逐條看待審的變更（diff、來源原文、未來 14 天的答案預覽）。`y` 全部核准，`e` 逐條處理 |
-| `nknu add hours …` | 手動錄入一段特殊開放時間或閉館（只有圖片的公告），要附原公告網址 |
-| `nknu build` | 由 facts.db 重建 serve.db；`--rollback` 換回上一版 |
+| `nknu init` | 建立 facts.db，載入 `config/entities.yaml`（地點、別名、主管單位）；舊的 facts.db 會就地升級到目前的格式（schema 2）。可以重複執行 |
+| `nknu crawl` | 禮貌抓取 5 個來源，通過改版檢查的資料直接寫進 facts.db；資料有變動就自動重建 serve.db，並送出抓取摘要。每個來源印出 `records=`（抓到幾筆）、`written=`（寫入）、`retired=`（下架）。`--only <來源>` 只跑一個，`--full` 強制全掃 |
+| `nknu changes` | 列出最近的變更（新增、更新、被取代、下架、撤回），每條附撤回用的 id 或 key。`--since YYYY-MM-DD`（預設 7 天前）；公告預設只列條數，`--docs` 逐條列出 |
+| `nknu undo <id 或 key>` | 下架一條現行資料（場館時段、閉館、假日、行事曆事件或公告），並記住這份內容：爬蟲之後抓到一模一樣的內容不會再寫回來，內容變了才會再寫。完成後自動重建 serve.db。`--cancel` 取消撤回 |
+| `nknu alerts` | 看告警（改版偵測失敗、新地點、解析問題、詳情頁讀不到、來源衝突、備份或重建失敗）；`--all` 連已處理的一起列，`--resolve <編號>` 標為已處理 |
+| `nknu add hours …` | 手動錄入一段特殊開放時間或閉館（只有圖片的公告），要附原公告網址。用同一個網址、同一個地點再錄一次（例如改正日期），會取代日期重疊的前一筆 |
+| `nknu review` | 只處理舊版留下的待審項目（現在爬蟲直接寫入，不會再新增）；某一條壞掉會略過，不影響其他條 |
+| `nknu build` | 由 facts.db 重建 serve.db；`--rollback` 暫時換回上一版（只能退一步，見日常維護） |
 | `nknu serve` | 啟動 MCP 服務（`/mcp` 和 `/health`） |
 | `nknu check` | 授權、個資、TLS、啟動檢查。個資掃描涵蓋所有 git 追蹤的文字檔（含 tests），刻意放的假樣例列在 `src/nknu/admin/checks.py` 的 `PII_SAMPLES`；推送前一定要跑。需要開發用套件，所以在 Mac 上用 `uv run nknu check` |
 | `nknu backup` | 把 facts.db 線上備份成 `facts-YYYYmmdd-HHMMSS.db`，只保留最新 14 份；`--to <目錄>`，預設 `NKNU_BACKUP_DIR` |
-| `nknu alerts` | 看告警（改版偵測失敗、新地點、來源衝突）；`--resolve <編號>` 標為已處理 |
+| `nknu notify-failure <服務>` | systemd 在備份或夜間重建失敗時自動執行：寫一條告警並通知，不用手動跑 |
 
 開發：`uv sync`，`uv run pytest -q`，`uv run ruff check src tests`。
 
@@ -292,9 +295,9 @@ sudo bash /opt/nknu/deploy/install.sh
 
 第一次上線：
 
-1. 編輯 `/etc/nknu/env`：`NKNU_ALLOWED_HOSTS`、`NKNU_ALLOWED_ORIGINS` 照 [deploy/tunnel/README.md](deploy/tunnel/README.md) 設定；`NKNU_BACKUP_DIR` 最好指到另一顆磁碟或 NAS（改了要重跑 install.sh）。
-2. `sudo systemctl start nknu-crawl.service`：第一次抓取，約 4 分鐘。進度用 `sudo journalctl -u nknu-crawl -f` 看。
-3. `nknu review`：第一次所有場館時段、閉館日都是「新增」，大約 87 條。看完 diff 後按 `y` 全部核准，核准後會自動重建 serve.db。
+1. 編輯 `/etc/nknu/env`：`NKNU_ALLOWED_HOSTS`、`NKNU_ALLOWED_ORIGINS`、`NKNU_TRUST_CF_HEADER`（Cloudflare 填 1，Tailscale Funnel 填 0）照 [deploy/tunnel/README.md](deploy/tunnel/README.md) 設定；`NKNU_BACKUP_DIR` 最好指到另一顆磁碟或 NAS（改了要重跑 install.sh）；想收通知就填 `NKNU_DISCORD_WEBHOOK`。
+2. `sudo systemctl start nknu-crawl.service`：第一次抓取（全掃），約 4 分鐘，資料直接寫入並建好 serve.db。進度用 `sudo journalctl -u nknu-crawl -f` 看。
+3. `nknu changes`：看第一次寫進了什麼。場館時段和閉館日大約 87 條「新增」，另外列出行事曆事件和公告的條數。抓錯的用 `nknu undo <key>` 撤回。
 4. `sudo systemctl start nknu-mcp.service`，然後 `curl -s http://127.0.0.1:8765/health` 應該看到 `"status":"ok"`。
 5. `systemctl list-timers 'nknu-*'` 應該有 3 個排程：
    - `nknu-crawl.timer`：每 2 小時抓一次（台北時間 00:17、02:17……，最多隨機晚 2 分鐘）
@@ -313,12 +316,27 @@ sudo bash /opt/nknu/deploy/install.sh
 
 ### 日常維護
 
-- 有新的待審項目或告警時會寫進 log（有設 `NKNU_DISCORD_WEBHOOK` 的話也會通知）。用 `nknu alerts` 看告警，用 `nknu review` 審核。
+**日常沒有例行審核。** 抓到的資料直接生效，維護者靠「變更摘要＋一鍵撤回＋告警」事後把關。
+
+- **抓取摘要**：每輪抓取只要有寫入、下架或告警，就在 log 寫一則摘要（標籤 `CRAWL`）；有設 `NKNU_DISCORD_WEBHOOK` 時同時發到 Discord。內容是每個來源的新增／更新／被取代／下架／撤回條數、最多 10 行變更說明（可撤回的行尾附 key）、這輪的告警（包括這輪重建 serve.db 時發現的來源衝突，和未處理告警的每日提醒）。變更說明先列場館時段、閉館和行事曆，公告排在最後，10 行用完的部分只算條數。每晚 00:05 的重建不發通知（它發現的來源衝突只記在 `nknu alerts`），但重建失敗會通知。
+- **看變更**：`nknu changes`（預設最近 7 天，`--since` 改起點），每條附撤回用的 id 或 key。
+- **撤回**：`nknu undo <key>` 立刻下架並重建答案。爬蟲之後抓到一模一樣的內容不會再寫回來，學校改了內容才會再寫；後悔了用 `nknu undo <key> --cancel`。撤回只下架，不會把更早的版本恢復成現行。
+- **告警**：`nknu alerts` 看，處理完 `nknu alerts --resolve <編號>`。列出的時間是最後一次提醒的時間：作廢、當機這類讓整個來源停住的告警，沒處理時每天提醒一次。
+- **新說法取代舊說法**：寫入一條資料時，同一網址、同一地點、同一項目、日期重疊的舊資料會一起被取代（例如閉館從 10/25–10/26 改成 10/24–10/26）。學期時段表以學期第一天區分，下學期的表是另一條，不會提前蓋掉本學期。手動錄入也一樣：用同一個網址再 `nknu add hours` 一次就能改正；它取代掉的爬蟲資料會被記住，下一輪不會被寫回來，網頁內容變了才會。
+- **什麼時候自動下架**：
+  - 表格頁上的資料（閉館日清單、學期時段表）不會因為頁面上不見了就下架，到期自己失效；學校提早取消某個閉館日的話，要手動 `nknu undo`。
+  - 公告的詳情頁回 404：公告下架，從它轉出來的閉館資料一起撤掉。
+  - 其他資料（公告、行事曆事件、假日）連續 3 次「這一輪本來看得到它」的全掃都沒出現，才下架。行事曆只算抓取範圍內（今天前 60 天到後 400 天）的事件；體育室停開公告轉出來的閉館，只在那則公告的詳情頁這輪有讀到時才算。
+- **改版守衛**：條數、必要的選擇器、日期解析率任一項不對，這一輪就作廢、保留舊資料，並發告警。條數比平常少、其他檢查都通過，而且連續 3 輪是同一個較低的數字時，當成新常態接受（告警 `count_new_normal`）；條數變多不會自動接受，最多 7 天內仍會作廢，等舊紀錄過了 7 天的比較範圍。
+- **公告摘錄**：每輪最多補抓 30 則 SSO、15 則體育室公告的詳情頁（先抓新出現的，再補舊的）。前 3 頁以外的舊公告只在每天第一次全掃時補，全部補完大約要 17 天。單一詳情頁讀不到只會發 `detail_failed` 告警（之後讀到會自動解除），不會讓整輪作廢。
+- **學校要求稍後再來**：網站回的 `Retry-After` 超過 120 秒時，這一輪就不再連那台主機（同主機的其他來源也一樣），下一輪再試。
+- **備份或夜間重建失敗**：systemd 會執行 `nknu notify-failure`，寫一條 `unit_failed` 告警並通知（同一則一天最多一次）。照訊息看 `journalctl`，修好後 `nknu alerts --resolve <編號>`。
 - log：`sudo journalctl -u nknu-crawl -n 100`、`sudo journalctl -u nknu-mcp -n 100`。
-- `/var/lib/nknu/misses.jsonl` 是查無資料的問題，用來補 `config/entities.yaml` 的別名。改完提交、推送，再到機器上跑一次 install.sh。
-- 新的 serve.db 有問題時：`nknu build --rollback`。
+- `/var/lib/nknu/misses.jsonl` 是查無資料的問題，用來補 `config/entities.yaml` 的別名。改完提交、推送，再到機器上跑一次 install.sh。檔案滿 5 MB 會輪替成 `misses.jsonl.1`～`.3`，更舊的丟掉。
+- **答案有問題時**：先 `nknu changes` 找到那一條，再 `nknu undo <key>`，這是長期有效的修法。`nknu build --rollback` 只是急救：只能退一步（第二次會說沒有上一版可換），而且下一次重建（每晚 00:05，或下一輪有變動的抓取）會照 facts.db 重新算回來。要讓某個來源整個先別出現，在 `/etc/nknu/env` 設 `NKNU_DISABLED_SOURCES=<來源>` 再 `nknu build`；`NKNU_READONLY=1` 只停止寫入，夜間重建仍會照現有資料算。
 - 遮名規則更新後，facts.db 裡已存的公告標題要等下一次全掃（每天第一輪抓取）才會用新規則重寫，重寫時順便清掉變成榮譽內容的公告摘錄；某則要立刻下架，用 `nknu undo sso_news:<UNID>`。
-- 緊急開關（在 `/etc/nknu/env`）：`NKNU_READONLY=1` 讓抓取不寫入、審核停用；`NKNU_DISABLED_SOURCES=<來源>` 停用某個來源，接著執行 `nknu build`。
+- 緊急開關（在 `/etc/nknu/env`）：`NKNU_READONLY=1` 讓抓取不寫入，`nknu review`、`nknu add`、`nknu undo` 也停用；`NKNU_DISABLED_SOURCES=<來源>` 停用某個來源，接著執行 `nknu build`。
+- 更新程式：重跑 `sudo bash /opt/nknu/deploy/install.sh`。它會升級 facts.db（`nknu init`）、重建 serve.db（新的回答措辭重建後才生效），並列出 `/etc/nknu/env` 缺少的新設定（沒寫的用預設值）。
 - 從備份還原 facts.db：
   ```bash
   sudo systemctl stop nknu-crawl.timer nknu-build.timer nknu-backup.timer nknu-crawl.service

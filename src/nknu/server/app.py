@@ -11,6 +11,7 @@ import datetime as dt
 import importlib.metadata
 import json
 import logging
+import os
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -60,20 +61,42 @@ MSG_INTERNAL = "查詢失敗，請稍後再試"
 
 class MissLog:
     """found=false queries, one JSON line each: {date, tool, query}. The query is PII-masked before it is cut, and no
-    client address is ever recorded. A failed write is logged and never fails the tool call."""
+    client address is ever recorded. A failed write is logged and never fails the tool call.
+
+    The file is rotated by size: a line that would take it past max_bytes first moves it to misses.jsonl.1 (.1 to .2 …,
+    the oldest beyond `keep` copies is dropped), so a flood of odd queries cannot fill the disk."""
 
     QUERY_MAX = 300
+    MAX_BYTES = 5 * 1024 * 1024
+    KEEP = 3
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, max_bytes: int = MAX_BYTES, keep: int = KEEP):
         self.path = Path(path)
+        self.max_bytes, self.keep = max_bytes, keep
         self._lock = threading.Lock()
+
+    def _copy(self, n: int) -> Path:
+        return self.path.with_name(f"{self.path.name}.{n}")
+
+    def _rotate(self) -> None:
+        for n in range(self.keep - 1, 0, -1):
+            if self._copy(n).exists():
+                os.replace(self._copy(n), self._copy(n + 1))
+        os.replace(self.path, self._copy(1))
 
     def add(self, date: str, tool: str, query: str) -> None:
         masked = redact(query.encode("utf-8", "replace").decode("utf-8"))[: self.QUERY_MAX]
-        line = json.dumps({"date": date, "tool": tool, "query": masked}, ensure_ascii=False)
+        data = (json.dumps({"date": date, "tool": tool, "query": masked}, ensure_ascii=False) + "\n").encode("utf-8")
         try:
-            with self._lock, self.path.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            with self._lock:
+                try:
+                    size = self.path.stat().st_size
+                except FileNotFoundError:
+                    size = 0
+                if size and size + len(data) > self.max_bytes:
+                    self._rotate()
+                with self.path.open("ab") as f:
+                    f.write(data)
         except OSError as exc:
             log.warning("cannot append to %s: %s", self.path, exc)
 
@@ -222,6 +245,8 @@ def create_app(settings: Settings) -> Starlette:
         code, body = health(db)
         return JSONResponse(body, status_code=code)
 
+    trust = settings.trust_cf_header  # 0 behind Tailscale Funnel: one budget for every (loopback) client
+    limiter = RateLimiter(shared_loopback=not trust)
     return mcp.http_app(path="/mcp", stateless_http=True, json_response=True, host_origin_protection=True,
                         allowed_hosts=settings.allowed_hosts, allowed_origins=settings.allowed_origins,
-                        middleware=[Middleware(RateLimitMiddleware, limiter=RateLimiter())])
+                        middleware=[Middleware(RateLimitMiddleware, limiter=limiter, trust_cf_header=trust)])

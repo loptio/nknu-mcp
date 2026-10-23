@@ -14,6 +14,10 @@ def _csv(value: str | None) -> list[str]:
     return [x.strip() for x in (value or "").split(",") if x.strip()]
 
 
+def _off(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("0", "false", "no", "off")
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -24,6 +28,8 @@ class Settings:
     allowed_origins: list[str]
     discord_webhook: str | None
     backup_dir: Path | None
+    # Cloudflare tunnel: trust cloudflared's CF-Connecting-IP from loopback; Tailscale Funnel: 0 (see ratelimit.py)
+    trust_cf_header: bool = True
 
     @property
     def facts_path(self) -> Path:
@@ -49,4 +55,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         allowed_origins=_csv(env.get("NKNU_ALLOWED_ORIGINS")),
         discord_webhook=env.get("NKNU_DISCORD_WEBHOOK") or None,
         backup_dir=Path(backup) if backup else None,
+        trust_cf_header=not _off(env.get("NKNU_TRUST_CF_HEADER")),
     )
