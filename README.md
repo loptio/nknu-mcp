@@ -297,7 +297,7 @@ sudo bash /opt/nknu/deploy/install.sh
 
 1. 編輯 `/etc/nknu/env`：`NKNU_ALLOWED_HOSTS`、`NKNU_ALLOWED_ORIGINS`、`NKNU_TRUST_CF_HEADER`（Cloudflare 填 1，Tailscale Funnel 填 0）照 [deploy/tunnel/README.md](deploy/tunnel/README.md) 設定；`NKNU_BACKUP_DIR` 最好指到另一顆磁碟或 NAS（改了要重跑 install.sh）；想收通知就填 `NKNU_DISCORD_WEBHOOK`。
 2. `sudo systemctl start nknu-crawl.service`：第一次抓取（全掃），約 4 分鐘，資料直接寫入並建好 serve.db。進度用 `sudo journalctl -u nknu-crawl -f` 看。
-3. `nknu changes`：看第一次寫進了什麼。場館時段和閉館日大約 87 條「新增」，另外列出行事曆事件和公告的條數。抓錯的用 `nknu undo <key>` 撤回。
+3. `nknu changes`：看第一次寫進了什麼。場館時段和閉館日大約 87 條「新增」，行事曆事件也逐條列出（約 70 多條），公告只列條數（加 `--docs` 逐條列出）。抓錯的用 `nknu undo <key>` 撤回。
 4. `sudo systemctl start nknu-mcp.service`，然後 `curl -s http://127.0.0.1:8765/health` 應該看到 `"status":"ok"`。
 5. `systemctl list-timers 'nknu-*'` 應該有 3 個排程：
    - `nknu-crawl.timer`：每 2 小時抓一次（台北時間 00:17、02:17……，最多隨機晚 2 分鐘）

@@ -182,7 +182,7 @@ if [[ $first_run == 1 ]]; then
 
 第一次安装，接下来依序执行：
   1. sudo systemctl start nknu-crawl.service   # 第一次抓取（全扫，约 4 分钟），资料直接写入并建好 serve.db；进度：sudo journalctl -u nknu-crawl -f
-  2. nknu changes                              # 看写进了什么：场馆时段和闭馆约 87 条，另有行事历事件和公告条数；有错的用 nknu undo <key>
+  2. nknu changes                              # 看写进了什么：场馆时段和闭馆约 87 条、行事历事件逐条（约 70 多条），公告只列条数；有错的用 nknu undo <key>
   3. sudo systemctl start nknu-mcp.service
   4. curl -s http://127.0.0.1:8765/health      # 应该看到 "status":"ok"
   5. systemctl list-timers 'nknu-*'            # 应该看到 3 个 timer
