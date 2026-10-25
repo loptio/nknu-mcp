@@ -20,6 +20,7 @@ import pytest
 from warcio.archiveiterator import ArchiveIterator
 
 from nknu.crawl import fetch as fetch_mod
+from nknu.crawl import schoollock
 from nknu.crawl.adapter import RateLimit, Target
 from nknu.crawl.fetch import KEEPALIVE_LIMITS, Client, FetchError, RetryLater, TooSlow
 from nknu.crawl.warc import WarcSink
@@ -139,13 +140,27 @@ def sockets(monkeypatch, server):
 
 
 def to_loopback(monkeypatch, *names: str) -> None:
-    """Let these school host names resolve to this machine (the conftest guard refuses every other name)."""
+    """Let these school host names resolve to this machine (the conftest guard refuses every other name). A request to
+    a school host needs the machine-wide lock (crawl/schoollock.py), as the archive crawl holds it: taken for the
+    test (the test run's own lock file), let go when it ends."""
     guarded = socket.getaddrinfo
 
     def getaddrinfo(host, port, *args, **kwargs):
         return guarded("127.0.0.1" if host in names else host, port, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    if not schoollock.held():
+        _HELD.append(schoollock.hold())  # let go by _let_go_of_the_school_lock
+
+
+_HELD: list = []
+
+
+@pytest.fixture(autouse=True)
+def _let_go_of_the_school_lock():
+    yield
+    while _HELD:
+        _HELD.pop().close()
 
 
 def archive(fake: Fake, warc=None, **kw) -> Client:

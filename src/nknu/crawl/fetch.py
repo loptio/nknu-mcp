@@ -25,6 +25,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 import stamina
 
+from nknu.crawl import schoollock
 from nknu.crawl.adapter import RateLimit, Target
 from nknu.crawl.tls import default_ssl_context, is_nknu_host, nknu_ssl_context
 from nknu.crawl.warc import WarcSink
@@ -334,6 +335,11 @@ class Client:
             common["limits"] = limits
         if self._one_conn:
             common["trust_env"] = False
+        # the real network: a request to a school host needs the machine-wide lock (schoollock.require, design §6.9,
+        # review 10-26 C). Only a transport that reaches no server goes without: httpx's MockTransport (the tests'), or
+        # one that says so (offline = True: the offline rehearsal's). Any other, httpx.HTTPTransport() included, may
+        # reach the school (second review 10-26)
+        self._real = not (isinstance(transport, httpx.MockTransport) or getattr(transport, "offline", False) is True)
         if transport is not None:
             self._nknu = self._other = httpx.Client(transport=transport, **common)
         else:
@@ -412,6 +418,8 @@ class Client:
             raise HostCircuitOpen(f"{host}: {self._skip[host]}")
         if self._failures[host] >= BREAKER_THRESHOLD:
             raise HostCircuitOpen(f"{host}: {BREAKER_THRESHOLD} consecutive failures, skipping for this run")
+        if self._real:
+            schoollock.require(host)  # SchoolLockNotHeld before anything is sent (not a FetchError: a program's bug)
         headers, secret = self._headers(target)
         body = urlencode(target.data).encode() if target.data is not None else None
         client = self._pool(host)

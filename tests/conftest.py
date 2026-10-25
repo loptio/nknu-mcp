@@ -2,12 +2,16 @@
 fixture, session ones included, and in every thread a test starts) name lookups, connections and datagrams that do
 not go to this machine are refused with "test guard", in every test directory. Only a test marked live (tests/live,
 which the default `-m 'not live'` leaves out) runs without it. Review 10-26: the guard used to be tests/archive's alone,
-one test function at a time, and did not cover sendto or sendmsg."""
+one test function at a time, and did not cover sendto or sendmsg. The machine-wide lock on school requests
+(NKNU_SCHOOL_LOCK, design §6.9) is a file of the test run's own, never ~/.cache/nknu's."""
 
 from __future__ import annotations
 
 import ipaddress
+import os
+import shutil
 import socket
+import tempfile
 
 import pytest
 import stamina
@@ -77,10 +81,20 @@ def pytest_configure(config):
     _REAL.update({key: getattr(*key) for key in guard})
     _set(guard)
     config._nknu_guard = guard
+    # the machine-wide lock on school requests (round-1 design §6.9): never the real one in ~/.cache, whoever holds it
+    config._nknu_lock_dir = tempfile.mkdtemp(prefix="nknu-school-lock-")
+    config._nknu_lock_env = os.environ.get("NKNU_SCHOOL_LOCK")
+    os.environ["NKNU_SCHOOL_LOCK"] = os.path.join(config._nknu_lock_dir, "school-requests.lock")
 
 
 def pytest_unconfigure(config):
     _set(_REAL)
+    if getattr(config, "_nknu_lock_env", None) is None:
+        os.environ.pop("NKNU_SCHOOL_LOCK", None)
+    else:
+        os.environ["NKNU_SCHOOL_LOCK"] = config._nknu_lock_env
+    if getattr(config, "_nknu_lock_dir", None):
+        shutil.rmtree(config._nknu_lock_dir, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

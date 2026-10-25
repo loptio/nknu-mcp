@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from nknu.archive import scope
-from nknu.archive.monitor import scope_and_robots
+from nknu.archive.monitor import scope_audit
 from nknu.crawl.adapter import RateLimit, Target
 from nknu.crawl.fetch import Client, UnwantedType
 from tests.archive.test_archive import drain, make, seed, snap
@@ -57,12 +57,12 @@ def test_requests_before_a_rule_change_are_not_breaches(tmp_path):
     f = crawler.frontier
     f.request("ip:1", "cc.nknu.edu.tw", "https://cc.nknu.edu.tw/moodle/course/view.php?id=1", "page", 100.0, 101.0, 200,
               None)
-    assert any("system" in x for x in scope_and_robots(f))
+    assert any("system" in x for x in scope_audit(f))
     f.x("INSERT INTO rule_change(reason, at, note) VALUES ('system', 200.0, 'Moodle')")
-    assert not any("system" in x for x in scope_and_robots(f))
+    assert not any("system" in x for x in scope_audit(f))
     f.request("ip:1", "cc.nknu.edu.tw", "https://cc.nknu.edu.tw/moodle/course/view.php?id=2", "page", 300.0, 301.0, 200,
               None)
-    assert any("system" in x for x in scope_and_robots(f))  # after the rule: a breach again
+    assert any("system" in x for x in scope_audit(f))  # after the rule: a breach again
 
 
 @pytest.mark.parametrize("url, out", [

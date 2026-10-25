@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 from nknu.archive import scope
 from nknu.archive.frontier import Frontier
 from nknu.archive.links import extract
-from nknu.archive.monitor import report, scope_and_robots
+from nknu.archive.monitor import report, scope_audit
 from nknu.crawl.adapter import Target
 from nknu.crawl.fetch import FetchError, HostCircuitOpen, RetryableStatus, Snapshot
 from tests.archive.test_archive import Sink, make, seed, snap
@@ -161,15 +161,17 @@ def test_P2_low_disk_stops_the_run_before_any_request(tmp_path):
 
 
 @pytest.mark.parametrize("headers", [{"content-type": "application/octet-stream"}, {}])
-def test_P3_robots_rules_apply_whatever_the_content_type(tmp_path, headers):
+def test_P3_robots_rules_are_read_whatever_the_content_type_and_block_nothing(tmp_path, headers):
+    # round-1 design §6.8 (owner 10-25: 「robots.txt 不用管」): kept for the record, never a block
     body = b"User-agent: *\nDisallow: /\n"
-    crawler, net, _ = make(tmp_path, {"robots.txt": raw("https://p.nknu.edu.tw/robots.txt", body=body, headers=headers)})
+    crawler, net, _ = make(tmp_path, {"robots.txt": raw("https://p.nknu.edu.tw/robots.txt", body=body, headers=headers),
+                                      "private/page.html": lambda u: snap(u, html="<p>x</p>")})
     seed(crawler, "https://p.nknu.edu.tw/private/page.html")
     drive(crawler, net, "ip:p.nknu.edu.tw")
     row = rows(crawler)["https://p.nknu.edu.tw/private/page.html"]
-    assert (row["state"], row["reason"]) == ("skipped", "robots")
-    assert net.seen == ["https://p.nknu.edu.tw/robots.txt"]
-    assert "Disallow: /" in crawler.frontier.host("p.nknu.edu.tw")["robots_body"]
+    assert row["state"] == "done" and "https://p.nknu.edu.tw/private/page.html" in net.seen
+    h = crawler.frontier.host("p.nknu.edu.tw")
+    assert h["robots_state"] == "rules" and "Disallow: /" in h["robots_body"]
 
 
 def test_P3_a_robots_txt_with_no_rule_in_it_is_logged(tmp_path):
@@ -521,24 +523,26 @@ def test_M1_site_keys_follow_the_platforms():
 
 
 def test_M1_units_on_one_platform_path_share_neither_a_cap_nor_a_name(tmp_path):
+    from tests.archive.plans import plan, site
+
     def unit(n, extra=""):
         menu = "".join(f'<a href="/Services/Web/Default.aspx?webIdx={n}&menuId={i}">m{i}</a>' for i in range(6))
         return lambda u: snap(u, html=menu + extra)
 
     routes = {"robots.txt": snap("x", 404), "webidx=1": unit(1, '<a href="/Services/Web/Default.aspx?webIdx=3">x</a>'),
               "webidx=2": unit(2), "webidx=3": lambda u: snap(u, html="<p>3</p>")}
-    crawler, net, _ = make(tmp_path, routes, variant_cap=3)
-    for n, name, tier in ((1, "秘書室", 1), (2, "衛生保健組", 2)):
-        crawler.enqueue(scope.canonical(f"https://sso.nknu.edu.tw/Services/Web/Default.aspx?WebIdx={n}"), unit=name,
-                        tier=tier, depth=0, found_via="seed", found_from=None)
-    crawler.load_site_meta()
+    units = plan(site("sso.nknu.edu.tw/web/1", imp="全校重要", name="秘書室"),
+                 site("sso.nknu.edu.tw/web/2", name="衛生保健組"))
+    crawler, net, _ = make(tmp_path, routes, variant_cap=3, plan=units)
+    for n in (1, 2):
+        crawler.seed_url(scope.canonical(f"https://sso.nknu.edu.tw/Services/Web/Default.aspx?WebIdx={n}"))
     drive(crawler, net, "ip:sso.nknu.edu.tw")
     r = rows(crawler)
-    assert not [u for u, x in r.items() if x["reason"] == "variant_cap"]
+    assert not [u for u, x in r.items() if x["reason"] == "cap:variant"]  # a platform path: no variant cap
     menu2 = r["https://sso.nknu.edu.tw/services/web/default.aspx?webidx=2&menuid=3"]
-    assert (menu2["unit"], menu2["tier"], menu2["site"]) == ("衛生保健組", 2, "sso.nknu.edu.tw/web/2")
-    other = r["https://sso.nknu.edu.tw/services/web/default.aspx?webidx=3"]  # a unit nobody seeded
-    assert (other["unit"], other["tier"]) == (None, 3)
+    assert (menu2["unit"], menu2["tier"], menu2["owner_site"]) == ("衛生保健組", 1, "sso.nknu.edu.tw/web/2")
+    other = r["https://sso.nknu.edu.tw/services/web/default.aspx?webidx=3"]  # a unit the list leaves for round two
+    assert (other["state"], other["reason"], other["unit"], other["tier"]) == ("later", "round2:other_site", None, 2)
 
 
 def test_M1_variant_cap_counts_per_site_and_path(tmp_path):
@@ -546,7 +550,7 @@ def test_M1_variant_cap_counts_per_site_and_path(tmp_path):
     crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", 404), "/home": lambda u: snap(u, html=cal)}, variant_cap=3)
     seed(crawler, "https://geo.nknu.edu.tw/home")
     drive(crawler, net, "ip:geo.nknu.edu.tw")
-    assert crawler.frontier.q("SELECT count(*) FROM url WHERE reason='variant_cap'")[0][0] == 7
+    assert crawler.frontier.q("SELECT count(*) FROM url WHERE state='held' AND reason='cap:variant'")[0][0] == 7
 
 
 def test_M1_attachments_have_their_own_cap(tmp_path):
@@ -555,8 +559,8 @@ def test_M1_attachments_have_their_own_cap(tmp_path):
                            site_cap=3, file_cap=4)
     seed(crawler, "https://att.nknu.edu.tw/home")
     drive(crawler, net, "ip:att.nknu.edu.tw")
-    reasons = dict(crawler.frontier.q("SELECT reason, count(*) FROM url WHERE state='skipped' GROUP BY reason"))
-    assert reasons == {"site_cap": 3, "file_cap": 1}
+    reasons = dict(crawler.frontier.q("SELECT reason, count(*) FROM url WHERE state='held' GROUP BY reason"))
+    assert reasons == {"cap:site": 3, "cap:file": 1}
 
 
 def test_M1_the_platform_path_is_not_reported_as_a_trap(tmp_path, monkeypatch):
@@ -581,6 +585,7 @@ CENTER = ('<a href="https://sites.google.com/view/taiwanology/home">超現代台
           '<a href="https://www.facebook.com/nknu">FB</a><a href="/edu_list.html">list</a>')
 
 
+@pytest.mark.skip(reason="第二轮：官方目录直链的校外网站（round-1 设计 §15、§16：目录站测试 M2、F3、F9 留到第二轮）")
 def test_M2_sites_an_official_directory_links_to_are_crawled(tmp_path):
     inner = '<a href="/view/taiwanology/about">about</a><a href="https://sites.google.com/view/other/x">o</a>'
     crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", 404), "center.html": lambda u: snap(u, html=CENTER),
@@ -600,11 +605,12 @@ def test_M2_sites_an_official_directory_links_to_are_crawled(tmp_path):
     r = rows(crawler)
     assert r["https://sites.google.com/view/taiwanology/about"]["state"] == "done"  # the site's own pages are crawled
     assert "https://sites.google.com/view/other/x" not in r  # a directory site's own links are not directory links
-    assert scope_and_robots(crawler.frontier) == []
+    assert scope_audit(crawler.frontier) == []
     text, _ = report(tmp_path)
     assert "目录直链" in text and "sites.google.com/view/taiwanology" in text
 
 
+@pytest.mark.skip(reason="第二轮：官方目录直链的校外网站（round-1 设计 §15、§16）")
 def test_M2_a_directory_short_link_admits_its_target_not_the_whole_short_link_service(tmp_path):
     page = '<a href="https://reurl.cc/3Lp06M">某中心</a>'
     crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", 404), "center.html": lambda u: snap(u, html=page),
@@ -636,17 +642,22 @@ def test_M4_a_page_that_cannot_be_decoded_strictly_is_kept_and_followed(tmp_path
     assert "https://big5.nknu.edu.tw/next" in r
 
 
-def test_M4_robots_txt_with_bytes_that_are_not_utf8_still_applies(tmp_path):
+def test_M4_robots_txt_with_bytes_that_are_not_utf8_is_still_read(tmp_path):
     def handler(req):
         if req.url.path == "/robots.txt":
-            return httpx.Response(200, content=b"# \xff\xfe\nUser-agent: *\nDisallow: /p\n", headers={"content-type": "text/plain"})
+            return httpx.Response(200, content=b"# \xff\xfe\nUser-agent: *\nDisallow: /p\nCrawl-delay: 9\n",
+                                  headers={"content-type": "text/plain"})
         return html_response()
 
     crawler, _, clock = make(tmp_path, {})
     seed(crawler, "https://rt.nknu.edu.tw/p/1")
-    drive(crawler, real(handler, clock), "ip:rt.nknu.edu.tw")
-    row = rows(crawler)["https://rt.nknu.edu.tw/p/1"]
-    assert (row["state"], row["reason"]) == ("skipped", "robots")
+    client = real(handler, clock)
+    for _ in range(3):  # robots.txt, then the probe and the page, each after the 9 s it asks for
+        drive(crawler, client, "ip:rt.nknu.edu.tw")
+        clock.t += 10
+    h = crawler.frontier.host("rt.nknu.edu.tw")
+    assert (h["robots_state"], h["crawl_delay"]) == ("rules", 9.0) and "Disallow: /p" in h["robots_body"]
+    assert rows(crawler)["https://rt.nknu.edu.tw/p/1"]["state"] == "done"  # never a block (design §6.8)
 
 
 # ---------------------------------------------------------------- M7 / P11 / R10: the report tells what went wrong
@@ -675,8 +686,11 @@ def test_P11_error_kinds():
     timeout.__cause__ = httpx.ReadTimeout("timed out")
     tls = FetchError("u: tls")
     tls.__cause__ = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    other_tls = FetchError("u: tls")
+    other_tls.__cause__ = httpx.ConnectError("[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1000)")
     assert error_kind(status_err(503)) == "http_503"
-    assert error_kind(timeout) == "timeout" and error_kind(tls) == "tls"
+    # a certificate that failed its check has a reason of its own (second review 10-26: an expired one)
+    assert error_kind(timeout) == "timeout" and error_kind(tls) == "tls_cert" and error_kind(other_tls) == "tls"
     assert error_kind(conn_err("[Errno 8] nodename nor servname provided, or not known")) == "dns"
     assert error_kind(conn_err()) == "connect"
     assert error_kind(FetchError("https://x.nknu.edu.tw/: HTTP 403")) == "http_403"
@@ -686,7 +700,7 @@ def test_P11_failures_are_counted_by_kind_and_retried_by_kind(tmp_path):
     crawler, net, clock = make(tmp_path, {"robots.txt": snap("x", 404), "m.nknu.edu.tw/err": status_err(500)})
     for i in range(4):
         seed(crawler, f"https://m.nknu.edu.tw/err{i}")
-    for _ in range(3):
+    for _ in range(6):  # three errors in a row rest the server (second review 10-26): the fourth URL comes later
         drive(crawler, net, "ip:m.nknu.edu.tw")
         clock.t += 4000
     assert {x["reason"] for x in rows(crawler).values()} == {"http_500"}
@@ -758,15 +772,19 @@ def test_R1_a_failed_connectivity_check_pauses_at_the_first_error(tmp_path):
 
 
 def test_R1_one_server_refusing_while_the_rest_answer_is_that_servers_problem(tmp_path):
-    crawler, net, _ = make(tmp_path, {"ok.nknu.edu.tw/robots.txt": snap("x", 404), "robots.txt": conn_err()})
+    crawler, net, clock = make(tmp_path, {"ok.nknu.edu.tw/robots.txt": snap("x", 404), "robots.txt": conn_err()})
     seed(crawler, "https://ok.nknu.edu.tw/a")
     for h in ("n1", "n2", "n3"):
         seed(crawler, f"https://{h}.nknu.edu.tw/a")
     drive(crawler, net, "ip:ok.nknu.edu.tw")
     for h in ("n1", "n2", "n3"):
         drive(crawler, net, f"ip:{h}.nknu.edu.tw")
-    assert crawler.frontier.paused_until("*") == 0
-    assert [crawler.frontier.host(f"{h}.nknu.edu.tw")["robots_fail"] for h in ("n1", "n2", "n3")] == [1, 1, 1]
+    assert crawler.frontier.paused_until("*") == 0 and crawler.frontier.pause_of("net:school") == 0
+    # review 10-26 B2: each server that does not connect rests a fixed 15 min; no URL loses an attempt
+    for h in ("n1", "n2", "n3"):
+        q = f"ip:{h}.nknu.edu.tw"
+        assert crawler.frontier.paused_until(q) > clock() and crawler.frontier.server_fails(q) == 1
+    assert all(x["attempts"] == 0 for x in rows(crawler).values())
 
 
 def test_R1_the_pause_ends_only_when_the_network_is_back(tmp_path):
@@ -868,13 +886,18 @@ def test_P12_the_request_after_robots_txt_already_waits_the_crawl_delay(tmp_path
 
 
 def test_P13_an_http_link_does_not_lose_an_https_only_host(tmp_path):
-    crawler, net, _ = make(tmp_path, {"http://hs.nknu.edu.tw/robots.txt": conn_err(),
+    crawler, net, _ = make(tmp_path, {"http://hs.nknu.edu.tw/": conn_err(),
                                       "https://hs.nknu.edu.tw/robots.txt": snap("x", 404),
                                       "/a": lambda u: snap(u, html="<p>a</p>")})
     seed(crawler, "http://hs.nknu.edu.tw/a")
     drive(crawler, net, "ip:hs.nknu.edu.tw")
-    assert crawler.frontier.host("hs.nknu.edu.tw")["robots_state"] == "none"
-    assert rows(crawler)["http://hs.nknu.edu.tw/a"]["state"] == "done"
+    h = crawler.frontier.host("hs.nknu.edu.tw")
+    # design §6.6: it answers on https only; robots.txt's 404 there proves nothing of its pages (second review
+    # 10-26), the page's own answer on https does
+    assert (h["robots_state"], h["scheme_only"]) == ("none", "https")
+    r = rows(crawler)
+    assert (r["http://hs.nknu.edu.tw/a"]["state"], r["http://hs.nknu.edu.tw/a"]["reason"]) == ("skipped", "moved_scheme")
+    assert r["https://hs.nknu.edu.tw/a"]["state"] == "done"
 
 
 def test_P13_a_long_robots_txt_is_kept_to_512_kib(tmp_path):
@@ -891,7 +914,7 @@ def test_P16_the_audit_uses_the_robots_txt_of_the_moment(tmp_path):
     seed(crawler, "https://rv.nknu.edu.tw/a")
     drive(crawler, net, "ip:rv.nknu.edu.tw")
     crawler.frontier.set_host("rv.nknu.edu.tw", robots_body="User-agent: *\nDisallow: /\n")  # the school changed it later
-    assert scope_and_robots(crawler.frontier) == []
+    assert scope_audit(crawler.frontier) == []
 
 
 def test_R11_each_robots_body_is_parsed_once(monkeypatch):

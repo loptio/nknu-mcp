@@ -1,6 +1,10 @@
-"""robots.txt per RFC 9309 (design §3.3).
+"""robots.txt per RFC 9309, read and kept but never a block (round-1 design §6.8; the owner, 10-25: 「robots.txt 不用管」).
 
-- A 4xx means no rules; a 5xx, a timeout or no answer means everything is disallowed until a later try.
+What it is read for: the sitemaps it names (sitemaps()), its Crawl-delay (crawl_delay(), the host's own wait), and
+whether the host answers at all. Robots.allows() is kept for the record (which rules a request went out under:
+request.robots_sha); the crawler no longer asks it.
+- A 4xx means no rules. A 5xx is an answer with no rules this time: rules already known stay (review 10-26 B3: the
+  20 s fine-arts asks for is never lost to a server error), as they do when robots.txt cannot be reached at all.
 - Redirects are followed up to five hops while they stay on the same queue. A redirect to another server could only be
   followed by opening a second connection to that server, so it counts as "unavailable", which RFC 9309 §2.3.1.2 and
   §2.3.1.3 let a crawler read as no rules; so does a sixth redirect. Either way an event says so.
@@ -9,8 +13,7 @@
 - At least 512 KiB is kept (RFC 9309 §2.5); each body is parsed once (Protego, Scrapy's parser, BSD-3).
 - Kept 24 hours; a failed refresh keeps the last good copy.
 - On a case-insensitive (IIS) server, where canonical() lowercases the path, rules and URL are compared lowercased
-  (ASCII): `Disallow: /ACA/Private/` then covers /aca/private/ too, as it does on that server. Robots.allows() is the
-  one check the crawler and the monitor both use.
+  (ASCII): `Disallow: /ACA/Private/` then covers /aca/private/ too, as it does on that server.
 - Crawl-delay is honoured up to 300 s (Heritrix's default ceiling); a larger value is read as 300 s.
 """
 
@@ -70,6 +73,12 @@ class Robots:
         if _case_insensitive(url):
             return _parsed_folded(self.body).can_fetch(url.translate(_ASCII_LOWER), AGENT)
         return _parsed(self.body).can_fetch(url, AGENT)
+
+    def sitemaps(self) -> list[str]:
+        """The Sitemap: lines (absolute addresses; RFC 9309 §2.2.4, sitemaps.org), in order, once each."""
+        if self.state != "rules":
+            return []
+        return list(dict.fromkeys(u.strip() for u in _parsed(self.body).sitemaps if u and u.strip()))
 
     def crawl_delay(self) -> float | None:
         if self.state != "rules":

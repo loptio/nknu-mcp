@@ -506,7 +506,17 @@ def _full_scan_due(conn: sqlite3.Connection, name: str, today: date) -> bool:
 
 def run_all(settings: Settings, *, today: date, only: list[str] | None = None, full_scan: bool | None = None,
             adapters: list[Adapter] | None = None, client=None) -> list[RunResult]:
+    from nknu.crawl import schoollock
     from nknu.crawl.adapter import load_adapters
+
+    # one program at a time sends to the school (round-1 design §6.9): SchoolLockBusy while the archive crawl runs
+    with schoollock.hold():
+        return _run_all(settings, today=today, only=only, full_scan=full_scan, adapters=adapters, client=client,
+                        load_adapters=load_adapters)
+
+
+def _run_all(settings: Settings, *, today: date, only: list[str] | None, full_scan: bool | None,
+             adapters: list[Adapter] | None, client, load_adapters) -> list[RunResult]:
     from nknu.crawl.fetch import Client
 
     if adapters is None:

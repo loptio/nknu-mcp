@@ -13,7 +13,7 @@ import pytest
 
 from nknu.archive import scope
 from nknu.archive.frontier import Frontier
-from nknu.archive.monitor import politeness, scope_and_robots
+from nknu.archive.monitor import politeness, scope_audit
 from nknu.archive.robots import Robots
 from nknu.crawl.adapter import Target
 from tests.archive.test_archive import Sink, make, seed, snap
@@ -52,26 +52,26 @@ def test_F2_robots_rules_match_whatever_the_case_on_iis_hosts():
     assert Robots("rules", "User-agent: *\nDisallow: /a/\nAllow: /A/Open/\n").allows("https://c.nknu.edu.tw/a/open/x")
 
 
-def test_F2_the_crawler_skips_and_the_monitor_flags_an_iis_page_robots_disallows(tmp_path):
+def test_F2_an_iis_page_robots_disallows_is_fetched_and_no_breach(tmp_path):
+    # round-1 design §6.8 (owner 10-25: 「robots.txt 不用管」): the rules are kept (request.robots_sha), never a block
     home = '<a href="/ACA/Private/x">x</a><a href="/ACA/Public/y">y</a>'
-    crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", html=IIS_ROBOTS), "/aca/home": lambda u: snap(u, html=home)})
+    crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", html=IIS_ROBOTS), "/aca/home": lambda u: snap(u, html=home),
+                                      "/aca/p": lambda u: snap(u, html="<p>x</p>")})
     seed(crawler, "https://c.nknu.edu.tw/aca/home")
     drive(crawler, net, "ip:c.nknu.edu.tw")
     r = rows(crawler)
-    private = r["https://c.nknu.edu.tw/aca/private/x"]
-    assert (private["state"], private["reason"]) == ("skipped", "robots")
-    assert "https://c.nknu.edu.tw/aca/private/x" not in net.seen and r["https://c.nknu.edu.tw/aca/public/y"]["state"] == "done"
-    assert scope_and_robots(crawler.frontier) == []
-    sha = crawler.frontier.host("c.nknu.edu.tw")["robots_sha"]  # had it been fetched, the audit says so
-    crawler.frontier.request("ip:c.nknu.edu.tw", "c.nknu.edu.tw", "https://c.nknu.edu.tw/aca/private/x", "page", 1.0, 2.0,
-                             200, None, scope="in_scope", robots_sha=sha)
-    assert scope_and_robots(crawler.frontier) == ["robots.txt 不允许却抓了：https://c.nknu.edu.tw/aca/private/x"]
+    assert r["https://c.nknu.edu.tw/aca/private/x"]["state"] == "done" and "https://c.nknu.edu.tw/aca/private/x" in net.seen
+    assert scope_audit(crawler.frontier) == []
+    sha = crawler.frontier.q("SELECT robots_sha FROM request WHERE url='https://c.nknu.edu.tw/aca/private/x'")[0][0]
+    assert sha == crawler.frontier.host("c.nknu.edu.tw")["robots_sha"]
 
 
 # ---------------------------------------------------------------- F8: no idle connection left to a server
 
 
-def test_F8_the_archive_client_keeps_no_connection_open_between_requests():
+def test_F8_the_archive_client_keeps_one_connection_open_between_requests():
+    """Round-1 design §6.2: the 10-24 client opened a connection per request (c.nknu: 3.6 s each); now one connection
+    per server is kept alive between requests, and still never two."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from nknu.archive.crawler import NO_RATE, archive_client
@@ -103,12 +103,12 @@ def test_F8_the_archive_client_keeps_no_connection_open_between_requests():
     try:
         for pool in (client._nknu, client._other):
             p = pool._transport._pool
-            assert (p._max_connections, p._max_keepalive_connections) == (1, 0)
+            assert (p._max_connections, p._max_keepalive_connections) == (1, 1)
         url = f"http://127.0.0.1:{server.server_port}/a"
         for _ in range(2):
             assert client.fetch(Target(url), NO_RATE).status == 200
-            assert client._other._transport._pool.connections == []  # closed as soon as the response ended
-        assert len(accepted) == 2  # every request opened its own connection
+            assert len(client._other._transport._pool.connections) == 1  # kept for the next request
+        assert len(accepted) == 1  # both requests on one connection
     finally:
         client.close()
         server.shutdown()
@@ -165,7 +165,6 @@ def test_P4_one_protected_folder_cannot_stall_its_host(tmp_path):
                                       "/tsi/p": lambda u: snap(u, html="<p>ok</p>")})
     seed(crawler, "https://c.nknu.edu.tw/aca/home", tier=1)
     seed(crawler, "https://c.nknu.edu.tw/tsi/home", tier=2)
-    crawler.load_site_meta()
     settle(crawler, net, ["ip:c.nknu.edu.tw"])
     h = crawler.frontier.host("c.nknu.edu.tw")
     assert (h["cooldown_until"], h["cooldown_s"]) == (0, 0)  # the host itself never cools down
@@ -248,14 +247,18 @@ def test_F10_a_host_that_speaks_one_scheme_gets_its_pages_whichever_spelling_cam
     r = rows(crawler)
     right = r[f"{serves}://one.nknu.edu.tw/a"]
     assert (right["state"], right["status"]) == ("done", 200)
-    assert (r[f"{wrong}://one.nknu.edu.tw/a"]["state"], r[f"{wrong}://one.nknu.edu.tw/a"]["reason"]) == ("failed", "connect")
+    # round-1 design §6.6: the wrong spelling moved to the right one (http/https switch), never a failure
+    assert (r[f"{wrong}://one.nknu.edu.tw/a"]["state"], r[f"{wrong}://one.nknu.edu.tw/a"]["reason"]) == \
+        ("skipped", "moved_scheme")
+    assert crawler.frontier.host("one.nknu.edu.tw")["scheme_only"] == serves
     assert crawler.frontier.host("one.nknu.edu.tw")["probe_status"] == 404  # the probe got its answer over the right scheme
-    assert dict(crawler.frontier.q("SELECT dst, verdict FROM link"))[f"{serves}://one.nknu.edu.tw/a"] == "queued"
+    assert dict(crawler.frontier.q("SELECT dst, verdict FROM link"))[f"{serves}://one.nknu.edu.tw/a"] == "dup"
 
 
 # ---------------------------------------------------------------- F3: only a short link lends its target the directory
 
 
+@pytest.mark.skip(reason="第二轮：官方目录直链的校外网站（round-1 设计 §15、§16：目录站测试 M2、F3、F9 留到第二轮）")
 def test_F3_a_directory_site_that_redirects_elsewhere_is_only_a_candidate(tmp_path):
     page = '<a href="https://old-center-nknu.com/">舊中心</a><a href="http://nknu-vd.com/">視設</a>'
     parked = "https://www.hugedomains.com/domain_profile.cfm?d=old-center-nknu.com"
@@ -280,6 +283,8 @@ def test_F3_line_and_discord_invitations_are_social_platforms(url):
 
 
 def _f4_crawler(tmp_path, netcheck, extra_routes=None):
+    """A school site, and three dead off-campus hosts holding its pictures (round-1 design §4.4: a page's images on any
+    host are its resources, fetched on their own servers' queues)."""
     dead = [f"dead{i}.example.org" for i in range(3)]
     school = "ip:140.127.1.1"
     queues = {"c.nknu.edu.tw": school, **{h: f"ip:203.0.113.{i}" for i, h in enumerate(dead)}}
@@ -287,13 +292,11 @@ def _f4_crawler(tmp_path, netcheck, extra_routes=None):
               "c.nknu.edu.tw/": lambda u: snap(u, html="<p>ok</p>")}
     routes.update({f"{h}/": conn_err() for h in dead})
     crawler, net, clock = make(tmp_path, routes, queues=queues, netcheck=netcheck)
-    for h in dead:
-        crawler.frontier.add_directory_site(h, "https://w3.nknu.edu.tw/center.html", None, None)
-    crawler.load_site_meta()
     for i in range(5):
         seed(crawler, f"https://c.nknu.edu.tw/p{i}")
+    page = crawler.frontier.row("https://c.nknu.edu.tw/p0")
     for h in dead:
-        crawler.enqueue(f"https://{h}/", unit=None, tier=3, depth=1, found_via="link", found_from=None)
+        assert crawler.enqueue(f"https://{h}/pic.jpg", from_row=page, how="image", depth=1) == "queued"
     return crawler, net, clock, school, [queues[h] for h in dead]
 
 
@@ -305,41 +308,42 @@ def test_F4_three_dead_off_campus_hosts_never_pause_the_school_queues(tmp_path):
     for q in dead:
         drive(crawler, net, q)
     assert len(checks) >= 2  # three failing queues asked for a fresh check, and it passed
-    assert crawler.frontier.q("SELECT count(*) FROM pause")[0][0] == 0 and not events(crawler, "offline")
-    assert school in crawler.frontier.queues(clock())
-    assert [crawler.frontier.host(f"dead{i}.example.org")["robots_fail"] for i in range(3)] == [1, 1, 1]  # kept
+    assert not crawler.frontier.q("SELECT 1 FROM pause WHERE queue IN ('*', 'net:school', 'net:other')")
+    assert not events(crawler, "offline") and school in crawler.frontier.queues(clock())
+    # review 10-26 B2: each dead server rests 15 min on its own, counted per server, no URL loses an attempt
+    assert [crawler.frontier.server_fails(q) for q in dead] == [1, 1, 1]
+    assert all(crawler.frontier.paused_until(q) > clock() for q in dead)
+    assert {x["attempts"] for x in rows(crawler).values()} == {0}
 
 
 def test_F4_a_failed_check_pauses_only_the_network_that_does_not_answer(tmp_path):
-    crawler, net, clock, school, dead = _f4_crawler(tmp_path, lambda: False,
-                                                    {"c.nknu.edu.tw/p0": conn_err()})
+    crawler, net, clock, school, dead = _f4_crawler(tmp_path, lambda: False)
     sink = Sink(tmp_path)
     crawler._handle(school, net, sink, crawler.frontier.next_for(["c.nknu.edu.tw"], clock()))  # robots, probe answer
-    p0 = rows(crawler)["https://c.nknu.edu.tw/p0"]
-    assert (p0["state"], p0["attempts"], p0["reason"]) == ("pending", 1, "connect")  # the school answered: p0's own
     drive(crawler, net, dead[0])
     assert crawler.frontier.paused_until("*") == 0
     assert crawler.frontier.paused_until(dead[1]) > clock() and crawler.frontier.paused_until(school) == 0
     assert school in crawler.frontier.queues(clock()) and dead[1] not in crawler.frontier.queues(clock())
-    assert rows(crawler)["https://c.nknu.edu.tw/p0"]["attempts"] == 1  # the answering network's costs stay
-    assert rows(crawler)["https://dead0.example.org/"]["reason"] == "net_down"
+    assert rows(crawler)["https://dead0.example.org/pic.jpg"]["reason"] == "net_down"
+    assert crawler.frontier.server_fails(dead[0]) == 0  # the outage is not held against the server
     assert any("校外" in m or "other" in m for m in events(crawler, "offline"))
 
 
 def test_F4_a_real_outage_pauses_every_queue_and_then_resumes(tmp_path):
+    from tests.archive.plans import OpenPlan, site
+
     up = {"net": False}
 
     def route(u):
         if not up["net"]:
             raise conn_err("[Errno 51] Network is unreachable")
-        return snap(u, 404) if u.endswith("/robots.txt") else snap(u, html="<p>ok</p>")
+        return snap(u, 404) if (u.endswith("/robots.txt") or "nknu-archive-probe" in u) else snap(u, html="<p>ok</p>")
 
     queues = {"s1.nknu.edu.tw": "ip:140.127.1.1", "s2.nknu.edu.tw": "ip:140.127.1.2", "o.example.org": "ip:203.0.113.9"}
-    crawler, net, clock = make(tmp_path, {"://": route}, queues=queues, netcheck=lambda: up["net"])
-    crawler.frontier.add_directory_site("o.example.org", "https://w3.nknu.edu.tw/center.html", None, None)
-    crawler.load_site_meta()
+    crawler, net, clock = make(tmp_path, {"://": route}, queues=queues, netcheck=lambda: up["net"],
+                               plan=OpenPlan(site("o.example.org")))
     for h in queues:
-        crawler.enqueue(f"https://{h}/a", unit=None, tier=1, depth=0, found_via="seed", found_from=None)
+        seed(crawler, f"https://{h}/a")
     drive(crawler, net, "ip:140.127.1.1")
     assert crawler.frontier.paused_until("*") > clock() and events(crawler, "offline")
     clock.t = crawler.frontier.paused_until("*") + 1
@@ -350,6 +354,7 @@ def test_F4_a_real_outage_pauses_every_queue_and_then_resumes(tmp_path):
     assert events(crawler, "online")
     assert {(x["state"], x["attempts"]) for x in rows(crawler).values()} == {("done", 0)}
     assert all(crawler.frontier.host(h)["robots_fail"] == 0 for h in queues)
+    assert all(crawler.frontier.server_fails(q) == 0 for q in queues.values())
 
 
 # ---------------------------------------------------------------- F7: caps count what will be fetched
@@ -364,7 +369,8 @@ def test_F7_caps_count_only_the_rows_that_will_be_fetched(tmp_path):
     drive(crawler, net, "ip:cap.nknu.edu.tw")
     r = rows(crawler)
     assert r["https://cap.nknu.edu.tw/about.html"]["state"] == "done" and r["https://cap.nknu.edu.tw/rules.html"]["state"] == "done"
-    assert dict(crawler.frontier.q("SELECT reason, count(*) FROM url WHERE state='skipped' GROUP BY reason")) == {"variant_cap": 25}
+    assert dict(crawler.frontier.q("SELECT reason, count(*) FROM url WHERE state='held' GROUP BY reason")) == \
+        {"cap:variant": 25}
 
 
 def test_F7_the_cap_counts_use_an_index(tmp_path):
@@ -440,6 +446,7 @@ def test_R9_retry_refuses_a_short_prefix_and_leaves_good_pages_alone(tmp_path):
 # ---------------------------------------------------------------- F9: which pages are official directory pages
 
 
+@pytest.mark.skip(reason="第二轮：官方目录页（round-1 设计 §15、§16）")
 def test_F9_directory_pages_are_marked_and_lend_neither_tier_nor_name(tmp_path):
     from nknu.archive.seeds import CLUB_DIRECTORY, DIRECTORY, directory_seeds
 
@@ -463,6 +470,7 @@ def test_F9_directory_pages_are_marked_and_lend_neither_tier_nor_name(tmp_path):
     assert "nknu-club.example.com" in crawler.frontier.directory_sites()
 
 
+@pytest.mark.skip(reason="第二轮：官方目录页（round-1 设计 §15、§16）")
 def test_F9_a_tier_0_page_that_is_not_a_directory_page_admits_no_off_campus_site(tmp_path):
     routes = {"robots.txt": snap("x", 404),
               "life.nknu.edu.tw/": snap("x", 302, headers={"location": "https://sso.nknu.edu.tw/OSA/Life.aspx"}),
@@ -478,6 +486,7 @@ def test_F9_a_tier_0_page_that_is_not_a_directory_page_admits_no_off_campus_site
                                                                                 "shop-example.com"}
 
 
+@pytest.mark.skip(reason="第二轮：官方目录页（round-1 设计 §15、§16）")
 def test_F9_a_directory_page_that_moved_stays_a_directory_page(tmp_path):
     routes = {"robots.txt": snap("x", 404),
               "w3.nknu.edu.tw/center.html": snap("x", 301, headers={"location": "https://w3.nknu.edu.tw/center2.html"}),

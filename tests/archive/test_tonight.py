@@ -1,5 +1,5 @@
 """The last fixes before the first full run (2026-10-24): escaped dot segments, a probe that times out, the directory
-marker on redirects to known off-campus rows, and honour notices (title, link and date only, never the body)."""
+marker on redirects to known off-campus rows; and honour notices, which round 1 fetches whole (record 三·3)."""
 
 import sqlite3
 
@@ -45,21 +45,25 @@ def test_a_probe_that_times_out_does_not_stop_the_pages(tmp_path):
     assert crawler.frontier.host("slow.nknu.edu.tw")["probe_status"] == 0
 
 
-def test_honour_links_are_recorded_masked_and_never_fetched(tmp_path):
-    html = ('<a href="/News/lastNews.aspx?UNID=AAA">賀！本系陳乙丙同學榮獲全國競賽第一名</a>'
+def test_honour_links_are_followed_like_any_other(tmp_path):
+    """Record 三·3 (owner 10-25: 「不要有挡荣誉词表这个规则了」): honour notices are fetched whole, like any page; the
+    10-24 rule (title, link and date only, masked) is gone."""
+    html = ('<a href="/News/lastNews.aspx?UNID=AAA">賀！本系陳O丙同學榮獲全國競賽第一名</a>'
             '<a href="/News/lastNews.aspx?UNID=BBB">115學年度停修申請</a>')
     crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", 404), "/list": lambda u: snap(u, html=html)})
     seed(crawler, "https://sso.nknu.edu.tw/News/list")
     drain(crawler, net, "ip:sso.nknu.edu.tw")
     f = crawler.frontier
-    links = {r["verdict"]: r["text"] for r in f.q("SELECT verdict, text FROM link")}
-    assert links["skipped:honor"] == "賀！本系陳O丙同學榮獲全國競賽第一名"
-    assert not any("AAA" in u for u in net.seen) and any("BBB" in u for u in net.seen)
-    assert not f.q("SELECT 1 FROM url WHERE url LIKE '%UNID=AAA%'")
+    links = {r["dst"]: (r["verdict"], r["text"]) for r in f.q("SELECT dst, verdict, text FROM link")}
+    honour = "https://sso.nknu.edu.tw/news/lastnews.aspx?unid=AAA"
+    assert links[honour] == ("queued", "賀！本系陳O丙同學榮獲全國競賽第一名")
+    assert any("AAA" in u for u in net.seen) and any("BBB" in u for u in net.seen)
+    assert f.q("SELECT state FROM url WHERE url=?", (honour,))[0][0] == "done"
 
 
-def test_no_honour_list_or_honour_notice_is_seeded(tmp_path):
-    assert not any("cat=GOOD" in u for u in SSO_LISTS)
+def test_honour_lists_and_honour_notices_are_seeded(tmp_path):
+    """Record 三·3: the SSO centre's 榮譽典範 list (cat=GOOD) is a seed, and v1's honour notices are seeds like any."""
+    assert any("cat=GOOD" in u for u in SSO_LISTS)
     db = tmp_path / "facts.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE doc(url TEXT, unit TEXT, title TEXT, category TEXT, withdrawn_at TEXT)")
@@ -70,4 +74,5 @@ def test_no_honour_list_or_honour_notice_is_seeded(tmp_path):
     ])
     conn.commit()
     conn.close()
-    assert [s.url for s in v1_known(db)] == [scope.canonical("https://sso.nknu.edu.tw/News/lastNews.aspx?UNID=3")]
+    assert sorted(s.url for s in v1_known(db)) == sorted(
+        scope.canonical(f"https://sso.nknu.edu.tw/News/lastNews.aspx?UNID={n}") for n in (1, 2, 3))

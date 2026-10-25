@@ -30,6 +30,9 @@ class Settings:
     backup_dir: Path | None
     # Cloudflare tunnel: trust cloudflared's CF-Connecting-IP from loopback; Tailscale Funnel: 0 (see ratelimit.py)
     trust_cf_header: bool = True
+    # the machine-wide lock on requests to the school (crawl/schoollock.py, round-1 design §6.9): every program that
+    # sends to the school's servers takes this one file, so they must all read the same path
+    school_lock: Path = Path.home() / ".cache" / "nknu" / "school-requests.lock"
 
     @property
     def facts_path(self) -> Path:
@@ -56,4 +59,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         discord_webhook=env.get("NKNU_DISCORD_WEBHOOK") or None,
         backup_dir=Path(backup) if backup else None,
         trust_cf_header=not _off(env.get("NKNU_TRUST_CF_HEADER")),
+        school_lock=Path(env.get("NKNU_SCHOOL_LOCK") or Path.home() / ".cache" / "nknu" / "school-requests.lock"),
     )

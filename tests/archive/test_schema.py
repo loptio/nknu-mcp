@@ -18,9 +18,12 @@ READ = {
             "reason", "next_at", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc", "title",
             "flags", "fetched_at", "owner_site", "prio", "leaf", "kind0", "page_role", "page_type", "sniff", "text_chars",
             "filename", "size_declared", "warc_offset", "warc_len", "added_at", "old_ref"},
-    "host": {"host", "queue", "ip", "crawl_delay", "cooldown_until", "not_before", "dns_fail", "scheme_only", "dns_ms"},
+    "host": {"host", "queue", "ip", "crawl_delay", "cooldown_until", "not_before", "dns_fail", "scheme_only", "dns_ms",
+             "answered_off"},
+    # review 10-26 B4, B7: where its answer is archived and where it was made from
     "request": {"id", "queue", "host", "url", "purpose", "started", "ended", "status", "error", "method", "bytes",
-                "new_conn", "connect_ms", "tls_ms", "ip", "attempt"},
+                "new_conn", "connect_ms", "tls_ms", "ip", "attempt", "warc", "warc_offset", "campus"},
+    "server": {"queue", "conn_fail", "failed_at", "answered_at", "err_fail"},  # review 10-26 B2; second review
     "postback": {"site", "target", "n", "sample", "argument", "text", "form_id", "decision"},
     "event": {"at", "level", "code", "host", "url", "message"},
     "pause": {"queue", "until", "why"},
@@ -57,7 +60,7 @@ VIEW_ADDS = {
                           "miss_img", "miss_other", "ended_by", "list_ok", "level", "label", "reasons"},
 }
 NEW_INDEXES = {"url_next2", "url_owner", "url_ptype", "url_added", "page_res_res", "page_res_action", "action_list",
-               "action_click", "request_started"}
+               "action_click", "request_started", "url_sha", "url_owner_path_state"}
 
 # the frontier.db of the 10-24 run (commit 8c8d23b): no column or table of the round-1 design
 OLD_TABLES = """
@@ -129,7 +132,7 @@ def test_the_caps_count_only_what_this_round_fetches(tmp_path):
     f = Frontier(tmp_path / "frontier.db")
     for i, state in enumerate(("pending", "active", "done", "failed", "skipped", "held", "later")):
         f.add(f"https://a.nknu.edu.tw/p{i}", host="a.nknu.edu.tw", site="a.nknu.edu.tw", unit=None, tier=0, kind="page",
-              depth=0, found_via="seed", found_from=None, state=state)
+              depth=0, found_via="seed", found_from=None, state=state, owner_site="a.nknu.edu.tw")
     try:
         assert f.count_site("a.nknu.edu.tw", "page") == 4
         assert f.count_path("a.nknu.edu.tw", "https://a.nknu.edu.tw/p6") == 0
@@ -247,7 +250,8 @@ def test_a_new_frontier_is_marked_round_one_and_opening_an_old_one_never_marks_i
     assert round_of(tmp_path / "nowhere" / "frontier.db") is None
 
 
-@pytest.mark.parametrize("cmd", [["retry", "timeout"], ["seed"], ["run", "--limit", "1"]])
+@pytest.mark.parametrize("cmd", [["retry", "timeout"], ["seed", "--round", "1", "--old", "/no/old-archive"],
+                                 ["run", "--limit", "1"]])
 def test_the_commands_that_write_refuse_the_10_24_archive(tmp_path, monkeypatch, cmd):
     # without --dir the commands use the repository's archive/, the 10-24 crawler's until it is renamed
     # archive-2026-10-24 (design §3, which asks the owner first): seed, run and retry would migrate it, and run would

@@ -7,10 +7,11 @@ import pytest
 from nknu.archive import scope
 from nknu.archive.crawler import Crawler
 from nknu.archive.links import extract
-from nknu.archive.monitor import politeness, report, scope_and_robots
+from nknu.archive.monitor import politeness, report, scope_audit
 from nknu.archive.robots import Robots, judge_answer
 from nknu.crawl.adapter import Target
 from nknu.crawl.fetch import FetchError, HostCircuitOpen, Snapshot, TooLarge
+from tests.archive.plans import OpenPlan
 
 # ---------------------------------------------------------------- scope
 
@@ -146,15 +147,19 @@ class Sink:
         self.path = root / "warc" / "q.warc.gz"
 
 
-def make(tmp_path, routes, queues=None, **kw):
-    """A crawler on the fake network: no DNS, no connectivity check, plenty of disk (each can be replaced)."""
+def make(tmp_path, routes, queues=None, plan=None, **kw):
+    """A crawler on the fake network: no DNS, no connectivity check, plenty of disk, no campus check (each can be
+    replaced), and a site list that takes every school site as a round-1 site (tests/archive/plans.OpenPlan) unless
+    a test gives its own."""
     clock = Clock()
     net = Net(clock, routes)
     queues = queues or {}
     kw.setdefault("resolver", lambda h: (queues.get(h, f"ip:{h}"), None, h))
     kw.setdefault("netcheck", lambda: True)
     kw.setdefault("disk_free", lambda path: 10**12)
-    crawler = Crawler(tmp_path, clock=clock, sleep=clock.sleep, client_factory=net, **kw)
+    kw.setdefault("campus_url", None)
+    crawler = Crawler(tmp_path, plan=plan if plan is not None else OpenPlan(), clock=clock, sleep=clock.sleep,
+                      client_factory=net, **kw)
     return crawler, net, clock
 
 
@@ -165,7 +170,10 @@ def drain(crawler, net, queue):
 
 
 def seed(crawler, url, tier=1):
-    return crawler.enqueue(url, unit="教務處", tier=tier, depth=0, found_via="seed", found_from=None)
+    """A seed of the test's site list (its tier: 0 全校重要, else 本系重要, on the open list)."""
+    if isinstance(crawler.plan, OpenPlan):
+        crawler.plan.mark(url, tier)
+    return crawler.seed_url(url)
 
 
 def test_one_queue_waits_after_every_response_even_across_hosts(tmp_path):
@@ -192,16 +200,18 @@ def test_redirect_is_queued_as_its_own_url_not_followed(tmp_path):
     assert row["state"] == "pending" and row["found_via"] == "redirect" and row["tier"] == 1
 
 
-def test_robots_disallow_and_unreachable(tmp_path):
+def test_robots_is_read_never_a_block_and_an_unreachable_one_makes_the_host_wait(tmp_path):
+    # round-1 design §6.8 (owner 10-25: 「robots.txt 不用管」): the rules are kept, the page is fetched
     crawler, net, clock = make(tmp_path, {"a.nknu.edu.tw/robots.txt": snap("x", html="User-agent: *\nDisallow: /p\n"),
-                                          "b.nknu.edu.tw/robots.txt": FetchError("timed out")})
+                                          "b.nknu.edu.tw/robots.txt": FetchError("timed out"),
+                                          "a.nknu.edu.tw/p/1": lambda u: snap(u, html="<p>1</p>")})
     seed(crawler, "https://a.nknu.edu.tw/p/1")
     seed(crawler, "https://b.nknu.edu.tw/x")
     drain(crawler, net, "ip:a.nknu.edu.tw")
     drain(crawler, net, "ip:b.nknu.edu.tw")
     rows = {r["url"]: r for r in crawler.frontier.q("SELECT * FROM url")}
-    assert rows["https://a.nknu.edu.tw/p/1"]["state"] == "skipped" and rows["https://a.nknu.edu.tw/p/1"]["reason"] == "robots"
-    assert "https://a.nknu.edu.tw/p/1" not in net.seen
+    assert rows["https://a.nknu.edu.tw/p/1"]["state"] == "done" and "https://a.nknu.edu.tw/p/1" in net.seen
+    assert "Disallow: /p" in crawler.frontier.host("a.nknu.edu.tw")["robots_body"]
     b = rows["https://b.nknu.edu.tw/x"]
     assert b["state"] == "pending" and "https://b.nknu.edu.tw/x" not in net.seen
     assert crawler.frontier.host("b.nknu.edu.tw")["cooldown_until"] > clock()
@@ -263,7 +273,7 @@ def test_too_large_and_caps(tmp_path):
     drain(crawler, net, "ip:h.nknu.edu.tw")
     f = crawler.frontier
     assert f.q("SELECT reason FROM url WHERE url LIKE '%big.pdf'")[0][0] == "too_large"
-    assert f.q("SELECT count(*) FROM url WHERE reason='site_cap'")[0][0] >= 1
+    assert f.q("SELECT count(*) FROM url WHERE state='held' AND reason='cap:site'")[0][0] >= 1  # held, never skipped
 
 
 def test_a_stopped_run_resumes(tmp_path):
@@ -285,7 +295,7 @@ def test_monitor_catches_impolite_and_out_of_scope_requests(tmp_path):
     f.request("ip:2", "www.moe.gov.tw", "https://www.moe.gov.tw/", "page", 100.0, 101.0, 200, None)
     gaps = politeness(f)
     assert any("间隔不足" in g for g in gaps) and any("并发" in g for g in gaps)
-    assert any("超出范围" in s for s in scope_and_robots(f))
+    assert any("超出范围" in s for s in scope_audit(f))
     text, code = report(tmp_path)
     assert code == 2 and "❌" in text and (tmp_path / "reports" / "latest.md").exists()
 

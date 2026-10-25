@@ -114,7 +114,17 @@ def crawl(
     before = data_version(conn)
     conn.close()
     started = iso_now()
-    results = run_all(s, today=today_tpe(), only=only or None, full_scan=full)
+    from nknu.crawl.schoollock import SchoolLockBusy, SchoolLockUnshared
+
+    try:
+        results = run_all(s, today=today_tpe(), only=only or None, full_scan=full)
+    except SchoolLockBusy as exc:  # the archive crawl (or another program) is sending to the school right now
+        typer.echo(f"另一个程序正在对学校发请求（pid {exc.pid}，多半是存档爬虫 nknu archive run），这次不抓；"
+                   "v1 照旧用上一次的资料回答。等它停下再跑 nknu crawl。")
+        raise typer.Exit(1) from None
+    except SchoolLockUnshared as exc:
+        typer.echo(_unshared(exc))
+        raise typer.Exit(1) from None
     for r in results:
         state = "ok" if r.passed else "VOID"
         typer.echo(f"{r.adapter:18} {state:4} records={r.n_records} written={r.n_written} retired={r.n_retired}"
@@ -143,19 +153,37 @@ def crawl(
         raise typer.Exit(1)
 
 
+def _unshared(exc: Exception) -> str:
+    """What to say when this machine runs v1's services and the command was not told their lock's path (second
+    review 10-26: two programs on two lock files would both send to the school)."""
+    return (f"这台机器装了 v1 的服务（{exc}）。没有设 NKNU_SCHOOL_LOCK，这个命令会用自己家目录下的全机锁，"
+            "跟服务用的不是同一个，两边挡不住彼此，所以没有执行。先 export NKNU_SCHOOL_LOCK=/var/lib/nknu/school-requests.lock"
+            "（和 /etc/nknu/env 里的一样），或改用 /usr/local/bin/nknu 执行。")
+
+
 @app.command()
 def fixture(url: str, out: str) -> None:
     """（开发用）礼貌地抓一页，存成解码后的 UTF-8 文字，用来做测试 fixture。之后要裁剪并遮罩个资。"""
     from pathlib import Path
 
+    from nknu.crawl import schoollock
     from nknu.crawl.adapter import RateLimit, Target
     from nknu.crawl.fetch import Client
 
+    try:  # one program at a time sends to the school (round-1 design §6.9)
+        lock = schoollock.hold()
+    except schoollock.SchoolLockBusy as exc:
+        typer.echo(f"另一个程序正在对学校发请求（pid {exc.pid}），没有抓。等它停下再试。")
+        raise typer.Exit(1) from None
+    except schoollock.SchoolLockUnshared as exc:
+        typer.echo(_unshared(exc))
+        raise typer.Exit(1) from None
     client = Client()
     try:
         snap = client.fetch(Target(url), RateLimit())
     finally:
         client.close()
+        lock.close()
     p = Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)
     if snap.text is not None:
@@ -523,57 +551,146 @@ def _archive_db(root):
     return db
 
 
-@archive_app.command("seed")
-def archive_seed(dir: str = typer.Option(None, "--dir", help="存档目录，默认是仓库里的 archive/")) -> None:
-    """按机构排好优先顺序，把起点网址放进待抓清单（可重复执行，已有的不会重复加）。"""
-    from nknu.archive.crawler import Crawler
-    from nknu.archive.seeds import all_seeds
+def _hold_for_writing(root):
+    """A command that writes to frontier.db (seed, retry) refuses while a run holds the directory, and holds run.lock
+    itself while it writes, so that no run starts meanwhile (design §6.9: one writer; second review 10-26: they only
+    looked when they started). Returns the lock, for the caller to close."""
+    from nknu.archive.crawler import AlreadyRunning, hold_run_lock
 
+    try:
+        return hold_run_lock(root)
+    except AlreadyRunning as exc:
+        typer.echo(f"archive run 正在用这个目录（pid {exc.pid}）：先 nknu archive stop，改完再 run（续跑不会重抓已抓过的）。")
+        raise typer.Exit(1) from None
+
+
+@archive_app.command("seed")
+def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起点（现在只有 1）"),
+                 old: str = typer.Option(..., "--old", help="旧存档的目录（或它的 frontier.db），只读，例如 "
+                                                         "archive-2026-10-24"),
+                 dir: str = typer.Option(None, "--dir", help="新存档目录，默认是仓库里的 archive/"),
+                 cc: str = typer.Option(None, "--cc", help="Common Crawl 网址索引的目录（*.cdx）；默认 research 里那份"),
+                 probe: str = typer.Option(None, "--probe", help="网站普查 data.json（52 个校务系统起点）；默认 research 里那份")
+                 ) -> None:
+    """建第一轮的待抓清单（设计第 5 节）：名单的网站、附加起点、登录重查，旧存档的每一行和它链接表的目标（照新规则重判），
+    Common Crawl、SiteMap、v1 已知公告、SSO 公告列表，第二轮的起点（分批记下）。可重复执行，已有的不会重复加。
+    旧存档只读、绝不改。写 reports/seed-<时间>.md；有网站的起点比旧存档少，退出码 2 并列出少了哪些。"""
+    from datetime import datetime
+    from pathlib import Path
+
+    from nknu.archive import crawler as archive
+    from nknu.archive import round1, seeds
+
+    if round_ != 1:
+        typer.echo("现在只有第一轮的起点（--round 1）")
+        raise typer.Exit(1)
     root = _round1_root(dir)
-    crawler = Crawler(root)
-    seeds = all_seeds(_settings().facts_path)
-    added = 0
-    for s in seeds:
-        added += crawler.enqueue(s.url, unit=s.unit, tier=s.tier, depth=0, found_via=s.via, found_from=None) == "queued"
-    crawler.load_site_meta()
-    typer.echo(f"起点 {len(seeds)} 个，新加入 {added} 个；待抓清单：{root / 'frontier.db'}")
+    old_path = Path(old).expanduser().resolve()
+    old_db = old_path if old_path.is_file() else old_path / "frontier.db"
+    if not old_db.exists():
+        typer.echo(f"找不到旧存档的待抓清单：{old_db}")
+        raise typer.Exit(1)
+    if old_db.parent.resolve() == root.resolve():
+        typer.echo("--old 和 --dir 是同一个目录：新的一轮要另开目录，旧存档只读")
+        raise typer.Exit(1)
+    lock = _hold_for_writing(root)  # held while seeding: no run may start meanwhile (design §6.9: one writer)
+    try:
+        crawler = archive.Crawler(root, plan=round1.load(), resolver=archive.resolve)
+        report = seeds.seed_round1(crawler, old=old_path, facts_db=_settings().facts_path,
+                                   cc_dir=Path(cc) if cc else seeds.CC_DIR, probe=Path(probe) if probe else seeds.PROBE)
+        reports = root / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        out = reports / f"seed-{datetime.now().astimezone():%Y%m%d-%H%M%S}.md"
+        out.write_text(report.text(), encoding="utf-8")
+        n = crawler.frontier.q("SELECT count(*) FROM url")[0][0]
+    finally:
+        lock.close()
+    typer.echo(f"待抓清单共 {n} 行：{root / 'frontier.db'}；起点报告：{out}")
+    if report.missing:
+        typer.echo(f"有 {len(report.missing)} 个旧存档的网址这次没有起点（也不是被规则挡掉的），见报告「少了的网址」")
+    raise typer.Exit(report.exit_code)
+
+
+def _gap_option(text: str) -> tuple[float, float]:
+    """「2-5」 (the default) or 「1-2」 (the owner 10-26, once the pilot passed): seconds, at least 1."""
+    from nknu.archive.crawler import check_gap
+
+    try:
+        lo, hi = (float(x) for x in text.replace("–", "-").split("-", 1))
+        return check_gap((lo, hi))
+    except ValueError as exc:
+        typer.echo(f"--gap 要写成「下限-上限」秒，例如 2-5 或 1-2，下限至少 1 秒：{exc}")
+        raise typer.Exit(1) from None
 
 
 @archive_app.command("run")
 def archive_run(dir: str = typer.Option(None, "--dir"),
-                limit: int = typer.Option(None, "--limit", help="抓这么多个页面就停（试跑用）")) -> None:
-    """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等 2–5 秒；中断后重跑会接着抓。同一个目录只能有一个在跑。"""
+                limit: int = typer.Option(None, "--limit", help="抓这么多个页面就停（试跑用）"),
+                gap: str = typer.Option("2-5", "--gap", help="每个回应之后等几秒（下限-上限）；默认 2-5，试跑通过、"
+                                                           "用户说开始用以后才设 1-2"),
+                sites: str = typer.Option(None, "--sites", help="只抓这些网站（网站键，逗号分隔，例如 "
+                                                              "c.nknu.edu.tw/reality,sso.nknu.edu.tw/web/595）")) -> None:
+    """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等（默认 2–5 秒）；中断后重跑会接着抓。同一个目录只能有一个在跑，
+    同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址时自己结束，留给下一次。"""
     import logging
     import signal
     import threading
 
     from nknu.archive import crawler as archive
+    from nknu.crawl import schoollock
 
     root = _round1_root(dir)
+    span = _gap_option(gap)
+    only = frozenset(x.strip() for x in sites.split(",") if x.strip()) if sites else None
     try:
         lock = archive.hold_run_lock(root)  # held until this process ends; the kernel lets go even after kill -9
     except archive.AlreadyRunning as exc:
         typer.echo(f"另一个 archive run 正在用这个目录（pid {exc.pid}），没有再启动。要换程序，先 nknu archive stop。")
         raise typer.Exit(1) from None
     try:
+        school = schoollock.hold()  # one program per machine sends to the school (design §6.9)
+    except schoollock.SchoolLockBusy as exc:
+        lock.close()
+        typer.echo(f"另一个程序正在对学校发请求（pid {exc.pid}，全机锁 {exc.path}），没有启动。等它停下再跑。")
+        raise typer.Exit(1) from None
+    except schoollock.SchoolLockUnshared as exc:
+        lock.close()
+        typer.echo(_unshared(exc))
+        raise typer.Exit(1) from None
+    typer.echo(f"全机锁：{school.path}（对学校发请求的程序都要用这一个档）")
+    try:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
         stop_file = root / "STOP"
         stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
         (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
-        crawler = archive.Crawler(root, limit=limit)
+        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only)
 
         def watch() -> None:
             while not crawler.stop.wait(archive.STOP_POLL_S):
                 if stop_file.exists():
                     logging.getLogger("nknu.archive").info("STOP file found: finishing the requests in flight")
-                    crawler.stop.set()
+                    crawler.halt("stop_file")
 
-        signal.signal(signal.SIGTERM, lambda *_: crawler.stop.set())
+        signal.signal(signal.SIGTERM, lambda *_: crawler.halt("sigterm"))
         threading.Thread(target=watch, daemon=True).start()
         crawler.run()
     finally:
+        school.close()
         lock.close()
-    typer.echo("archive run stopped")
+    typer.echo(f"archive run stopped ({crawler.end_reason or 'stop'})")
+    if crawler.end_reason == "waiting":
+        _next_run(crawler)
+
+
+def _next_run(crawler) -> None:
+    """A run that ended with only waits left (B1) says when the soonest of them comes due: the earliest a run again
+    has something to do (second review 10-26, END_WAIT_S: a person, or a timer, starts it)."""
+    from datetime import datetime
+
+    left, nxt = crawler.frontier.waiting(crawler.sites)
+    if nxt is not None:
+        typer.echo(f"还有 {left} 个网址在等（重试、DNS、冷却或服务器休息）；最早 "
+                   f"{datetime.fromtimestamp(nxt).astimezone():%m-%d %H:%M} 起再执行一次 nknu archive run 就会接着抓")
 
 
 @archive_app.command("status")
@@ -629,8 +746,14 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     if len(reason.strip()) < RETRY_MIN_PREFIX:
         typer.echo(f"原因开头至少要 {RETRY_MIN_PREFIX} 个字（例如 http_5、dns），免得把不相干的网址一起放回")
         raise typer.Exit(1)
-    n, hosts = Frontier(_archive_db(_round1_root(dir))).retry(reason)
-    typer.echo(f"放回待抓：{n} 个网址（{hosts} 台主机一起重设）")
+    root = _round1_root(dir)
+    db = _archive_db(root)
+    lock = _hold_for_writing(root)
+    try:
+        n, hosts = Frontier(db).retry(reason)
+    finally:
+        lock.close()
+    typer.echo(f"放回待抓：{n} 个网址（{hosts} 台主机一起重设）；还没查过地址的主机，下一次 archive run 开始时先查")
 
 
 @archive_app.command("browse")
