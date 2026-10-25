@@ -6,6 +6,14 @@ SQLite on the maintainer's Mac (one writer: the process that holds run.lock); th
 Opening an older frontier.db adds the columns and tables it lacks (_migrate), so a schema change never needs a rebuild;
 the monitor opens it read-only instead (it never alters the database of a running crawl), and refuses one that lacks
 columns until `archive seed` or `archive run` has brought it up to date.
+
+The round-1 tables (design §12): the site list (site_plan), page types and their browser verdict (page_type), what each
+page uses (page_res), the ASP.NET buttons pressed (action: POSTs only, the url table holds GETs) and each list's walk
+to its last page (listwalk), Drive items, the id probes, where each seed came from (seed_src), the run's facts
+(meta), what the browser check saw on each page it opened (js_page), each site's last reconciliation
+(reconcile_site), and a person's word that a row's result is the school's (review_mark). What a row came to is
+never stored: each open builds the views url_result, action_result, page_resource and page_completeness from
+outcome.py (a read-only open, in its own temp schema), so every reader applies the same rules.
 """
 
 from __future__ import annotations
@@ -16,6 +24,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nknu.archive import outcome
+
 TABLES = """
 CREATE TABLE IF NOT EXISTS url(
   id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, path TEXT NOT NULL, host TEXT NOT NULL, site TEXT NOT NULL, unit TEXT,
@@ -23,23 +33,48 @@ CREATE TABLE IF NOT EXISTS url(
   found_via TEXT NOT NULL, found_from INTEGER,
   state TEXT NOT NULL DEFAULT 'pending', reason TEXT, next_at REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
   status INTEGER, final_url TEXT, ctype TEXT, bytes INTEGER, sha256 TEXT, warc TEXT, title TEXT, flags TEXT,
-  fetched_at TEXT, elapsed_ms INTEGER, n_links INTEGER, n_postbacks INTEGER, directory INTEGER NOT NULL DEFAULT 0);
+  fetched_at TEXT, elapsed_ms INTEGER, n_links INTEGER, n_postbacks INTEGER, directory INTEGER NOT NULL DEFAULT 0,
+  -- round 1 (design §12): the site it counts for (§4.3); 0 lists/seeds/sitemaps/login checks/tabs pressed by rule,
+  -- 1 pages, 2 files/Drive/calendars/forms, 3 images/school scripts, +1 when only an old source names it (§6.7); 1: no
+  -- links are read from it as a page (§4.4: what a tab, an embed box or a Drive folder listing brings counts on the
+  -- page that uses it); the kind expected when found (page/file/image/drive/calendar/form/shortlink/sitemap/
+  -- login_check/click: a tab pressed by its platform rule, §7.4/script: a school site's .js, §4.4/embed: a Google
+  -- Sites embed box, §4.4/drive_list: one page of a Drive folder's listing, §7.6); home/list/detail/frame/other; its
+  -- page type key (§8.1); the format its first bytes say (§7.3); the response record in url.warc.
+  -- kind once fetched: page/file/image/drive/calendar/embed (§10.2: what is not HTML is never a page; a form's or an
+  -- embed box's HTML is an embed, the page's part, never a round-1 page itself), or shortlink: a short link's row stays
+  -- one whatever its service answers, its target in final_url (§7.7, review 10-26 A2; round1.short_answer).
+  -- flags: login, soft404, decode, gone_redirect, gone_id, error_page, thin, empty_detail, js_hint, form_closed,
+  -- js_redirect (§8.3), click_empty (§7.4): outcome.FLAGS lists them all, any other makes the row unknown.
+  -- found_via: seed, v1_known, old_frontier, commoncrawl (the seeds); link, redirect, js_redirect (§8.3),
+  -- scheme_switch (§6.6), click (§7.4), drive (§7.6), jscheck_redirect (later rows only, §8.4), reconcile (§18.2b),
+  -- rejudge (§18.2a)
+  owner_site TEXT, prio INTEGER NOT NULL DEFAULT 1, leaf INTEGER NOT NULL DEFAULT 0, kind0 TEXT, page_role TEXT,
+  page_type TEXT, sniff TEXT, text_chars INTEGER, filename TEXT, size_declared INTEGER,
+  warc_offset INTEGER, warc_len INTEGER, added_at REAL, old_ref INTEGER);
 CREATE TABLE IF NOT EXISTS link(src INTEGER NOT NULL, dst TEXT NOT NULL, text TEXT, verdict TEXT NOT NULL,
   PRIMARY KEY(src, dst)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS offsite(domain TEXT PRIMARY KEY, n INTEGER NOT NULL, first_src INTEGER, sample TEXT);
 CREATE TABLE IF NOT EXISTS postback(site TEXT NOT NULL, target TEXT NOT NULL, n INTEGER NOT NULL, sample INTEGER,
+  argument TEXT, text TEXT, form_id TEXT,
+  decision TEXT NOT NULL DEFAULT 'unknown',  -- press/never/ignore from the platform profile; unknown must reach 0 (§7.4)
   PRIMARY KEY(site, target)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS host(host TEXT PRIMARY KEY, queue TEXT NOT NULL, ip TEXT, cname TEXT,
   robots_state TEXT, robots_at REAL, robots_body TEXT, crawl_delay REAL,
   probe_status INTEGER, probe_sha TEXT, probe_len INTEGER, probe_title TEXT,
   cooldown_until REAL NOT NULL DEFAULT 0, cooldown_s REAL NOT NULL DEFAULT 0, robots_fail INTEGER NOT NULL DEFAULT 0,
   robots_sha TEXT, dns_fail INTEGER NOT NULL DEFAULT 0, dns_at REAL NOT NULL DEFAULT 0,
-  not_before REAL NOT NULL DEFAULT 0);
+  not_before REAL NOT NULL DEFAULT 0,
+  scheme_only TEXT, dns_ms REAL);  -- the one scheme the host answers on (§6.6); the hourly getaddrinfo time (§6.2)
 CREATE TABLE IF NOT EXISTS deny(dir TEXT PRIMARY KEY, host TEXT NOT NULL, run INTEGER NOT NULL DEFAULT 0,
   until REAL NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS request(id INTEGER PRIMARY KEY, queue TEXT NOT NULL, host TEXT NOT NULL, url TEXT NOT NULL,
   purpose TEXT NOT NULL, started REAL NOT NULL, ended REAL NOT NULL, status INTEGER, error TEXT,
-  scope TEXT, robots_sha TEXT);
+  scope TEXT, robots_sha TEXT,
+  -- the connection it used (§6.2: a new one or kept alive, its TCP and TLS times, the server's address) and the try
+  -- within one call (§6.4: 2 is the resend after a kept-alive connection was closed)
+  method TEXT, bytes INTEGER, new_conn INTEGER, connect_ms REAL, tls_ms REAL, ip TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1);
 -- a scope rule added during a run: requests for that reason before `at` were fetched under the old rules
 CREATE TABLE IF NOT EXISTS rule_change(reason TEXT PRIMARY KEY, at REAL NOT NULL, note TEXT);
 CREATE TABLE IF NOT EXISTS event(at TEXT NOT NULL, level TEXT NOT NULL, code TEXT NOT NULL, host TEXT, url TEXT,
@@ -48,10 +83,72 @@ CREATE TABLE IF NOT EXISTS robots_version(sha TEXT PRIMARY KEY, host TEXT NOT NU
 CREATE TABLE IF NOT EXISTS directory_site(site TEXT PRIMARY KEY, via_url TEXT NOT NULL, via_id INTEGER, text TEXT,
   at TEXT);
 CREATE TABLE IF NOT EXISTS pause(queue TEXT PRIMARY KEY, until REAL NOT NULL, why TEXT);
+-- round 1 (design §12). The site list (config/archive_round1.json): round 1, resource or 2 (why: js_site, other_site,
+-- offsite_unit); paths and params as JSON (params: a parameter's value that must match, cirn.moe's sid=1219); leaf 1:
+-- round two fetches that page only (§4.1); base_urls, the rows the old archive holds for the site
+CREATE TABLE IF NOT EXISTS site_plan(site TEXT PRIMARY KEY, name TEXT, imp TEXT, round TEXT NOT NULL, why TEXT,
+  platform TEXT, home TEXT, paths TEXT, params TEXT, leaf INTEGER NOT NULL DEFAULT 0, base_urls INTEGER);
+-- a site's pages that share one address pattern (§8.1) and what the browser test said of them: ok, js, frame or todo
+CREATE TABLE IF NOT EXISTS page_type(key TEXT PRIMARY KEY, site TEXT NOT NULL, host TEXT, path_tpl TEXT, params TEXT,
+  verdict TEXT NOT NULL DEFAULT 'todo', why TEXT, method TEXT, direct_chars INTEGER, rendered_chars INTEGER,
+  data_urls TEXT, sample_id INTEGER, sample_url TEXT, n_pages INTEGER NOT NULL DEFAULT 0,
+  n_strong INTEGER NOT NULL DEFAULT 0, n_weak INTEGER NOT NULL DEFAULT 0, tries INTEGER NOT NULL DEFAULT 0,
+  source TEXT, tested_at TEXT, note TEXT);
+-- what a page uses (§7.1): how it is fetched (get/postback/drive_api/calendar_api/link_only/unhandled/click), its role
+-- (img/file/iframe/frame/drive/calendar/form/detail/download/pager/item/shortlink/click/script), need (must/no/round2,
+-- why when not must, and for a resource with no row: round2:<why>, unhandled:<why>, out:<rule>) and the url or action
+-- row that holds its result
+CREATE TABLE IF NOT EXISTS page_res(page_id INTEGER NOT NULL, res_key TEXT NOT NULL, how TEXT NOT NULL,
+  role TEXT NOT NULL, need TEXT NOT NULL, why TEXT, res_id INTEGER, action_id INTEGER, zone TEXT, text TEXT,
+  PRIMARY KEY(page_id, res_key)) WITHOUT ROWID;
+-- one press of an ASP.NET button (§7.5), built from the form state of the list page archived at form_src_*; the
+-- pager's row_key is 'p<step>'. kind: pager/detail/download, or click (a button pressed by its platform rule that posts
+-- for a file's address, §7.4: list_id is the page; one press per site and row_key, action_click)
+CREATE TABLE IF NOT EXISTS action(id INTEGER PRIMARY KEY, list_id INTEGER NOT NULL, epoch INTEGER NOT NULL,
+  step INTEGER NOT NULL, kind TEXT NOT NULL, queue TEXT NOT NULL, host TEXT NOT NULL, site TEXT NOT NULL,
+  profile TEXT NOT NULL, form_src_warc TEXT NOT NULL, form_src_offset INTEGER NOT NULL, form_id TEXT,
+  target TEXT NOT NULL, argument TEXT NOT NULL DEFAULT '', row_key TEXT NOT NULL, row_text TEXT,
+  state TEXT NOT NULL DEFAULT 'pending', reason TEXT, status INTEGER, ctype TEXT, bytes INTEGER, sha256 TEXT,
+  sniff TEXT, filename TEXT, location TEXT, warc TEXT, warc_offset INTEGER, warc_len INTEGER, created REAL, done REAL,
+  UNIQUE(list_id, epoch, kind, row_key));
+-- the evidence that a list was walked to its last page (§7.5 step 7): claimed is the 「共 N 筆」 the page states
+CREATE TABLE IF NOT EXISTS listwalk(list_id INTEGER PRIMARY KEY, site TEXT, profile TEXT, epoch INTEGER,
+  pages INTEGER, rows INTEGER, rows_unique INTEGER, claimed INTEGER, ended_by TEXT, ok INTEGER, note TEXT, at REAL);
+-- a Drive item whose metadata row is url_id; content_id: the row of its content (export, alt=media), for a folder its
+-- listing's first page; none for a video (§7.6)
+CREATE TABLE IF NOT EXISTS drive_item(url_id INTEGER PRIMARY KEY, file_id TEXT NOT NULL, name TEXT, mime TEXT,
+  size INTEGER, md5 TEXT, modified TEXT, parent_id TEXT, resource_key TEXT, depth INTEGER, album INTEGER,
+  content_id INTEGER);
+-- what jscheck saw when it opened this one page (§8.3, §8.4): ok/js/frame/click/unresolved, at frontier.utc_now();
+-- one row per page, written again when it is opened again. url_result reads it for a page with a strong hint
+CREATE TABLE IF NOT EXISTS js_page(url_id INTEGER PRIMARY KEY, page_type TEXT, at TEXT NOT NULL, verdict TEXT NOT NULL,
+  why TEXT, final_url TEXT);
+-- each site's last reconciliation (§18.2b): checks as JSON (R1–R7, V13, V14: pass/fail/warn/skip and numbers), the
+-- discovery coverage (NULL when it cannot be estimated), and whether every gate passed (a site is 爬完 only then)
+CREATE TABLE IF NOT EXISTS reconcile_site(site TEXT PRIMARY KEY, batch TEXT NOT NULL, at TEXT NOT NULL,
+  checks TEXT NOT NULL, cover_cc REAL, cover_old REAL, gates_ok INTEGER NOT NULL);
+-- what a detail page for an id that does not exist looks like, per platform host (§10.1)
+CREATE TABLE IF NOT EXISTS id_probe(host TEXT NOT NULL, page_type TEXT NOT NULL, url TEXT, status INTEGER,
+  final_url TEXT, sha256 TEXT, len INTEGER, title TEXT, at REAL, PRIMARY KEY(host, page_type));
+CREATE TABLE IF NOT EXISTS seed_src(url TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(url, source)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+-- a person looked at a row and says what it came to is the school's to answer for (mark school_side, review 10-26
+-- B7): the result, reason, status and fetched_at it had then, which the result views compare with the row's (any
+-- change, a new fetch included, and the mark lapses for good), the person's note and when (frontier.utc_now());
+-- outcome.markable() says which results it may have (Frontier.mark_school_side). For an address that redirects, the
+-- result is what it leads to as a page's resource (view page_resource: an attachment sent to the home page is
+-- not_file), which page_completeness compares (second look, F5)
+-- the YouTube videos a page links or embeds (owner 10-26, record 五·15): never fetched (out:social), kept with the title
+-- the school's page gives each (links.Video) for the sorting stage; one row per page and video
+CREATE TABLE IF NOT EXISTS video(page_id INTEGER NOT NULL, video_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT,
+  how TEXT NOT NULL, zone TEXT, PRIMARY KEY(page_id, video_id)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS review_mark(url_id INTEGER PRIMARY KEY, mark TEXT NOT NULL, result TEXT NOT NULL,
+  reason TEXT, status INTEGER, note TEXT NOT NULL, at TEXT NOT NULL, fetched_at TEXT);
 """
-# the caps count the rows that will be fetched: not those skipped, nor any held back by a cap (F7); both counts are
-# answered from an index alone
-_WILL_FETCH = "state != 'skipped' AND coalesce(reason, '') NOT IN ('site_cap', 'file_cap', 'variant_cap', 'depth')"
+# the caps count the rows this round fetches (design §9): waiting, being fetched, fetched or failed; never those skipped,
+# held back by a cap (held, and the 10-24 crawler's skipped site_cap and the like) or left for round two (later: a
+# second-round site's rows would otherwise take a round-1 site's 4,000 pages). Both counts are answered from an index
+_WILL_FETCH = "state IN ('pending', 'active', 'done', 'failed')"
 COUNT_SITE = f"SELECT count(*) FROM url WHERE site=? AND kind=? AND {_WILL_FETCH}"
 COUNT_PATH = f"SELECT count(*) FROM url WHERE site=? AND path=? AND {_WILL_FETCH}"
 INDEXES = """
@@ -64,6 +161,15 @@ CREATE INDEX IF NOT EXISTS url_site_path_state ON url(site, path, state, reason)
 CREATE INDEX IF NOT EXISTS url_path ON url(path);
 CREATE INDEX IF NOT EXISTS link_dst ON link(dst);
 CREATE INDEX IF NOT EXISTS request_queue ON request(queue, started);
+CREATE INDEX IF NOT EXISTS url_next2 ON url(host, state, next_at, tier, prio, depth, id);
+CREATE INDEX IF NOT EXISTS url_owner ON url(owner_site, kind, state);
+CREATE INDEX IF NOT EXISTS url_ptype ON url(page_type);
+CREATE INDEX IF NOT EXISTS url_added ON url(added_at);
+CREATE INDEX IF NOT EXISTS page_res_res ON page_res(res_id);
+CREATE INDEX IF NOT EXISTS page_res_action ON page_res(action_id);
+CREATE INDEX IF NOT EXISTS action_list ON action(list_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS action_click ON action(site, row_key) WHERE kind = 'click';
+CREATE INDEX IF NOT EXISTS request_started ON request(started);
 """
 ALL_QUEUES = "*"  # the pause row that holds every queue (our network is down)
 NETWORKS = ("school", "other")  # the school's addresses (140.127.*) and everything else, told apart when one is down
@@ -82,6 +188,26 @@ def network_of(queue: str) -> str:
 def net_key(network: str) -> str:
     """The pause row of one network's queues."""
     return _NET + network
+
+
+ROUND_KEY = "round"  # meta: the round a frontier.db was made for, written when this version creates the file
+ROUND = "1"
+
+
+def round_of(path: Path) -> str | None:
+    """The round a frontier.db was made for (meta round); None for one the 10-24 crawler made (it never had the key,
+    and opening it never adds it: only a new file gets it), or when there is no file. Read only: never migrates, and
+    never creates the file (review 10-26: the archive commands refuse the 10-24 archive by this)."""
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (ROUND_KEY,)).fetchone()
+    except sqlite3.OperationalError:  # no meta table: the 10-24 crawler's
+        return None
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 class OutdatedFrontier(RuntimeError):
@@ -133,15 +259,20 @@ class Frontier:
                 self.conn.close()
                 names = ", ".join(f"{t}.{c[1]}" if c else t for t, c in gaps[:6])
                 raise OutdatedFrontier(f"{path} was written by an older version (no {names})")
+            outcome.create_views(self.conn, temp=True)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
+        new = not path.exists() or path.stat().st_size == 0
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(TABLES)
+        if new:  # made by this version: a round-1 archive (an old file opened here never becomes one)
+            self.conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (ROUND_KEY, ROUND))
         _migrate(self.conn)
         self.conn.executescript(INDEXES)
+        outcome.create_views(self.conn)
 
     def q(self, sql: str, args=()) -> list[sqlite3.Row]:
         with self.lock:
@@ -332,9 +463,56 @@ class Frontier:
     def directory_sites(self) -> dict[str, sqlite3.Row]:
         return {r["site"]: r for r in self.q("SELECT * FROM directory_site")}
 
+    # ---- a person's word on a row (review 10-26 B7)
+    def mark_school_side(self, url_id: int, note: str) -> str:
+        """「人看过，确认是学校那边的问题」: the row's result, reason, status and fetched_at as they are now are kept with
+        the note, and the result views count the row as the school's (school_side) while they stay so: a new fetch, the
+        same answer included, ends the mark for good. Only a result a person may mark (outcome.markable: ValueError for
+        any other, what is ours to fix or may be ours, or nothing to fix at all), only an existing row, only with a note
+        saying why. An address that redirects is marked by what it leads to as a page's resource (view page_resource:
+        the school's attachment link sent to its home page is not_file, second look F5): its one markable result there;
+        none, or several different ones, and it is refused (mark the rows it lands on instead). Marked again: the newest
+        note. Returns the result marked. Whether a run may be going on is the command's to check (`nknu archive review
+        --mark`, which refuses while one runs)."""
+        if not (note or "").strip():
+            raise ValueError("a school_side mark says why (note)")
+        with self.lock:
+            row = self.conn.execute("SELECT result, reason, status, fetched_at FROM url_result WHERE id=?",
+                                    (url_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"no url row {url_id}")
+            result = row["result"]
+            if result == outcome.SCHOOL_SIDE:  # marked already, and nothing changed since
+                result = self.conn.execute("SELECT result FROM review_mark WHERE url_id=?", (url_id,)).fetchone()[0]
+            if result == "redirect":
+                led = sorted({r[0] for r in self.conn.execute("SELECT DISTINCT result FROM page_resource WHERE via=?",
+                                                              (url_id,))})
+                can = [r for r in led if outcome.markable(r, row["reason"])]
+                if len(can) != 1:
+                    raise ValueError(
+                        f"url row {url_id} redirects, and what it leads to as a page's resource "
+                        f"({', '.join(led) or 'nothing: no page uses it'}) is not one result that is the school's to "
+                        f"answer for: mark the rows it lands on instead")
+                result = can[0]
+            if not outcome.markable(result, row["reason"]):
+                raise ValueError(f"url row {url_id} came to {result} (reason {row['reason']}), which is not the "
+                                 f"school's to answer for: a school_side mark takes only "
+                                 f"{', '.join(outcome.SCHOOL_SIDE_RESULTS)} (failed only for "
+                                 f"{', '.join(outcome.FAILED_SCHOOL_REASONS)} or {outcome.FAILED_SCHOOL_PREFIX}*)")
+            self.conn.execute("INSERT OR REPLACE INTO review_mark(url_id, mark, result, reason, status, fetched_at, "
+                              "note, at) VALUES (?,?,?,?,?,?,?,?)",
+                              (url_id, outcome.SCHOOL_SIDE, result, row["reason"], row["status"], row["fetched_at"],
+                               note.strip(), utc_now()))
+            return result
+
     # ---- links and logs
     def link(self, src: int, dst: str, text: str, verdict: str) -> None:
         self.x("INSERT OR IGNORE INTO link(src, dst, text, verdict) VALUES (?,?,?,?)", (src, dst, text, verdict))
+
+    def video(self, page_id: int, video) -> None:
+        """A YouTube video the page links or embeds (links.Video): the newest reading of the page wins."""
+        self.x("INSERT OR REPLACE INTO video(page_id, video_id, url, title, how, zone) VALUES (?,?,?,?,?,?)",
+               (page_id, video.video_id, video.url, video.title, video.how, video.zone))
 
     def offsite(self, domain: str, src: int, sample: str) -> None:
         self.x("INSERT INTO offsite(domain, n, first_src, sample) VALUES (?,1,?,?) "

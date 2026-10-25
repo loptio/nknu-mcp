@@ -192,7 +192,7 @@ def archive_client(warc: WarcSink | None, **kw) -> Client:
     """The archive crawl's client: a 4xx (but 408/429) comes back as a snapshot, redirects are handed back, and a body
     that cannot be decoded strictly comes back without text instead of failing."""
     return Client(warc=warc, follow_redirects=False, pass_statuses=PAGE_4XX, strict_decode=False, limits=ARCHIVE_LIMITS,
-                  skip_types=SKIP_TYPES, **kw)
+                  skip_types=SKIP_TYPES, resend_gap_s=GAP[0], **kw)
 
 
 def resolve(host: str) -> tuple[str, str | None, str | None]:

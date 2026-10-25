@@ -16,7 +16,8 @@ from tests.archive.test_archive import drain, make, seed, snap
     ("https://cc.nknu.edu.tw/moodle/course/view.php?id=3", "system"),
     ("https://moocs.nknu.edu.tw/moodle/calendar/view.php?view=day&time=1", "system"),
     ("https://cc.nknu.edu.tw/moodle/user/profile.php?id=9", "system"),
-    ("https://nknulib.nknu.edu.tw/search*cht/a?searchtype=t", "search"),
+    ("https://nknulib.nknu.edu.tw/search*cht/a?searchtype=t", "system"),  # the whole host since record 三·19
+    ("https://lis.nknu.edu.tw/search*cht/a?searchtype=t", "search"),
     ("https://www.nknu.edu.tw/search.php?q=x", "search"),
     ("https://geo.nknu.edu.tw/includes/timthumb/timthumb.php?src=a.jpg", "media"),
 ])

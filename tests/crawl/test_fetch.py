@@ -1,4 +1,5 @@
 import gzip
+import io
 from datetime import UTC, date, datetime
 
 import httpx
@@ -223,6 +224,34 @@ def test_credentialed_request_never_follows_a_redirect(monkeypatch):
     assert hosts == ["www.googleapis.com"] and SECRET not in str(exc.value)
 
 
+@pytest.mark.parametrize("url", ["https://elsewhere.example/v3/x", "http://www.googleapis.com/calendar/v3/x",
+                                 "https://www.googleapis.com.evil.example/x", "https://c.nknu.edu.tw/aca/"])
+def test_a_credential_goes_only_to_its_own_host_over_https(monkeypatch, url):
+    # review 10-26: the key's header is sent to Google's API host over https only, whatever a Target says
+    monkeypatch.setenv("GOOGLE_API_KEY", SECRET)
+    calls = []
+    with pytest.raises(FetchError, match="google_api_key") as exc:
+        client(lambda req: calls.append(req) or html(), Fake()).fetch(Target(url, credential="google_api_key"), RL)
+    assert not calls and SECRET not in str(exc.value)
+
+
+def test_a_failure_of_a_credentialed_request_keeps_no_trace_of_the_key(monkeypatch):
+    # review 10-26: the FetchError's text was redacted, but its cause (printed by log.exception) kept the original
+    import traceback
+
+    monkeypatch.setenv("GOOGLE_API_KEY", SECRET)
+
+    def handler(req):
+        raise httpx.ConnectError(f"cannot connect, header was {SECRET}", request=req)
+
+    with pytest.raises(FetchError) as exc:
+        client(handler, Fake()).fetch(Target(API, credential="google_api_key"), RL)
+    shown = "".join(traceback.format_exception(exc.value))
+    assert SECRET not in shown and SECRET not in repr(exc.value.__cause__) and "[redacted]" in shown
+    assert isinstance(exc.value.__cause__, httpx.ConnectError)  # the kind of failure is kept (crawler.error_kind)
+    assert all(SECRET not in (s.error or "") for s in exc.value.sent)
+
+
 def test_plain_request_still_follows_redirects():
     def handler(req):
         if req.url.host == "short.nknu.edu.tw":
@@ -368,3 +397,70 @@ def test_archive_mode_keeps_a_page_it_cannot_decode(tmp_path):
 def test_decode_an_unusable_charset_is_a_decode_error():
     with pytest.raises(DecodeError):
         decode_body(b"\xff\xfe", "text/html; charset=undefined")
+
+
+# ---------------------------------------------------------------- round 1 (2026-10-25): design §12, §7.6
+
+
+def test_warc_write_returns_where_the_response_record_is(tmp_path):
+    # url.warc_offset / url.warc_len point at the response record, not at the request record written before it
+    from warcio.archiveiterator import ArchiveIterator
+
+    from nknu.crawl.fetch import Snapshot
+
+    sink = WarcSink(tmp_path, "q", 1, datetime(2026, 10, 25, 3, 0, tzinfo=UTC))
+    places = []
+    for i, body in enumerate((b"<p>first</p>", b"<p>second</p>")):
+        url = f"{URL}&n={i}"
+        places.append(sink.write(Snapshot(Target(url), url, 200, {"content-type": "text/html"}, body, None,
+                                          datetime.now(UTC), "s"), {"User-Agent": USER_AGENT}))
+    sink.close()
+    raw = sink.path.read_bytes()
+    (first, first_len), (second, second_len) = places
+    assert 0 < first < first + first_len < second and second + second_len == len(raw)
+    for (offset, length), body in zip(places, (b"<p>first</p>", b"<p>second</p>"), strict=True):
+        records = [(r.rec_type, r.content_stream().read()) for r in ArchiveIterator(io.BytesIO(raw[offset:offset + length]))]
+        assert records == [("response", body)]
+
+
+def test_a_snapshot_carries_its_response_records_place(tmp_path):
+    from warcio.archiveiterator import ArchiveIterator
+
+    sink = WarcSink(tmp_path, "q", 1, datetime(2026, 10, 25, 3, 0, tzinfo=UTC))
+    c = client(lambda req: html("<p>場地</p>"), Fake(), warc=sink)
+    c.fetch(Target(URL), RL)
+    snap = c.fetch(Target(URL + "&b=1"), RL)
+    sink.close()
+    with open(sink.path, "rb") as fh:
+        fh.seek(snap.warc_offset)
+        rec = next(iter(ArchiveIterator(fh)))
+    assert rec.rec_type == "response" and rec.rec_headers.get_header("WARC-Target-URI") == URL + "&b=1"
+    assert rec.content_stream().read() == "<p>場地</p>".encode() and snap.warc_len > 0
+    assert client(lambda req: html(), Fake()).fetch(Target(URL), RL).warc_offset is None  # no archive, no place
+
+
+def test_a_target_sends_its_own_headers(tmp_path, monkeypatch):
+    # Drive's resource keys travel in a header beside the API key (design §7.6)
+    monkeypatch.setenv("GOOGLE_API_KEY", SECRET)
+    seen = {}
+
+    def handler(req):
+        seen.update(req.headers)
+        return httpx.Response(200, json={"id": "F1"})
+
+    sink = WarcSink(tmp_path, "googleapis", 1, datetime(2026, 10, 25, 3, 0, tzinfo=UTC))
+    keys = {"X-Goog-Drive-Resource-Keys": "F1/0-abc"}
+    client(handler, Fake(), warc=sink).fetch(Target(API, credential="google_api_key", headers=keys), RL)
+    sink.close()
+    assert seen["x-goog-drive-resource-keys"] == "F1/0-abc" and seen["x-goog-api-key"] == SECRET
+    assert seen["user-agent"] == USER_AGENT
+    raw = gzip.decompress(sink.path.read_bytes())
+    assert b"X-Goog-Drive-Resource-Keys: F1/0-abc" in raw and SECRET.encode() not in raw  # as sent (review 10-26 A1)
+    assert Target(URL).headers == {}
+
+
+@pytest.mark.parametrize("name", ["X-Goog-Api-Key", "authorization", "Proxy-Authorization", "User-Agent"])
+def test_a_target_never_holds_a_secret_or_another_identity(name):
+    # a secret is named by Target.credential and read when the request is made; the bot always says who it is
+    with pytest.raises(ValueError, match=name.lower()):
+        Target(URL, headers={name: "x"})

@@ -496,6 +496,23 @@ def _archive_root(path: str | None):
     return Path(path).expanduser().resolve() if path else REPO_ROOT / "archive"
 
 
+def _round1_root(dir: str | None):
+    """The archive directory of a command that writes to frontier.db (seed, run, retry): never the 10-24 crawler's
+    archive, which is kept as it is (design §3, record 二·8) and whose crawl is not resumed (CLAUDE.md: 全新重爬). Its
+    frontier.db has no round mark (frontier.round_of), and opening it to write would add the new columns and tables;
+    run would clear its STOP and go on with the old crawl. Without --dir that is the repository's archive/ until it is
+    renamed archive-2026-10-24. Review 10-26; 【Claude 的执行办法】."""
+    from nknu.archive.frontier import round_of
+
+    root = _archive_root(dir)
+    db = root / "frontier.db"
+    if db.exists() and round_of(db) is None:
+        typer.echo(f"{root} 是 10-24 旧爬虫的存档（frontier.db 没有第一轮的标记）：第一轮不在旧存档上续跑，也不改它。"
+                   "先照设计第 3 节把它改名成 archive-2026-10-24/（改名前先问用户），或用 --dir 指定新的存档目录。")
+        raise typer.Exit(1)
+    return root
+
+
 def _archive_db(root):
     """The archive's frontier.db, which must already exist: only seed and run create one (a mistyped --dir is not an
     empty archive)."""
@@ -512,7 +529,7 @@ def archive_seed(dir: str = typer.Option(None, "--dir", help="存档目录，默
     from nknu.archive.crawler import Crawler
     from nknu.archive.seeds import all_seeds
 
-    root = _archive_root(dir)
+    root = _round1_root(dir)
     crawler = Crawler(root)
     seeds = all_seeds(_settings().facts_path)
     added = 0
@@ -532,7 +549,7 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
 
     from nknu.archive import crawler as archive
 
-    root = _archive_root(dir)
+    root = _round1_root(dir)
     try:
         lock = archive.hold_run_lock(root)  # held until this process ends; the kernel lets go even after kill -9
     except archive.AlreadyRunning as exc:
@@ -612,7 +629,7 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     if len(reason.strip()) < RETRY_MIN_PREFIX:
         typer.echo(f"原因开头至少要 {RETRY_MIN_PREFIX} 个字（例如 http_5、dns），免得把不相干的网址一起放回")
         raise typer.Exit(1)
-    n, hosts = Frontier(_archive_db(_archive_root(dir))).retry(reason)
+    n, hosts = Frontier(_archive_db(_round1_root(dir))).retry(reason)
     typer.echo(f"放回待抓：{n} 个网址（{hosts} 台主机一起重设）")
 
 

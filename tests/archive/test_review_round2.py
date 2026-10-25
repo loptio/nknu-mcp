@@ -1,6 +1,6 @@
 """The second verification round of the archive crawler (2026-10-24): one or more tests per finding (the id is in the
 name). Everything runs on a fake network and a fake clock, apart from one test that talks to a server of its own on
-127.0.0.1; tests/archive/conftest.py refuses any other name lookup or connection."""
+127.0.0.1; tests/conftest.py refuses any other name lookup or connection."""
 
 from __future__ import annotations
 

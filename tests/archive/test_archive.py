@@ -49,7 +49,8 @@ def test_sso_external_link_wrapper_is_unwrapped():
     ("https://calendar.google.com/calendar/ical/x/basic.ics", False, "never_host"),
     ("https://sites.google.com/view/other", False, "google_other"),
     ("https://www.moe.gov.tw/", False, "offsite"),
-    ("https://c.nknu.edu.tw/aca/banner.jpg", False, "media"),
+    ("https://c.nknu.edu.tw/aca/banner.jpg", True, "in_scope"),  # images are page resources (round-1 design §4.5)
+    ("https://c.nknu.edu.tw/aca/clip.mp4", False, "media"),
 ])
 def test_judge(url, ok, reason):
     v = scope.judge(url)
