@@ -482,3 +482,182 @@ def check() -> None:
     if problems:
         raise typer.Exit(1)
     typer.echo("all checks passed")
+
+
+archive_app = typer.Typer(help="存档爬虫（v2 第一块）：礼貌地把学校网页原样存成 WARC，之后再处理")
+app.add_typer(archive_app, name="archive")
+
+
+def _archive_root(path: str | None):
+    from pathlib import Path
+
+    from nknu.settings import REPO_ROOT
+
+    return Path(path).expanduser().resolve() if path else REPO_ROOT / "archive"
+
+
+def _archive_db(root):
+    """The archive's frontier.db, which must already exist: only seed and run create one (a mistyped --dir is not an
+    empty archive)."""
+    db = root / "frontier.db"
+    if not db.exists():
+        typer.echo(f"找不到待抓清单：{db}（目录打错了？只有 nknu archive seed 或 run 会建立它）")
+        raise typer.Exit(1)
+    return db
+
+
+@archive_app.command("seed")
+def archive_seed(dir: str = typer.Option(None, "--dir", help="存档目录，默认是仓库里的 archive/")) -> None:
+    """按机构排好优先顺序，把起点网址放进待抓清单（可重复执行，已有的不会重复加）。"""
+    from nknu.archive.crawler import Crawler
+    from nknu.archive.seeds import all_seeds
+
+    root = _archive_root(dir)
+    crawler = Crawler(root)
+    seeds = all_seeds(_settings().facts_path)
+    added = 0
+    for s in seeds:
+        added += crawler.enqueue(s.url, unit=s.unit, tier=s.tier, depth=0, found_via=s.via, found_from=None) == "queued"
+    crawler.load_site_meta()
+    typer.echo(f"起点 {len(seeds)} 个，新加入 {added} 个；待抓清单：{root / 'frontier.db'}")
+
+
+@archive_app.command("run")
+def archive_run(dir: str = typer.Option(None, "--dir"),
+                limit: int = typer.Option(None, "--limit", help="抓这么多个页面就停（试跑用）")) -> None:
+    """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等 2–5 秒；中断后重跑会接着抓。同一个目录只能有一个在跑。"""
+    import logging
+    import signal
+    import threading
+
+    from nknu.archive import crawler as archive
+
+    root = _archive_root(dir)
+    try:
+        lock = archive.hold_run_lock(root)  # held until this process ends; the kernel lets go even after kill -9
+    except archive.AlreadyRunning as exc:
+        typer.echo(f"另一个 archive run 正在用这个目录（pid {exc.pid}），没有再启动。要换程序，先 nknu archive stop。")
+        raise typer.Exit(1) from None
+    try:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
+        stop_file = root / "STOP"
+        stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
+        (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
+        crawler = archive.Crawler(root, limit=limit)
+
+        def watch() -> None:
+            while not crawler.stop.wait(archive.STOP_POLL_S):
+                if stop_file.exists():
+                    logging.getLogger("nknu.archive").info("STOP file found: finishing the requests in flight")
+                    crawler.stop.set()
+
+        signal.signal(signal.SIGTERM, lambda *_: crawler.stop.set())
+        threading.Thread(target=watch, daemon=True).start()
+        crawler.run()
+    finally:
+        lock.close()
+    typer.echo("archive run stopped")
+
+
+@archive_app.command("status")
+def archive_status(dir: str = typer.Option(None, "--dir")) -> None:
+    """健康报告：有没有爬错（礼貌、范围、robots）或爬漏。写进 archive/reports/。有硬性违反时退出码 2。"""
+    from nknu.archive.frontier import OutdatedFrontier
+    from nknu.archive.monitor import report
+
+    root = _archive_root(dir)
+    _archive_db(root)
+    try:
+        text, code = report(root)
+    except OutdatedFrontier as exc:
+        typer.echo(f"{exc}。监控只读、不改资料库：先执行一次 nknu archive seed（或 archive run）升级它，再看状态。")
+        raise typer.Exit(1) from None
+    typer.echo(text)
+    raise typer.Exit(code)
+
+
+@archive_app.command("stop")
+def archive_stop(dir: str = typer.Option(None, "--dir")) -> None:
+    """请正在跑的爬虫在手上的请求做完后停下，并等到它真的停下（它放开 run.lock）才返回。"""
+    import time
+
+    from nknu.archive import crawler as archive
+
+    root = _archive_root(dir)
+    pid = archive.lock_holder(root)
+    if pid is None:
+        typer.echo("这个目录没有正在跑的 archive run")
+        return
+    (root / "STOP").write_text("stop\n")
+    typer.echo(f"已请爬虫（pid {pid}）在手上的请求做完后停下，等它放开 run.lock……")
+    deadline = time.monotonic() + archive.STOP_WAIT_S
+    while time.monotonic() < deadline:
+        if archive.lock_holder(root) is None:
+            typer.echo("已停下")
+            return
+        time.sleep(archive.STOP_POLL_S)
+    typer.echo(f"等了 {archive.STOP_WAIT_S / 60:.0f} 分钟还没停下：可能有请求在重试（最长 5 分钟）或大档在下载。"
+               "再执行一次 nknu archive stop 接着等；不要另开 archive run。")
+    raise typer.Exit(1)
+
+
+@archive_app.command("retry")
+def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头，例如 http_5（所有 5xx）、timeout、connect、dns、"
+                                                        "host_unreachable、robots_unreachable、host_cooldown、crash"),
+                  dir: str = typer.Option(None, "--dir")) -> None:
+    """把某种原因失败、跳过或在等的网址放回待抓：次数归零，主机的 robots 失败次数、冷却和 DNS 退避也一起清掉。
+    已存好的网页不动，只有存成 4xx 拒绝（http_4xx）的才放回。原因开头至少 3 个字。"""
+    from nknu.archive.frontier import RETRY_MIN_PREFIX, Frontier
+
+    if len(reason.strip()) < RETRY_MIN_PREFIX:
+        typer.echo(f"原因开头至少要 {RETRY_MIN_PREFIX} 个字（例如 http_5、dns），免得把不相干的网址一起放回")
+        raise typer.Exit(1)
+    n, hosts = Frontier(_archive_db(_archive_root(dir))).retry(reason)
+    typer.echo(f"放回待抓：{n} 个网址（{hosts} 台主机一起重设）")
+
+
+@archive_app.command("browse")
+def archive_browse(dir: str = typer.Option(None, "--dir"),
+                   port: int = typer.Option(8877, "--port", help="本机端口（只开在 127.0.0.1）")) -> None:
+    """在本机浏览器检查抓到的每一页：按单位和网站列出、看文字或不连网的预览、问题清单。Ctrl+C 结束。"""
+    from nknu.archive.viewer import build_index, serve
+
+    root = _archive_root(dir)
+    if not (root / "frontier.db").exists():
+        typer.echo(f"找不到 {root / 'frontier.db'}")
+        raise typer.Exit(1)
+    import errno
+
+    typer.echo("建立存档索引（第一次要几分钟，之后只补新的部分）……")
+    typer.echo(f"新增 {build_index(root)} 笔")
+    try:
+        server = serve(root, port)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        typer.echo(f"端口 {port} 已经有程序在用：检查工具多半已经开着，直接打开 http://127.0.0.1:{port}/ ；"
+                   f"要另开一个就加 --port 8878")
+        raise typer.Exit(0) from None
+    typer.echo(f"打开 http://127.0.0.1:{port}/")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.server_close()
+
+
+@archive_app.command("choices")
+def archive_choices(dir: str = typer.Option(None, "--dir")) -> None:
+    """算出每个待决定项目的资讯量，给检查工具的「选择放行」页用（扫一遍存档，要几分钟）。"""
+    import json
+
+    from nknu.archive.choices import build
+    from nknu.archive.viewer import build_index
+
+    root = _archive_root(dir)
+    if not (root / "frontier.db").exists():
+        typer.echo(f"找不到 {root / 'frontier.db'}")
+        raise typer.Exit(1)
+    build_index(root)
+    data = build(root)
+    (root / "choices-data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    typer.echo("、".join(f"{s['title']} {len(s['items'])} 项" for s in data["sections"]))
