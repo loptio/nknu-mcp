@@ -17,3 +17,7 @@ research/
 strategy-report.md
 tech-stack-report.md
 
+
+# raw crawl archives hold names and student IDs from school pages: never commit
+/archive/
+/archive*/
