@@ -1,4 +1,16 @@
-"""教務處教學行事曆 (public Google Calendar embedded on c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2).
+"""教務處教學行事曆 (the public Google Calendar embedded on c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2), read through the
+Google Calendar API: events.list with singleEvents=true and orderBy=startTime, usually one request a run.
+
+calendar.google.com's robots.txt disallows everything but its root page, so the public ICS feed is no longer read
+(2026-10-24); the API with the project's key is the way Google offers to read a public calendar. The key is the
+GOOGLE_API_KEY environment variable (~/.config/nknu/google.env on the maintainer's machine, /etc/nknu/env on the lab
+machine) and travels only in a request header (Target.credential): never in a URL, a log line or the WARC archive.
+
+The adapter keeps the name aca_calendar_ics from when it read the ICS feed, and the record keys stay the ICS UIDs (the
+API's iCalUID), so the events, holiday facts and retirement counts stored under that name carry over. The cited source
+changed from the ICS address to the school's calendar page, and a record's content hash covers its source: the first run
+after the switch rewrites every record once, and an `nknu undo` made before the switch no longer matches (the
+maintainer's data held none on 2026-10-24).
 
 The calendar also carries staff-internal entries (personal leave, 組長 schedules, meetings, and a staff member's name
 followed by a private errand: 林O，看牙 / 林O去玩). Those are dropped here and never stored or logged (design §3); there is
@@ -8,22 +20,27 @@ Holidays additionally become university-wide `holiday` facts; they never imply t
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from datetime import date, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, date, datetime, time, timedelta
 from typing import ClassVar, Literal
-
-import icalendar
-import recurring_ical_events
+from urllib.parse import urlencode
 
 from nknu.core.records import EventRecord, FactRecord, Record, SourceRef
 from nknu.core.timeutil import TAIPEI
 from nknu.crawl.adapter import Adapter, ParseError, Target, adapter
 from nknu.crawl.fetch import Snapshot
 
-ICS_URL = "https://calendar.google.com/calendar/ical/nknubf%40gmail.com/public/basic.ics"
-PAGE_URL = "https://c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2"
+API_URL = "https://www.googleapis.com/calendar/v3/calendars/nknubf%40gmail.com/events"
+PAGE_URL = "https://c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2"  # the school's page showing the calendar: the cited source
 TITLE = "教學行事曆"
 WINDOW_BEFORE, WINDOW_AFTER = timedelta(days=60), timedelta(days=400)
+MAX_RESULTS = 2500  # the API's largest page size
+# events.list may split even a window far below MAX_RESULTS into pages, some short or empty: only nextPageToken says more
+# remain (developers.google.com/workspace/calendar/api/v3/reference/events/list, maxResults). fetch_all follows it.
+MAX_PAGES = 10
 
 # filter rules ported from prototypes/acquisition/10_ics.py (0 false drops on the 115 academic year)
 _MASK = "OＯ○"
@@ -52,22 +69,23 @@ def _staff_tag(summary: str) -> bool:
     return m is not None and not any(c in _NOT_A_TAG for c in m.group("names"))
 
 
-def classify(e) -> Literal["keep", "drop", "review"]:
-    s = f"{e.get('SUMMARY') or ''} {e.get('DESCRIPTION') or ''}"
+def classify(e: dict) -> Literal["keep", "drop", "review"]:
+    """e is one item of events.list."""
+    summary = e.get("summary") or ""
+    s = f"{summary} {e.get('description') or ''}"
     if _NAME_PREFIX_LEAVE.search(s) and not _PUBLIC_HOLIDAY.search(s):
         return "drop"
     if _LEAVE.search(s) and not _ACADEMIC_EXC.search(s) and not _PUBLIC_HOLIDAY.search(s):
         return "drop"
     if _STAFF.search(s) or _MEETING.search(s):
         return "drop"
-    summary = str(e.get("SUMMARY") or "")
     if (_staff_tag(summary) or _ERRAND.search(s)) and not _CALENDAR.search(s):
         return "drop"
-    if e.get("RRULE") and isinstance(e.decoded("DTSTART"), datetime):
+    if e.get("recurringEventId") and "dateTime" in (e.get("start") or {}):
         return "drop"  # timed weekly entries are staff schedules
-    if not str(e.get("SUMMARY") or "").strip():
+    if not summary.strip():
         return "drop"
-    if str(e.get("STATUS")) == "TENTATIVE":
+    if e.get("status") == "tentative":
         return "review"
     return "keep"
 
@@ -89,67 +107,119 @@ def category(summary: str) -> str:
     return "other"
 
 
-def _as_date(v) -> date:
-    return v.astimezone(TAIPEI).date() if isinstance(v, datetime) else v
+def _day(when: dict, *, end: bool) -> date:
+    """A start or end of events.list as a Taipei day. An all-day event's end.date is the day after its last day, which is
+    exactly the exclusive bound of the half-open [from, to) the fact store uses: it is kept as is, and the last day
+    shown to students (templates.span_zh) is end.date minus one. A timed end at midnight ends the day before; any other
+    timed end counts its own day."""
+    if "date" in when:
+        return date.fromisoformat(when["date"])
+    t = datetime.fromisoformat(when["dateTime"]).astimezone(TAIPEI)
+    return t.date() + timedelta(days=1 if end and t.time() != time.min else 0)
 
 
-def _span(e) -> tuple[date, date]:
-    start = e.decoded("DTSTART")
-    d0 = _as_date(start)
-    end = e.decoded("DTEND") if e.get("DTEND") else None
-    if end is None:
-        return d0, d0 + timedelta(days=1)
-    if isinstance(end, datetime):
-        end_t = end.astimezone(TAIPEI)
-        d1 = end_t.date() + timedelta(days=0 if end_t.time() == datetime.min.time() else 1)
-    else:
-        d1 = end
+def _span(e: dict) -> tuple[date, date]:
+    d0 = _day(e["start"], end=False)
+    d1 = _day(e["end"], end=True) if e.get("end") else d0 + timedelta(days=1)
     return d0, max(d1, d0 + timedelta(days=1))
 
 
-@adapter("aca_calendar_ics", hosts=["calendar.google.com"])
-class AcaCalendarIcs(Adapter):
+def _body(snap: Snapshot) -> dict:
+    return json.loads(snap.text if snap.text is not None else snap.body)
+
+
+def _merged(pages: list[Snapshot]) -> Snapshot:
+    """The pages of one events.list as one snapshot, so that parse() sees the whole window (the instances of a series
+    can sit on two pages and share one iCalUID). Each page was fetched and archived on its own."""
+    data = [_body(p) for p in pages]
+    merged = {**data[0], "items": [e for d in data for e in d.get("items", [])]}
+    merged.pop("nextPageToken", None)
+    body = json.dumps(merged, ensure_ascii=False).encode()
+    return replace(pages[0], body=body, text=body.decode(), sha256=hashlib.sha256(body).hexdigest())
+
+
+def _seconds(stamp: str | None) -> str | None:
+    """events.list `updated` (milliseconds, Z) in the ICS LAST-MODIFIED form stored before: whole seconds, +00:00."""
+    return datetime.fromisoformat(stamp).astimezone(UTC).replace(microsecond=0).isoformat() if stamp else None
+
+
+@adapter("aca_calendar_ics", hosts=["www.googleapis.com"])
+class AcaCalendar(Adapter):
     pages_are_html: ClassVar[bool] = False
 
     def discover(self, ctx) -> list[Target]:
-        return [Target(ICS_URL)]
+        lo, hi = ctx.today - WINDOW_BEFORE, ctx.today + WINDOW_AFTER
+        q = urlencode({"singleEvents": "true", "orderBy": "startTime", "maxResults": MAX_RESULTS, "timeZone": "Asia/Taipei",
+                       "timeMin": f"{lo.isoformat()}T00:00:00+08:00", "timeMax": f"{hi.isoformat()}T00:00:00+08:00"})
+        return [Target(f"{API_URL}?{q}", credential="google_api_key")]
+
+    def fetch_all(self, ctx) -> list[Snapshot]:
+        """Every page of the window, merged into one snapshot. A page that does not answer 200 or is not JSON comes back
+        alone, and parse() voids the run; still a next page after MAX_PAGES voids it too."""
+        [first] = self.discover(ctx)
+        pages: list[Snapshot] = []
+        token = None
+        while True:
+            target = first if token is None else replace(first, url=f"{first.url}&{urlencode({'pageToken': token})}")
+            snap = ctx.fetch(target)
+            if snap.status != 200:
+                return [snap]
+            try:
+                token = _body(snap).get("nextPageToken")
+            except (ValueError, AttributeError):
+                return [snap]
+            pages.append(snap)
+            if not token:
+                return [_merged(pages)] if len(pages) > 1 else pages
+            if len(pages) == MAX_PAGES:
+                raise ParseError(f"events.list still had a next page after {MAX_PAGES} pages: the unread pages would "
+                                 "look deleted")
 
     def counts_missing(self, key: str, kind: str, span: tuple[date, date] | None, records: list[Record],
                        today: date) -> bool:
-        """Only events (and holiday facts) inside the window parse() reads count: one that ended more than WINDOW_BEFORE
-        ago simply stopped being parsed. A day of margin at each edge covers a fetch just after midnight."""
+        """Only events (and holiday facts) inside the window asked for count: one that ended more than WINDOW_BEFORE
+        ago simply stopped being returned. A day of margin at each edge covers a fetch just after midnight."""
         if span is None:
             return True
         lo, hi = span
         return hi > today - WINDOW_BEFORE + timedelta(days=1) and lo < today + WINDOW_AFTER - timedelta(days=1)
 
     def parse(self, snap: Snapshot) -> list[Record]:
+        """The events of the window around the fetch day (the API's timeMin/timeMax already ask for it; parse keeps
+        the same window, so a replayed snapshot gives the same records)."""
         if snap.status != 200:
             return []
         try:
-            cal = icalendar.Calendar.from_ical(snap.body)
+            data = json.loads(snap.text if snap.text is not None else snap.body)
+            items = data["items"]
             anchor = snap.fetched_at.astimezone(TAIPEI).date()
-            occurrences = recurring_ical_events.of(cal).between(anchor - WINDOW_BEFORE, anchor + WINDOW_AFTER)
-        except Exception as exc:
-            raise ParseError(f"ICS not readable: {type(exc).__name__}") from exc
-        if not list(cal.walk("VEVENT")):
-            raise ParseError("ICS has no VEVENT")
-        src = SourceRef(ICS_URL, TITLE, "nknu.org.aca", "ics", snap.sha256)
-        kept = [(e, classify(e)) for e in occurrences]
-        kept = [(e, c) for e, c in kept if c != "drop"]  # dropped entries are never stored, counted or logged
+            lo, hi = anchor - WINDOW_BEFORE, anchor + WINDOW_AFTER
+            spans = [_span(e) for e in items]
+            uids = [str(e["iCalUID"]) for e in items]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ParseError(f"Calendar API response not readable: {type(exc).__name__}") from exc
+        if data.get("kind") != "calendar#events" or not isinstance(items, list):
+            raise ParseError("not an events.list response")
+        if data.get("nextPageToken"):
+            raise ParseError("an events.list page with a nextPageToken: the unread pages would look deleted")
+        if not items:
+            raise ParseError("the calendar returned no events")
+        src = SourceRef(PAGE_URL, TITLE, "nknu.org.aca", "ics", snap.sha256)
+        occurrences = [(e, uid, span) for e, uid, span in zip(items, uids, spans, strict=True)
+                       if span[1] > lo and span[0] < hi]
+        kept = [(e, uid, span, c) for e, uid, span in occurrences if (c := classify(e)) != "drop"]
+        # dropped entries are never stored, counted or logged
         uid_count: dict[str, int] = {}
-        for e, _ in kept:
-            uid_count[str(e["UID"])] = uid_count.get(str(e["UID"]), 0) + 1
+        for _, uid, _, _ in kept:
+            uid_count[uid] = uid_count.get(uid, 0) + 1
         out: list[Record] = []
-        for e, c in kept:
-            uid, summary = str(e["UID"]), str(e.get("SUMMARY")).strip()
-            d0, d1 = _span(e)
+        for e, uid, (d0, d1), c in kept:
+            summary = str(e.get("summary")).strip()
             key = uid if uid_count[uid] == 1 else f"{uid}@{d0}"
-            status = "tentative" if c == "review" else ("cancelled" if str(e.get("STATUS")) == "CANCELLED" else "confirmed")
-            lm = e.decoded("LAST-MODIFIED") if e.get("LAST-MODIFIED") else None
+            status = "tentative" if c == "review" else ("cancelled" if e.get("status") == "cancelled" else "confirmed")
             cat = category(summary)
-            out.append(EventRecord(key, uid, summary, d0, d1, cat, status, int(e.get("SEQUENCE") or 0),
-                                   lm.isoformat() if lm else None, src))
+            out.append(EventRecord(key, uid, summary, d0, d1, cat, status, int(e.get("sequence") or 0),
+                                   _seconds(e.get("updated")), src))
             if cat == "holiday" and status == "confirmed":
                 out.append(FactRecord(f"ics-holiday:{key}", "nknu", "holiday", {"label": summary[:60]}, d0, d1, "explicit",
                                       2, False, src, summary[:200], "ics"))

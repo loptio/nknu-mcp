@@ -13,6 +13,7 @@ Type=simple
 User=nknu
 Group=nknu
 EnvironmentFile=/etc/nknu/env
+UnsetEnvironment=GOOGLE_API_KEY
 Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
 WorkingDirectory=/var/lib/nknu
 ExecStart=/opt/nknu/.venv/bin/nknu serve --host 127.0.0.1 --port 8765

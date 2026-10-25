@@ -13,7 +13,7 @@ from nknu.build.servedb import build_serve_db
 from nknu.core.factsdb import connect, migrate
 from nknu.core.vocab import load_vocab, seed
 from nknu.crawl.adapter import Adapter
-from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs
+from nknu.crawl.adapters.aca_calendar_ics import API_URL, AcaCalendar
 from nknu.crawl.adapters.lib_open_time import URL as LIB_URL
 from nknu.crawl.adapters.lib_open_time import LibOpenTime
 from nknu.crawl.adapters.pe_news import DETAIL_META as PE_DETAIL
@@ -28,7 +28,7 @@ from nknu.crawl.adapters.sso_news import SsoNews, list_meta
 from nknu.crawl.adapters.sso_news import detail_url as sso_detail_url
 from nknu.crawl.pipeline import run_adapter
 from nknu.settings import REPO_ROOT
-from tests.crawl.adapters.helpers import FIXTURES, read, snap
+from tests.crawl.adapters.helpers import read, snap
 
 NOW = "2026-10-22T02:00:00Z"
 LIB_NEWS = "https://lis.nknu.edu.tw/news/2380"
@@ -55,10 +55,10 @@ class Replay(Adapter):
 
 
 def _snapshots():
-    ics = (FIXTURES / "aca_calendar_ics" / "calendar.ics").read_bytes()
+    cal = read("aca_calendar_ics", "events.json")
     unid = "3E3FDDE24A008A28322CF9E129D050890FBE26AC"
     return [
-        (AcaCalendarIcs(), [snap(ICS_URL, ics.decode(), body=ics)]),
+        (AcaCalendar(), [snap(API_URL, cal)]),
         (PeOpenHours(), [snap(PE_URL, read("pe_open_hours", "page.html"))]),
         (LibOpenTime(), [snap(LIB_URL, read("lib_open_time", "page.html"))]),
         (PeNews(), [snap(PE_LIST_URL, read("pe_news", "list.html"), meta=PE_LIST)]

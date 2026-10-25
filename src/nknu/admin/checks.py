@@ -12,8 +12,9 @@ from pathlib import Path
 from nknu.core.pii import find_pii
 from nknu.settings import REPO_ROOT, Settings
 
-# LGPL libraries used unmodified as dynamic imports (allowed); everything GPL/AGPL fails
-LGPL_ALLOWED = ("recurring-ical-events", "x-wr-timezone")
+# LGPL libraries used unmodified as dynamic imports (allowed; none since the ICS libraries left on 2026-10-24); everything
+# GPL/AGPL fails
+LGPL_ALLOWED: tuple[str, ...] = ()
 FORBIDDEN = {"pymupdf", "html2text", "ckip-transformers", "firecrawl", "firecrawl-py", "crawl4ai", "poppler"}
 _TLS_OFF = re.compile(r"verify\s*=\s*False|" + "CERT_" + "NONE")
 # synthetic samples the tests use on purpose, per tracked file (find_pii hits); any other hit in these files still fails

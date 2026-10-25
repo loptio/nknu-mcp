@@ -25,6 +25,7 @@ class Target:
     method: str = "GET"
     data: list[tuple[str, str]] | None = None  # form fields, order and duplicates kept (WebForms postbacks)
     meta: dict = field(default_factory=dict)
+    credential: str | None = None  # the name of a secret the client sends as a header (fetch.CREDENTIALS), never the secret
 
 
 class ParseError(Exception):

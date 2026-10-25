@@ -26,7 +26,7 @@ MCP（Model Context Protocol）是 AI 助理呼叫外部工具的共通規格。
 | 體育室場地開放時間 | https://c.nknu.edu.tw/reality/Page.aspx?PN=8 | 各場館的學期開放時段 |
 | 體育室最新消息 | https://c.nknu.edu.tw/reality/ | 公告；寫明日期的停開公告另外轉成閉館資料 |
 | 圖書館開館時間 | https://lis.nknu.edu.tw/open-time | 兩校區圖書館和愛閱館的開館時間、年度閉館日 |
-| 教務處教學行事曆 | 公開的 Google 日曆 ICS（嵌在 https://c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2） | 開學、考試、放假、截止日等事件 |
+| 教務處教學行事曆 | 公開的 Google 日曆（嵌在 https://c.nknu.edu.tw/aca/Page.aspx?PN=28&GI=2），用 Google Calendar API 讀取：日曆的 ICS 網址被 robots.txt 禁止程式抓取，API 才是 Google 開放讀公開日曆的方式 | 開學、考試、放假、截止日等事件 |
 | SSO 公告中心 | https://sso.nknu.edu.tw/News/SubjectList.aspx | 7 個分類的公告標題、單位、日期和摘錄 |
 
 - **每 2 小時抓一次**（台北時間偶數整點的 17 分前後，例如 08:17、10:17），資料有變動就馬上重建答案。SSO 公告每天第一次全部掃過，其餘只看前 3 頁。
@@ -263,7 +263,7 @@ gemini mcp add --scope user --transport http nknu <對外網址>/mcp
 
 ### 指令
 
-開發在 Mac 上用 `uv run nknu …`；實驗室機器上直接打 `nknu …`（見下面的部署）。
+開發在 Mac 上用 `uv run nknu …`；實驗室機器上直接打 `nknu …`（見下面的部署）。在 Mac 上跑 `nknu crawl` 之前，先在同一個終端機執行 `set -a; source ~/.config/nknu/google.env; set +a` 載入 `GOOGLE_API_KEY`（只寫 `source` 不會把變數傳給程式）；沒有金鑰時行事曆這個來源會失敗並告警，其他來源照常。
 
 | 指令 | 作用 |
 |---|---|
@@ -295,7 +295,7 @@ sudo bash /opt/nknu/deploy/install.sh
 
 第一次上線：
 
-1. 編輯 `/etc/nknu/env`：`NKNU_ALLOWED_HOSTS`、`NKNU_ALLOWED_ORIGINS`、`NKNU_TRUST_CF_HEADER`（Cloudflare 填 1，Tailscale Funnel 填 0）照 [deploy/tunnel/README.md](deploy/tunnel/README.md) 設定；`NKNU_BACKUP_DIR` 最好指到另一顆磁碟或 NAS（改了要重跑 install.sh）；想收通知就填 `NKNU_DISCORD_WEBHOOK`。
+1. 編輯 `/etc/nknu/env`：`NKNU_ALLOWED_HOSTS`、`NKNU_ALLOWED_ORIGINS`、`NKNU_TRUST_CF_HEADER`（Cloudflare 填 1，Tailscale Funnel 填 0）照 [deploy/tunnel/README.md](deploy/tunnel/README.md) 設定；`NKNU_BACKUP_DIR` 最好指到另一顆磁碟或 NAS（改了要重跑 install.sh）；想收通知就填 `NKNU_DISCORD_WEBHOOK`；填上 `GOOGLE_API_KEY`（讀行事曆用，和 Mac 上 `~/.config/nknu/google.env` 的是同一把）。
 2. `sudo systemctl start nknu-crawl.service`：第一次抓取（全掃），約 4 分鐘，資料直接寫入並建好 serve.db。進度用 `sudo journalctl -u nknu-crawl -f` 看。
 3. `nknu changes`：看第一次寫進了什麼。場館時段和閉館日大約 87 條「新增」，行事曆事件也逐條列出（約 70 多條），公告只列條數（加 `--docs` 逐條列出）。抓錯的用 `nknu undo <key>` 撤回。
 4. `sudo systemctl start nknu-mcp.service`，然後 `curl -s http://127.0.0.1:8765/health` 應該看到 `"status":"ok"`。

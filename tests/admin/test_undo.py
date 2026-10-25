@@ -8,10 +8,10 @@ from typer.testing import CliRunner
 from nknu.admin.cli import app
 from nknu.core.factsdb import connect
 from nknu.core.writer import current_fact
-from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs
+from nknu.crawl.adapters.aca_calendar_ics import API_URL, AcaCalendar
 from nknu.crawl.adapters.lib_open_time import URL as LIB_URL
 from nknu.crawl.adapters.lib_open_time import LibOpenTime
-from tests.crawl.test_identity import ICS, LIB_PAGE, RETRO_UID, crawl, edited
+from tests.crawl.test_identity import CAL, LIB_PAGE, RETRO_UID, crawl, edited
 from tests.crawl.test_pipeline import FakeAdapter
 from tests.factories import DOC, make_db
 
@@ -77,15 +77,15 @@ def test_undo_cancel_lets_the_crawler_write_it_again(lib):
 
 def test_undo_calendar_event(tmp_path):
     conn = make_db(tmp_path, calendar=False)
-    crawl(conn, AcaCalendarIcs(), ICS, ICS_URL)
+    crawl(conn, AcaCalendar(), CAL, API_URL)
     conn.close()
     assert cli(tmp_path, "undo", RETRO_UID, "--no-build").exit_code == 0
     conn = connect(tmp_path / "facts.db")
     status = "SELECT status FROM calendar_event WHERE uid=?"
     assert conn.execute(status, (RETRO_UID,)).fetchone()[0] == "withdrawn"
-    crawl(conn, AcaCalendarIcs(), ICS, ICS_URL)
+    crawl(conn, AcaCalendar(), CAL, API_URL)
     assert conn.execute(status, (RETRO_UID,)).fetchone()[0] == "withdrawn"
-    crawl(conn, AcaCalendarIcs(), edited(ICS, "SUMMARY:放假日(臺灣光復節)", "SUMMARY:放假日(臺灣光復節連假)"), ICS_URL)
+    crawl(conn, AcaCalendar(), edited(CAL, '"summary": "放假日(臺灣光復節)', '"summary": "放假日(臺灣光復節連假)'), API_URL)
     assert conn.execute(status, (RETRO_UID,)).fetchone()[0] == "confirmed"  # changed content is written again
 
 

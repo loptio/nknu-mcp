@@ -32,7 +32,7 @@ _ROLE_RE = re.compile(rf"({_ROLE})([\s、:：]*)((?:{_N}{{2,4}}?{_LIST_SEP}\s*)*
 _BOUNDARY_END = re.compile(r"(?:系|所|班|組|學程|中心|院|生|友|級|屆|大[一二三四五]|碩[一二三]|博[一二三四]|師大|恭賀|恭喜|賀|"
                            r"本校|本系|本所|本院|系上)$")
 # 取得獎勵 (an award scheme) holds 得獎; a 賽事名單 lists events, not people; 獲…獎 is 獲 and 獎 in one clause
-HONOR_TITLE = re.compile(r"(?<!賽事)名單|榜單|榮獲|(?<!取)得獎|獲獎|獲頒|獲選|當選|入選|考取|錄取|榮升|榮登|恭賀|恭喜|狂賀|"
+HONOR_TITLE = re.compile(r"(?<!賽事)名單|榜單|榮譽榜|光榮榜|榮獲|(?<!取)得獎|獲獎|獲頒|獲選|當選|入選|考取|錄取|榮升|榮登|恭賀|恭喜|狂賀|"
                          r"(?:^|[^\w])賀|獲[^，,。！!？?\s]{1,15}?獎")
 # the school's own name, then a name written right after it, whatever follows (高師大陳宥余挺身…, 高師大陳宥余林宥余獲…)
 _LEAD_SCHOOL = re.compile(r"高師大|高雄師大|高雄師範大學")

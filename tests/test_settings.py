@@ -1,5 +1,6 @@
 """Settings come from the environment (/etc/nknu/env on the lab machine, copied once from deploy/env.example)."""
 
+from nknu.crawl.fetch import CREDENTIALS
 from nknu.settings import REPO_ROOT, load_settings
 
 
@@ -24,6 +25,7 @@ def test_env_example_lists_every_setting():
             return super().__getitem__(key)
 
     load_settings(Spy())
+    read += [env for _header, env in CREDENTIALS.values()]  # secrets: read by fetch.py per request, never in Settings
     lines = (REPO_ROOT / "deploy" / "env.example").read_text(encoding="utf-8").splitlines()
     listed = [ln.split("=", 1)[0] for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
     assert len(listed) == len(set(listed))

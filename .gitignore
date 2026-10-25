@@ -17,3 +17,6 @@ research/
 strategy-report.md
 tech-stack-report.md
 
+/archive/
+# old archive copies (archive-2026-10-24/ etc.) hold full names and student IDs: never commit
+/archive*/

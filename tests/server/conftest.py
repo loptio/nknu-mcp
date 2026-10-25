@@ -1,6 +1,7 @@
 """Worlds derived from the session fixture world: each copies facts.db, changes the copy and rebuilds serve.db.
 Test-only records use NewsView ids >= 9000 (no such notices exist) and titles that start with 測試."""
 
+import json
 import sqlite3
 from datetime import date, datetime
 
@@ -13,7 +14,7 @@ from nknu.core.ids import lineage_id
 from nknu.core.records import DocRecord, FactRecord, HoursRule, SourceRef, content_hash
 from nknu.core.timeutil import TAIPEI
 from nknu.core.writer import add_pending, apply_fact, upsert_doc
-from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs
+from nknu.crawl.adapters.aca_calendar_ics import API_URL, AcaCalendar
 from nknu.crawl.pipeline import run_adapter
 from nknu.server.query import get_hours
 from nknu.server.servedb_reader import ServeDB
@@ -100,22 +101,22 @@ MIDTERM_UID = "2ub1uqe5kjr320ihfvggmodtat@google.com"  # 期中考試Mid-term ex
 WITHDRAWAL_UID = "10kt6s1i12424pqmif1bkmifcm@google.com"  # 申辦停修 2026-11-03
 
 
-def ics_with_status(ics: str, uid: str, status: str) -> str:
-    blocks = ics.split("BEGIN:VEVENT")
-    hit = [i for i, b in enumerate(blocks) if f"UID:{uid}" in b]
-    assert len(hit) == 1 and "STATUS:CONFIRMED" in blocks[hit[0]]
-    blocks[hit[0]] = blocks[hit[0]].replace("STATUS:CONFIRMED", f"STATUS:{status}")
-    return "BEGIN:VEVENT".join(blocks)
+def cal_with_status(cal: str, uid: str, status: str) -> str:
+    data = json.loads(cal)
+    hit = [e for e in data["items"] if e["iCalUID"] == uid]
+    assert len(hit) == 1 and hit[0]["status"] == "confirmed"
+    hit[0]["status"] = status
+    return json.dumps(data, ensure_ascii=False)
 
 
 @pytest.fixture(scope="session")
 def world_calendar_status(world, tmp_path_factory):
-    """The real calendar crawled again after the 11/02 mid-term exam turned TENTATIVE and 申辦停修 was CANCELLED (U2: the
+    """The real calendar crawled again after the 11/02 mid-term exam turned tentative and 申辦停修 was cancelled (U2: the
     crawler writes both changes itself)."""
     def change(conn):
-        ics = (FIXTURES / "aca_calendar_ics" / "calendar.ics").read_bytes().decode()
-        ics = ics_with_status(ics_with_status(ics, MIDTERM_UID, "TENTATIVE"), WITHDRAWAL_UID, "CANCELLED")
-        res = run_adapter(conn, Replay(AcaCalendarIcs(), [snap(ICS_URL, ics, body=ics.encode())]), None, today=TODAY,
+        cal = (FIXTURES / "aca_calendar_ics" / "events.json").read_text()
+        cal = cal_with_status(cal_with_status(cal, MIDTERM_UID, "tentative"), WITHDRAWAL_UID, "cancelled")
+        res = run_adapter(conn, Replay(AcaCalendar(), [snap(API_URL, cal)]), None, today=TODAY,
                           full_scan=False, readonly=False)
         assert res.passed and res.n_written >= 2, (res.violations, res.error)
 

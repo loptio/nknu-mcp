@@ -1,6 +1,7 @@
 """Fact identity across crawls (C1), the undo memory (C3) and the disappearance rules (C2): pipeline replays over edited
 copies of the real fixtures."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
@@ -13,7 +14,7 @@ from nknu.core.records import FactRecord, content_hash
 from nknu.core.resolve import SQLiteBackend, resolve
 from nknu.core.vocab import fill_validity
 from nknu.core.writer import apply_fact, current_fact, set_state
-from nknu.crawl.adapters.aca_calendar_ics import ICS_URL, AcaCalendarIcs
+from nknu.crawl.adapters.aca_calendar_ics import API_URL, AcaCalendar
 from nknu.crawl.adapters.lib_open_time import URL as LIB_URL
 from nknu.crawl.adapters.lib_open_time import LibOpenTime
 from nknu.crawl.adapters.pe_news import DETAIL_META as PE_DETAIL_META
@@ -24,7 +25,7 @@ from nknu.crawl.adapters.pe_news import detail_url as pe_detail_url
 from nknu.crawl.adapters.pe_open_hours import URL as PE_URL
 from nknu.crawl.adapters.pe_open_hours import PeOpenHours
 from nknu.crawl.pipeline import run_adapter
-from tests.crawl.adapters.helpers import FIXTURES, read, snap
+from tests.crawl.adapters.helpers import read, snap
 from tests.factories import make_db
 from tests.world import Replay
 
@@ -34,7 +35,7 @@ LIBS = ("nknu.heping.library.main", "nknu.yanchao.library.main", "nknu.heping.li
 WR = "nknu.heping.gym.weight-room"
 LIB_PAGE = read("lib_open_time", "page.html")
 PE_PAGE = read("pe_open_hours", "page.html")
-ICS = (FIXTURES / "aca_calendar_ics" / "calendar.ics").read_bytes().decode()
+CAL = read("aca_calendar_ics", "events.json")
 RETRO_UID = "45ddkd2cuoblc1f9b9jvo212g7@google.com"  # 放假日(臺灣光復節) 10/24–10/26
 DOUBLE_TENTH_UID = "416toqdmtcs9su9fbh23emqmi6@google.com"  # 放假日(雙十連假) 10/09–10/11
 
@@ -75,35 +76,42 @@ def test_moved_library_closure_replaces_the_old_one(tmp_path):
 def test_holiday_recreated_under_a_new_uid(tmp_path):
     # F-ics-holiday-uid: a holiday deleted and re-created in Google Calendar gets a new UID (= a new record key)
     conn = make_db(tmp_path, calendar=False)
-    crawl(conn, AcaCalendarIcs(), ICS, ICS_URL)
+    crawl(conn, AcaCalendar(), CAL, API_URL)
     assert current_fact(conn, f"ics-holiday:{RETRO_UID}")
     new_uid = "0recreated0holiday0000000@google.com"
-    recreated = edited(ICS, f"UID:{RETRO_UID}", f"UID:{new_uid}")
-    crawl(conn, AcaCalendarIcs(), recreated, ICS_URL)
+    recreated = edited(CAL, f'"iCalUID": "{RETRO_UID}"', f'"iCalUID": "{new_uid}"')
+    crawl(conn, AcaCalendar(), recreated, API_URL)
     assert current_fact(conn, f"ics-holiday:{RETRO_UID}") is None and current_fact(conn, f"ics-holiday:{new_uid}")
     assert conn.execute("SELECT 1 FROM calendar_event WHERE uid=?", (new_uid,)).fetchone()
     # the calendar keeps updating afterwards
-    renamed = edited(recreated, "SUMMARY:期末考試Final exams", "SUMMARY:期末考試Final exams week")
-    crawl(conn, AcaCalendarIcs(), renamed, ICS_URL)
+    renamed = edited(recreated, '"summary": "期末考試Final exams"', '"summary": "期末考試Final exams week"')
+    crawl(conn, AcaCalendar(), renamed, API_URL)
     assert conn.execute("SELECT 1 FROM calendar_event WHERE summary='期末考試Final exams week'").fetchone()
 
 
-EXTRA_HOLIDAY = ("BEGIN:VEVENT\r\nSUMMARY:國慶日放假\r\nDTSTART;VALUE=DATE:20261010\r\nDTEND;VALUE=DATE:20261011\r\n"
-                 "UID:0extra0holiday00000000000@google.com\r\nSEQUENCE:0\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\n")
+EXTRA_HOLIDAY = {"kind": "calendar#event", "id": "0extra0holiday00000000000", "status": "confirmed", "summary": "國慶日放假",
+                 "start": {"date": "2026-10-10"}, "end": {"date": "2026-10-11"},
+                 "iCalUID": "0extra0holiday00000000000@google.com", "sequence": 0}
+
+
+def with_item(cal: str, item: dict) -> str:
+    data = json.loads(cal)
+    data["items"].append(item)
+    return json.dumps(data, ensure_ascii=False)
 
 
 def test_overlapping_holidays_in_one_calendar(tmp_path):
     # F-ics-holiday-uid: a second holiday overlapping 雙十連假 in the same calendar neither crashes the run nor makes the
     # two replace each other on every crawl; the earlier-starting one is kept and the maintainer is told
     conn = make_db(tmp_path, calendar=False)
-    both = edited(ICS, "BEGIN:VEVENT\r\nSUMMARY:放假日(雙十連假)", EXTRA_HOLIDAY + "BEGIN:VEVENT\r\nSUMMARY:放假日(雙十連假)")
-    crawl(conn, AcaCalendarIcs(), both, ICS_URL)
+    both = with_item(CAL, EXTRA_HOLIDAY)
+    crawl(conn, AcaCalendar(), both, API_URL)
     assert current_fact(conn, f"ics-holiday:{DOUBLE_TENTH_UID}")
     assert current_fact(conn, "ics-holiday:0extra0holiday00000000000@google.com") is None
     assert conn.execute("SELECT count(*) FROM alert WHERE code='overlap'").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM calendar_event WHERE category='holiday'").fetchone()[0] == 3  # events untouched
     for _ in range(2):
-        assert crawl(conn, AcaCalendarIcs(), both, ICS_URL).n_written == 0
+        assert crawl(conn, AcaCalendar(), both, API_URL).n_written == 0
 
 
 def test_next_term_table_does_not_close_this_term(tmp_path):
@@ -387,11 +395,11 @@ def test_kept_day_goes_when_the_table_page_moves_the_closure(tmp_path):
 def test_events_leaving_the_ics_window_are_not_retired(tmp_path):
     # C2: as the parse window moves on, past events stop being produced; they were not deleted from the calendar
     conn = make_db(tmp_path, calendar=False)
-    crawl(conn, AcaCalendarIcs(), ICS, ICS_URL)
+    crawl(conn, AcaCalendar(), CAL, API_URL)
     later = date(2027, 1, 15)  # 註冊及全校上課開始 (2026-09-07) is now before the window
     for _ in range(4):
-        s = replace(snap(ICS_URL, ICS, body=ICS.encode()), fetched_at=datetime(2027, 1, 15, 2, 0, tzinfo=UTC))
-        res = run_adapter(conn, Replay(AcaCalendarIcs(), [s]), None, today=later, full_scan=True, readonly=False)
+        s = replace(snap(API_URL, CAL), fetched_at=datetime(2027, 1, 15, 2, 0, tzinfo=UTC))
+        res = run_adapter(conn, Replay(AcaCalendar(), [s]), None, today=later, full_scan=True, readonly=False)
         assert res.passed and res.n_retired == 0, (res.violations, res.error)
     assert conn.execute("SELECT status FROM calendar_event WHERE uid='285io5346ii0sed306em64cj2k@google.com'").fetchone()[0] \
         == "confirmed"

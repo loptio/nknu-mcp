@@ -130,6 +130,15 @@ def test_honor_titles_by_title_not_category():
         assert not is_honor_title(t), t
 
 
+def test_honor_roll_words_are_honor_titles():
+    # 榮譽榜 and 光榮榜 name honour rolls without 榜單, 恭賀 or 榮獲; 榮譽 alone (an honours programme) is not one
+    for t in ("本系榮譽榜", "【榮譽榜】115學年度第1學期書卷獎", "化學系光榮榜：陳乙丙同學"):
+        assert is_honor_title(t), t
+    for t in ("115學年度榮譽學程申請", "榮譽學會招募新成員"):
+        assert not is_honor_title(t), t
+    assert mask_honor_names("化學系光榮榜：陳乙丙同學") == "化學系光榮榜：陳O丙同學"
+
+
 def test_national_id_next_to_chinese_and_spaced_mobile():
     # F-redact-gaps
     assert find_pii("身分證A123456789號碼")

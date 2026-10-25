@@ -13,8 +13,6 @@ dependencies = [
     "uvicorn",
     "stamina",
     "warcio",
-    "icalendar",
-    "recurring-ical-events",
     "opencc-python-reimplemented",
     "typer",
     "pyyaml",
@@ -22,6 +20,7 @@ dependencies = [
     "certifi",
     "pandas",
     "lxml",
+    "protego>=0.7.0",
 ]
 
 [project.scripts]

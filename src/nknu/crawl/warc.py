@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
+import os
 import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from nknu.crawl.fetch import Snapshot
 
 _DROP = {"content-encoding", "transfer-encoding", "content-length"}  # body is stored decoded
+_SECRET = {"x-goog-api-key", "authorization", "proxy-authorization"}  # request headers archived as [redacted]
 
 
 class WarcSink:
@@ -23,20 +26,35 @@ class WarcSink:
         d = Path(root) / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
         d.mkdir(parents=True, exist_ok=True)
         self.path = d / f"{adapter}-{run_id}.warc.gz"
-        self._fh = open(self.path, "ab")  # noqa: SIM115 - closed in close()
-        self._w = WARCWriter(self._fh, gzip=True)
+        # unbuffered: a write that fails leaves nothing behind in a buffer to be flushed on close
+        self._fh = open(self.path, "ab", buffering=0)  # noqa: SIM115 - closed in close()
 
     def write(self, snap: Snapshot, request_headers: dict[str, str], request_body: bytes = b"") -> None:
+        """The request and response records, appended whole or not at all: on any error the file is cut back to where
+        it was (no new space needed), since half a gzip member would hide every record written after it."""
+        buf = io.BytesIO()
+        w = WARCWriter(buf, gzip=True)
         parts = urlsplit(snap.url)
         target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-        req = StatusAndHeaders(f"{snap.target.method} {target} HTTP/1.1", list(request_headers.items()), is_http_request=True)
-        self._w.write_record(self._w.create_warc_record(snap.url, "request", payload=io.BytesIO(request_body),
-                                                        http_headers=req))
+        kept = [(k, "[redacted]" if k.lower() in _SECRET else v) for k, v in request_headers.items()]
+        req = StatusAndHeaders(f"{snap.target.method} {target} HTTP/1.1", kept, is_http_request=True)
+        w.write_record(w.create_warc_record(snap.url, "request", payload=io.BytesIO(request_body), http_headers=req))
         headers = [(k, v) for k, v in snap.headers.items() if k.lower() not in _DROP]
         headers.append(("Content-Length", str(len(snap.body))))
         resp = StatusAndHeaders(f"{snap.status}", headers, protocol="HTTP/1.1")
-        self._w.write_record(self._w.create_warc_record(snap.url, "response", payload=io.BytesIO(snap.body),
-                                                        http_headers=resp))
+        w.write_record(w.create_warc_record(snap.url, "response", payload=io.BytesIO(snap.body), http_headers=resp))
+        data = memoryview(buf.getvalue())
+        start = os.fstat(self._fh.fileno()).st_size
+        try:
+            while data:
+                n = self._fh.write(data)
+                if not n:
+                    raise OSError("the WARC file took no bytes")
+                data = data[n:]
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.ftruncate(self._fh.fileno(), start)
+            raise
 
     def close(self) -> None:
         self._fh.close()
