@@ -831,24 +831,6 @@ def archive_browse(dir: str = typer.Option(None, "--dir"),
         server.server_close()
 
 
-@archive_app.command("choices")
-def archive_choices(dir: str = typer.Option(None, "--dir")) -> None:
-    """算出每个待决定项目的资讯量，给检查工具的「选择放行」页用（扫一遍存档，要几分钟）。"""
-    import json
-
-    from nknu.archive.choices import build
-    from nknu.archive.viewer import build_index
-
-    root = _archive_root(dir)
-    if not (root / "frontier.db").exists():
-        typer.echo(f"找不到 {root / 'frontier.db'}")
-        raise typer.Exit(1)
-    build_index(root)
-    data = build(root)
-    (root / "choices-data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    typer.echo("、".join(f"{s['title']} {len(s['items'])} 项" for s in data["sections"]))
-
-
 # ---------------------------------------------------------------- round 1 after the crawl: verify, jscheck, reconcile
 
 
@@ -873,27 +855,19 @@ def _site_list(sites: str | None) -> list[str] | None:
 
 
 @archive_app.command("verify")
-def archive_verify(dir: str = typer.Option(None, "--dir"),
-                   golden: str = typer.Option(None, "--golden", help="25 题的答案档（例如 research/project_audit_2026-10-25/"
-                                                                   "web_search_baseline_25q.json），另核对第 G 项")
-                   ) -> None:
+def archive_verify(dir: str = typer.Option(None, "--dir")) -> None:
     """第一轮验收（设计第 13 节）：只读、不连网，逐项核对（每项 ✓ 通过 / ⚠ 要看 / ✗ 出错 / 没检查）和每个网站的状态，写
     reports/verify-<时间>.md。退出码 0 全过、1 有要看的或没检查的、2 有出错的。已知缺口（第 16 项）会一直列着，所以最好
-    也只到「第一轮完成，有已知缺口 N 项」。爬虫在跑时也能看，但第 14 项（存档读得回来）要等它停下。"""
-    from pathlib import Path
-
+    也只到「第一轮完成，有已知缺口 N 项」。爬虫在跑时也能看，但第 14 项（存档读得回来）要等它停下。25 题那一项（--golden）
+    10-26 拿掉了：25 题是整个项目做好以后量回答好坏用的，不是第一轮爬虫完整度的检查（设计第 13 节）。"""
     from nknu.archive import monitor, round1
     from nknu.archive.frontier import OutdatedFrontier
 
     root = _archive_root(dir)
     _archive_db(root)
-    gold = Path(golden).expanduser().resolve() if golden else None
-    if gold is not None and not gold.is_file():
-        typer.echo(f"找不到 25 题的答案档：{gold}")
-        raise typer.Exit(1)
     plan = round1.load()
     try:
-        got = monitor.verify(root, plan=plan, golden=gold, resource_check=monitor.extract_check(plan))
+        got = monitor.verify(root, plan=plan, resource_check=monitor.extract_check(plan))
     except OutdatedFrontier as exc:
         typer.echo(f"{exc}。验收只读、不改资料库：这多半是 10-24 旧爬虫的存档，或旧版程序写的待抓清单，先用 --dir 指定第一轮的"
                    "存档目录。")
@@ -976,7 +950,7 @@ def archive_reconcile(batch: str = typer.Option(None, "--batch", help="这一批
                       enqueue: str = typer.Option(None, "--enqueue", help="人看过、要抓的网址清单（一行一个，"
                                                                         "例如对账写的 -found.txt），写进待抓清单")
                       ) -> None:
-    """对账（设计第 18.2b 节）：拿 Common Crawl、旧存档、25 题、浏览器抽查和爬虫自己的纪录比，逐站写 reconcile_site 和
+    """对账（设计第 18.2b 节）：拿 Common Crawl、旧存档、浏览器抽查和爬虫自己的纪录比，逐站写 reconcile_site 和
     reports/reconcile-<批>-<时间>.md。R6 用 jscheck 的浏览器和队列打开每站首页加几页（要拿全机锁、run 停着）；其余几项
     不连网。run 在跑时拒绝。退出码 0 每站关卡全过、1 有没过或没检查的关卡、2 有关卡出错。
     --enqueue <清单>：把人确认要抓的网址写进待抓清单（found_via=reconcile），下一次 run 照老方法抓。"""
@@ -1085,34 +1059,50 @@ def archive_rejudge(sites: str = typer.Option(..., "--sites", help="要重算的
 @archive_app.command("review")
 def archive_review(url_id: int = typer.Argument(None, help="要标记的网址编号（不给就列出可以标记的网址）"),
                    mark: str = typer.Option(None, "--mark", help="标记：school_side（学校那边的问题，人看过）"),
+                   menu: str = typer.Option(None, "--menu", help="要标记的选单项目网址（对账 R1 列的「学校的链接坏了」）"),
                    note: str = typer.Option(None, "--note", help="为什么这样标（必填）"),
-                   site: str = typer.Option(None, "--site", help="只列这个网站的"),
+                   site: str = typer.Option(None, "--site", help="只列（或只标）这个网站的"),
                    dir: str = typer.Option(None, "--dir")) -> None:
     """人看过、确认是学校那边的问题的网址（例如云端档案不公开、学校的链接坏了），标成「学校那边的问题（人看过）」（设计第
-    10.2.1 节）：nknu archive review --mark school_side <编号> --note …。那个网址再抓一次，标记就作废。不给 --mark 时只
-    列出可以标记的网址（只读）。run 在跑时拒绝标记。"""
+    10.2.1 节）：nknu archive review --mark school_side <编号> --note …。那个网址再抓一次，标记就作废。网站选单上学校的坏
+    链接（对账 R1 的 ⚠，没有网址编号）用 --menu <网址> 标：nknu archive review --mark school_side --menu <网址> --note …；
+    链到它的那一页再抓一次，标记就作废；标过的不再挡 R1，照样列出。不给 --mark 时只列出可以标记的网址和选单上学校的坏链接
+    （只读）。run 在跑时拒绝标记。"""
     from nknu.archive import crawler as archive
-    from nknu.archive import outcome, reconcile
+    from nknu.archive import monitor, outcome, reconcile
     from nknu.archive.frontier import Frontier
 
     root = _round1_root(dir)
     db = _archive_db(root)
+    school = outcome.RESULT_LABEL[outcome.SCHOOL_SIDE]
     if mark is None:
         f = Frontier(db, readonly=True)
         try:
             rows = reconcile.markable_rows(f, site)
+            menus = reconcile.menu_bad_links(f, root, site=site)
+            marked = {s: monitor.menu_marks(f, s) for s in {m.site for m in menus}}
         finally:
             f.close()
         typer.echo(f"可以标记的网址 {len(rows)} 个（nknu archive review --mark school_side <编号> --note …）：")
         for r in rows:
             label = outcome.RESULT_LABEL.get(r["result"], r["result"])
             typer.echo(f"  {r['id']}  {label}（{r['reason'] or '—'}，{r['status'] or '—'}）  {r['url']}")
+        typer.echo(f"选单上学校的坏链接 {len(menus)} 个（对账 R1；nknu archive review --mark school_side --menu <网址> "
+                   "--note …）：")
+        for m in menus:
+            got = marked.get(m.site, {}).get(m.target)
+            label = f"{school}：{got.get('note')}" if got else reconcile.R1_STATUS_ZH["bad_link"]
+            typer.echo(f"  {m.site}  {label}  {m.target}（在 {m.page} 的选单上）")
         return
-    if url_id is None:
-        typer.echo("要给网址编号：nknu archive review --mark school_side <编号> --note …")
+    if (url_id is None) == (menu is None):
+        typer.echo("要给网址编号，或用 --menu 给选单项目的网址（两个只能给一个）：nknu archive review --mark school_side "
+                   "<编号> --note …")
         raise typer.Exit(1)
     try:
-        result = reconcile.review_mark(root, url_id, note=note or "", mark=mark)
+        if menu is not None:
+            got = reconcile.review_menu_mark(root, menu, note=note or "", site=site, mark=mark)
+        else:
+            result = reconcile.review_mark(root, url_id, note=note or "", mark=mark)
     except archive.AlreadyRunning as exc:
         typer.echo(f"archive run 正在用这个目录（pid {exc.pid}）：先 nknu archive stop，改完再 run")
         raise typer.Exit(1) from None
@@ -1122,7 +1112,12 @@ def archive_review(url_id: int = typer.Argument(None, help="要标记的网址�
     except ValueError as exc:
         typer.echo(f"没有标记：{exc}")
         raise typer.Exit(1) from None
-    typer.echo(f"已标记 {url_id}（原来是「{outcome.RESULT_LABEL.get(result, result)}」）为学校那边的问题（人看过）；"
+    if menu is not None:
+        for m in got:
+            typer.echo(f"已标记 {m.site} 选单上的 {m.target}（学校的链接坏了，在 {m.page}）为{school}；")
+        typer.echo("对账 R1 不再因为它没过（看板和验收马上算）；链到它的那一页再抓一次，标记就作废")
+        return
+    typer.echo(f"已标记 {url_id}（原来是「{outcome.RESULT_LABEL.get(result, result)}」）为{school}；"
                "这个网址再抓一次，标记就作废")
 
 

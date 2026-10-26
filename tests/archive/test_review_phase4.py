@@ -1,9 +1,9 @@
 """The two reviews of phase 4 (10-26), each note that held first written here as a test that failed: a round-1 row no
 page uses (a Common Crawl attachment the school refuses) and a jump menu fired on load the browser never opened are
-counted, verify item 7 waits for this round's jscheck, `jscheck --set` makes a reconciliation stale, R5 never passes
-a quote it did not check and verify's G item no longer calls a PDF answer incomplete, the coverage is written as the
-estimate it is, a gate that compared nothing says so, the top bar is green only when every site is 爬完, a stale
-reconciliation says it is, R6 never passes a page the browser did not load whole, the crawler reconciles a finished
+counted, verify item 7 waits for this round's jscheck, `jscheck --set` makes a reconciliation stale, the coverage is
+written as the estimate it is (R5 and verify's G item, which a note of these reviews was about too, were taken out
+10-26: test_decisions_1026), a gate that compared nothing says so, the top bar is green only when every site is 爬完,
+a stale reconciliation says it is, R6 never passes a page the browser did not load whole, the crawler reconciles a finished
 site on a thread of its own with its own connection and stops it with the run, and Chrome gets no secret and keeps
 Playwright's own switches.
 
@@ -40,7 +40,6 @@ from tests.archive.test_round1_after_crawl import (
     EMPTY,
     HOME,
     NEWS,
-    PDF_URL,
     PLAN,
     SITE,
     TESTED,
@@ -175,7 +174,7 @@ def _all_types_tested(tmp_path: Path) -> None:
 def _menu_world(tmp_path: Path) -> World:
     w = make_world(tmp_path)
     _all_types_tested(tmp_path)
-    w.school.html[NEWS] = MENU_PAGE  # not the 25 questions' answer page (R5 wants that one complete)
+    w.school.html[NEWS] = MENU_PAGE
     w.shown[NEWS] = MENU_PAGE
     crawler = w.crawler
 
@@ -265,46 +264,6 @@ def test_the_set_command_says_which_sites_to_reconcile_again(tmp_path, monkeypat
         assert [json.loads(r[0])["sites"] for r in ev] == [[SITE]]
     finally:
         f.close()
-
-
-# ---------------------------------------------------------------- 4. R5 and the G item on an answer that is a PDF (S9b)
-
-
-def _pdf_answer(w: World, quote: str) -> None:
-    w.golden.write_text(json.dumps({"webAnswers": [{"id": "Q1", "sources": [{"url": PDF_URL, "quote": quote}]}],
-                                    "grades": []}, ensure_ascii=False), encoding="utf-8")
-
-
-def test_r5_never_passes_a_quote_it_could_not_check(tmp_path):
-    w = make_world(tmp_path)
-    _pdf_answer(w, "這一句不在任何地方")
-    _all_steps(w)
-    f = ro(w)
-    try:
-        r5 = json.loads(f.q("SELECT checks FROM reconcile_site WHERE site=?", (SITE,))[0][0])["R5"]
-    finally:
-        f.close()
-    assert r5["status"] != "pass" and r5["quotes_unchecked"] == 1 and "引文" in r5["note"], r5
-    got = w.not_done(monitor.UNRECONCILED)
-    assert any("R5" in x for x in got.sites[SITE].why)
-    g = _by_no(got.checks)["G"]
-    assert g.status == monitor.WARN and any("引文没" in x for x in g.lines), (g.status, g.lines)
-    assert not any("不在完整度表里" in x for x in g.lines)
-
-
-def test_the_g_item_says_a_pdf_answer_that_was_not_got(tmp_path):
-    w = make_world(tmp_path, missing=(PDF_URL,))
-    _pdf_answer(w, "招生簡章")
-    _all_steps(w)
-    g = _by_no(w.verify().checks)["G"]
-    assert g.status == monitor.WARN and any("学校那边已经不存在" in x for x in g.lines), g.lines
-    (tmp_path / "b").mkdir()
-    w2 = make_world(tmp_path / "b")
-    w2.school = Refusing(w2.school.html, refused=(PDF_URL,))
-    _pdf_answer(w2, "招生簡章")
-    _all_steps(w2)
-    g = _by_no(w2.verify().checks)["G"]
-    assert g.status == monitor.FAIL and any("被拒绝" in x for x in g.lines), g.lines
 
 
 # ---------------------------------------------------------------- 5. the coverage, as the estimate it is (S0)
@@ -481,7 +440,7 @@ def _two_sites(tmp_path: Path):
     root = tmp_path / "archive"
     c = mod.Crawler(root, plan=two, clock=clock, sleep=clock.sleep, resolver=_resolver, client_factory=client,
                     netcheck=lambda: True, disk_free=lambda p: 10**12, campus_url=None,
-                    reconcile_sources=Sources(cc_dir=None, old=None, golden=None))
+                    reconcile_sources=Sources(cc_dir=None, old=None))
     seeds.seed_round1(c, old=None, facts_db=None, cc_dir=None, probe=None, jstest=None)
     return c, asked
 

@@ -1,6 +1,6 @@
 """Reconciliation, rejudge and a person's mark (round-1 design §18.2a, §18.2b, §10.1 thin, §10.2.1, verify checks 13
 and 14; §16 test_reconcile). Offline: synthetic sites crawled on the tests' fake network into a real WARC, a
-made-up Common Crawl index, a made-up old archive and made-up questions; a fake spot checker stands for jscheck's
+made-up Common Crawl index and a made-up old archive; a fake spot checker stands for jscheck's
 browser. Titles, text and file names are made up; no person's name."""
 
 from __future__ import annotations
@@ -130,13 +130,6 @@ def _old(path: Path, rows):
     conn.executemany("INSERT INTO url(url, site, state, status, depth) VALUES (?,?,?,?,0)", rows)
     conn.commit()
     conn.close()
-    return path
-
-
-def _golden(path: Path, sources):
-    path.write_text(json.dumps({"webAnswers": [{"id": f"Q{i}", "sources": [{"url": u, "quote": q}]}
-                                               for i, (u, q) in enumerate(sources, 1)], "grades": []},
-                               ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -364,14 +357,14 @@ def test_r1_menu_items_each_have_a_result(site_db, tmp_path):
     c, _net = site_db
     fr = c.frontier
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     r1 = res.checks["R1"]
     assert r1.status == PASS and r1.counts["rule"] == 1 and r1.counts["missing"] == 0  # the sign-in: a rule
     # a menu item that has no row and that the crawler never noted: missing, found for a person
     fr.x("DELETE FROM url WHERE url=?", (f"{W}/contact.html",))
     fr.x("DELETE FROM link WHERE dst=?", (f"{W}/contact.html",))
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     assert res.checks["R1"].status == FAIL
     assert [(f.check, f.url) for f in res.found] == [("R1", f"{W}/contact.html")]
 
@@ -382,7 +375,7 @@ def test_r7_reads_the_schools_js_and_writes_what_it_says(site_db, tmp_path):
     before = _keys(fr, HOME)
     assert before["js_link:toggleMenu"]["why"] == "unhandled:unknown" and before["js_link:"]["need"] == "must"
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     after = _keys(fr, HOME)
     bound = [k for k, r in after.items() if (r["zone"] or "").startswith(reconcile.R7_ZONE)]
     assert bound == ["click:.cat[0]"]
@@ -394,7 +387,7 @@ def test_r7_reads_the_schools_js_and_writes_what_it_says(site_db, tmp_path):
     level = fr.q("SELECT level, reasons FROM page_completeness WHERE id=?", (_id(fr, HOME),))[0]
     assert level[0] == "partial" and "click" in level[1]  # what only the school's script loads is no longer unseen
     # a second reconcile writes the same rows again (never twice), and rejudge keeps them
-    reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN, sources=Sources(cc_dir=None, golden=None))
+    reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN, sources=Sources(cc_dir=None))
     assert [k for k, r in _keys(fr, HOME).items() if (r["zone"] or "").startswith("r7:")] == ["click:.cat[0]"]
 
 
@@ -403,7 +396,7 @@ def test_r7_lists_a_data_link_target_and_a_drive_embed_with_no_row(site_db, tmp_
     fr = c.frontier
     fr.x("DELETE FROM link WHERE dst=?", (f"{W}/news/2.html",))
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     r7 = res.checks["R7"]
     assert r7.status == FAIL
     assert {"page": HOME, "problem": "attr_target", "target": f"{W}/news/2.html"} in r7.items
@@ -416,11 +409,11 @@ def test_r7_drive_embed_with_no_drive_row(arch):
             "</body></html>")
     uid = arch.page("/embed.html", html)
     res = reconcile.reconcile_sites(arch.f, arch.root, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     assert {"page": f"{W}/embed.html", "problem": "drive_embed", "target": f"drive:{fid}"} in res.checks["R7"].items
     arch.f.add_page_res(uid, [{"res_key": f"drive:{fid}", "how": "drive_api", "role": "drive", "need": "must"}])
     res = reconcile.reconcile_sites(arch.f, arch.root, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     assert not [i for i in res.checks["R7"].items if i.get("problem") == "drive_embed"]
 
 
@@ -447,7 +440,7 @@ def test_common_crawl_import_and_coverage(site_db, tmp_path):
              "https://sso.nknu.edu.tw/login.aspx"]
     cc = _cdx(tmp_path / "cc", known)
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=cc, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=cc)).sites[0]
     r3a, r3b = res.checks["R3a"], res.checks["R3b"]
     assert r3a.status == FAIL and r3a.items == [{"url": f"{W}/only-cc.html"}]
     assert ("R3a", f"{W}/only-cc.html") in [(f.check, f.url) for f in res.found]
@@ -466,7 +459,7 @@ def test_coverage_cannot_be_estimated_when_none_is_ok(site_db, tmp_path):
     c, _net = site_db
     cc = _cdx(tmp_path / "cc", [f"{W}/only-cc.html"])
     res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=cc, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=cc)).sites[0]
     assert res.checks["R3b"].status == SKIP and res.cover_cc is None
     assert c.frontier.q("SELECT cover_cc FROM reconcile_site")[0][0] is None
 
@@ -477,7 +470,7 @@ def test_old_archive_import_and_coverage_read_only(site_db, tmp_path):
                                   (f"{W}/gone-now.html", SITE, "done", 200), (f"{W}/x.html", SITE, "failed", None)])
     before = hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest()
     res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, old=old, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None, old=old)).sites[0]
     assert res.checks["R4a"].status == FAIL and res.checks["R4a"].items == [{"url": f"{W}/gone-now.html"}]
     assert res.checks["R4b"].status == PASS and res.cover_old == 1.0
     assert hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest() == before
@@ -487,28 +480,10 @@ def test_old_archive_import_and_coverage_read_only(site_db, tmp_path):
 def test_sources_not_there_are_not_checked_never_passed(site_db, tmp_path):
     c, _net = site_db
     res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=tmp_path / "none", golden=tmp_path / "none.json")).sites[0]
-    assert {k: res.checks[k].status for k in ("R3a", "R3b", "R4a", "R4b", "R5", "R6")} == dict.fromkeys(
-        ("R3a", "R3b", "R4a", "R4b", "R5", "R6"), SKIP)
+                                    sources=Sources(cc_dir=tmp_path / "none")).sites[0]
+    assert {k: res.checks[k].status for k in ("R3a", "R3b", "R4a", "R4b", "R6")} == dict.fromkeys(
+        ("R3a", "R3b", "R4a", "R4b", "R6"), SKIP)
     assert not res.gates_ok
-
-
-# ---------------------------------------------------------------- R5
-
-
-def test_r5_answer_pages_must_be_complete_and_hold_their_quotes(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    _ok_types(fr)
-    gold = _golden(tmp_path / "q.json", [(f"{W}/about.html", "關於我們的內文；本單位的業務"),
-                                         (f"{W}/news.html", "不在頁面上的一句話，學校可能改了"),
-                                         (f"{W}/files/a.pdf", "簡章"),
-                                         ("https://elsewhere.example.org/x", "別的網站")])
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=gold)).sites[0]
-    r5 = res.checks["R5"]
-    assert r5.status == FAIL and r5.counts["answers"] == 3 and r5.counts["quotes_unchecked"] == 1
-    assert [(i["url"], i["problem"]) for i in r5.items if "problem" in i] == [(f"{W}/news.html", "quote_not_found")]
 
 
 # ---------------------------------------------------------------- R6 and the gates
@@ -525,8 +500,7 @@ def test_every_gate_passes_and_a_run_after_it_makes_it_stale(tmp_path):
     fr = c.frontier
     cc = _cdx(tmp_path / "cc", [f"{W}/about.html", f"{W}/news.html"])
     old = _old(tmp_path / "old", [(f"{W}/about.html", SITE, "done", 200)])
-    gold = _golden(tmp_path / "q.json", [(f"{W}/about.html", "關於我們的內文")])
-    src = Sources(cc_dir=cc, old=old, golden=gold)
+    src = Sources(cc_dir=cc, old=old)
     _ok_types(fr)
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="pilot", plan=PLAN, sources=src,
                                     spot=_same_spot(tmp_path)).sites[0]
@@ -550,7 +524,7 @@ def test_site_done_in_the_crawlers_process_skips_r6_so_never_a_pass(tmp_path):
     c, net = _clean_site(tmp_path)
     fr = c.frontier
     assert reconcile.site_finished(fr, SITE)
-    res = reconcile.site_done(fr, tmp_path, SITE, plan=PLAN, sources=Sources(cc_dir=None, golden=None))
+    res = reconcile.site_done(fr, tmp_path, SITE, plan=PLAN, sources=Sources(cc_dir=None))
     assert res.checks["R6"].status == SKIP and not res.gates_ok
     assert fr.q("SELECT gates_ok FROM reconcile_site WHERE site=?", (SITE,))[0][0] == 0
     assert json.loads(fr.q("SELECT message FROM event WHERE code='reconcile'")[0][0])["r6"] is False
@@ -576,7 +550,7 @@ def test_r6_text_the_browser_shows_more_of_and_a_menu_item_only_the_browser_sees
         return view
 
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="b", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None), spot=spot,
+                                    sources=Sources(cc_dir=None), spot=spot,
                                     out_dir=tmp_path / "spot").sites[0]
     r6 = res.checks["R6"]
     assert r6.status == FAIL and r6.counts["pages"] == 4
@@ -585,7 +559,7 @@ def test_r6_text_the_browser_shows_more_of_and_a_menu_item_only_the_browser_sees
     assert item["screenshot"].startswith("shots/")
     assert (tmp_path / "spot" / SITE / f"{_id(fr, f'{W}/about.html')}.txt").is_file()
     errors = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="b", plan=PLAN,
-                                       sources=Sources(cc_dir=None, golden=None),
+                                       sources=Sources(cc_dir=None),
                                        spot=lambda u: SpotView(u, error="timeout")).sites[0]
     assert errors.checks["R6"].status == FAIL
     net.sink.close()
@@ -597,7 +571,7 @@ def test_a_read_only_reconcile_writes_nothing(site_db, tmp_path):
     fr = c.frontier
     before = fr.q("SELECT count(*) FROM page_res")[0][0]
     got = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None), write=False).sites[0]
+                                    sources=Sources(cc_dir=None), write=False).sites[0]
     assert fr.q("SELECT count(*) FROM page_res")[0][0] == before
     assert not fr.q("SELECT 1 FROM reconcile_site") and not fr.q("SELECT 1 FROM event WHERE code='reconcile'")
     assert got.checks["R7"].status == FAIL  # what R7 would write and did not
@@ -612,12 +586,12 @@ def test_reconcile_command_refuses_while_a_run_holds_the_lock_and_writes_its_rep
     net.sink.close()
     lock = hold_run_lock(tmp_path)
     with pytest.raises(AlreadyRunning):
-        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None, golden=None))
+        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None))
     lock.close()
     with pytest.raises(Exception, match="machine-wide lock"):
-        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None, golden=None),
+        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None),
                             spot=_same_spot(tmp_path))
-    got, path = reconcile.reconcile(tmp_path, batch="b 1", plan=PLAN, sources=Sources(cc_dir=None, golden=None))
+    got, path = reconcile.reconcile(tmp_path, batch="b 1", plan=PLAN, sources=Sources(cc_dir=None))
     assert path.parent == tmp_path / "reports" and path.name.startswith("reconcile-b_1-")
     text = path.read_text(encoding="utf-8")
     assert "浏览器抽查" in text and SITE in text and got.sites[0].site == SITE
@@ -640,7 +614,7 @@ def test_reconcile_command_makes_the_spot_checker_inside_its_locks(tmp_path):
 
     with schoollock.hold():
         got, _path = reconcile.reconcile(tmp_path, batch="b", plan=PLAN, spot_factory=factory,
-                                         sources=Sources(cc_dir=None, golden=None))
+                                         sources=Sources(cc_dir=None))
     assert opened[-1] == "closed" and got.sites[0].checks["R6"].status == PASS and got.r6
 
 
@@ -791,11 +765,7 @@ def test_review_mark_takes_only_a_markable_result_with_a_note_and_never_during_a
 # ---------------------------------------------------------------- small pieces
 
 
-def test_quote_pieces_and_the_golden_file(tmp_path):
-    assert reconcile.quote_pieces("和平愛閱館：08:15-23:29　燕巢：09:15；短") == ["和平愛閱館:08:15-23:29", "燕巢:09:15"]
-    gold = _golden(tmp_path / "q.json", [(HOME, "首頁")])
-    assert reconcile.load_golden(gold) == [reconcile.Answer("Q1", HOME, "首頁")]
-    assert reconcile.load_golden(reconcile.GOLDEN)  # the real 25 questions' file reads
+
 
 
 def test_library_scripts_are_not_read():
@@ -832,7 +802,7 @@ def test_r7_waits_for_a_school_script_not_got_and_a_library_only_page_ignores(tm
     c, net = crawl(tmp_path, routes)
     fr = c.frontier
     res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     assert {s.key: s.decision for s in res.suggestions}["js_link:toggleMenu"] == "unknown"
     assert res.checks["R7"].status == WARN
     net.sink.close()
@@ -843,7 +813,7 @@ def test_r7_waits_for_a_school_script_not_got_and_a_library_only_page_ignores(tm
               f"{SITE}/": lambda u: snap(u, html=html)}
     c, net = crawl(lib, routes)
     res = reconcile.reconcile_sites(c.frontier, lib, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None)).sites[0]
+                                    sources=Sources(cc_dir=None)).sites[0]
     got = {s.key: (s.decision, s.why) for s in res.suggestions}
     assert got["js_link:toggleMenu"][0] == "ignore" and "没有载入任何外面的 .js" in got["js_link:toggleMenu"][1]
     net.sink.close()
@@ -856,7 +826,7 @@ def test_the_report_names_no_link_text(site_db, tmp_path):
     fr.x("DELETE FROM url WHERE url=?", (f"{W}/contact.html",))
     fr.x("DELETE FROM link WHERE dst=?", (f"{W}/contact.html",))
     got = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, golden=None))
+                                    sources=Sources(cc_dir=None))
     text = got.text()
     assert f"{W}/contact.html" in text and "聯絡我們" not in text  # addresses and reasons, never a page's words
     assert "R7 给平台档案的决定建议" in text and "js_link:toggleMenu" in text

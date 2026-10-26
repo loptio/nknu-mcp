@@ -582,20 +582,6 @@ def test_item_13_reads_the_reconciliations_until_reconcile_gives_its_function(a)
     assert c.status == monitor.FAIL and c.lines == ["page 1: img x 没有 page_res"]
 
 
-def test_golden_sources_must_be_listed_complete_and_quoted(a, tmp_path):
-    site = good_archive(a)
-    golden = tmp_path / "golden.json"
-    golden.write_text(json.dumps({"webAnswers": [
-        {"id": "Q1", "sources": [{"url": f"https://{site}/", "quote": "115 學年度第 1 學期行事曆；已公告"}]},
-        {"id": "Q2", "sources": [{"url": f"https://{site}/", "quote": "這一句不在頁面上的引文"}]},
-        {"id": "Q3", "sources": [{"url": "https://other.nknu.edu.tw/x", "quote": ""}]}]}), encoding="utf-8")
-    a.close()
-    c = by_no(monitor.verify(a.root, golden=golden, resource_check=no_problems).checks)["G"]
-    assert c.status == monitor.FAIL and "都对得上的 1 个" in c.detail
-    assert any(x.startswith("Q2：") and "找不到" in x for x in c.lines)
-    assert any(x.startswith("Q3：") and "不在清单里" in x for x in c.lines)
-
-
 # ---------------------------------------------------------------- viewer.locate (design §12)
 
 

@@ -75,7 +75,6 @@ MAIN_REAL_WAIT_S = 0.02  # how long the main loop's wait really lasts (it moves 
 WORKER_REAL_WAIT_S = 0.002  # how long a worker's idle wait really lasts
 KEEPALIVE_S = 60.0  # fetch.KEEPALIVE_LIMITS' keepalive_expiry: a connection idle longer is a new one
 BATCH = "rehearsal"
-DEFAULT = object()  # rehearse(golden=…) not given: the research file's, when it is there
 
 
 # ---------------------------------------------------------------- the old archive, read only
@@ -578,7 +577,7 @@ def refuse(old: Path, root: Path) -> None:
 
 def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan: round1.Plan | None = None,
              facts_db: Path | None = None, cc_dir: Path | None = seeds.CC_DIR, probe: Path | None = seeds.PROBE,
-             jstest: Path | None = pagetypes.JSTEST_DIR, golden: Any = DEFAULT,
+             jstest: Path | None = pagetypes.JSTEST_DIR,
              gap: tuple[float, float] | None = None, after: bool = True,
              say: Callable[[str], None] = lambda s: log.info("%s", s)) -> Rehearsed:
     """Seed (unless root holds a rehearsal's frontier already: then the run goes on), run on the old archive, then
@@ -590,8 +589,6 @@ def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan:
     old, root = Path(old).resolve(), Path(root).resolve()
     refuse(old, root)
     plan = plan if plan is not None else round1.load()
-    if golden is DEFAULT:  # the 25 questions' answers (reconcile R5, verify G), when the research files are there
-        golden = reconcile.GOLDEN if reconcile.GOLDEN.is_file() else None
     t0 = time.monotonic()
     root.mkdir(parents=True, exist_ok=True)
     reports = root / "reports"
@@ -661,10 +658,10 @@ def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan:
         if after:
             say("reconcile（不含 R6）")
             got_rec, rec_path = reconcile.reconcile(root, batch=BATCH, sites=list(sites) if sites else None, plan=plan,
-                                                    sources=reconcile.Sources(cc_dir=cc_dir, old=old, golden=golden))
+                                                    sources=reconcile.Sources(cc_dir=cc_dir, old=old))
             gates = {r.site: bool(r.gates_ok) for r in got_rec.sites}
             say("verify")
-            ver = monitor.verify(root, plan=plan, golden=golden, resource_check=monitor.extract_check(plan))
+            ver = monitor.verify(root, plan=plan, resource_check=monitor.extract_check(plan))
             ver_path, ver_code, ver_conc = ver.path, ver.code, monitor.conclusion(ver.checks)
     done = Rehearsed(root=root, resumed=resumed, run_end=run_end, stats=stats.as_dict(), page_types=page_types,
                      seed_report=seed_path, reconcile_report=rec_path, reconcile_gates=gates, verify_report=ver_path,

@@ -80,36 +80,3 @@ def test_records_appended_after_indexing_are_found(tmp_path):
     v = Viewer(tmp_path)
     uid = f.q("SELECT id FROM url WHERE url=?", (url,))[0][0]
     assert v.body_of(uid)[1] == b"<p>later</p>"
-
-
-def test_choices_save_only_from_the_page_itself(tmp_path):
-    import json
-
-    archive(tmp_path)
-    (tmp_path / "choices-data.json").write_text(json.dumps({"sections": [{"title": "t", "items": [
-        {"id": "x", "title": "X", "why": "", "where": "", "docs": 3, "stats": "", "units": [], "samples": [],
-         "recommend": "a", "options": [["a", "A"], ["b", "B"]]}]}]}), encoding="utf-8")
-    server = serve(tmp_path, 0)
-    port = server.server_address[1]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        page = get(port, "/choose")[2].decode()
-        token = page.split("'X-Choice-Token': '")[1].split("'")[0]
-
-        def post(headers):
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/choose/save", method="POST",
-                                         data=json.dumps({"choices": {"x": "b"}}).encode(), headers=headers)
-            try:
-                with urllib.request.urlopen(req) as r:
-                    return r.status
-            except urllib.error.HTTPError as e:
-                return e.code
-
-        assert post({"Content-Type": "application/json"}) == 403  # no token
-        assert post({"Content-Type": "application/json", "X-Choice-Token": "guess"}) == 403
-        assert post({"Content-Type": "text/plain", "X-Choice-Token": token}) == 403
-        assert post({"Content-Type": "application/json", "X-Choice-Token": token, "Host": "evil.example"}) == 403
-        assert post({"Content-Type": "application/json", "X-Choice-Token": token}) == 200
-        assert json.loads((tmp_path / "choices.json").read_text())["choices"] == {"x": "b"}
-    finally:
-        server.shutdown()

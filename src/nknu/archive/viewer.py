@@ -7,13 +7,10 @@ each page as extracted text, as HTML source, or as a preview that loads nothing 
 from __future__ import annotations
 
 import html
-import json
 import logging
-import secrets
 import sqlite3
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
@@ -126,7 +123,6 @@ class Viewer:
     def __init__(self, root: Path):
         self.root = root
         self.lock = threading.Lock()
-        self.token = secrets.token_urlsafe(16)  # only the choice page served by this process can save
         self._dash: progress.Dashboard | None = None  # the progress dashboard's numbers (design §14), made when asked
         self._dash_lock = threading.Lock()
 
@@ -301,27 +297,6 @@ class Viewer:
         _status, headers, body = read_record(self.root, *loc)
         return headers.get("content-type", row["ctype"] or ""), body
 
-    def choose(self, q: dict) -> str:
-        data_path = self.root / "choices-data.json"
-        if not data_path.exists():
-            return self.layout("选择", "<p>还没算资讯量：在终端执行 <code>nknu archive choices</code>，再重新整理。</p>")
-        saved = {}
-        if (self.root / "choices.json").exists():
-            saved = json.loads((self.root / "choices.json").read_text(encoding="utf-8")).get("choices", {})
-        payload = json.dumps({"data": json.loads(data_path.read_text(encoding="utf-8")), "saved": saved},
-                             ensure_ascii=False).replace("</", "<\\/")
-        return self.layout("选择要放行或挡掉的资料", CHOOSE_PAGE.replace("__TOKEN__", self.token)
-                           .replace("__PAYLOAD__", payload))
-
-    def save_choices(self, body: bytes) -> dict:
-        got = json.loads(body.decode("utf-8"))
-        choices = {str(k): str(v) for k, v in (got.get("choices") or {}).items()}
-        notes = str(got.get("notes") or "")[:5000]
-        record = {"saved_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"), "choices": choices,
-                  "notes": notes}
-        (self.root / "choices.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
-        return {"ok": True, "saved_at": record["saved_at"], "n": len(choices)}
-
     # ---------------------------------------------------------------- the progress dashboard (design §14)
     def dashboard(self) -> progress.Dashboard:
         """The dashboard's numbers (progress.Dashboard), made at the first /progress: read-only, never build_index."""
@@ -390,9 +365,9 @@ def make_handler(viewer: Viewer):
                 if route in ("/progress", "/progress/site"):
                     fn = viewer.progress if route == "/progress" else viewer.progress_site
                     return self.send(200, "text/html; charset=utf-8", fn(q).encode(), {"Cache-Control": "no-store"})
-                if route in ("/", "/site", "/search", "/issues", "/page", "/choose"):
+                if route in ("/", "/site", "/search", "/issues", "/page"):
                     fn = {"/": viewer.home, "/site": viewer.site, "/search": viewer.search, "/issues": viewer.issues,
-                          "/page": viewer.page, "/choose": viewer.choose}[route]
+                          "/page": viewer.page}[route]
                     return self.send(200, "text/html; charset=utf-8", fn(q).encode())
                 if route in ("/text", "/source", "/preview", "/raw"):
                     got = viewer.body_of(int(q.get("id", ["0"])[0]))
@@ -415,21 +390,9 @@ def make_handler(viewer: Viewer):
                 return self.send(500, "text/plain; charset=utf-8", f"{type(exc).__name__}: {exc}".encode())
 
         def do_POST(self):
-            # a page on another site could post to localhost: only this process's own choice page (its token, its
-            # host, a JSON body) may save
-            host_ok = (self.headers.get("Host") or "").split(":")[0] in ("127.0.0.1", "localhost")
-            if (urlsplit(self.path).path != "/choose/save" or not host_ok
-                    or self.headers.get("X-Choice-Token") != viewer.token
-                    or not (self.headers.get("Content-Type") or "").startswith("application/json")):
-                return self.send(403, "text/plain; charset=utf-8", b"forbidden")
-            size = int(self.headers.get("Content-Length") or 0)
-            if size > 1_000_000:
-                return self.send(413, "text/plain; charset=utf-8", b"too large")
-            try:
-                result = viewer.save_choices(self.rfile.read(size))
-            except Exception as exc:  # noqa: BLE001 - a malformed body is the client's problem
-                return self.send(400, "text/plain; charset=utf-8", f"{type(exc).__name__}".encode())
-            return self.send(200, "application/json", json.dumps(result).encode())
+            # the viewer only shows (the 10-24 choice page that saved was taken out 10-26, design §14.1): nothing here
+            # takes a POST
+            return self.send(405, "text/plain; charset=utf-8", b"method not allowed", {"Allow": "GET"})
 
     return Handler
 
@@ -780,6 +743,7 @@ def progress_site_html(d: dict) -> str:
                     + (f"（已过期：之后又有{rec.get('stale') or '新的抓取'}，要重对）" if rec.get("fresh") is False else "")
                     + "：" + ("关卡全过" if rec["gates_ok"] else "有关卡没过")
                     + (f"（没比到的：{rec['blind']}，不等于没问题）" if rec.get("blind") else "")
+                    + (f"；{rec['menu']}" if rec.get("menu") else "")
                     + "".join(f"；{x}" for x in covers))
     slow = (f"完整度更新于 {progress.fmt_clock(d['slow_at'], now)}" if d.get("slow_at")
             else "完整度还在算（第一次要几秒），网页这一块稍后再看")
@@ -840,54 +804,3 @@ def progress_site_html(d: dict) -> str:
         out.append("<p class='dim'>没有。</p>")
     return "<main id='psite'>" + "".join(out) + "</main>"
 
-
-CHOOSE_PAGE = """
-<style>
-.sec{margin:28px 0 8px}.card{border:1px solid #ddd;border-radius:8px;padding:10px 12px;margin:10px 0}
-.card h3{margin:0 0 4px;font-size:15px}.meta{color:#555;font-size:13px}.bar{height:8px;background:#e8eef8;border-radius:4px;
-margin:6px 0}.bar span{display:block;height:8px;background:#3b6fd6;border-radius:4px}.opts label{display:block;margin:2px 0;
-cursor:pointer}.rec{color:#0a7b34;font-size:12px}.samples{font-size:12px;color:#444;margin:4px 0 0 0}
-.samples summary{cursor:pointer;color:#3b6fd6}.docs{font-weight:600}#bar{position:sticky;bottom:0;background:#fff;
-border-top:1px solid #ccc;padding:10px 0}button{font-size:15px;padding:6px 16px}textarea{width:100%;height:60px}
-.changed{border-color:#3b6fd6}
-</style>
-<p>每张卡片是一项待决定的事。<b>资讯量</b>＝这一项涉及的不同文件或页面数（蓝条按同一组里的最大值比例画），
-样本是链接文字或页面标题。绿字是我的建议，默认已选好；改完按最下面的「保存」。</p>
-<div id="app"></div>
-<div id="bar"><textarea id="notes" placeholder="其他想补充的（可留空）"></textarea>
-<button onclick="save()">保存选择</button> <span id="status" class="meta"></span></div>
-<script>
-const P = __PAYLOAD__;
-const app = document.getElementById('app');
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let html = '';
-P.data.sections.forEach((sec, si) => {
-  const max = Math.max(1, ...sec.items.map(i => i.docs || 0));
-  html += `<h2 class="sec">${esc(sec.title)}（${sec.items.length} 项）</h2>`;
-  sec.items.forEach((it, ii) => {
-    const chosen = P.saved[it.id] || it.recommend;
-    const recLabel = (it.options.find(o => o[0] === it.recommend) || [, ''])[1];
-    html += `<div class="card" id="c${si}_${ii}"><h3>${esc(it.title)}</h3>
-      <div class="meta">资讯量：<span class="docs">${(it.docs||0).toLocaleString()}</span>　${esc(it.stats)}</div>
-      <div class="bar"><span style="width:${Math.round(100*(it.docs||0)/max)}%"></span></div>
-      <div class="meta">为什么被挡：${esc(it.why)}　<span style="color:#888">（${esc(it.where)}）</span></div>
-      ${it.units && it.units.length ? `<div class="meta">谁链到它：${esc(it.units.join('、'))}</div>` : ''}
-      ${it.samples && it.samples.length ? `<details class="samples"><summary>看样本（${it.samples.length}）</summary><ul>${it.samples.map(s => `<li>${esc(s)}</li>`).join('')}</ul></details>` : ''}
-      <div class="opts">${it.options.map(o => `<label><input type="radio" name="${esc(it.id)}" value="${esc(o[0])}" ${o[0]===chosen?'checked':''}> ${esc(o[1])}</label>`).join('')}</div>
-      <div class="rec">建议：${esc(recLabel)}</div></div>`;
-  });
-});
-app.innerHTML = html;
-async function save() {
-  const choices = {};
-  P.data.sections.forEach(sec => sec.items.forEach(it => {
-    const el = document.querySelector(`input[name="${CSS.escape(it.id)}"]:checked`);
-    if (el) choices[it.id] = el.value;
-  }));
-  const r = await fetch('/choose/save', {method: 'POST', headers: {'Content-Type': 'application/json',
-    'X-Choice-Token': '__TOKEN__'}, body: JSON.stringify({choices, notes: document.getElementById('notes').value})});
-  const j = r.ok ? await r.json() : null;
-  document.getElementById('status').textContent = j ? `已保存 ${j.n} 项（${j.saved_at}）` : '保存失败：' + r.status;
-}
-</script>
-"""

@@ -322,7 +322,7 @@ def test_the_rehearsal_never_runs_on_a_round_one_archive_that_is_no_rehearsals(o
     with pytest.raises(rehearsal.RehearsalRefused, match="第一轮的真存档"):
         rehearsal.refuse(old, real)
     with pytest.raises(rehearsal.RehearsalRefused, match="第一轮的真存档"):
-        rehearsal.rehearse(old, real, plan=PLAN, cc_dir=None, probe=None, jstest=None, golden=None)
+        rehearsal.rehearse(old, real, plan=PLAN, cc_dir=None, probe=None, jstest=None)
     assert fingerprint(real) == before
     assert round_of(real / "frontier.db") == "1" and rehearsal_of(real / "frontier.db") is None
 
@@ -338,7 +338,7 @@ def test_a_rehearsal_stopped_before_its_seed_ended_is_still_a_rehearsals(old, tm
     monkeypatch.setattr(rehearsal.seeds, "seed_round1", stopped)
     root = tmp_path / "half"
     with pytest.raises(KeyboardInterrupt):
-        rehearsal.rehearse(old, root, plan=PLAN, cc_dir=None, probe=None, jstest=None, golden=None)
+        rehearsal.rehearse(old, root, plan=PLAN, cc_dir=None, probe=None, jstest=None)
     assert rehearsal_of(root / "frontier.db") is not None
     rehearsal.refuse(old, root)  # its own directory: goes on
     f = Frontier(root / "frontier.db", readonly=True)
@@ -359,8 +359,7 @@ def rehearsed(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.delenv(google_api.KEY_ENV, raising=False)
     try:
-        done = rehearsal.rehearse(old, base / "new", plan=PLAN, cc_dir=None, probe=None, jstest=jstest_dir(base),
-                                  golden=None)
+        done = rehearsal.rehearse(old, base / "new", plan=PLAN, cc_dir=None, probe=None, jstest=jstest_dir(base))
         key_after = google_api.key_set()
     finally:
         mp.undo()

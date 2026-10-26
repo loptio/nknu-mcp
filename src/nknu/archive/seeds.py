@@ -136,7 +136,9 @@ def all_seeds(facts_db: Path) -> list[Seed]:
 # ================================================================ round 1 (design §5)
 
 CC_DIR = REPO_ROOT / "research" / "crawl_seed_sources_2026-10-24" / "commoncrawl"
-SYSTEMS_KIND = "校务系统"  # the 52 「校务系统」 seeds of the 10-24 choices page (research/site_probe_2026-10-23)
+# the 52 「校务系统」 seeds the 10-24 choices page listed (the page is gone since 10-26; they are read from
+# research/site_probe_2026-10-23)
+SYSTEMS_KIND = "校务系统"
 # ⑤: besides the c.nknu template's sites (platform c.nknu…), ksped's /resource/ runs the same system (design §5 ⑤)
 SITEMAP_ALSO = frozenset({"ksped.nknu.edu.tw"})
 CC_STATUS = ("2", "3", "5")  # Common Crawl's answers taken (a 404 is counted only: design §5 ④)

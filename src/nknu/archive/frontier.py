@@ -618,9 +618,16 @@ class Frontier:
         any other, what is ours to fix or may be ours, or nothing to fix at all), only an existing row, only with a note
         saying why. An address that redirects is marked by what it leads to as a page's resource (view page_resource:
         the school's attachment link sent to its home page is not_file, second look F5): its one markable result there;
-        none, or several different ones, and it is refused (mark the rows it lands on instead). Marked again: the newest
-        note. Returns the result marked. Whether a run may be going on is the command's to check (`nknu archive review
-        --mark`, which refuses while one runs)."""
+        none, or several different ones, and it is refused (mark the rows it lands on instead). One no page uses (a
+        Common Crawl attachment) is marked by what it comes to as a round-1 row of its own (monitor.orphan_result),
+        which monitor.orphans reads the mark by, under the same outcome.markable as any other row (record 五·16, the
+        owner's option A) 【Claude 的执行办法】: sent to a web page, not_file (the owner's 10-26 decision); its
+        redirects landing on no row, what the last hop says: a school error page's address is bad_link, a loop or too
+        many hops server_error (a page's attachment in a loop is server_error in page_resource too; review 10-26, O
+        review: a loop is server_error by Claude's rule, for the owner to overturn); what is ours (not_discovered,
+        unhandled) or no fault (rule, login) is refused. Marked again: the newest note. Returns the result marked.
+        Whether a run may be going on is the command's to check (`nknu archive review --mark`, which refuses while
+        one runs)."""
         if not (note or "").strip():
             raise ValueError("a school_side mark says why (note)")
         with self.lock:
@@ -634,6 +641,12 @@ class Frontier:
             if result == "redirect":
                 led = sorted({r[0] for r in self.conn.execute("SELECT DISTINCT result FROM page_resource WHERE via=?",
                                                               (url_id,))})
+                if not led:  # no page uses it: a round-1 row of its own, by what it comes to there (monitor.orphans:
+                    # not_file, bad_link, server_error… whatever it is, markable() below decides)
+                    from nknu.archive import monitor
+
+                    alone = monitor.orphan_result(self, url_id)
+                    led = [alone] if alone else []
                 can = [r for r in led if outcome.markable(r, row["reason"])]
                 if len(can) != 1:
                     raise ValueError(

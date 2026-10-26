@@ -24,12 +24,14 @@ Per site of a batch (reconcile_sites), in this order (the first two change what 
   SSO 公告中心's categories against its whole list) is what was got; R3a, R4a every address Common Crawl (2xx) or the
   10-24 archive (done, 2xx) knows of this site has a row or a rule that leaves it out; R3b, R4b the discovery coverage
   (of those that answer well this round, the share a page of this round links to) and Lincoln–Petersen's estimate of
-  what is still missed, a lower bound (both lists come from crawls that follow links too); R5 the 25 questions'
-  answer pages are got, complete, and hold their quotes; R6 the spot check; V13 (verify check 13) every page read
-  again from the WARC with links.extract names nothing its link table and page_res rows do not; V14 (check 14) every
-  response record reads back and matches its sha256, every WARC file reads through gzip to its last record.
-- reconcile_site: one row per site (its checks as JSON, the coverages, gates_ok when R1, R2, R3a, R4a, R5, R6, R7,
-  V13, V14 all pass), and an event reconcile. In the crawler's own process, as a site finishes (site_done), all of it
+  what is still missed, a lower bound (both lists come from crawls that follow links too); R6 the spot check; V13
+  (verify check 13) every page read again from the WARC with links.extract names nothing its link table and page_res
+  rows do not; V14 (check 14) every response record reads back and matches its sha256, every WARC file reads through
+  gzip to its last record. R5 (the 25 questions' answer pages) is no check since 10-26 (the owner agreed: the 25
+  questions measure the answers of the whole project, not round 1's completeness; design §18.2b): an older
+  reconciliation's R5 is read past (monitor.reconciled).
+- reconcile_site: one row per site (its checks as JSON, the coverages, gates_ok when R1, R2, R3a, R4a, R6, R7, V13,
+  V14 all pass), and an event reconcile. In the crawler's own process, as a site finishes (site_done), all of it
   but R6 (skip, so gates_ok 0): the run stops before R6 and a person's look (design §18.2a step 3).
 
 What the checks find that has no row (R1, R3a, R4a: record 二·4 「对账发现爬虫没找到的网址」) is listed for a person, who
@@ -37,12 +39,15 @@ gives the ones to fetch to enqueue() (found_via reconcile). rejudge() reads the 
 the WARC and works out again, with today's rules, what the crawler would have written of them (links.extract,
 round1.admit, pagetypes, the platform profiles, the presses already made: postback.Chains.rebuild), and the thin marks;
 what it finds new is queued (found_via rejudge), nothing fetched is fetched again, no fetched_at changes.
-review_mark() is Frontier.mark_school_side's command. Each command that writes refuses while a run holds run.lock and
-holds it itself while it writes; and refuses a frontier.db no round-1 crawl made (the 10-24 archive is only read).
+review_mark() is Frontier.mark_school_side's command; review_menu_mark() marks a menu item that is the school's broken
+link (R1 bad_link, design §10.2.1: the owner's 10-26 decision), which has no url row: an event menu_mark that holds
+while the page it was seen on is not fetched again (monitor.menu_marks). Each command that writes refuses while a run
+holds run.lock and holds it itself while it writes; and refuses a frontier.db no round-1 crawl made (the 10-24 archive
+is only read).
 
 Every way of doing this the design does not spell out is Claude's (【Claude 的执行办法】): which zone is a menu, the
 discovery kinds (pages and files), the line split and the content-area fallback of thin, the r7: zone, the library
-.js left unread, how R5 splits a quote, which R6 differences count, the V14 cache.
+.js left unread, which R6 differences count, the V14 cache, where a menu item's mark is kept.
 """
 
 from __future__ import annotations
@@ -56,7 +61,6 @@ import random
 import re
 import sqlite3
 import time
-import unicodedata
 import zlib
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -73,14 +77,15 @@ from nknu.archive.frontier import ROUND, Frontier, round_of, utc_now, wall
 from nknu.crawl import schoollock
 from nknu.crawl.adapter import Target
 from nknu.crawl.fetch import DecodeError, Snapshot, decode_body
-from nknu.settings import REPO_ROOT
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
-CHECKS = ("R1", "R2", "R3a", "R3b", "R4a", "R4b", "R5", "R6", "R7", "V13", "V14")
-GATES = ("R1", "R2", "R3a", "R4a", "R5", "R6", "R7", "V13", "V14")  # design §18.2b: R3b, R4b only warn
+# design §18.2b: R3b, R4b only warn. R5 (the 25 questions' answer pages) taken out 10-26, its number kept free: R6, R7
+# keep theirs (the gates as monitor reads them: monitor.GATES, the same list)
+CHECKS = ("R1", "R2", "R3a", "R3b", "R4a", "R4b", "R6", "R7", "V13", "V14")
+GATES = monitor.GATES
 CHECK_LABEL = {
     "R1": "网站选单", "R2": "列表写的总数", "R3a": "Common Crawl 导入齐了没有", "R3b": "Common Crawl 发现覆盖率",
-    "R4a": "旧存档导入齐了没有", "R4b": "旧存档发现覆盖率", "R5": "25 题答案页", "R6": "浏览器抽查",
+    "R4a": "旧存档导入齐了没有", "R4b": "旧存档发现覆盖率", "R6": "浏览器抽查",
     "R7": "读学校自己的 .js", "V13": "资源没有漏抽（验收第 13 项）", "V14": "存档读得回来（验收第 14 项）",
 }
 STATUS_LABEL = {PASS: "✓ 过", FAIL: "✗ 没过", WARN: "⚠ 要看", SKIP: "没检查"}
@@ -113,7 +118,6 @@ ANSWERED = outcome.PAGE_CAME_BACK
 R6_PAGES = 4
 R6_MORE_CHARS = 200
 R6_RATIO = 1.3
-GOLDEN = REPO_ROOT / "research" / "project_audit_2026-10-25" / "web_search_baseline_25q.json"
 ITEMS_KEPT = 20  # items per check in reconcile_site.checks; the report lists every one
 R7_ZONE = "r7:"  # page_res.zone of the rows R7 writes: rewritten by each reconcile and rejudge, never the crawler's
 # the school's copies of libraries that work by attributes or are no page's code: not read (they bind every element of
@@ -127,8 +131,6 @@ LIBRARY_JS = re.compile(
 MAX_JS_BYTES = 512 * 1024  # a school script larger than this is listed, not read (a bundle, not a page's code)
 _TEXT_DROP = ("script", "style", "noscript", "template")
 _CODE_DEPTH = 2  # embed-code blocks inside embed-code blocks (links._DATA_CODE_DEPTH)
-_QUOTE_SPLIT = re.compile(r"[；;　]|…|\.\.\.|\s{2,}")
-_QUOTE_MIN = 4  # a quote's piece shorter than this says too little to look for
 _ATTR_TEXTS = ("[data-link]", "[data-href]", "[data-url]")
 _R7_KEYS = ("js_link:", "js_bind:", "js_deep:", "js_nav:")  # the writings R7 can read a decision for
 
@@ -225,7 +227,6 @@ class Sources:
 
     cc_dir: Path | None = seeds.CC_DIR
     old: Path | None = None
-    golden: Path | None = GOLDEN
 
 
 @dataclass(frozen=True)
@@ -665,6 +666,13 @@ def _page_read(row, html: str, url: str) -> links.PageLinks:
     return page
 
 
+def _menu_targets(page: links.PageLinks) -> list[str]:
+    """What a stored page's menus link (links.extract's chrome zone: nav, aside, the page's own header and footer; on a
+    profiled site everything outside its content area), as R1 reads them: canonical addresses."""
+    return [t for href, _text in page.links
+            if page.link_zone.get(href) == "chrome" and (t := scope.canonical(href, page.base)) is not None]
+
+
 def _expected(plan: round1.Plan, row, html: str, url: str, page: links.PageLinks, fr: Frontier
               ) -> tuple[dict[str, str], dict[str, str]]:
     """What the crawler writes of one page (Crawler._parts): the link table's targets ({address: what}) and the
@@ -945,26 +953,50 @@ def _menu_status(fr: Frontier, target: str) -> str:
     return "rule" if not v.ok and v.reason not in scope.SOFT_OUT else "missing"
 
 
-def _r1(fr: Frontier, menus: Mapping[str, str]) -> tuple[Check, list[Found]]:
-    """menus: each menu target of the site's pages -> the first page it is on."""
+# R1's items in the order they are kept (reconcile_site keeps the first ITEMS_KEPT): the school's broken links first,
+# so that monitor can tell whether every one of them is marked since (monitor.reconciled), then what the crawl lacks
+_R1_ORDER = {"bad_link": 0, outcome.SCHOOL_SIDE: 1, "missing": 2, "waiting": 3}
+R1_STATUS_ZH = {"bad_link": "学校的链接坏了（要人看）", outcome.SCHOOL_SIDE: outcome.RESULT_LABEL[outcome.SCHOOL_SIDE],
+                "missing": "没抓到（对账发现爬虫没找到的网址）", "waiting": "还在等"}
+
+
+def _r1(fr: Frontier, menus: Mapping[str, str], marks: Mapping[str, Mapping] | None = None
+        ) -> tuple[Check, list[Found]]:
+    """menus: each menu target of the site's pages -> the first page it is on. marks: the site's menu items a person
+    marked as the school's that still hold (monitor.menu_marks)."""
+    marks = marks or {}
     counts = Counter()
     items, found = [], []
     for target, page in sorted(menus.items()):
         s = _menu_status(fr, target)
+        if s == "bad_link" and target in marks:
+            s = outcome.SCHOOL_SIDE
         counts[s] += 1
         if s in ("waiting", "missing", "bad_link"):
             items.append({"target": target, "page": page, "status": s})
+        elif s == outcome.SCHOOL_SIDE:  # listed all the same, with the person's note (design §10.2.1)
+            items.append({"target": target, "page": page, "status": s, "note": marks[target].get("note"),
+                          "marked_at": marks[target].get("at")})
         if s == "missing":
             found.append(Found("R1", target, f"选单项目，在 {page}"))
+    items.sort(key=lambda i: _R1_ORDER[i["status"]])
     # the school's broken menu link: nothing the crawler missed (no Found), but never a pass unseen (outcome: bad_link
-    # is 要人看 and a page using one is never complete) 【Claude 的执行办法】
+    # is 要人看 and a page using one is never complete) 【Claude 的执行办法】; once a person marked it the school's, it
+    # holds R1 back no more (the owner's 10-26 decision, design §10.2.1)
     status = FAIL if counts["missing"] or counts["waiting"] else WARN if counts["bad_link"] else PASS
-    out = Check(status, {"menu_links": len(menus),
-                         **{k: counts[k] for k in ("has", "rule", "waiting", "missing", "bad_link")},
-                         "compared": bool(menus)}, items)
+    kinds = ("has", "rule", "waiting", "missing", "bad_link", outcome.SCHOOL_SIDE)
+    out = Check(status, {"menu_links": len(menus), **{k: counts[k] for k in kinds}, "compared": bool(menus)}, items)
     if not menus:  # review 10-26: 「没发现」 is no 「没有」
         out.note = ("没认出选单（这个网站的网页没有 nav、header、footer、aside，也没有平台档案）：这一项没比到，"
                     "不等于选单都抓到了")
+    notes = []
+    if counts["bad_link"]:
+        notes.append(f"选单上 {counts['bad_link']} 个网址是学校的错误页（学校的链接坏了）：人看过、确认是学校那边的问题的，用 "
+                     "nknu archive review --mark school_side --menu <网址> --note … 标记")
+    if counts[outcome.SCHOOL_SIDE]:
+        notes.append(f"{counts[outcome.SCHOOL_SIDE]} 个已标成{R1_STATUS_ZH[outcome.SCHOOL_SIDE]}，照样列出")
+    if notes:
+        out.note = "；".join(notes)
     return out, found
 
 
@@ -1143,93 +1175,16 @@ def _coverage(fr: Frontier, sr: _SiteRows, addrs: Iterable[str], source: str) ->
 
 
 
-# ---------------------------------------------------------------- R5: the 25 questions' answer pages
-
-
-@dataclass(frozen=True)
-class Answer:
-    qid: str
-    url: str
-    quote: str
-
-
-def load_golden(path: Path) -> list[Answer]:
-    """The answer pages of web_search_baseline_25q.json: each source of each web answer (its address and quote)."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    out = []
-    for a in data.get("webAnswers", []):
-        for s in a.get("sources", []):
-            if s.get("url"):
-                out.append(Answer(a.get("id", ""), s["url"], s.get("quote") or ""))
-    return out
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
-
-
-def quote_pieces(quote: str) -> list[str]:
-    """A quote's pieces, each looked for by itself (a source's quote joins what the page shows in several places)."""
-    return [p for p in (_norm(x) for x in _QUOTE_SPLIT.split(quote or "")) if len(p) >= _QUOTE_MIN]
+# ---------------------------------------------------------------- R6: the spot check
 
 
 def page_text(html: str, parts: Iterable[str] = ()) -> str:
-    """Every word of a stored page (its menus too), its embed-code blocks and what its tabs and embeds brought."""
+    """Every word of a page (its menus too), its embed-code blocks and what its tabs and embeds brought: the text R6
+    keeps of what the browser showed."""
     texts = _html_texts(html, None)
     for p in parts:
         texts += _html_texts(p, None)
     return "\n".join(texts)
-
-
-def _answer_site(fr: Frontier, plan: round1.Plan, url: str) -> str | None:
-    row = _row_of(fr, url)
-    if row is not None and row["owner_site"]:
-        return row["owner_site"]
-    canon = scope.canonical(url)
-    if canon is None:
-        return None
-    adm = round1.admit(plan, canon)
-    return (adm.placement.owner_site if adm is not None else None) or scope.site_key(canon)
-
-
-def _r5(fr: Frontier, arc: Archive, answers: list[Answer], levels: Mapping[int, tuple[str, str, str]]) -> Check:
-    items, unchecked = [], []
-    for a in answers:
-        row = _row_of(fr, a.url)
-        if row is None:
-            items.append({"q": a.qid, "url": a.url, "problem": "not_fetched"})
-            continue
-        land, res = _landing(fr, row)
-        if land["kind"] != "page":
-            if res != "ok":
-                items.append({"q": a.qid, "url": a.url, "problem": f"result:{res}"})
-            else:
-                unchecked.append({"q": a.qid, "url": a.url, "note": "不是网页，引文没有不连网核对"})
-            continue
-        lv = levels.get(row["id"]) or levels.get(land["id"])
-        if lv is None or lv[0] not in ("complete", "complete_school"):
-            items.append({"q": a.qid, "url": a.url, "problem": "incomplete",
-                          "level": lv[0] if lv else None, "label": lv[1] if lv else None})
-            continue
-        html = arc.text(land["warc"], land["warc_offset"])
-        if html is None:
-            items.append({"q": a.qid, "url": a.url, "problem": "unreadable"})
-            continue
-        text = _norm(page_text(html, _part_htmls(fr, arc, land["id"])))
-        lost = [p for p in quote_pieces(a.quote) if p not in text]
-        if lost:
-            items.append({"q": a.qid, "url": a.url, "problem": "quote_not_found", "pieces": len(lost),
-                          "note": "学校页面可能改了：先人看再下结论"})
-    counts = {"answers": len(answers), "problems": len(items), "quotes_unchecked": len(unchecked)}
-    if items:
-        return Check(FAIL, counts, items + unchecked)
-    if unchecked:  # 没检查 is never a pass (review 10-26): a quote nobody looked for proves nothing
-        return Check(SKIP, counts, unchecked,
-                     f"{len(unchecked)} 题的答案不是网页（PDF 等），引文没有不连网核对：这一项不算过（怎么核对要用户决定）")
-    return Check(PASS, counts)
-
-
-# ---------------------------------------------------------------- R6: the spot check
 
 
 def _r6_pages(fr: Frontier, plan: round1.Plan, site: str, batch: str) -> list[sqlite3.Row]:
@@ -1351,8 +1306,8 @@ class _Batch:
         self._many = False  # a batch of several sites reads page_resource once for all of them
         self.arc = Archive(root)
         self.spot, self.write, self.out_dir = spot, write, out_dir
-        self.cc = self.old = self.golden = None
-        self.cc_note = self.old_note = self.golden_note = ""
+        self.cc = self.old = None
+        self.cc_note = self.old_note = ""
         if sources.cc_dir is not None and Path(sources.cc_dir).is_dir():
             self.cc = cc_addresses(Path(sources.cc_dir))
         else:
@@ -1362,10 +1317,6 @@ class _Batch:
             self.old = old_addresses(Path(old))
         else:
             self.old_note = f"没有旧存档（{old}）" if old else "没有旧存档：seed 没记下 old_archive，也没给 --old"
-        if sources.golden is not None and Path(sources.golden).is_file():
-            self.golden = load_golden(Path(sources.golden))
-        else:
-            self.golden_note = f"没有 25 题的档案（{sources.golden}）"
         self.scripts = ScriptCache(fr, self.arc)
         self._lost: dict[str, list[tuple[str, str]]] | None = None
 
@@ -1397,21 +1348,10 @@ class _Batch:
         self._many = len(sites) > 1
         results = [self._offline(site) for site in sites]
         self.check_stop()
-        answers: dict[str, list[Answer]] = defaultdict(list)
-        for a in self.golden or ():
-            if (s := _answer_site(self.fr, self.plan, a.url)) in sites:
-                answers[s].append(a)
-        ids = {r["id"] for s in sites for a in answers.get(s, []) if (r := _row_of(self.fr, a.url)) is not None}
-        ids |= {_landing(self.fr, r)[0]["id"] for i in list(ids) if (r := self.fr.row_by_id(i)) is not None}
-        levels = self._levels(ids)
         v14 = verify_archive(self.fr, self.root, sites, cache=self.write, stop=self.check_stop)
         for res in results:
             site = res.site
             self.check_stop()
-            if self.golden is None:
-                res.checks["R5"] = Check(SKIP, note=self.golden_note)
-            else:
-                res.checks["R5"] = _r5(self.fr, self.arc, answers.get(site, []), levels)
             res.checks["R6"] = _r6(self.fr, self.arc, self.plan, site, self.batch, self.spot,
                                    self.out_dir / site.replace("/", "_") if self.out_dir is not None else None)
             res.checks["V14"] = v14[site]
@@ -1435,13 +1375,6 @@ class _Batch:
                  "gates_ok": sorted(r.site for r in results if r.gates_ok),
                  "seconds": round(time.monotonic() - t0, 1)}, ensure_ascii=False))
         return results
-
-    def _levels(self, ids: set[int]) -> dict[int, tuple[str, str, str]]:
-        if not ids:
-            return {}
-        marks = ",".join("?" * len(ids))
-        return {r[0]: (r[1], r[2], r[3]) for r in self.fr.q(
-            f"SELECT id, level, label, reasons FROM page_completeness WHERE id IN ({marks})", sorted(ids))}
 
     def _offline(self, site: str) -> SiteResult:
         """What needs no browser and no page_completeness of other sites: thin, R7 (both write first), R1, R2, R3,
@@ -1475,9 +1408,8 @@ class _Batch:
             if flags & {"login", "soft404"}:
                 continue
             page = _page_read(row, html, url)
-            for href, _text in page.links:
-                if page.link_zone.get(href) == "chrome" and (t := scope.canonical(href, page.base)) is not None:
-                    menus.setdefault(t, row["url"])
+            for t in _menu_targets(page):
+                menus.setdefault(t, row["url"])
             v13 += _v13_page(fr, self.plan, row, html, url, page, parts)
             got = r7_page(fr, row, html, url, page, self.scripts)
             if self.write:
@@ -1490,7 +1422,7 @@ class _Batch:
         self.check_stop()
         thin = _decide_thin(fr, site, rows, lines, skip, self.write)
         res.thin_set, res.thin_cleared = thin.set_, thin.cleared
-        res.checks["R1"], found = _r1(fr, menus)
+        res.checks["R1"], found = _r1(fr, menus, monitor.menu_marks(fr, site))
         res.found += found
         res.checks["R2"] = _r2(fr, self.root, site, write=self.write)
         for name, addrs, note, check, label in (("cc", self.cc, self.cc_note, "R3", "Common Crawl "),
@@ -1949,17 +1881,117 @@ def review_mark(root: Path, url_id: int, *, note: str, mark: str = outcome.SCHOO
             fr.close()
 
 
-def markable_rows(fr: Frontier, site: str | None = None) -> list[sqlite3.Row]:
+def markable_rows(fr: Frontier, site: str | None = None) -> list[Mapping[str, Any]]:
     """The rows a person may mark as the school's now (outcome.markable), with their result, reason and status: what
-    `review --mark` would take. A redirect is marked by what it leads to as a page's resource (page_resource)."""
+    `review --mark` would take. A redirect is marked by what it leads to as a page's resource (page_resource); one no
+    page uses, by what it comes to as a round-1 row of its own (monitor.orphans: an attachment sent to the home page is
+    not_file), which this lists too."""
     only, args = ("AND owner_site=?", (site,)) if site else ("", ())
     rows = fr.q(f"SELECT id, url, owner_site, result, reason, status FROM url_result WHERE result IN "
                 f"({','.join('?' * len(outcome.SCHOOL_SIDE_RESULTS))}) {only} ORDER BY id",
                 (*outcome.SCHOOL_SIDE_RESULTS, *args))
-    return [r for r in rows if outcome.markable(r["result"], r["reason"])]
+    out: list[Mapping[str, Any]] = [r for r in rows if outcome.markable(r["result"], r["reason"])]
+    for s, lone in sorted(monitor.orphans(fr).items()):
+        if site and s != site:
+            continue
+        out += [{"id": o.id, "url": o.url, "owner_site": o.site, "result": o.result, "reason": o.reason,
+                 "status": o.status} for o in lone if o.moved and outcome.markable(o.result, o.reason)]
+    return sorted(out, key=lambda r: r["id"])
+
+
+# ---------------------------------------------------------------- a menu item that is the school's broken link (O1)
+
+MENU_MARK_EVENT = monitor.MENU_MARK_EVENT
+
+
+@dataclass(frozen=True)
+class MenuLink:
+    """A menu item of a round-1 page that is the school's broken link (R1 bad_link: a school error page's address, no
+    url row), with the first page (by id, the one R1 lists) whose menu has it, and that page's fetch."""
+
+    site: str
+    target: str
+    page_id: int
+    page: str
+    fetched_at: str | None
+
+
+def menu_bad_links(fr: Frontier, root: Path, *, site: str | None = None, target: str | None = None
+                   ) -> list[MenuLink]:
+    """The menu items R1 finds to be the school's broken links (design §10.2.1, §18.2b): every address a round-1 page
+    links that the link table says is a school error page's (outcome.ERROR_OUT) and that has no row, with the first
+    page of its site (by id, as R1 lists it) whose menu has it, read back from the WARC (only the pages that link such
+    an address). site, target: only these."""
+    arc = Archive(root)
+    where, args = "", [outcome.ERROR_OUT]
+    if site:
+        where, args = where + " AND u.owner_site = ?", [*args, site]
+    if target:
+        where, args = where + " AND l.dst = ?", [*args, target]
+    out = []
+    for s, t in fr.q(f"SELECT DISTINCT u.owner_site, l.dst FROM link l JOIN url u ON u.id = l.src WHERE l.verdict = ? "
+                     f"AND u.owner_site IS NOT NULL {where} ORDER BY u.owner_site, l.dst", args):
+        if _menu_status(fr, t) != "bad_link":
+            continue
+        for row in fr.q(f"{_PAGES.replace(' ORDER BY id', '')} AND id IN (SELECT src FROM link WHERE dst = ? AND "
+                        "verdict = ?) ORDER BY id", (s, t, outcome.ERROR_OUT)):
+            if set(_flags(row)) & {"login", "soft404"} or (rec := arc.record(row["warc"], row["warc_offset"])) is None:
+                continue
+            html = postback.as_text(rec[3], rec[2].get("content-type"))
+            if t in _menu_targets(_page_read(row, html, rec[0] or row["url"])):
+                out.append(MenuLink(s, t, row["id"], row["url"], row["fetched_at"]))
+                break
+    return out
+
+
+def review_menu_mark(root: Path, target: str, *, note: str, site: str | None = None,
+                     mark: str = outcome.SCHOOL_SIDE) -> list[MenuLink]:
+    """`nknu archive review --mark school_side --menu <网址> --note …` (design §10.2.1, the owner's 10-26 decision): a
+    person's word that a menu item R1 lists as the school's broken link (bad_link) is the school's to answer for, the
+    rules of a row's mark kept: only bad_link, only with a note, void once the page it was seen on is fetched again
+    (its fetched_at kept: monitor.menu_marks), listed all the same. It has no url row, so the mark is an event
+    (menu_mark), one for each site whose menu has it (site: only that one). Refused while a run holds run.lock.
+    Returns what was marked; ValueError for a mark, an address or a note that may not be."""
+    if mark not in MARKS:
+        raise ValueError(f"the only mark is {', '.join(MARKS)} (got {mark!r})")
+    if not (note or "").strip():
+        raise ValueError("a mark says why (--note)")
+    root = Path(root)
+    db = _round1_db(root)
+    canon = scope.canonical(target) or target
+    with _run_lock(root):
+        fr = Frontier(db)
+        try:
+            status = _menu_status(fr, canon)
+            if status != "bad_link" or not outcome.markable("bad_link", None):
+                raise ValueError(f"{canon} comes to {status} as a menu item: only the school's broken link (bad_link: "
+                                 "a school error page's address, no row) may be marked")
+            got = menu_bad_links(fr, root, site=site, target=canon)
+            if not got:
+                raise ValueError(f"{canon} is on no round-1 page's menu{' of ' + site if site else ''}: R1 reads "
+                                 "menus only, so there is nothing of it to mark")
+            for m in got:
+                fr.event("info", MENU_MARK_EVENT, json.dumps(
+                    {"site": m.site, "target": m.target, "page_id": m.page_id, "page": m.page,
+                     "fetched_at": m.fetched_at, "mark": mark, "result": "bad_link", "note": note.strip()},
+                    ensure_ascii=False), urlsplit(m.target).hostname, m.target)
+            return got
+        finally:
+            fr.close()
 
 
 # ---------------------------------------------------------------- the report
+
+
+def _r1_line(i: Mapping[str, Any]) -> str:
+    """One menu item R1 lists, in words: 学校的链接坏了（要人看）, 学校那边的问题（人看过） with the person's note, …."""
+    st = i.get("status")
+    line = f"- {R1_STATUS_ZH.get(st, st)}：{i.get('target')}（在 {i.get('page')} 的选单上）"
+    if st == outcome.SCHOOL_SIDE:
+        line += f"；理由：{i.get('note') or '—'}（{i.get('marked_at') or '—'} 标记）"
+    elif st == "bad_link":
+        line += "；人看过的用 nknu archive review --mark school_side --menu <网址> --note … 标记"
+    return line
 
 
 def report_text(got: Reconciled) -> str:
@@ -1968,7 +2000,7 @@ def report_text(got: Reconciled) -> str:
     ok = [s.site for s in got.sites if s.gates_ok]
     w.append(f"网站 {len(got.sites)} 个，关卡全过 {len(ok)} 个。" + ("" if got.r6 else
                                                                "这一次没有做浏览器抽查（R6），所以没有网站会是「✓ 爬完」。"))
-    w.append("关卡：R1、R2、R3a、R4a、R5、R6、R7、V13、V14 全过才算过；R3b、R4b 只是估计，只提醒。")
+    w.append(f"关卡：{'、'.join(GATES)} 全过才算过；R3b、R4b 只是估计，只提醒。")
     for s in got.sites:
         blind = s.uncompared()
         w += ["", f"## {s.site}：{'关卡全过' if s.gates_ok else '还有没过的关卡'}"
@@ -1986,7 +2018,7 @@ def report_text(got: Reconciled) -> str:
         for name, ck in s.checks.items():
             if ck.items:
                 w += ["", f"### {name} {CHECK_LABEL.get(name, '')}", ""]
-                w += [f"- {json.dumps(i, ensure_ascii=False)}" for i in ck.items]
+                w += [_r1_line(i) if name == "R1" else f"- {json.dumps(i, ensure_ascii=False)}" for i in ck.items]
         if s.suggestions:
             w += ["", "### R7 给平台档案的决定建议", "", "| 写法 | 建议 | 理由 | 页数 | 例子 |", "|---|---|---|---|---|"]
             w += [f"| `{x.key}` | {x.decision} | {x.why} | {x.pages} | {x.sample} |" for x in s.suggestions]

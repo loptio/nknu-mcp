@@ -490,8 +490,12 @@ ERROR, LOOK, CRAWLING, UNRECONCILED, DONE, NOT_CHECKED = "error", "look", "crawl
 SITE_STATE = {ERROR: ("✗ 出错", "red"), LOOK: ("⚠ 要看", "yellow"), NOT_CHECKED: ("⚠ 没检查", "yellow"),
               CRAWLING: ("还在抓", "none"), UNRECONCILED: ("⚠ 纪录齐了，还没对账", "yellow"), DONE: ("✓ 爬完", "green")}
 SITE_ORDER = (ERROR, LOOK, NOT_CHECKED, CRAWLING, UNRECONCILED, DONE)
-# the gates of a reconciliation (design §18.2b): every one passed, and the site may be 爬完; R3b, R4b only estimate
-GATES = ("R1", "R2", "R3a", "R4a", "R5", "R6", "R7", "V13", "V14")
+# the gates of a reconciliation (design §18.2b): every one passed, and the site may be 爬完; R3b, R4b only estimate.
+# R5 (the 25 questions' answer pages) was one until 10-26 (the owner agreed to take it out: they measure the whole
+# project's answers, not round 1's completeness): a reconciliation written before says it, and is read past
+# (reconciled()); R6 and R7 keep their numbers
+GATES = ("R1", "R2", "R3a", "R4a", "R6", "R7", "V13", "V14")
+DROPPED_GATES = ("R5",)
 # what makes a reconciliation stale (§10.5, §18.2b): a run or a rejudge that covers the site, and a person's verdict on
 # a page type with pages there (jscheck --set, event verdict_set: thin is judged only on pages whose type is no js or
 # frame, review 10-26 【Claude 的执行办法】)
@@ -638,6 +642,50 @@ def cover_words(source: str, counts: Mapping) -> str:
 
 
 COVER_SOURCES = (("R3b", "Common Crawl "), ("R4b", "旧存档"))
+# a person's word on a menu item that is the school's broken link (R1 bad_link: the address of a school error page,
+# which has no url row; design §10.2.1, the owner's 10-26 decision): an event of its own, written by
+# reconcile.review_menu_mark, read by menu_marks() 【Claude 的执行办法: an event, not a table: a new table would make
+# every archive an older version wrote (the rehearsal's among them) one that only a writer may open】
+MENU_MARK_EVENT = "menu_mark"
+
+
+def menu_marks(src, site: str) -> dict[str, dict]:
+    """The marks a person put on a site's menu items that are the school's broken links (R1 bad_link), as long as
+    what was looked at is what is there: the newest menu_mark event of each address, its page not fetched again (the
+    same fetched_at: a new fetch, the same answer included, ends the mark for good, as a url row's mark), that page
+    still linking it as a school error page's address, and still no row for the address. {address: the mark (site,
+    target, page_id, page, fetched_at, mark, result, note, at)}. Nothing is written: a mark that no longer holds is
+    simply not there."""
+    f = _frontier(src)
+    newest: dict[str, dict] = {}
+    for r in f.q("SELECT at, message FROM event WHERE code=? ORDER BY rowid", (MENU_MARK_EVENT,)):
+        try:
+            msg = json.loads(r["message"] or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(msg, dict) and msg.get("site") == site and isinstance(msg.get("target"), str):
+            newest[msg["target"]] = {**msg, "at": r["at"]}
+    out = {}
+    for target, m in newest.items():
+        if m.get("mark") != outcome.SCHOOL_SIDE or not outcome.markable(m.get("result") or "", None):
+            continue
+        page = f.q("SELECT fetched_at FROM url WHERE id=?", (m.get("page_id"),))
+        if not page or page[0][0] != m.get("fetched_at"):
+            continue
+        if not f.q("SELECT 1 FROM link WHERE src=? AND dst=? AND verdict=? LIMIT 1",
+                   (m["page_id"], target, outcome.ERROR_OUT)):
+            continue
+        if f.q("SELECT 1 FROM url WHERE url=? LIMIT 1", (target,)):
+            continue
+        out[target] = m
+    return out
+
+
+def _n(v) -> int:
+    """A count reconcile wrote (anything else, 0)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
 # a gate that passed with nothing to compare (reconcile.SiteResult.uncompared), in a few words
 UNCOMPARED_ZH = {"R1": "R1 没认出选单", "R2": "R2 没有写总数的列表", "R3a": "R3a Common Crawl 不认得这个网站",
                  "R4a": "R4a 旧存档不认得这个网站"}
@@ -650,7 +698,8 @@ class Reconciled:
     written (reconcile.py writes one with each reconcile_site row: a run_end in the same second is still before or after
     it, never a guess); a row no reconcile event covers (an older writer's) goes by its time, the same second counting
     as after (never a false 爬完). Passed when gates_ok is 1 and every gate's own status says pass (the two disagreeing
-    is no pass) 【Claude 的执行办法】."""
+    is no pass) 【Claude 的执行办法】; gates_ok here is the row's, or yes where reconciled() reads past what no longer
+    holds a site back (an older R5, menu links a person marked since)."""
 
     site: str
     batch: str
@@ -662,6 +711,8 @@ class Reconciled:
     stale_by: Mark | None
     covers: dict = field(default_factory=dict)  # R3b, R4b: their numbers as reconcile wrote them
     uncompared: tuple[str, ...] = ()  # the gates that passed with nothing to compare
+    menu_school: int = 0  # R1: menu items that are the school's broken links a person marked as the school's
+    menu_bad: int = 0  # R1: the school's broken menu links nobody marked yet (⚠ 要看)
 
     @property
     def fresh(self) -> bool:
@@ -676,7 +727,21 @@ class Reconciled:
         return self.gates_ok and all(self.gates.get(g) == PASS for g in GATES)
 
     def not_passed(self) -> list[str]:
-        return [f"{g}（{CHECK_ZH.get(self.gates.get(g), '没写')}）" for g in GATES if self.gates.get(g) != PASS]
+        out = []
+        for g in GATES:
+            if self.gates.get(g) == PASS:
+                continue
+            why = CHECK_ZH.get(self.gates.get(g), "没写")
+            if g == "R1" and self.menu_bad:
+                why += (f"：选单上 {self.menu_bad} 个学校的坏链接还没人看过（人看过、确认是学校那边的问题的，"
+                        "nknu archive review --mark school_side --menu <网址> --note …）")
+            out.append(f"{g}（{why}）")
+        return out
+
+    def menu_words(self) -> str:
+        """R1's menu items a person marked as the school's, in words (the dashboard, verify, design §10.2.1)."""
+        return (f"选单上 {self.menu_school} 个学校的坏链接：{outcome.RESULT_LABEL[outcome.SCHOOL_SIDE]}"
+                if self.menu_school else "")
 
     def low_cover(self) -> list[str]:
         return [f"{name} 覆盖率估计 {v:.0%}（低于 {COVER_MIN:.0%}）" for name, v in
@@ -706,7 +771,26 @@ class Reconciled:
         return "" if m is None else f"{STALE_ZH.get(m.code, m.code)}（{m.code}，{_taipei(m.at)}）"
 
 
+def _r1_marked(f: Frontier, site: str, r1: Mapping) -> tuple[int, bool]:
+    """Of the school's broken menu links a reconciliation's R1 listed, how many a person has marked since (O1, design
+    §10.2.1: they count as the school's at once, and leave 「还没人看过」, without another reconciliation; review 10-26,
+    O review low), and whether that is all of them, so that they no longer hold R1 back: never when R1 counted more
+    than it kept, or has anything else to say."""
+    bad = [i.get("target") for i in r1.get("items") or [] if isinstance(i, dict) and i.get("status") == "bad_link"]
+    if not bad:
+        return 0, False
+    marks = menu_marks(f, site)
+    n = sum(1 for t in bad if t in marks)
+    whole = (n == len(bad) == _n(r1.get("bad_link")) and not _n(r1.get("missing"))
+             and not _n(r1.get("waiting")))
+    return n, whole
+
+
 def reconciled(f: Frontier, rounds: Rounds) -> dict[str, Reconciled]:
+    """Each site's last reconciliation as §10.5 reads it. Two things the row says no for no longer hold a site back
+    (10-26, the owner's decisions): an older writer's R5 (taken out), and an R1 whose only ⚠ is the school's broken
+    menu links a person has marked since (O1). A row that says no for any other reason, or for none it gives, stays
+    no 【Claude 的执行办法】."""
     out = {}
     for r in f.q("SELECT site, batch, at, checks, cover_cc, cover_old, gates_ok FROM reconcile_site"):
         try:
@@ -714,7 +798,17 @@ def reconciled(f: Frontier, rounds: Rounds) -> dict[str, Reconciled]:
         except (TypeError, ValueError):
             data = {}
         items = data.items() if isinstance(data, dict) else ()
-        gates = {k: s for k, v in items if (s := _gate_status(v))}
+        raw = {k: s for k, v in items if (s := _gate_status(v))}
+        gates = dict(raw)
+        r1 = data.get("R1") if isinstance(data, dict) and isinstance(data.get("R1"), dict) else {}
+        since, whole = _r1_marked(f, r["site"], r1)
+        menu_school, menu_bad = _n(r1.get("school_side")) + since, max(_n(r1.get("bad_link")) - since, 0)
+        cured = whole and gates.get("R1") == WARN
+        if cured:
+            gates["R1"] = PASS
+        ok = bool(r["gates_ok"])
+        if not ok and all(gates.get(g) == PASS for g in GATES):
+            ok = bool(cured) or any(raw.get(g) not in (None, PASS) for g in DROPPED_GATES)
         covers = {k: v for k, v in items if k in ("R3b", "R4b") and isinstance(v, dict)}
         blind = tuple(g for g in GATES if isinstance(data, dict) and isinstance(data.get(g), dict)
                       and gates.get(g) == PASS and data[g].get("compared") is False)
@@ -727,8 +821,8 @@ def reconciled(f: Frontier, rounds: Rounds) -> dict[str, Reconciled]:
             stale = last if last.rowid > mark.rowid else None
         else:
             stale = last if at is None or last.at is None or last.at >= at else None
-        out[r["site"]] = Reconciled(r["site"], r["batch"], at, gates, bool(r["gates_ok"]), r["cover_cc"],
-                                    r["cover_old"], stale, covers, blind)
+        out[r["site"]] = Reconciled(r["site"], r["batch"], at, gates, ok, r["cover_cc"], r["cover_old"], stale,
+                                    covers, blind, menu_school, menu_bad)
     return out
 
 
@@ -877,8 +971,12 @@ class Orphan:
     按钮」): an attachment, a picture or a sitemap that came in as a start of its own (Common Crawl, the old archive,
     v1, robots.txt) and that no page links to. A page's resources are judged with the page (§10.4); such a row is
     judged by itself, by its own result, so that one the school refuses is 连接失败 here too. A row whose redirects land
-    on another row is that row's (judged by itself in turn); one whose redirects land nowhere comes to what the last
-    hop's link verdict says, as page_completeness has it 【Claude 的执行办法】."""
+    on another row is that row's (judged by itself in turn), but one that was to be a file and lands on a web page that
+    came back is not_file (连接失败), as a page's attachment sent to its site's home page is (§10.4 rule 2; the owner's
+    10-26 decision: never the web page's result in its place); one whose redirects land nowhere comes to what the last
+    hop's link verdict says, as page_completeness has it 【Claude 的执行办法】. moved: it is a redirect (what it comes to
+    is worked out here, so a person's mark on it is looked up here too: Frontier.mark_school_side); to: where it
+    went."""
 
     id: int
     site: str
@@ -888,6 +986,8 @@ class Orphan:
     result: str
     reason: str | None
     status: int | None
+    moved: bool = False
+    to: str | None = None
 
     @property
     def tone(self) -> str:
@@ -895,7 +995,8 @@ class Orphan:
 
     def text(self) -> str:
         via = FOUND_VIA_ZH.get(self.found_via or "", self.found_via or "—")
-        return f"{self.kind}：{outcome.RESULT_LABEL.get(self.result, self.result)}（没有网页用到它：从{via}进来的）"
+        went = f"，跳到 {self.to}" if self.moved and self.to else ""
+        return f"{self.kind}：{outcome.RESULT_LABEL.get(self.result, self.result)}（没有网页用到它：从{via}进来的{went}）"
 
 
 def _landed_nowhere(f: Frontier, uid: int) -> str | None:
@@ -904,6 +1005,10 @@ def _landed_nowhere(f: Frontier, uid: int) -> str | None:
     out:login, out:<rule>, unhandled:<why>, or lost);
     None when they land on a row."""
     end, nowhere = landing(f, uid)
+    return _nowhere(f, end, nowhere)
+
+
+def _nowhere(f: Frontier, end, nowhere: str | None) -> str | None:
     if nowhere is None:
         return None
     if nowhere in ("跳转绕圈", "跳太多次"):
@@ -920,22 +1025,88 @@ def _landed_nowhere(f: Frontier, uid: int) -> str | None:
     return "unhandled" if verdict.startswith("unhandled:") else "not_discovered"
 
 
+def _expected_file(f: Frontier, uid: int) -> bool:
+    """Whether a redirecting row, or any row its redirects pass through before they land, was to be a file (its kind0
+    one of outcome._EXPECTED_FILE: an attachment, a picture, a Drive item, a sitemap…): page_completeness's exp of hop
+    (§10.4 rule 2), over the same rows."""
+    cur, seen = uid, set()
+    for _ in range(outcome.MAX_HOPS):
+        rows = f.q("SELECT id, final_url, coalesce(kind0, kind) AS k, result FROM url_result WHERE id=?", (cur,))
+        if not rows or rows[0]["result"] != "redirect" or rows[0]["id"] in seen:
+            return False
+        r = rows[0]
+        if r["k"] in outcome._EXPECTED_FILE:
+            return True
+        seen.add(r["id"])
+        nxt = f.q("SELECT id FROM url WHERE url=?", (r["final_url"],)) if r["final_url"] else []
+        if not nxt:
+            return False
+        cur = nxt[0][0]
+    return False
+
+
+def _redirect_alone(f: Frontier, uid: int) -> tuple[str | None, str | None]:
+    """What a redirecting row no page uses comes to, before any person's mark, and where it went: what its redirects
+    landing nowhere says (_nowhere); not_file when it was to be a file and lands on a web page that came back (the
+    landing row's own result, a person's mark on it aside: page_completeness's rule for a page's attachment, §10.4
+    rule 2, the owner's 10-26 decision); else None: it lands on a row, which is judged by itself."""
+    end, nowhere = landing(f, uid)
+    if nowhere is not None:
+        return _nowhere(f, end, nowhere), (end["final_url"] if end is not None else None)
+    if end is None:
+        return None, None
+    came = end["result"]
+    if came == outcome.SCHOOL_SIDE:
+        got = f.q("SELECT result FROM review_mark WHERE url_id=?", (end["id"],))
+        came = got[0][0] if got else came
+    kind = f.q("SELECT kind FROM url WHERE id=?", (end["id"],))
+    if kind and kind[0][0] == "page" and came in outcome.PAGE_CAME_BACK and _expected_file(f, uid):
+        return "not_file", end["url"]
+    return None, end["url"]
+
+
+def _marked_alone(f: Frontier, r, result: str) -> bool:
+    """A person's mark on a redirecting row no page uses (review_mark, Frontier.mark_school_side): it holds while the
+    row is as it was when marked (reason, status, fetched_at: a new fetch ends it) and still comes to what was marked,
+    a result a person may mark (outcome.markable): the rule of a url row's own mark (outcome.url_result_case)."""
+    return outcome.markable(result, r["reason"]) and bool(f.q(
+        "SELECT 1 FROM review_mark WHERE url_id=? AND mark=? AND result=? AND reason IS ? AND status IS ? "
+        "AND fetched_at IS ?", (r["id"], outcome.SCHOOL_SIDE, result, r["reason"], r["status"], r["fetched_at"])))
+
+
+_ORPHAN_ROWS = f"""{_USED}
+SELECT r.id, r.owner_site, r.url, r.kind, r.found_via, r.result, r.reason, r.status, r.fetched_at
+FROM url_result r WHERE r.owner_site IS NOT NULL AND r.tier IN (0, 1) AND r.kind <> 'page' AND r.state <> 'later'
+  AND r.id NOT IN (SELECT id FROM used WHERE id IS NOT NULL)"""
+
+
 def orphans(src) -> dict[str, list[Orphan]]:
     """Each site's round-1 rows (tier 0, 1; never round two's, state later) that are no page and that no page uses
     (_USED), with what each came to."""
     f = _frontier(src)
     out: dict[str, list[Orphan]] = defaultdict(list)
-    for r in f.q(f"""{_USED}
-                     SELECT r.id, r.owner_site, r.url, r.kind, r.found_via, r.result, r.reason, r.status
-                     FROM url_result r WHERE r.owner_site IS NOT NULL AND r.tier IN (0, 1) AND r.kind <> 'page'
-                       AND r.state <> 'later' AND r.id NOT IN (SELECT id FROM used WHERE id IS NOT NULL)
-                     ORDER BY r.owner_site, r.url"""):
-        result = r["result"]
-        if result == "redirect" and (result := _landed_nowhere(f, r["id"])) is None:
-            continue
+    for r in f.q(f"{_ORPHAN_ROWS} ORDER BY r.owner_site, r.url"):
+        result, moved, to = r["result"], r["result"] == "redirect", None
+        if moved:
+            result, to = _redirect_alone(f, r["id"])
+            if result is None:
+                continue
+            if _marked_alone(f, r, result):
+                result = outcome.SCHOOL_SIDE
         out[r["owner_site"]].append(Orphan(r["id"], r["owner_site"], r["url"], r["kind"], r["found_via"], result,
-                                           r["reason"], r["status"]))
+                                           r["reason"], r["status"], moved, to))
     return dict(out)
+
+
+def orphan_result(src, uid: int) -> str | None:
+    """What a redirecting round-1 row that no page uses comes to (orphans()), before any person's mark: what
+    Frontier.mark_school_side marks it by (a page's resource is marked by page_resource instead). None for any other
+    row, and for one whose redirects land on a row (judged by itself: mark that one)."""
+    f = _frontier(src)
+    rows = f.q(f"{_ORPHAN_ROWS} AND r.id = ?", (uid,))
+    if not rows or rows[0]["result"] != "redirect":
+        return None
+    return _redirect_alone(f, uid)[0]
 
 
 # ---------------------------------------------------------------- requests made on the school's network (B4)
@@ -1317,6 +1488,8 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
         warnings += rec.low_cover()
         if rec.uncompared:
             warnings.append(f"对账有几项没比到（不等于没问题）：{rec.blind_words()}")
+        if rec.menu_school:
+            warnings.append(rec.menu_words())
     if red:
         state, why = ERROR, red
     elif s not in fx.res_sites and any(p.level != "waiting" for p in pages):
@@ -2009,6 +2182,8 @@ def _c18(ctx: _Ctx, c: Check) -> None:
         c.lines += [f"  - {s}：{line}" for line in rec.cover_lines()]
         if rec.uncompared:
             c.lines.append(f"  - {s}：对账有几项没比到（不等于没问题）：{rec.blind_words()}")
+        if rec.menu_school:
+            c.lines.append(f"  - {s}：{rec.menu_words()}")
     c.detail = (f"第一轮网站 {len(sites)} 个：对账全过而且是新的 {n['ok']}，没对账 {n['none']}，过期 {n['stale']}，"
                 f"没过 {n['failed']}；覆盖率低于 {COVER_MIN:.0%} 的 {n['low']}（只提醒，不挡「爬完」）")
 
@@ -2070,14 +2245,14 @@ ITEMS: tuple[tuple[str, str, Callable, bool], ...] = (
 
 def checks(src, now: float | None = None, *, cheap: bool = False, root: Path | None = None, plan=None,
            fx: Facts | None = None, pages: Iterable | None = None, statuses: dict[str, SiteStatus] | None = None,
-           alive: bool | None = None, wayback_open: bool = True, resource_check: Callable | None = None,
-           golden: Path | None = None) -> list[Check]:
+           alive: bool | None = None, wayback_open: bool = True, resource_check: Callable | None = None
+           ) -> list[Check]:
     """§13's items (the dashboard: cheap=True, items 1–12 and 16, §14.2; an item that needs page completeness reads
     the pages it is given, or says 没检查). root: the archive directory (item 14 reads its WARC files; and whether a
     run holds run.lock). plan: the site list (round1.load), for the scope audit's placements. resource_check: item
     13's function (reconcile.py's: (frontier, root) -> problems), else item 13 reads each site's reconciliation (V13).
-    wayback_open: item 16 keeps its Wayback line until the user agrees and it is filled. golden: the 25 questions
-    (research/project_audit_2026-10-25/web_search_baseline_25q.json), an item G of its own."""
+    wayback_open: item 16 keeps its Wayback line until the user agrees and it is filled. (The 25 questions' item G is
+    no item since 10-26, with reconcile's R5: §13.)"""
     f = _frontier(src)
     if alive is None:
         alive = root is not None and _alive(root) is not None
@@ -2090,8 +2265,6 @@ def checks(src, now: float | None = None, *, cheap: bool = False, root: Path | N
         c = Check(no, title)
         fn(ctx, c)
         out.append(c)
-    if golden is not None and not cheap:
-        out.append(golden_check(ctx, Path(golden)))
     return out
 
 
@@ -2179,92 +2352,6 @@ def warc_readback(root: Path, src, sites: Iterable[str] | None = None) -> tuple[
     return problems, n
 
 
-# ---------------------------------------------------------------- --golden: the 25 questions (§13)
-
-_QUOTE_SPLIT = re.compile(r"[；;…|｜]+|\.{3,}|　|\s{2,}")
-
-
-def page_text(markup: str) -> str:
-    """A stored page's visible text (viewer.page_text's reading: scripts, styles and templates left out)."""
-    from selectolax.lexbor import LexborHTMLParser
-
-    tree = LexborHTMLParser(markup)
-    for node in tree.css("script, style, noscript, template"):
-        node.decompose()
-    body = tree.body or tree.root
-    return body.text(separator="\n", strip=True) if body else ""
-
-
-def quote_found(quote: str, text: str) -> bool:
-    """Every piece of a quote (cut where the answer joined pieces: ；, …, a wide space) is in the text, whitespace
-    aside. A quote the school's page no longer holds is a person's to look at, never proof either way."""
-    flat = re.sub(r"\s+", "", text)
-    pieces = [re.sub(r"\s+", "", p) for p in _QUOTE_SPLIT.split(quote or "")]
-    return all(p in flat for p in pieces if len(p) >= 4)
-
-
-def golden_check(ctx: _Ctx, path: Path) -> Check:
-    """Each answer's source address is in the list with a result, its page complete, and its quote in the text stored
-    (§13 --golden): not in the list, or not complete, ✗; still waiting, or the quote not found (the school may have
-    changed the page: a person looks first), ⚠."""
-    from nknu.archive.postback import as_text, read_response
-
-    c = Check("G", "25 题的答案网址（--golden）")
-    f = ctx.f
-    data = json.loads(path.read_text(encoding="utf-8"))
-    fx = ctx.facts()
-    by_id = {p.id: p for p in fx.pages} if fx is not None else {}
-    by_content: dict[int, Page] = {}
-    for p in by_id.values():
-        by_content.setdefault(p.content_id, p)
-    n = Counter()
-    for q in data.get("webAnswers", []):
-        for src in q.get("sources", []):
-            url, quote = src.get("url") or "", src.get("quote") or ""
-            n["sources"] += 1
-            row = find_row(f, url)
-            if row is None:
-                c.add(FAIL, f"{q.get('id')}：{url} 不在清单里")
-                continue
-            end, nowhere = landing(f, row["id"])
-            if nowhere or end is None:
-                c.add(FAIL, f"{q.get('id')}：{url} {nowhere or '没有结果'}")
-                continue
-            if end["result"] in ("todo", "retry", "lab"):
-                c.add(WARN, f"{q.get('id')}：{url} {outcome.RESULT_LABEL[end['result']]}")
-                continue
-            page = by_id.get(row["id"]) or by_id.get(end["id"]) or by_content.get(end["id"])
-            kind = f.q("SELECT kind FROM url WHERE id=?", (end["id"],))[0][0]
-            if page is None and kind != "page":  # a PDF, a file: no completeness of its own, its result says (§13)
-                what = f"{q.get('id')}：{url} 不是网页（{kind}），{outcome.RESULT_LABEL.get(end['result'], end['result'])}"
-                if end["result"] == "ok":
-                    c.add(WARN, f"{what}：引文没有不连网核对（怎么核对要用户决定），先人看")
-                elif end["result"] in outcome.SCHOOL:
-                    c.add(WARN, f"{what}（学校页面可能已经更新，先人看再下结论）")
-                else:
-                    c.add(FAIL, what)
-                continue
-            if page is None or page.level not in ("complete", "complete_school"):
-                level = outcome.LEVEL_LABEL.get(page.level, page.level) if page else "不在完整度表里"
-                c.add(FAIL, f"{q.get('id')}：{url} 的完整度是 {level}（{outcome.RESULT_LABEL.get(end['result'], end['result'])}）")
-                continue
-            loc = f.q("SELECT warc, warc_offset, ctype FROM url WHERE id=?", (end["id"],))[0]
-            if not loc["warc"] or loc["warc_offset"] is None or ctx.root is None:
-                c.add(WARN, f"{q.get('id')}：{url} 没有存档位置，引文没核对")
-                continue
-            try:
-                _u, _s, headers, body = read_response(ctx.root, loc["warc"], loc["warc_offset"])
-            except (ValueError, OSError) as exc:
-                c.add(FAIL, f"{q.get('id')}：{url} 按位置读不回来（{exc}）")
-                continue
-            if quote and not quote_found(quote, page_text(as_text(body, headers.get("content-type") or loc["ctype"]))):
-                c.add(WARN, f"{q.get('id')}：{url} 的引文在存下的正文里找不到（学校页面可能已经更新，先人看再下结论）")
-                continue
-            n["ok"] += 1
-    c.detail = f"答案来源 {n['sources']} 个，都对得上的 {n['ok']} 个"
-    return c
-
-
 # ---------------------------------------------------------------- nknu archive verify
 
 @dataclass
@@ -2276,8 +2363,8 @@ class Verified:
     path: Path | None
 
 
-def verify(root: Path, *, plan=None, golden: Path | None = None, wayback_open: bool = True,
-           resource_check: Callable | None = None, write: bool = True) -> Verified:
+def verify(root: Path, *, plan=None, wayback_open: bool = True, resource_check: Callable | None = None,
+           write: bool = True) -> Verified:
     """`nknu archive verify` (design §13): the frontier opened read-only (OutdatedFrontier for one an older version
     wrote), nothing sent, every item, each site's state; writes reports/verify-<time>.md under root (write=False: the
     text only). The exit code: 2 something wrong, 1 something to look at or not checked, 0 all passed."""
@@ -2287,7 +2374,7 @@ def verify(root: Path, *, plan=None, golden: Path | None = None, wayback_open: b
         fx = facts(f)
         sts = site_status(f, fx=fx)
         cs = checks(f, root=root, plan=plan, fx=fx, statuses=sts, alive=alive is not None, wayback_open=wayback_open,
-                    resource_check=resource_check, golden=golden)
+                    resource_check=resource_check)
     finally:
         f.close()
     code = exit_code(cs)

@@ -125,13 +125,6 @@ def _cc(root: Path) -> Path:
     return d
 
 
-def _golden(root: Path) -> Path:
-    path = root / "q25.json"
-    path.write_text(json.dumps({"webAnswers": [{"id": "Q1", "sources": [{"url": ABOUT, "quote": QUOTE}]}],
-                                "grades": []}, ensure_ascii=False), encoding="utf-8")
-    return path
-
-
 def _facts(root: Path) -> Path:
     """v1's facts.db as seeds.v1_known reads it: one notice v1 knew (verify item 12)."""
     path = root / "facts.db"
@@ -166,7 +159,6 @@ class World:
     clock: Clock
     school: School
     sources: Sources
-    golden: Path
     shown: dict[str, str] = field(default_factory=dict)  # what the browser shows of each page (the page itself)
 
     def client(self, warc):
@@ -215,7 +207,7 @@ class World:
             return reconcile.reconcile(self.root, batch="e2e", plan=PLAN, sources=src, spot_factory=spot)[0]
 
     def verify(self) -> monitor.Verified:
-        return monitor.verify(self.root, plan=PLAN, golden=self.golden, resource_check=monitor.extract_check(PLAN),
+        return monitor.verify(self.root, plan=PLAN, resource_check=monitor.extract_check(PLAN),
                               write=False)
 
     def dashboard(self) -> tuple[dict, str]:
@@ -255,8 +247,7 @@ def make_world(tmp_path: Path, *, missing: tuple[str, ...] = (), erring: tuple[s
     _facts(tmp_path)
     html = pages(empty=empty)
     world = World(tmp_path / "archive", Clock(), School(html, missing, erring),
-                  Sources(cc_dir=_cc(tmp_path) if cc else None, old=_old(tmp_path), golden=_golden(tmp_path)),
-                  tmp_path / "q25.json")
+                  Sources(cc_dir=_cc(tmp_path) if cc else None, old=_old(tmp_path)))
     world.shown = {**html, **(shown or {})}
     return world
 
@@ -413,7 +404,7 @@ def test_without_r6_the_site_is_recorded_never_done(tmp_path):
 
 def test_without_the_common_crawl_index_r3_is_not_checked_and_the_site_never_done(tmp_path):
     w = make_world(tmp_path)
-    _all_steps(w, sources=Sources(cc_dir=None, old=w.sources.old, golden=w.golden))
+    _all_steps(w, sources=Sources(cc_dir=None, old=w.sources.old))
     got = w.not_done(monitor.UNRECONCILED)
     assert any("R3a" in x for x in got.sites[SITE].why)
 
@@ -440,11 +431,11 @@ def done_world(tmp_path, monkeypatch):
 
 def test_verify_command_writes_its_report_and_exits_by_its_worst_item(done_world):
     w = done_world
-    got = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root), "--golden", str(w.golden)])
+    got = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root)])
     assert got.exit_code == 1, got.output  # item 16 stays open until the owner agrees to use Wayback
     assert "第一轮完成，有已知缺口" in got.output and "✓ 爬完" in got.output
     assert list((w.root / "reports").glob("verify-*.md"))
-    missing = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root), "--golden", str(w.root / "no.json")])
+    missing = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root / "no-archive")])
     assert missing.exit_code == 1 and "找不到" in missing.output
 
 
@@ -710,7 +701,7 @@ def test_a_site_is_reconciled_while_another_is_still_being_crawled(tmp_path, mon
     root = tmp_path / "archive"
     c = mod.Crawler(root, plan=two, clock=clock, sleep=clock.sleep, resolver=_resolver, client_factory=client,
                     netcheck=lambda: True, disk_free=lambda p: 10**12, campus_url=None,
-                    reconcile_sources=Sources(cc_dir=None, old=None, golden=None))
+                    reconcile_sources=Sources(cc_dir=None, old=None))
     seeds.seed_round1(c, old=None, facts_db=None, cc_dir=None, probe=None, jstest=None)
     try:
         c.run(poll_s=0.01)

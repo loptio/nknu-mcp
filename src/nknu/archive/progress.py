@@ -1093,6 +1093,8 @@ def _found(v: dict) -> tuple[int, list[str]]:
 def _reconciled(conn: sqlite3.Connection) -> tuple[dict, list[dict]]:
     """Each site's last reconciliation (reconcile_site) and the addresses it found the crawl has no result for (R1,
     R3a, R4a: FOUND_CHECKS), which 漏抓检查 lists under 要人看 (§10.2.1, §18.2b)."""
+    from nknu.archive import monitor
+
     rec, missing = {}, []
     for r in conn.execute("SELECT site, batch, at, checks, cover_cc, cover_old, gates_ok FROM reconcile_site"):
         try:
@@ -1101,7 +1103,8 @@ def _reconciled(conn: sqlite3.Connection) -> tuple[dict, list[dict]]:
             checks = {}
         if not isinstance(checks, dict):
             checks = {}
-        failed = sorted(k for k, v in checks.items() if _status_of(v) == "fail")
+        # an older reconciliation's R5 (taken out 10-26) is read past, as monitor.reconciled does
+        failed = sorted(k for k, v in checks.items() if _status_of(v) == "fail" and k not in monitor.DROPPED_GATES)
         rec[r["site"]] = {"batch": r["batch"], "at": _ts(r["at"]), "gates_ok": r["gates_ok"],
                           "cover_cc": r["cover_cc"], "cover_old": r["cover_old"], "failed": failed}
         for item, v in checks.items():
@@ -1243,7 +1246,10 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
                                             if bucket_counts[b]],
             "bucket": bucket, "label": label, "slow_at": (slow or {}).get("at"),
             "reconcile": None if rec is None else {
-                "batch": rec["batch"], "at": _ts(rec["at"]), "gates_ok": rec["gates_ok"], "cover_cc": rec["cover_cc"],
+                "batch": rec["batch"], "at": _ts(rec["at"]), "cover_cc": rec["cover_cc"],
+                # the monitor's reading (an older R5 read past, menu links a person marked since: §10.2.1, §18.2b)
+                "gates_ok": rec_now.passed if rec_now is not None else rec["gates_ok"],
+                "menu": rec_now.menu_words() if rec_now is not None else "",
                 # §10.5: stale once a run, a rejudge or a person's verdict covered the site after it (review 10-26)
                 "fresh": rec_now.fresh if rec_now is not None else None,
                 "stale": rec_now.stale_words() if rec_now is not None else "",
@@ -1389,5 +1395,5 @@ COMMANDS = {
     # §18.3 step 4 (the order after a run stopped): the browser check, the reconciliation with R6, the acceptance
     "after": (".venv/bin/nknu archive jscheck                 # 浏览器判定网页类型（只判定，不抓）\n"
               ".venv/bin/nknu archive reconcile --batch <批>   # 对账，含浏览器抽查 R6\n"
-              ".venv/bin/nknu archive verify --golden research/project_audit_2026-10-25/web_search_baseline_25q.json"),
+              ".venv/bin/nknu archive verify                   # 验收"),
 }
