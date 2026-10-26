@@ -133,6 +133,12 @@ NEVER_HOSTS = {"drive.google.com", "docs.google.com", "calendar.google.com"}
 # Calendar's old address under www.google.com/calendar/; asked before judge() and its length limit (round1.admit)
 GOOGLE_LINK_HOSTS = frozenset({"drive.google.com", "docs.google.com", "calendar.google.com"})
 _GOOGLE_OLD_CALENDAR = re.compile(r"(?i)^/calendar(?:/|$)")
+# a Drive file's preview picture on Google's picture hosts (pilot 10-26, F2: Google Sites shows a Drive file as
+# lh3.google.com/u/0/d/<id>=s2048, which answered 302 to a sign-in and was counted 要登录): /d/<id> or /u/N/d/<id>,
+# a size suffix (=s2048, =w1280) or not. Any other picture on these hosts is a plain image 【Claude 的执行办法】
+LH3_HOSTS = frozenset({"lh3.google.com", "lh3.googleusercontent.com", "lh4.googleusercontent.com",
+                       "lh5.googleusercontent.com", "lh6.googleusercontent.com"})
+LH3_DRIVE = re.compile(r"^/(?:u/\d+/)?d/([A-Za-z0-9_-]{10,})(?:=[^/]*)?$")
 # a Google form's page, read once by GET and never answered (record 三·8; design §7.6): viewform, closedform for a
 # form that no longer takes answers, or the form's own address (/forms/d/e/ID, a slash or not), which Google redirects
 # to viewform (the crawler follows a resource's redirect, design §7.1). formResponse, edit and every other
@@ -406,6 +412,8 @@ def is_google_link(url: str) -> bool:
     except ValueError:
         return False
     host = (parts.hostname or "").lower()
+    if host in LH3_HOSTS:
+        return LH3_DRIVE.match(parts.path) is not None
     return host in GOOGLE_LINK_HOSTS or (host in _GOOGLE_REDIRECT_HOSTS and bool(_GOOGLE_OLD_CALENDAR.match(parts.path)))
 
 

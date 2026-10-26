@@ -536,8 +536,9 @@ def _total_html(snap: dict) -> str:
                     f"{_e(progress.fmt_dur(est['seconds']))}）")
         else:
             when = f"<b>还要跑</b>　约 {_e(progress.fmt_dur(est['seconds']))}（照最近的速度，从再开跑算起）"
-        out.append(f"<p>{when}——最慢的是 {_e(name)}：还剩 {_n(s['left'])} 个，每个约 {s['per_row']:.1f} 秒{_e(guess)}"
-                   + (f"；{_e('；'.join(s['why']))}" if s["why"] else "") + "</p>")
+        only = f"（只算这次 run 的 {len(est['sites'])} 个网站）" if est.get("sites") else ""
+        out.append(f"<p>{when}{_e(only)}——最慢的是 {_e(name)}：还剩 {_n(s['left'])} 个，每个约 {s['per_row']:.1f} 秒"
+                   f"{_e(guess)}" + (f"；{_e('；'.join(s['why']))}" if s["why"] else "") + "</p>")
     pol = snap["polite"]
     chips = [_mark("red", f"礼貌违反 {pol['hard']} 次") if pol["hard"] else _mark("green", "礼貌正常")]
     checks = snap.get("checks")

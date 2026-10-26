@@ -768,8 +768,11 @@ def test_google_api_errors_are_sorted_by_their_reason(tmp_path, monkeypatch):
     row = {k: f.row(google_api.item_url(i)) for k, i in ids.items()}
     assert (row["gone"]["state"], row["gone"]["reason"]) == ("done", "api:notFound")
     assert f.q("SELECT result FROM url_result WHERE id=?", (row["gone"]["id"],))[0][0] == "api_error"
+    # a rate answer is Google's protection, not the row's fault: it waits for the rest with no attempt used (pilot
+    # 10-26, F9; it used to cost one, and three blocks ended the row failed)
     assert (row["busy"]["state"], row["busy"]["reason"], row["busy"]["attempts"]) == \
-        ("pending", "api:rateLimitExceeded", 1)
+        ("pending", "api:rateLimitExceeded", 0)
+    assert f.q("SELECT count(*) FROM event WHERE code='google_block'")[0][0] == 1
     assert (row["key"]["state"], row["key"]["reason"], row["key"]["attempts"]) == ("pending", "api_key", 0)
     why = f.q("SELECT why FROM pause WHERE queue=?", (google_api.QUEUE,))[0][0]
     assert why.startswith("api_key")  # hold_for_key() lifts it when the next run starts with a key

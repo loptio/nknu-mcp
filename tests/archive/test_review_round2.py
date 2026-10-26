@@ -171,9 +171,15 @@ def test_P4_one_protected_folder_cannot_stall_its_host(tmp_path):
     pages_done = [u for u in net.seen if "/tsi/p" in u]
     files_seen = [u for u in net.seen if "/uploadfile/" in u]
     assert len(pages_done) == 5 and net.seen.index(pages_done[-1]) < net.seen.index(files_seen[10])
-    assert len(files_seen) == 25 and all(r["status"] == 403 for u, r in rows(crawler).items() if "/uploadfile/" in u)
+    # two streaks of ten are asked, 15 min apart; the folder refusing again after its wait is parked for a person
+    # (pilot 10-26: 76 pictures would have been drained ten by ten for 2 h, every one 403), the rest never sent
+    assert len(files_seen) == 20 and all(r["status"] == 403 for u, r in rows(crawler).items()
+                                         if "/uploadfile/" in u and r["status"] is not None)
+    parked = [r for u, r in rows(crawler).items() if "/uploadfile/" in u and r["status"] is None]
+    assert len(parked) == 5 and {(r["state"], r["reason"]) for r in parked} == {("failed", "denied_dir")}
     denies = events(crawler, "host_denies")
-    assert len(denies) == 2 and all("15 min" in m for m in denies)  # fixed: never 30 min, never a day
+    assert len(denies) == 1 and "15 min" in denies[0]  # fixed: never 30 min, never a day
+    assert len(events(crawler, "host_denies_parked")) == 1
 
 
 # ---------------------------------------------------------------- F5 / P5 remainder: Retry-After on the 404 probe

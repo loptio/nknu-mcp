@@ -27,7 +27,7 @@ import stamina
 
 from nknu.crawl import schoollock
 from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.tls import default_ssl_context, is_nknu_host, nknu_ssl_context
+from nknu.crawl.tls import is_nknu_host, nknu_ssl_context
 from nknu.crawl.warc import WarcSink
 
 USER_AGENT = "nknu-facts-bot/1.0 (+https://github.com/loptio/nknu-mcp)"
@@ -352,8 +352,10 @@ class Client:
         if transport is not None:
             self._nknu = self._other = httpx.Client(transport=transport, **common)
         else:
-            self._nknu = httpx.Client(verify=nknu_ssl_context(), **common)
-            self._other = httpx.Client(verify=default_ssl_context(), **common)
+            # one pool, one certificate check for every host (pilot 10-26, F1): certifi's roots plus the TWCA
+            # intermediate the school's servers send, STRICT kept. Government sites (bully.moe.edu.tw, www.kh.edu.tw)
+            # use that same intermediate, and failed the check without it
+            self._nknu = self._other = httpx.Client(verify=nknu_ssl_context(), **common)
         self.warc = warc
         self._follow, self._pass, self._strict_decode = follow_redirects, pass_statuses, strict_decode
         self._skip_types = tuple(t.lower() for t in skip_types)  # content-type prefixes not downloaded (streamed only)

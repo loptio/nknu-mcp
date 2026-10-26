@@ -189,6 +189,11 @@ BLOCK_HOSTS = re.compile(r"(?i)(^|\.)(youtube\.com|youtube-nocookie\.com|ytimg\.
 # scope.judge's reasons a request is never sent for, judging or not: a login system (a captcha's picture among them)
 # and the internal web services that answer with student records (scope.INTERNAL_HOSTS) 【Claude 的执行办法】
 NEVER_SEND = frozenset({"login", "internal_service"})
+# Google's own bookkeeping a page's scripts call (pilot 10-26, F10: the browser sent Google Sites' impression log and
+# Drive's auth warm-up): tracking, never content, never sent. Google's sign-in (accounts.google.com) stays what
+# scope.judge says, a login (NEVER_SEND: inconclusive:not_sent, for a person) 【Claude 的执行办法】
+BLOCK_PATHS = re.compile(r"(?i)^https://(?:sites\.google\.com/_/|drive\.google\.com/(?:auth_warmup|_/)|"
+                         r"www\.google\.com/(?:log|gen_204|recaptcha/))")
 # every 4xx and 5xx is the server's answer, handed to the browser as it is (408, 429 and the retried 5xx are failures)
 ANSWERS = frozenset(range(400, 600))
 JS_CHARS, JS_RATIO, FRAME_CHARS = 200, 1.3, 200  # jstest.py:259-265
@@ -451,8 +456,12 @@ def judge(obs: Observation, clicks: Sequence[Mapping[str, Any]] = ()) -> PageVer
     if obs.slow or obs.not_idle:
         return PageVerdict(None, "inconclusive:slow", **common)
     needed = [e for e in obs.log if not e.navigation and e.kind in NEEDED_KINDS]
-    if any(e.unsent or e.error for e in needed):
+    if any((e.unsent or e.error) and not data_post(e) for e in needed):
         return PageVerdict(None, "inconclusive:request_failed", **common)
+    if any(data_post(e) for e in needed):
+        # a data request the round cannot make (a POST with a JSON or text body: cLv2's timeline, pilot 10-26): the
+        # page reads data from an address of its own, the next round's way (读资料网址), whatever else it showed
+        return PageVerdict("js", None, method="data_post", **common)
     if any(e.blocked in NEVER_SEND for e in needed):  # a login's or an internal service's: what it holds is unseen
         return PageVerdict(None, "inconclusive:not_sent", **common)
     if any(d["new_text"] for d in data):
@@ -472,13 +481,19 @@ def incomplete(obs: Observation) -> str | None:
     if obs.not_idle:
         return "not_idle"
     for e in obs.log:
-        if e.navigation or e.kind not in NEEDED_KINDS:
-            continue
+        if e.navigation or e.kind not in NEEDED_KINDS or data_post(e):
+            continue  # a data POST the round cannot make is the type's (judge: js, data_post), not an unseen page
         if e.unsent or e.error:
             return f"{e.kind} {e.url[:200]}: {e.error or e.unsent}"
         if e.blocked in NEVER_SEND:
             return f"{e.kind} {e.url[:200]}: not_sent:{e.blocked}"
     return None
+
+
+def data_post(e: Exchange) -> bool:
+    """A data request (xhr, fetch) with a body the client does not send (post_body: JSON, text), which the page asks
+    its own data address for: the next round's way of reading it (pilot 10-26: SSO cLv2's ajaxTimeline.aspx)."""
+    return e.kind in DATA_KINDS and e.unsent == "post_body"
 
 
 def type_verdict(looks: Sequence[PageVerdict]) -> PageVerdict | None:
@@ -671,6 +686,8 @@ class PageBridge:
             return "type"
         if BLOCK_HOSTS.search(host):
             return "host"
+        if BLOCK_PATHS.match(a.url):
+            return "tracking"
         url = scope.canonical(a.url)
         if url is None:
             return "scheme"
@@ -1471,6 +1488,7 @@ class SpotLook:
     screenshot: str | None = None
     error: str | None = None
     incomplete: str | None = None
+    data_posts: tuple[str, ...] = ()  # the data addresses the page asked by a POST the round cannot make (data_post)
 
 
 class SpotChecker:
@@ -1523,7 +1541,8 @@ class SpotChecker:
         if obs.screenshot:
             with contextlib.suppress(ValueError):
                 shot = str(Path(obs.screenshot).relative_to(self.check.root))
-        return SpotLook(url, obs.final_url, obs.rendered or None, shot, error, None if error else incomplete(obs))
+        return SpotLook(url, obs.final_url, obs.rendered or None, shot, error, None if error else incomplete(obs),
+                        tuple(dict.fromkeys(e.url[:300] for e in obs.log if data_post(e))))
 
     async def _open(self, url: str, rel: Path | None) -> Observation:
         return await self.browser.open(url, PageBridge(self.check, url), None if rel is None else self.check.root / rel)

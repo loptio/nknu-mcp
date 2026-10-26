@@ -241,6 +241,7 @@ class SpotView:
     screenshot: str | None = None
     error: str | None = None
     incomplete: str | None = None  # why what the browser showed may be less than the page (jscheck.incomplete)
+    data_posts: tuple[str, ...] = ()  # data addresses the page asked by a POST the round cannot make (jscheck.data_post)
 
 
 # the spot checker (design §18.2b R6): opens one address through jscheck's browser, unreachable proxy and own queue
@@ -1221,12 +1222,18 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
     pages = _r6_pages(fr, plan, site, batch)
     if not pages:
         return Check(FAIL, {"pages": 0}, note="这个网站没有回 200 的网页可以抽查")
-    items, partial = [], []
+    items, partial, posts = [], [], []
     for row in pages:
         view = spot(row["url"])
         if view.error or not view.html:
             items.append({"url": row["url"], "problem": "error", "error": (view.error or "no page")[:200]})
             continue
+        if getattr(view, "data_posts", ()):
+            # the page reads data from an address of its own by a POST the round cannot make (pilot 10-26: cLv2's
+            # ajaxTimeline.aspx): what the browser showed is compared as any page's, and the page's type is judged js
+            # (method data_post, the next round's 读资料网址), so that no page of it ever shows complete
+            posts.append({"url": row["url"], "problem": "data_post", "targets": list(view.data_posts)[:5]})
+            _type_data_post(fr, row, view.data_posts)
         html = arc.text(row["warc"], row["warc_offset"])
         if html is None:
             items.append({"url": row["url"], "problem": "unreadable"})
@@ -1267,14 +1274,35 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
         elif getattr(view, "incomplete", None):  # no difference where the page was not seen whole proves nothing
             partial.append({"url": row["url"], "problem": "incomplete", "why": view.incomplete[:200],
                             "screenshot": view.screenshot})
+    counts = {"pages": len(pages), "differ": len(items), "incomplete": len(partial)}
+    if posts:
+        counts["data_post"] = len(posts)
     if items:
-        return Check(FAIL, {"pages": len(pages), "differ": len(items), "incomplete": len(partial)}, items + partial,
-                     "agent 再拿截图对照：正文、附件、图片、选单")
+        return Check(FAIL, counts, items + partial + posts, "agent 再拿截图对照：正文、附件、图片、选单")
     if partial:  # 【Claude 的执行办法】 (review 10-26): no difference seen where nothing was seen whole is no pass
-        return Check(SKIP, {"pages": len(pages), "differ": 0, "incomplete": len(partial)}, partial,
+        return Check(SKIP, counts, partial + posts,
                      f"{len(partial)} 页浏览器没载入完整（页面要的脚本或资料没回应、太慢、一直没安静下来）：这几页等于没抽查，"
                      "过一阵再跑 reconcile")
-    return Check(PASS, {"pages": len(pages), "differ": 0}, items)
+    return Check(PASS, counts, posts, f"{len(posts)} 页用 POST 向自己的资料网址要资料（这一轮发不了）：网页类型记成 js、"
+                                      "下一轮用读资料网址补；显示出来的部分没有差异" if posts else "")
+
+
+def _type_data_post(fr: Frontier, row, targets: Sequence[str]) -> None:
+    """A page's type judged js by the browser spot check (R6): it loads data by a POST the round cannot make. Written
+    only over a verdict that is not js already; a person's verdict (source manual) stands."""
+    key = row["page_type"]
+    if not key:
+        return
+    cur = fr.q("SELECT verdict, source FROM page_type WHERE key=?", (key,))
+    if not cur or cur[0]["verdict"] == "js" or cur[0]["source"] == "manual":
+        return
+    # a note token keeps no comma (page_type.note is comma-separated: jscheck.note_token's rule)
+    note = "data_post:" + targets[0].replace(",", "%2C") if targets else "data_post"
+    fr.x("UPDATE page_type SET verdict='js', why=NULL, method='data_post', source='spotcheck', tested_at=?, "
+         "note=CASE WHEN coalesce(note, '') = '' THEN ? ELSE note || ',' || ? END WHERE key=?",
+         (utc_now(), note, note, key))
+    fr.event("info", "verdict_set", f"R6 浏览器抽查：{key} 用 POST 向 {targets[0] if targets else '?'} 要资料，这一轮发"
+             "不了：类型记成 js（下一轮读资料网址）", row["host"], row["url"])
 
 
 # ---------------------------------------------------------------- one batch

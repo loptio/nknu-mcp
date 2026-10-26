@@ -521,12 +521,13 @@ def hosts_left(conn: sqlite3.Connection) -> dict[str, tuple[int, float | None]]:
 
 
 def eta(conn: sqlite3.Connection, now: float, speeds: dict[str, dict],
-        left: dict[str, tuple[int, float | None]] | None = None) -> dict:
+        left: dict[str, tuple[int, float | None]] | None = None, sites: list[str] | None = None) -> dict:
     """The round's finishing time: each server's T = W × k × c (W: the rows still to fetch, lab rows and DNS failures
     aside, plus the presses still to make; k, c: Tracker.speeds), at least each slow host's rows × its Crawl-delay
     and the last retry's time from now plus c, plus what is left of a pause or a cool-down; the round is the largest
     T (the servers run side by side: the makespan), with the server that holds it up named. left: hosts_left(),
-    when the caller has it already."""
+    when the caller has it already; sites: only these sites' presses count (a --sites run; the rows are the
+    caller's to scope)."""
     hosts = {r["host"]: r for r in conn.execute("SELECT host, queue, crawl_delay, cooldown_until FROM host")}
     per: dict[str, dict] = defaultdict(lambda: {"left": 0, "rows": 0, "presses": 0, "hosts": {}, "last_retry": None,
                                                 "cool": 0.0})
@@ -544,7 +545,9 @@ def eta(conn: sqlite3.Connection, now: float, speeds: dict[str, dict],
             p["last_retry"] = max(p["last_retry"] or 0.0, last_retry)
         if h is not None and (h["cooldown_until"] or 0) > now:
             p["cool"] = max(p["cool"], h["cooldown_until"] - now)
-    for r in conn.execute("SELECT queue, count(*) n FROM action WHERE state IN ('pending', 'active') GROUP BY queue"):
+    only = f" AND site IN ({','.join('?' * len(sites))})" if sites else ""
+    for r in conn.execute("SELECT queue, count(*) n FROM action WHERE state IN ('pending', 'active')" + only +
+                          " GROUP BY queue", tuple(sites or ())):
         if r["queue"] != "dns-fail":
             per[r["queue"]]["presses"] += r["n"]
     paused = {r["queue"]: r["until"] for r in conn.execute("SELECT queue, until FROM pause WHERE until > ?", (now,))}
@@ -657,8 +660,13 @@ def snapshot(conn: sqlite3.Connection, now: float, *, tracker: Tracker | None = 
                                WHERE a.state <> 'superseded' GROUP BY 1, 2""").fetchall()
         by_host = _by_host(rows)
         server_rows = _servers(conn, now, speeds, by_host)
-        est = eta(conn, now, speeds, {h: (v["left"], v["last_retry"]) for h, v in by_host.items()})
         run = _run_state(conn, now, running, stop_file)
+        # a run of some sites only (--sites: the pilot, a sample) is estimated on those sites' rows and presses, not
+        # the whole round's (pilot 10-26, F6: the 4-site pilot showed the round's 27k URLs and 13 h)
+        sites = sorted(set(run["sites"])) if running and run.get("sites") else None
+        scoped = _by_host([r for r in rows if r["owner_site"] in sites]) if sites else by_host
+        est = eta(conn, now, speeds, {h: (v["left"], v["last_retry"]) for h, v in scoped.items()}, sites=sites)
+        est["sites"] = sites
         errors = _errors(conn, now)
         n_requests = conn.execute("SELECT count(*) FROM request").fetchone()[0]
     finally:

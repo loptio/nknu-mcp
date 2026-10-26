@@ -606,7 +606,8 @@ def _tls(tmp_path) -> tuple[ssl.SSLContext, ssl.SSLContext]:
 
 def test_the_trace_times_the_tls_handshake(tmp_path, monkeypatch):
     served, trusting = _tls(tmp_path)
-    monkeypatch.setattr(fetch_mod, "default_ssl_context", lambda: trusting)
+    # one context for every host since the 10-26 pilot (F1): the test's CA stands in for certifi plus TWCA
+    monkeypatch.setattr(fetch_mod, "nknu_ssl_context", lambda: trusting)
     srv = Loopback(tls=served)
     client = archive(Fake())
     try:

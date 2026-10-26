@@ -516,6 +516,29 @@ def title_ok(row_title: str, html: str, css: str | None, exclude: str | None = N
 EMPTY_DETAIL = outcome.EMPTY_DETAIL  # action.reason of a detail answered with nothing but its title: thin
 
 
+# a download press's answer that names where the file is: SSO's startup script creates a hidden iframe at
+# /WebServices/ajaxDownloadFile.aspx, which the session answers with the file once (pilot 10-26, F3: the 61 presses
+# on web/595 and the 5 on site/100061 all answered 200 text/html, the page again with this script)
+_EXPORT_IFRAME = re.compile(r"""iframeExport\.src\s*=\s*(['"])([^'"]+)\1""")
+
+
+def file_followup(html: str, base: str) -> str | None:
+    """The canonical address a download press's answer sends the browser to for the file, on the press's own host
+    (the file is bound to this session: another host's address is no such export), or None: the page names none
+    and is the answer itself."""
+    m = _EXPORT_IFRAME.search(html)
+    if m is None:
+        return None
+    url = scope.canonical(m.group(2), base)
+    if url is None:
+        return None
+    try:
+        same = (urlsplit(url).hostname or "").lower() == (urlsplit(base).hostname or "").lower()
+    except ValueError:
+        return None
+    return url if same else None
+
+
 def empty_answer(row_title: str, html: str, rs: profiles.Rows | None) -> bool | None:
     """§10.1 nonempty for a detail a row's press brings back (review 10-26 phase 3), as profiles.empty_detail judges
     one got by GET: True when the row set's body area holds no text but the row's title (cLv2 writes the title inside
@@ -602,12 +625,15 @@ class Stored:
 class Followup:
     """What the crawler does after an answer: location, a redirect's target to queue as the list page's resource
     (link table: list page → it, text [postback]); files, the addresses a file button's POST gave, each queued as the
-    page's attachment (kind0 file, page_res role file, need must); restart: the chain starts again from its GET (the
-    list page's url row is pending again, reason chain_restart: nothing more to do)."""
+    page's attachment (kind0 file, page_res role file, need must); file_get, the address a download press's answer
+    names for its file (file_followup: SSO's export iframe), to GET at once on the same connection and hand to
+    file_answered(), the press staying active meanwhile; restart: the chain starts again from its GET (the list page's
+    url row is pending again, reason chain_restart: nothing more to do)."""
 
     page_id: int
     location: str | None = None
     files: tuple[str, ...] = ()
+    file_get: str | None = None
     restart: bool = False
     note: str = ""
 
@@ -936,20 +962,32 @@ class Chains:
 
     def _end(self, action, state: str, reason: str, **cols) -> None:
         cols = {"state": state, "reason": reason[:200] if reason else None, "done": self.clock(), **cols}
+        self._set(action, **cols)
+
+    def _set(self, action, **cols) -> None:
         sets = ", ".join(f"{k}=?" for k in cols)
         self.f.x(f"UPDATE action SET {sets} WHERE id=?", (*cols.values(), action["id"]))
 
-    # ---- answers
-    def answered(self, action: sqlite3.Row, snap, warc: str | None) -> Followup:
-        """The answer to a press (a fetch.Snapshot: status, url, headers, body, sha256, warc_offset, warc_len), archived
-        in warc. For a detail or a next page answered with a web page, the crawler reads its links first (as the
-        list page's: _parts with the list row, add_page_res), then calls this."""
+    @staticmethod
+    def _answer(snap, warc: str | None) -> tuple[_Answer, dict]:
+        """A fetch.Snapshot (status, url, headers, body, sha256, warc_offset, warc_len) as an answer, with the columns
+        every answer writes on its action."""
         a = _Answer(snap.status, snap.url, dict(snap.headers), snap.body, getattr(snap, "sha256", None),
                     getattr(snap, "raw_headers", ()), getattr(snap, "text", None), getattr(snap, "warc_offset", None),
                     getattr(snap, "warc_len", None))
         cols = {"status": a.status, "ctype": (a.headers.get("content-type") or "")[:100], "bytes": len(a.body),
                 "sha256": a.sha256 or hashlib.sha256(a.body).hexdigest(), "warc": warc, "warc_offset": a.warc_offset,
                 "warc_len": a.warc_len}
+        return a, cols
+
+    # ---- answers
+    def answered(self, action: sqlite3.Row, snap, warc: str | None) -> Followup:
+        """The answer to a press (a fetch.Snapshot: status, url, headers, body, sha256, warc_offset, warc_len), archived
+        in warc. For a detail or a next page answered with a web page, the crawler reads its links first (as the
+        list page's: _parts with the list row, add_page_res), then calls this. A download answered with a page that
+        names where the file is (file_followup) stays active: Followup.file_get says what to GET, file_answered()
+        takes what comes."""
+        a, cols = self._answer(snap, warc)
         out = Followup(action["list_id"])
         if a.status in REDIRECTS:
             loc = scope.canonical(a.headers.get("location", ""), a.url)
@@ -970,6 +1008,15 @@ class Chains:
             self._end(action, "done", "", **cols)
             self._walk_end(action, "mismatch:page", f"page {action['step']} answered {cols['sniff']}, no web page")
             return out
+        if action["kind"] == "download" and cols["sniff"] == "html":
+            # SSO (WebIdx's lnkDownloadFile, cLv2's downloadBtnN) answers a download with the page again and a startup
+            # script that opens the file's address in an iframe (pilot 10-26, F3): the file is the answer to that GET,
+            # in this session, right after the press. The press's own answer is kept until the file's replaces it.
+            html = a.text if a.text is not None else as_text(a.body, cols["ctype"])
+            if (follow := file_followup(html, a.url)) is not None:
+                self._set(action, **cols)
+                out.file_get = follow
+                return out
         if action["kind"] == "download" or cols["sniff"] != "html":
             self._end(action, "done", "", **cols)
             return out
@@ -1066,6 +1113,27 @@ class Chains:
             return out
         self._end(action, "done", "", location=url, **cols)
         out.files = (url,)
+        return out
+
+    def file_answered(self, action: sqlite3.Row, snap, warc: str | None) -> Followup:
+        """The answer to the GET a download press's export page named (Followup.file_get): the press's file, judged
+        as any download's answer (its format sniffed, its name from Content-Disposition; a web page again is
+        not_file), with the address it came from (location). A failure of that GET is the crawler's to hand to
+        failed(): the chain starts again from its GET once (§6.4), the press with it."""
+        a, cols = self._answer(snap, warc)
+        out = Followup(action["list_id"])
+        if a.status in REDIRECTS:  # the export sends the browser elsewhere: that address is the list page's resource
+            loc = scope.canonical(a.headers.get("location", ""), a.url)
+            self._end(action, "done", "", location=loc, **cols)
+            out.location = loc
+            return out
+        if a.status != 200:
+            if a.status >= 500 or a.status in FAIL_STATUSES:
+                return self.failed(action, f"http_{a.status}", **cols)
+            self._end(action, "done", "", location=a.url, **cols)
+            return out
+        cols.update(sniff=sniff.sniff(a.body, cols["ctype"]), filename=sniff.filename(a.raw_headers, a.headers))
+        self._end(action, "done", "", location=a.url, **cols)
         return out
 
     def failed(self, action: sqlite3.Row, error: str, **cols) -> Followup:

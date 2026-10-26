@@ -1,8 +1,10 @@
-"""TLS for *.nknu.edu.tw.
+"""TLS for every host the crawlers reach (*.nknu.edu.tw first; since the 10-26 pilot, F1, the other hosts too).
 
 TWCA Global Root CA (in certifi) has no Subject Key Identifier, which Python 3.13's VERIFY_X509_STRICT rejects.
 We keep STRICT, bundle the intermediate the school's servers send (TWCA Secure SSL Certification Authority, the 2023G3
 generation; verified offline against certifi's TWCA Global Root CA) and let VERIFY_X509_PARTIAL_CHAIN anchor the chain there.
+The government sites the school links (bully.moe.edu.tw, www.kh.edu.tw) send that same intermediate, so one context
+serves every host: certifi's roots for the rest of the web, the bundled intermediate where a chain holds it.
 Certificate verification is never switched off. Intermediate expires 2030-10-16; the school's leaf expires 2027-02-10 (recheck on renewal).
 """
 

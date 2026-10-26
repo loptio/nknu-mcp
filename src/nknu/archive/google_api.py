@@ -84,6 +84,12 @@ MAX_LIST_PAGES = 50  # a folder's listing pages; the 51st is held (cap:drive_lis
 MAX_CALENDAR_PAGES = 10  # events.list pages per calendar; the 11th is held (cap:calendar)
 RATE_PAUSE_S = 900.0  # design §7.6: a quota or rate answer without Retry-After rests the googleapis queue 15 min
 MAX_PAUSE_S = 86400.0
+# Google's "automated queries" page (pilot 10-26, F9: after 21 Drive downloads every alt=media answered 403 with it,
+# text/html, no JSON reason): a protection mechanism, never bypassed (CLAUDE.md). The googleapis queue rests an hour
+# at least, doubling while it goes on (crawler._api_error), and the rows lose no attempt 【Claude 的执行办法】
+BLOCK_PAUSE_S = 3600.0
+BLOCK_REASON = "automated_queries"
+_SORRY_PAGE = re.compile(r"(?i)automated queries|<title>\s*Sorry\.\.\.\s*</title>")
 # a key Google refuses cannot be fixed inside a running process (fetch.py reads the variable of the running process):
 # the queue rests for the rest of the run, and hold_for_key() lifts that rest when the next run starts 【Claude 的执行办法】
 KEY_PAUSE_S = 6 * 3600.0
@@ -209,6 +215,9 @@ def parse_link(url: str) -> GoogleLink:
     key = next(iter(params.get("resourcekey", ())), None) or None
     if host == "drive.google.com":
         return _drive(url, segs, params, key)
+    if host in scope.LH3_HOSTS:  # a Drive file's preview picture (pilot 10-26, F2): the file itself
+        m = scope.LH3_DRIVE.match(parts.path)
+        return GoogleLink(url, "file", m.group(1), key) if m else GoogleLink(url, "unhandled")
     if host == "docs.google.com":
         return _docs(url, parts, segs, params, key)
     if host == "calendar.google.com" or (host in ("www.google.com", "google.com") and segs[:1] == ["calendar"]):
@@ -319,6 +328,12 @@ def media_url(file_id: str) -> str:
 def export_url(file_id: str, mime: str) -> str:
     """A native document exported (files.export: 10 MB at most)."""
     return f"{DRIVE_API}/{file_id}/export?mimeType={_quote(mime)}"
+
+
+def is_download(url: str) -> bool:
+    """A Drive download (an upload's bytes, alt=media, or an export): the request Google's protection watches, which
+    the crawler spaces out (crawler.DRIVE_MEDIA_GAP); metadata and listings are not."""
+    return "alt=media" in url or "/export?" in url
 
 
 def list_url(folder_id: str, token: str | None = None) -> str:
@@ -461,14 +476,18 @@ class ApiError:
     """A 4xx (or 5xx) answer of Google's API, sorted by its reason (design §7.6's table). action:
     answer: kept as answered, never retried (url_result: 404/403/410 api_error, 400 http_4xx), reason url_reason;
     login: kept, flag login (要登录: 「云端硬盘回『没有权限』」, record 二·4); too_large: skipped, too_large;
-    retry: the googleapis queue rests pause_s and the row is retried as a GET (an attempt; reason url_reason);
-    key: the queue rests pause_s, the row back to pending (api_key, no attempt), an event key_check."""
+    retry: the googleapis queue rests pause_s and the row is retried as a GET (an attempt; reason url_reason), or,
+    when block is set (a quota or rate answer, a 429, Google's "automated queries" page: the service's protection,
+    never the URL's fault), the row waits for the rest with no attempt used and the rest grows while the block goes
+    on (crawler._api_error, pilot 10-26 F9); key: the queue rests pause_s, the row back to pending (api_key, no
+    attempt), an event key_check."""
 
     status: int
     reason: str  # Google's (errors[].reason or details[].reason), else http_<status>
     action: str
     url_reason: str
     pause_s: float | None = None
+    block: bool = False
 
 
 def error_reasons(body: bytes | str | None) -> list[str]:
@@ -513,12 +532,16 @@ def classify(status: int, body: bytes | str | None, headers: Mapping[str, str] |
         if r in QUOTA_REASONS:
             wait = retry_after(headers)
             return ApiError(status, r, "retry", f"api:{r}",
-                            min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S)
+                            min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S, block=True)
+    if status in (403, 429, 503) and not reasons and _sorry_page(body, headers):
+        wait = retry_after(headers)
+        return ApiError(status, BLOCK_REASON, "retry", f"api:{BLOCK_REASON}",
+                        max(min(wait, MAX_PAUSE_S), BLOCK_PAUSE_S) if wait is not None else BLOCK_PAUSE_S, block=True)
     reason = next((r for r in reasons if r[:1].islower()), None) or (reasons[0] if reasons else f"http_{status}")
     if status == 429:
         wait = retry_after(headers)
         return ApiError(status, reason, "retry", f"api:{reason}",
-                        min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S)
+                        min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S, block=True)
     if status >= 500:
         return ApiError(status, reason, "retry", f"api:{reason}")
     if any(r in TOO_LARGE_REASONS for r in reasons):
@@ -528,6 +551,15 @@ def classify(status: int, body: bytes | str | None, headers: Mapping[str, str] |
     if status in (404, 410) and reason == f"http_{status}":
         reason = "notFound"
     return ApiError(status, reason, "answer", f"api:{reason}")
+
+
+def _sorry_page(body: bytes | str | None, headers: Mapping[str, str]) -> bool:
+    """Google's "We're sorry... automated queries" page: a web page (text/html) saying so, in place of the API's JSON."""
+    ctype = (headers.get("content-type") or "").lower()
+    if "html" not in ctype and not isinstance(body, str):
+        return False
+    text = body if isinstance(body, str) else (body or b"")[:4000].decode("utf-8", "replace")
+    return _SORRY_PAGE.search(text) is not None
 
 
 def error_cols(err: ApiError) -> dict[str, Any] | None:

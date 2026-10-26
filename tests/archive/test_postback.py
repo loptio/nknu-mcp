@@ -819,3 +819,64 @@ def test_sso_category_totals(world):
         world.f.x("UPDATE listwalk SET ended_by='last_page', ok=1 WHERE list_id=?", (list_id,))
     assert world.chains.sso_totals() == (4, 5)
     assert world.walk(whole)["ended_by"] == "mismatch:total"
+
+
+# ---------------------------------------------------------------- a download answered by an export page (pilot 10-26, F3)
+
+PDF = b"%PDF-1.4\n%made up for a test\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+def _download_press(world):
+    """MoreNews stored, its first detail answered (one file planned), its second too, then the file's press."""
+    row, _got = world.stored(MORE, "sso.nknu.edu.tw/web/3", fx("webidx_morenews.html"))
+    a, target = world.press()
+    world.answer(a, target.url, fx("webidx_detail.html"))
+    b, target = world.press()
+    world.answer(b, target.url, fx("webidx_detail_wrong.html"))
+    c, target = world.press()
+    assert c["kind"] == "download"
+    return row, c, target
+
+
+def test_file_followup_reads_the_export_iframe_the_answer_creates():
+    html = fx("sso_download_export.html")
+    assert postback.file_followup(html, MORE) == scope.canonical("/WebServices/ajaxDownloadFile.aspx", MORE)
+    assert postback.file_followup(fx("webidx_detail.html"), MORE) is None  # no export script: the page is the answer
+    off = html.replace("'/WebServices/ajaxDownloadFile.aspx'", "'https://files.example.org/x.pdf'")
+    assert postback.file_followup(off, MORE) is None  # another host's address is no session-bound export
+
+
+def test_a_download_answered_with_an_export_page_is_fetched_from_that_address_as_the_press(world):
+    """SSO's download buttons (WebIdx lnkDownloadFile, cLv2 downloadBtnN) answer with the page again and a startup
+    script that opens /WebServices/ajaxDownloadFile.aspx in an iframe: the file comes from that GET, in the same
+    session, right after the press (pilot 10-26, F3: 61 presses on web/595 ended not_file)."""
+    row, c, target = _download_press(world)
+    out = world.answer(c, target.url, fx("sso_download_export.html"))
+    assert out.file_get == postback.file_followup(fx("sso_download_export.html"), target.url)
+    a = world.f.q("SELECT * FROM action WHERE id=?", (c["id"],))[0]
+    assert a["state"] == "active" and a["status"] == 200 and a["sniff"] == "html"  # the press's own answer, kept
+    snap = world.archive(out.file_get, PDF, headers={"content-type": "application/octet-stream",
+                                                     "content-disposition": 'attachment; filename="名單.pdf"'})
+    world.chains.file_answered(c, snap, world.warc)
+    a = world.f.q("SELECT * FROM action WHERE id=?", (c["id"],))[0]
+    assert (a["state"], a["sniff"], a["filename"], a["location"]) == ("done", "pdf", "名單.pdf", out.file_get)
+    assert (a["warc_offset"], a["sha256"], a["bytes"]) == (snap.warc_offset, snap.sha256, len(PDF))
+    assert world.f.q("SELECT result FROM action_result WHERE id=?", (c["id"],))[0][0] == "ok"
+    res = {r["res_key"]: r["result"] for r in world.f.q("SELECT res_key, result FROM page_resource WHERE page_id=?",
+                                                        (row["id"],))}
+    assert res[f"pb:download:{c['row_key']}"] == "ok"
+
+
+def test_a_file_address_that_answers_a_web_page_again_is_not_file(world):
+    _row, c, target = _download_press(world)
+    out = world.answer(c, target.url, fx("sso_download_export.html"))
+    world.chains.file_answered(c, world.archive(out.file_get, "<html><body>附件無法下載</body></html>"), world.warc)
+    assert world.f.q("SELECT state, result FROM action_result WHERE id=?", (c["id"],))[0][:] == ("done", "not_file")
+
+
+def test_an_export_to_another_host_is_not_followed(world):
+    _row, c, target = _download_press(world)
+    off = fx("sso_download_export.html").replace("'/WebServices/ajaxDownloadFile.aspx'", "'https://files.example.org/x'")
+    out = world.answer(c, target.url, off)
+    assert out.file_get is None
+    assert world.f.q("SELECT state, result FROM action_result WHERE id=?", (c["id"],))[0][:] == ("done", "not_file")

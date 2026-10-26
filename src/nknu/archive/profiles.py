@@ -231,6 +231,10 @@ GLOBAL_WRITINGS = (
             "浏览器内建的呼叫（列印、关窗、卷动），不载入内容（§7.8 全校通用）"),
     Writing(r"js_link:(?:window\.)?history\.(?:back|go|forward)", "ignore",
             "浏览器内建的上一页、下一页，不载入内容（§7.8 全校通用）"),
+    Writing(r"js_link:(?:isFinite|isNaN|parseInt|parseFloat|Number|String|Boolean|encodeURIComponent|"
+            r"decodeURIComponent|encodeURI|decodeURI|alert|confirm|prompt)", "ignore",
+            "JavaScript 内建函数（算数、转码、弹出对话框），不发请求、不载入内容（§7.8 全校通用；试跑 10-26：校安中心的 "
+            "isFinite）"),
 )
 _GET_FORM = re.compile(r"get_form:(?P<action>\S*) (?P<fields>.*)")
 
@@ -307,9 +311,12 @@ SSO_WEBIDX = Profile(
                "分类签：载入时显示的就是「全部」（btnAll 带 active），各分类是同一批的子集。§7.4 写「btnCat、btnAll 先不按，"
                "试跑时核对 MoreNews 的总数」（第 18.2 节）"),
     ),
-    writings=(Writing(r"select:ucNews\$ddlSort", "ignore", "排序选单：只换排序，行还是同一批"),),
-    pending_r7=("toggleMobileSub", "toggleMenu", "scrollToTop", "currentSlide", "moveSlide", "toggleClearBtn",
-                "setSearch", "clearSearchInput"),
+    writings=(Writing(r"select:ucNews\$ddlSort", "ignore", "排序选单：只换排序，行还是同一批"),
+              Writing(r"js_link:scrollToTop", "ignore", "「回到頂端」：R7 读了学校的 script.js 本体（试跑 10-26），不发请求、"
+                      "不载入内容"),
+              Writing(r"js_link:toggleMenu", "ignore", "主选单的开关：R7 读了学校的 script.js 本体（试跑 10-26），不发请求、"
+                      "不载入内容")),
+    pending_r7=("toggleMobileSub", "currentSlide", "moveSlide", "toggleClearBtn", "setSearch", "clearSearchInput"),
 )
 
 SSO_CLV2 = Profile(
@@ -373,6 +380,8 @@ CNKNU = Profile(
                 "站内搜索的条件（组别、类别，配合「搜尋」按钮）：搜索结果页不抓；各类别另有自己的列表网址"),
         Writing(r"select:ddl_Sort", "ignore", "排序方式（日期、标题、单位）：只换排序，行还是同一批"),
         Writing(r"select:ddl_FileKind", "ignore", "体育室表格下载的「類別索引」：载入时是「全部」，列表已列出全部类别"),
+        Writing(r"select:ddl_Class", "ignore", "newslist.aspx 的分类筛选：载入时是「全部」，列表翻到底就是全部（试跑 10-26：体育"
+                "室 99 条，和 v1 已知的一样多）；各分类是同一批的子集，?class= 的分类页另有自己的列表"),
     ),
     pending_r7=("WdatePicker",),
 )

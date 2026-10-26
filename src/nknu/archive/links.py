@@ -106,7 +106,12 @@ MIN_SIZE = 80  # a width or height under this is an icon or a tracking pixel
 # never count. Kept 【Claude 的执行办法, 10-26】: a skipped picture is never fetched, so a lower share risks content for
 # a few requests saved (each picture is fetched once however many pages use it)
 REPEAT_PAGES, REPEAT_SHARE = 5, 0.3
-IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:repeat")
+IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:repeat", "round2:google_sites_image")
+# Google Sites serves a page's own pictures through its runtime picture service, at an address bound to the browser's
+# session (pilot 10-26, F8: 106 pictures of the counselling centre's home answered 403 from the first request, a
+# plain "Your client does not have permission"); a plain GET never gets them, and the round bypasses no protection
+# (CLAUDE.md). They are the next round's, where a browser's own loading of the page brings them 【Claude 的执行办法】
+_GOOGLE_SITES_RUNTIME_IMAGE = re.compile(r"(?i)^https://sites\.google\.com/sitesv-images-rt/")
 
 # GET paging (design §9): one parameter of these names changes, or WordPress's /page/N/; the link reads as a number
 # or "next". c.nknu's pn is a page's number, not paging.
@@ -1046,14 +1051,17 @@ def album_page(url: str) -> bool:
 
 
 def image_need(img: Image, page_url: str, profiled: bool = False) -> tuple[str, str]:
-    """("must", "") or ("no", why), every why in IMAGE_WHY: a captcha's picture (scope.CAPTCHA: never fetched, and
-    never content, so never a picture the page lacks; 【Claude 的执行办法】, review 10-26), a data: image, a size under
-    80, an album page, a decoration file name outside the body, a layout area on a site without a profile.
+    """("must", ""), ("no", why) or ("round2", why), every why in IMAGE_WHY: a captcha's picture (scope.CAPTCHA: never
+    fetched, and never content, so never a picture the page lacks; 【Claude 的执行办法】, review 10-26), a data: image,
+    a size under 80, an album page, a decoration file name outside the body, a layout area on a site without a
+    profile; Google Sites' session-bound pictures are the next round's (a page_res row with need round2, no url row).
     decor:repeat is the crawler's, once it has seen the site's pages (decor_repeat)."""
     if scope.CAPTCHA.search(unquote(img.src.split("?", 1)[0])):
         return "no", "captcha"
     if img.src.startswith("data:"):
         return "no", "data"
+    if _GOOGLE_SITES_RUNTIME_IMAGE.match(img.src):
+        return "round2", "round2:google_sites_image"
     if any(x is not None and x < MIN_SIZE for x in (img.width, img.height)):
         return "no", "tiny"
     if album_page(page_url):

@@ -161,6 +161,11 @@ GAP = (2.0, 5.0)  # the gap after each response (CLAUDE.md, design §6.3): the d
 GAP_FAST = (1.0, 2.0)  # the owner 10-26: once the pilot passed (record 一·3); never the default
 MIN_GAP_S = 1.0  # no setting goes below this
 SLOW_CAP_S = 30.0  # a slow answer is waited out up to this long (Heritrix's maxDelayMs)
+# the gap after a Drive download (alt=media, export) on the googleapis queue, never shorter than this (pilot 10-26,
+# F9: 21 downloads one every 4–5 s and Google's "automated queries" page blocked the rest; metadata and listings
+# keep the run's gap). Slower than the school's servers get, since Google's protection is what it is, never bypassed
+# 【Claude 的执行办法】
+DRIVE_MEDIA_GAP = (20.0, 40.0)
 RETRY_AFTER_S = 1800  # a failed URL is tried again after 30 min × attempts (plus up to 5 min), three attempts in all
 RETRY_JITTER_S = 300.0
 MAX_ATTEMPTS = 3
@@ -182,6 +187,11 @@ ROBOTS_4XX = frozenset(range(400, 500)) - {429}  # RFC 9309: any 4xx for robots.
 DENY_STATUSES = frozenset({401, 403, 451})
 DENY_STREAK = 10  # this many URLs of one directory refused in a row: that directory waits DENY_WAIT_S
 DENY_WAIT_S = 900.0  # fixed: a protected folder never grows into a day-long wait
+# a directory refused this many streaks in a row (DENY_STREAK each, a wait between) is parked: its other URLs fail
+# as denied_dir for a person to look at (`nknu archive retry denied_dir` puts them back), instead of being asked
+# ten by ten every 15 min for hours (pilot 10-26, F8: 106 pictures, 76 left to drain over about 2 h, every one 403)
+# 【Claude 的执行办法】
+DENY_GIVE_UP = 2
 UNREACHABLE_TRIES = 3  # robots.txt unreachable (no connection kind of its own) this many hours in a row: give up
 ROBOTS_HOPS = 5
 REDIRECTS = (301, 302, 303, 307, 308)
@@ -616,6 +626,8 @@ class Crawler:
         self._tl = threading.local()  # row: the url row a worker is handling now (a scheme move hands it another)
         self._last_kind: dict[str, str] = {}
         self._prefer: dict[str, str] = {}
+        self._deny_rests: dict[str, int] = {}  # directory -> streaks of refusals answered by a wait this run
+        self._google_blocks = 0  # blocks of the googleapis queue in a row (google_api.ApiError.block), 0 once answered
         self._answered_off: set[str] = set()
         self._dns_timed: dict[str, float] = {}
         self._doors: dict[str, dict[tuple[str, int], float]] = {}  # queue -> (scheme, port) -> its last answer
@@ -1311,13 +1323,13 @@ class Crawler:
             self.chains.failed(a, kind)  # a timeout, a TLS failure, a 5xx: the chain starts again from its GET once
             return
         self._answered(host, target.url, got.status)
-        self._press_answer(a, list_row, got, sink)
+        self._press_answer(queue, client, a, list_row, got, sink)
 
-    def _press_answer(self, a, list_row, got: Snapshot, sink) -> None:
+    def _press_answer(self, queue: str, client: Client, a, list_row, got: Snapshot, sink) -> None:
         """An answer to a press (design §7.5 step 6). A page that answers a detail or a next page is read as the list
         page's (its links and parts, _parts with the list row) before postback.answered() checks it; a redirect's
         Location is the list page's resource (link table: [postback]); a file button's address is the attachment of
-        every page that shows the button (§7.4)."""
+        every page that shows the button (§7.4); a download's export page names where its file is (_press_file)."""
         warc = self._warc_path(sink)
         list_id = a["list_id"]
         ctype = got.headers.get("content-type", "")
@@ -1328,6 +1340,10 @@ class Crawler:
             self.frontier.add_page_res(list_id, entries)
             google_api.resync(self.frontier, list_id)
         out = self.chains.answered(a, got, warc)
+        if out.file_get is not None:
+            out = self._press_file(queue, client, sink, a, list_row, out.file_get)
+            if out is None:
+                return
         if out.location is not None:
             e = self._resource_of(out.location, list_row, "redirect", list_row, [list_id])
             self.frontier.link(list_id, out.location, "[postback]", e.verdict)
@@ -1340,6 +1356,51 @@ class Crawler:
                 for pid in pages:
                     self.frontier.add_page_res(pid, [{"res_key": f, "how": "get", "role": "file", "need": "must",
                                                       "res_id": e.id}])
+
+    def _press_file(self, queue: str, client: Client, sink, a, list_row, url: str):
+        """The GET a download press's export page named (postback.file_followup; pilot 10-26 F3: SSO's download
+        buttons answer with the page again and an iframe at /WebServices/ajaxDownloadFile.aspx, which the session
+        answers with the file once): asked for at once on the list's own queue, after the gap like any request, on
+        the connection that pressed (its cookies), and handed back as the press's answer (chains.file_answered).
+        What goes wrong is the press's: nothing is sent twice (§6.4), the chain starts again from its GET once
+        (chains.failed), a server's refusal to connect pauses the server as any (B2). Returns the Followup, or None
+        when there is nothing more to do."""
+        host = urlsplit(url).hostname or a["host"]
+        try:
+            got = self._request(queue, client, Target(url), "postback", scope_reason=self._admitted_as(list_row))
+        except (_Paused, _Offline, _DiskLow, schoollock.SchoolLockNotHeld):
+            # the GET did not go out (a pause, the network down, the run halting): the press, sent and answered, may
+            # not go back to pending, or next_action would send its POST again (§6.4; review of the pilot fixes). It
+            # fails and the chain starts again from its GET once, as after any failure of this GET. A stop is the
+            # next run's resume(): the chain is superseded there, nothing sent twice
+            self.chains.failed(a, "file_get_interrupted")
+            raise
+        if isinstance(got, HostCircuitOpen):  # nothing was sent: the chain starts again once the breaker rests
+            self._cool_host(host)
+            client.reset_host(host)
+            self.chains.failed(a, "breaker")
+            return None
+        self._count()
+        if isinstance(got, RetryLater):  # the server asked us to wait: the chain starts again after the rest
+            self._rest_queue(queue, client, host, url, got)
+            self.chains.failed(a, "retry_after")
+            return None
+        if isinstance(got, TooLarge):
+            self._press_dead(a, "media_type" if isinstance(got, UnwantedType) else "too_large")
+            return None
+        if isinstance(got, FetchError):
+            kind = error_kind(got)
+            if kind == NOT_ARCHIVED:  # the rehearsal: no answer will come (§18.1)
+                self._press_dead(a, kind)
+                return None
+            if kind in CONN_KINDS:  # it never reached the server: the server's failure (B2); the chain starts again
+                self._conn_failed(queue, client, {"host": host, "id": None}, url, got,
+                                  back=lambda: self.chains.failed(a, kind), fail=lambda: self.chains.failed(a, kind))
+                return None
+            self.chains.failed(a, kind)
+            return None
+        self._answered(host, url, got.status)
+        return self.chains.file_answered(a, got, self._warc_path(sink))
 
     def _resource_of(self, target: str, page_row, found_via: str, via, page_ids: list[int],
                      kind0: str | None = None) -> Enqueued:
@@ -1358,12 +1419,16 @@ class Crawler:
                              depth=page_row["depth"] + 1, found_via=found_via, found_from=via["id"])
 
     # ---- the wait after each request (design §6.3)
-    def _gap(self, host: str, took: float) -> None:
+    def _gap(self, host: str, took: float, url: str | None = None) -> None:
         """The run's gap after a response, on this queue, never cut short, and never less than what the answer took
-        (at most SLOW_CAP_S). A longer Crawl-delay of the host (at most 300 s) is that host's own wait: it may not be
-        asked again before not_before, the other hosts on the server may."""
+        (at most SLOW_CAP_S); after a Drive download, DRIVE_MEDIA_GAP at least. A longer Crawl-delay of the host (at
+        most 300 s) is that host's own wait: it may not be asked again before not_before, the other hosts on the
+        server may."""
         ended = self.clock()
-        delay = max(self.rng.uniform(*self.gap), min(max(took, 0.0), SLOW_CAP_S))
+        low, high = self.gap
+        if url is not None and host == google_api.API_HOST and google_api.is_download(url):
+            low, high = max(low, DRIVE_MEDIA_GAP[0]), max(high, DRIVE_MEDIA_GAP[1])
+        delay = max(self.rng.uniform(low, high), min(max(took, 0.0), SLOW_CAP_S))
         h = self.frontier.host(host)
         crawl_delay = min(float(h["crawl_delay"]), MAX_CRAWL_DELAY_S) if h is not None and h["crawl_delay"] else 0.0
         if crawl_delay > delay:
@@ -1422,7 +1487,7 @@ class Crawler:
                     self._log(queue, host, target.url, purpose, started, got, status, error, scope_reason, robots_sha,
                               client)
                 finally:
-                    self._gap(host, self.clock() - started)
+                    self._gap(host, self.clock() - started, url=target.url)
 
     def _log(self, queue: str, host: str, url: str, purpose: str, started: float, got, status: int | None,
              error: str | None, scope_reason: str | None, robots_sha: str | None, client) -> None:
@@ -1997,6 +2062,20 @@ class Crawler:
         if err is None:
             return False
         now = self.clock()
+        if err.action == "retry" and err.block:
+            # the service's protection (a quota, a rate, Google's "automated queries" page; pilot 10-26 F9): the
+            # queue rests, longer each time the block goes on (doubling, at most MAX_PAUSE_S), and the row waits for
+            # the rest with no attempt used: nothing about the row is wrong, and nothing is bypassed (CLAUDE.md)
+            self._google_blocks += 1
+            base = err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S
+            wait = min(base * 2 ** (self._google_blocks - 1), google_api.MAX_PAUSE_S)
+            until = now + wait
+            self.frontier.pause(queue, until, f"{row['host']}: {err.url_reason}")
+            self.frontier.finish(row["id"], state="pending", reason=err.url_reason, next_at=until, fetched_at=None)
+            self.frontier.event("warn", "google_block", f"Google 回「{err.reason}」（这次 run 第 {self._google_blocks} "
+                                f"次）：googleapis 这条队休息 {wait / 60:.0f} 分钟再试；这一行放回待抓、不算失败；这是 "
+                                "Google 的保护机制，不绕过", row["host"], row["url"])
+            return True
         if err.action == "retry":
             self.frontier.pause(queue, now + (err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S),
                                 f"{row['host']}: {err.url_reason}")
@@ -2215,11 +2294,24 @@ class Crawler:
         h = self.frontier.host(host)
         if h is None:
             return
+        if host == google_api.API_HOST and status < 400 and google_api.is_download(url):
+            # a download got through: the next block's rest starts from the first again. Metadata and listings answer
+            # 200 while downloads are blocked (pilot 10-26), so they say nothing of the block (review of the fixes)
+            self._google_blocks = 0
         directory = deny_dir(url)
         if status in DENY_STATUSES and host != google_api.API_HOST:  # an API's 403 is its reason's (_api_error)
             run = self.frontier.deny(directory, host)
             if run >= DENY_STREAK:
                 until = self.clock() + DENY_WAIT_S
+                rests = self._deny_rests[directory] = self._deny_rests.get(directory, 0) + 1
+                if rests >= DENY_GIVE_UP:  # refused again after a wait: parked for a person, not drained for hours
+                    n = self._park_directory(host, directory)
+                    self.frontier.deny_rest(directory, until)
+                    self.frontier.event("warn", "host_denies_parked", f"{run} URLs in a row under {directory} "
+                                        f"answered 401/403/451 again after a {DENY_WAIT_S / 60:.0f}-min wait: its {n} "
+                                        "other URLs are parked (failed, denied_dir) for a person to look at (nknu "
+                                        "archive retry denied_dir puts them back)", host, url)
+                    return
                 n = self._defer_directory(host, directory, until)
                 self.frontier.deny_rest(directory, until)
                 self.frontier.event("warn", "host_denies", f"{run} URLs in a row under {directory} answered "
@@ -2228,17 +2320,31 @@ class Crawler:
                                     "blocking us)", host, url)
             return
         self.frontier.deny_clear(directory)
+        self._deny_rests.pop(directory, None)  # answered: a later streak waits again before any parking
         if h["cooldown_s"]:
             self.frontier.set_host(host, cooldown_s=0)
 
     def _defer_directory(self, host: str, directory: str, until: float) -> int:
-        ids = [r["id"] for r in self.frontier.q("SELECT id, url FROM url WHERE host=? AND state='pending'", (host,))
-               if deny_dir(r["url"]) == directory]
+        ids = self._directory_rows(host, directory)
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]
             self.frontier.x(f"UPDATE url SET next_at = max(next_at, ?), reason = coalesce(reason, 'denied_dir') "
                             f"WHERE id IN ({','.join('?' * len(part))})", (until, *part))
         return len(ids)
+
+    def _park_directory(self, host: str, directory: str) -> int:
+        """The directory's rows still to fetch fail as denied_dir (要人看; `retry denied_dir` puts them back): nothing
+        more is asked of a directory that refused DENY_GIVE_UP streaks in a row (pilot 10-26, F8)."""
+        ids = self._directory_rows(host, directory)
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            self.frontier.x(f"UPDATE url SET state='failed', reason='denied_dir', next_at=0 "
+                            f"WHERE id IN ({','.join('?' * len(part))})", part)
+        return len(ids)
+
+    def _directory_rows(self, host: str, directory: str) -> list[int]:
+        return [r["id"] for r in self.frontier.q("SELECT id, url FROM url WHERE host=? AND state='pending'", (host,))
+                if deny_dir(r["url"]) == directory]
 
     # ---- B4: where the requests are made from
     def campus_queue(self) -> str | None:
@@ -2753,8 +2859,8 @@ class Crawler:
             if target is None:
                 continue
             need, why = links.image_need(img, url, page.profiled)
-            if need != "must":
-                put(target, how="get", role="img", need="no", why=why, zone=img.zone, text=img.alt)
+            if need != "must":  # no (with why), or round2 (Google Sites' session-bound pictures: the next round's)
+                put(target, how="get", role="img", need=need, why=why, zone=img.zone, text=img.alt)
                 continue
             e = admit(img.src, "image", depth, img.zone, img.alt)
             if target not in google_done:
