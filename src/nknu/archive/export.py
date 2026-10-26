@@ -15,7 +15,11 @@ What goes out (README.md in the folder says it again, in words):
   timeline, a sitemap).
 - manifest.csv (UTF-8 with BOM, for Excel) and manifest.json: one row per item, got or not; missing.csv: the rows that
   have no file, worst first. The results are the views' (outcome.py: url_result, action_result, page_resource,
-  page_completeness) in the dashboard's words; the site's state is monitor.site_status's.
+  page_completeness) in the dashboard's words; the site's state is monitor.site_status's. A row no branch of the
+  export lists or counts is listed as 要人看 at the end (Builder._account), never left out.
+- README.md: the state, what was got (and of that, what still needs a look), what was not with why, what is still
+  queued counted from the manifest's rows (other sites' rows the site's pages use too), and the notice pages whose
+  text area is missing or empty (the school's deleted notices: 抓到了 by the views, said in 缺什么; review 10-27).
 
 Read only: frontier.db is opened with mode=ro (SQLite's own -wal and -shm files of a reader aside, nothing is written
 next to it), the WARC files are only read, and every database read is one transaction, so the export sees one moment of
@@ -119,37 +123,48 @@ class ExportRefused(Exception):
 # ---------------------------------------------------------------- the dates a page states
 
 
-_LABEL = (r"(?:發\s*佈|發\s*布|发\s*布|公\s*告|更\s*新|日\s*期|"
-          r"(?<![A-Za-z])(?:date|posted|published|updated|update)(?![A-Za-z]))")
-_DATE = re.compile(
-    rf"(?P<label>{_LABEL})[\s:：︰\-–—|｜\]】)）]{{0,8}}(?P<roc>民\s*[國国]\s*)?"
-    r"(?P<y>\d{2,4})\s*(?P<s1>[/.\-年])\s*(?P<m>\d{1,2})\s*(?P<s2>[/.\-月])\s*(?P<d>\d{1,2})(?!\d)\s*(?:日)?",
-    re.IGNORECASE)
+# the labels of the date a page was put up or changed (发布、發佈、公告、更新、張貼、刊登, with 日期 or 時間 after them or
+# not; Posted, Published, Updated, with on or at or not): first. 「最新公告」 is a side list's heading, never a label
+_STRONG = (r"(?:發\s*[佈布]|发\s*布|(?<!最新)公\s*告|更\s*新|張\s*貼|张\s*贴|刊\s*登)(?:\s*(?:日\s*期|時\s*間|时\s*间))?|"
+           r"(?<![A-Za-z])(?:posted|published|updated?)(?:\s+(?:on|at))?(?![A-Za-z])")
+# a bare 日期 or Date: only when no label above holds a date (an event page's 活動日期 may come before its 公告日期)
+_WEAK = r"日\s*期|(?<![A-Za-z])date(?![A-Za-z])"
+_AFTER = (r"[\s:︰\-–—|｜\]】)）]{0,8}(?P<roc>(?:中\s*[華华]\s*)?民\s*[國国]\s*)?"
+          r"(?P<y>\d{2,4})\s*(?P<s1>[/.\-年])\s*(?P<m>\d{1,2})\s*(?P<s2>[/.\-月])\s*(?P<d>\d{1,2})(?!\d)\s*(?:日)?")
+_DATES = tuple(re.compile(rf"(?P<label>{label}){_AFTER}", re.IGNORECASE) for label in (_STRONG, _WEAK))
+# full-width digits and the marks between them as their ASCII twins, one character for one: the words kept beside the
+# date are cut from the page's own text at the same places
+_HALF = str.maketrans("０１２３４５６７８９／．－：", "0123456789/.-:")
 YEARS = (1990, 2100)  # a date outside these is taken for none (a 民国 year read as a western one, a phone number)
 
 
 def find_date(text: str) -> tuple[str, str] | None:
-    """The first date the text states after a label (发布、發佈、公告、更新、日期, Date, Posted, Updated …): (YYYY-MM-DD, the
-    words as written), or None. 2025/10/01, 2025-10-01, 2025.10.01, 2025年10月1日; a year of two or three digits is a
-    民国 year (114/10/01, 114.10.01, 民國114年10月1日: + 1911). A date that does not exist, or falls outside YEARS, is
-    passed over. Found by the program: it may be wrong, which is why the words are kept beside it."""
-    for m in _DATE.finditer(text or ""):
-        s1, s2 = m["s1"], m["s2"]
-        if (s1 == "年") != (s2 == "月") or (s1 != "年" and s1 != s2):
-            continue
-        y = int(m["y"])
-        if len(m["y"]) == 4:
-            if m["roc"]:
+    """The date the text states after a label: (YYYY-MM-DD, the words as the page writes them), or None. A label of
+    putting up or changing (发布、發佈、公告、更新、張貼、刊登, with 日期 or 時間 or not; Posted, Published, Updated) first,
+    the first such date in the text; else the first after a bare 日期 or Date. 2025/10/01, 2025-10-01, 2025.10.01,
+    2025年10月1日, full-width digits too; a year of two or three digits is a 民国 year (114/10/01, 114.10.01,
+    民國114年10月1日, 中華民國114年10月1日: + 1911). A date that does not exist, or falls outside YEARS, is passed over.
+    Found by the program: it may be wrong, which is why the words are kept beside it."""
+    raw = text or ""
+    half = raw.translate(_HALF)
+    for pattern in _DATES:
+        for m in pattern.finditer(half):
+            s1, s2 = m["s1"], m["s2"]
+            if (s1 == "年") != (s2 == "月") or (s1 != "年" and s1 != s2):
                 continue
-        else:
-            y += 1911
-        try:
-            got = date(y, int(m["m"]), int(m["d"]))
-        except ValueError:
-            continue
-        if not YEARS[0] <= got.year <= YEARS[1]:
-            continue
-        return got.isoformat(), re.sub(r"\s+", " ", m.group(0)).strip()
+            y = int(m["y"])
+            if len(m["y"]) == 4:
+                if m["roc"]:
+                    continue
+            else:
+                y += 1911
+            try:
+                got = date(y, int(m["m"]), int(m["d"]))
+            except ValueError:
+                continue
+            if not YEARS[0] <= got.year <= YEARS[1]:
+                continue
+            return got.isoformat(), re.sub(r"\s+", " ", raw[m.start():m.end()]).strip()
     return None
 
 
@@ -189,24 +204,40 @@ class Item:
     date_raw: str = ""
     path: str = ""
     shared: bool = False  # its file is another row's (a redirect landing on an exported page)
-    empty_area: bool = False  # a notice page whose platform's title and text areas are both empty
+    empty_area: str = ""  # a notice page whose platform's title and text areas are missing or empty: in words
+    owner: str = ""  # the site the row counts for (url.owner_site; a press: the site of its list)
     order: tuple = ()
 
-    def row(self, n: int, page_url) -> dict[str, str]:
+    def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
+        """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
+        layout picture on every page of a site of 900 pages would pass the 32767 characters an Excel cell holds),
+        saying how many there are; manifest.json names them all."""
         return {"序号": str(n), "类型": self.type, "网址": self.url, "最后落地网址": self.final_url, "本地档案": self.path,
                 "标题": self.title, "网页上写的日期": self.date, "日期原文": self.date_raw,
                 "完整度": self.completeness(), "缺什么": self.lacks,
                 "结果": outcome.RESULT_LABEL.get(self.result, self.result), "原因": self.why,
                 "分类": progress.BUCKET_ZH.get(self.bucket, self.bucket), "原因代码": self.codes,
                 "抓取时间": self.fetched_at, "大小": "" if self.size is None else str(self.size), "sha256": self.sha256,
-                "格式": self.sniff, "链到它的网页": " | ".join(dict.fromkeys(page_url(p) for p in self.pages)),
-                "链接文字": " | ".join(dict.fromkeys(t for t in self.texts if t)), "怎么来的": self.how,
+                "格式": self.sniff, "链到它的网页": _joined((page_url(p) for p in self.pages), cap, "页"),
+                "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
                 "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref}
 
     def completeness(self) -> str:
-        if self.level:
+        """A page's level (page_completeness) when it has its file; anything else, and a page with no file (a sign-in
+        page is 完整（学校那边缺） by the views, with nothing in the folder): its category."""
+        if self.level and self.path:
             return outcome.LEVEL_LABEL.get(self.level, self.level)
         return progress.BUCKET_ZH.get(self.bucket, self.bucket)
+
+
+CAP = 20  # pages and link texts named in a cell of manifest.csv and missing.csv (Item.row)
+
+
+def _joined(values, cap: int | None, unit: str) -> str:
+    got = list(dict.fromkeys(values))
+    if cap is None or len(got) <= cap:
+        return " | ".join(got)
+    return " | ".join([*got[:cap], f"…等 {len(got)} {unit}（全部在 manifest.json）"])
 
 
 @dataclass
@@ -217,11 +248,12 @@ class Result:
     state: str
     state_words: str
     running: bool
-    left_urls: int
+    left_urls: int  # the manifest's rows still queued (还在排队 / 等重试), url rows and presses: Left
     left_presses: int
-    counts: dict[str, dict[str, int]]
+    counts: dict[str, dict[str, int]]  # by type: got (a file in the folder), to_do (of those, not settled), missing
     missing_by: Counter
     lines: list[str]
+    left_other: int = 0  # of what is still queued (left_urls, left_presses), the rows another site owns
 
 
 # ---------------------------------------------------------------- the checks before anything is written
@@ -305,10 +337,9 @@ class Snap:
     orphans: dict[int, object]
     status: object | None
     status_error: str | None
-    left_urls: int
-    left_presses: int
     videos: int
     other_site_items: int
+    press_to: dict[int, int]  # a press: the url row its answer named (action.location)
 
 
 def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
@@ -347,6 +378,18 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
         actions = {r["id"]: dict(r) for r in conn.execute(
             f"SELECT * FROM action_result WHERE list_id IN ({own}) OR site=?", (site, site))}
         want |= {a["list_id"] for a in actions.values()}
+        # the url row a press's answer named (a redirect's Location, the file a file button's POST answered): the
+        # press is listed by that row (Builder._presses), which Builder._account then looks for
+        press_to: dict[int, int] = {}
+        locs = sorted({a["location"] for a in actions.values() if a.get("location")})
+        for i in range(0, len(locs), 500):
+            part = locs[i:i + 500]
+            got = {r["url"]: r["id"] for r in conn.execute(
+                f"SELECT id, url FROM url WHERE url IN ({','.join('?' * len(part))})", part)}
+            for a in actions.values():
+                if a.get("location") in got:
+                    press_to[a["id"]] = got[a["location"]]
+        want |= set(press_to.values())
         rows.update(_rows_by_id(conn, want - set(rows)))
         walks = {r["list_id"]: dict(r) for r in conn.execute(f"SELECT * FROM listwalk WHERE list_id IN ({own})",
                                                              (site,))}
@@ -383,11 +426,8 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
             orphans = {o.id: o for o in fx.orphans.get(site, [])}
         except Exception as exc:  # noqa: BLE001 - said in the README as 没检查, never a state made up here
             status_error = f"{type(exc).__name__}: {exc}"
-        left_urls = conn.execute("SELECT count(*) FROM url WHERE owner_site=? AND state IN ('pending','active')",
-                                 (site,)).fetchone()[0]
-        left_presses = conn.execute("""SELECT count(*) FROM action a LEFT JOIN url u ON u.id = a.list_id
-                                       WHERE coalesce(u.owner_site, a.site) = ? AND a.state IN ('pending','active')""",
-                                    (site,)).fetchone()[0]
+        # what is still queued is counted from the manifest's rows (Left), never from the site's own rows here: a
+        # page of the site may rest on a row another site owns (review 10-27 #3)
         videos = conn.execute(f"SELECT count(DISTINCT video_id) FROM video WHERE page_id IN ({own})",
                               (site,)).fetchone()[0]
         other_site_items = conn.execute(
@@ -397,8 +437,7 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
     finally:
         conn.execute("COMMIT")
     return Snap(dict(plan) if plan is not None else None, rows, page_ids, pc, pres, raw_res, actions, walks, drive,
-                drive_of_content, landing, orphans, status, status_error, left_urls, left_presses, videos,
-                other_site_items)
+                drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to)
 
 
 # ---------------------------------------------------------------- the items
@@ -486,6 +525,7 @@ class Builder:
             for rid in self.items_by_list[lst]:
                 self.item_of_list.setdefault(rid, lst)
         self.counts = Counter()  # what is not an item of its own (scripts, Drive's bookkeeping, data: pictures)
+        self.counted: set[int] = set()  # the url rows counted there (scripts, Drive's bookkeeping): _account
 
     def add(self, it: Item) -> Item:
         it.order = (len(self.items),)
@@ -522,7 +562,79 @@ class Builder:
         covered = self._resources()
         self._others(covered)
         self._unfetched_pictures()
+        self._account(covered)
+        self._unique_press_urls()
         return self.items
+
+    GAP = "导出程式没处理到"
+
+    def _account(self, covered: set[int]) -> None:
+        """Every url row of the site, every row its pages' needed resources rest on or end at, every row a press's
+        answer named, and every press of its lists is an item above, or counted in the README (a script, Drive's
+        bookkeeping), or a press a newer press of the same row stands for. One that is none of these is listed here as
+        要人看 with no file, never left out (review 10-27 #9: the branches above pass rows over in a dozen places; the
+        owner, 10-27: 「不要让我以为资料已经抓好了，但实际漏了不少」)."""
+        s = self.s
+        seen = set(covered) | self.counted
+        for it in self.items.values():
+            if it.key.startswith("u") and it.key[1:].isdigit():
+                seen.add(int(it.key[1:]))
+            if it.landing is not None:
+                seen.add(it.landing)
+        for meta, d in s.drive.items():  # a Drive item's metadata row and its content row stand for each other
+            content = d.get("content_id")
+            if content is not None and (content in seen or meta in seen):
+                seen |= {meta, content}
+        want = {uid for uid, r in s.rows.items() if r["owner_site"] == self.site}
+        for r in s.pres:
+            if r["via"] is not None:
+                want.add(r["via"])
+            if r["res"].startswith("u") and r["res"][1:].isdigit():
+                want.add(int(r["res"][1:]))
+        # a press not listed itself (a redirect, a file button's POST) is listed by the row its answer named
+        want |= {to for a_id, to in s.press_to.items() if f"a{a_id}" not in self.items}
+        for uid in sorted(want - seen):
+            r = s.rows.get(uid)
+            if r is None:
+                continue  # a row the snapshot never read: nothing to list it by (the views name it not_discovered)
+            it = Item(f"u{uid}", _type_of_row(r), r["url"], result=r["result"], codes=_codes(r), ref=f"u{uid}",
+                      fetched_at=_taipei(r["fetched_at"]), size=r["bytes"], sha256=r["sha256"] or "",
+                      sniff=r["sniff"] or "", title=r["title"] or _last_part(r["url"]), owner=r["owner_site"] or "",
+                      bucket="review", why=self.GAP, how=monitor.FOUND_VIA_ZH.get(r["found_via"], r["found_via"] or ""))
+            it.notes.append(f"{self.GAP}这一行（导出程式的漏洞，不是漏抓），没有导出档案，要人看")
+            self.add(it)
+            seen.add(uid)
+        listed = {a_id for a_id in s.actions if f"a{a_id}" in self.items}
+        rows_of = {}
+        for a in s.actions.values():
+            rows_of.setdefault((a["list_id"], a["kind"], a["row_key"]), []).append(a["id"])
+        for a in sorted(s.actions.values(), key=lambda a: a["id"]):
+            if a["id"] in listed or s.press_to.get(a["id"]) in seen:
+                continue
+            if any(o in listed or s.press_to.get(o) in seen
+                   for o in rows_of[(a["list_id"], a["kind"], a["row_key"])] if o != a["id"]):
+                continue  # a newer press of the same row stands for it (design §7.5 step 9)
+            lst = s.rows.get(a["list_id"]) or {"url": ""}
+            words = (a["row_text"] or a["row_key"] or "")[:40]
+            it = Item(f"a{a['id']}", BUTTON, f"{lst['url'] or a['target'] or ''}#按钮={words}", result=a["result"],
+                      codes=_codes(a), ref=f"a{a['id']}", fetched_at=_taipei(a["done"]), size=a["bytes"], sha256=a["sha256"] or "", sniff=a["sniff"] or "", pages=[a["list_id"]],
+                      texts=[a["row_text"] or ""], title=a["row_text"] or "", owner=self.site, bucket="review",
+                      why=self.GAP, how=f"列表 {lst['url']} 上的按钮（{a['kind']}）")
+            it.notes.append(f"{self.GAP}这个按钮（导出程式的漏洞，不是漏抓），没有导出档案，要人看")
+            self.add(it)
+            listed.add(a["id"])
+
+    def _unique_press_urls(self) -> None:
+        """A press brought page or file has no address of its own: its list's with #第N页 or #按钮=<the button's
+        words>. Two buttons with the same words (review 10-27 #10) each get their 存档编号 too."""
+        by: dict[str, list[Item]] = defaultdict(list)
+        for it in self.items.values():
+            if it.ref.startswith("a") and "#" in it.url:
+                by[it.url].append(it)
+        for url, same in by.items():
+            if len(same) > 1:
+                for it in same:
+                    it.url = f"{url}（{it.ref}）"
 
     # -- the site's web pages
     def _pages(self) -> None:
@@ -532,7 +644,8 @@ class Builder:
             it = Item(f"u{uid}", PAGE, r["url"], final_url=r["final_url"] if r["final_url"] not in (None, r["url"])
                       else "", title=r["title"] or "", result=r["result"], codes=_codes(r), ref=f"u{uid}",
                       fetched_at=_taipei(r["fetched_at"]), size=r["bytes"], sha256=r["sha256"] or "",
-                      sniff=r["sniff"] or "", page_role=r["page_role"], list_id=uid if r["page_role"] == "list" else None)
+                      sniff=r["sniff"] or "", page_role=r["page_role"], list_id=uid if r["page_role"] == "list" else None,
+                      owner=r["owner_site"] or "")
             own = r["result"]
             p = s.pc.get(uid)
             if r["result"] == "redirect":
@@ -564,11 +677,19 @@ class Builder:
             self.add(it)
 
     def _lacks(self, p: dict) -> str:
+        """缺什么: the page's reasons (page_completeness.reasons) in the dashboard's words, with how many where it
+        counts them. 完整（学校那边缺） says what the school lacks: the page's resources it no longer has, keeps behind a
+        sign-in, or a person marked as its problem (n_school); a page that is itself the school's (a sign-in page) has
+        its 结果 for that, and nothing here."""
         n = {"miss_file": p.get("miss_file"), "miss_img": p.get("miss_img"), "miss_other": p.get("miss_other"),
              "failed": p.get("n_failed"), "review": p.get("n_review")}
         out = []
         for code in (p.get("reasons") or "").split(","):
             if not code:
+                continue
+            if code == "complete_school":
+                if p.get("n_school"):
+                    out.append(f"学校那边已不存在、要登录或有问题的资源（{p['n_school']} 个）")
                 continue
             zh = progress.LABEL_ZH.get(code, code)
             out.append(f"{zh}（{n[code]} 个）" if n.get(code) else zh)
@@ -606,7 +727,7 @@ class Builder:
                       codes=_codes(a), ref=f"a{a['id']}", fetched_at=_taipei(a["done"]), size=a["bytes"],
                       sha256=a["sha256"] or "", sniff=a["sniff"] or "", pages=[a["list_id"]],
                       texts=[a["row_text"] or ""], list_id=a["list_id"], step=a["step"], kind=kind,
-                      name=a["filename"] or "")
+                      name=a["filename"] or "", owner=self.site)
             it.bucket = monitor.bucket(a["result"])
             it.why = _why(a["result"], a["reason"], a["status"])
             if a["reason"] == outcome.EMPTY_DETAIL:
@@ -671,7 +792,8 @@ class Builder:
                 if a is not None:
                     url += f"#按钮={(a['row_text'] or a['row_key'])[:40]}"
                 it = Item(key, ROLE_TYPE.get(role, BUTTON), url, result=result, ref=res, pages=g["pages"], texts=texts,
-                          title=(a or {}).get("row_text") or "", codes=_codes(a) if a is not None else "")
+                          title=(a or {}).get("row_text") or "", codes=_codes(a) if a is not None else "",
+                          owner=self.site)
                 it.why = _why(result, (a or {}).get("reason"), (a or {}).get("status"))
             elif key.startswith("u"):
                 via = s.rows[g["via"]]
@@ -683,7 +805,7 @@ class Builder:
                 typ = _type_of_row(to, role)
                 it = Item(key, typ, via["url"], result=result, codes=_codes(via if to is via else to), ref=key,
                           fetched_at=_taipei(to["fetched_at"]), size=to["bytes"], sha256=to["sha256"] or "",
-                          sniff=to["sniff"] or "", pages=g["pages"], texts=texts)
+                          sniff=to["sniff"] or "", pages=g["pages"], texts=texts, owner=to["owner_site"] or "")
                 if to is not via:
                     it.final_url = to["url"]
                     it.landing = to["id"]
@@ -726,17 +848,20 @@ class Builder:
             kind0 = r["kind0"] or r["kind"]
             if kind0 == "script":
                 self.counts["script"] += 1
+                self.counted.add(uid)
                 continue
             d = s.drive.get(uid)
             if kind0 == "drive" and d is not None and d.get("content_id") is not None:
                 self.counts["drive_meta"] += 1
+                self.counted.add(uid)
                 continue
             o = s.orphans.get(uid)
             result = o.result if o is not None else r["result"]
             typ = _type_of_row(r)
             it = Item(f"u{uid}", typ, r["url"], result=result, codes=_codes(r), ref=f"u{uid}",
                       fetched_at=_taipei(r["fetched_at"]), size=r["bytes"], sha256=r["sha256"] or "",
-                      sniff=r["sniff"] or "", name=(d or {}).get("name") or r["filename"] or "")
+                      sniff=r["sniff"] or "", name=(d or {}).get("name") or r["filename"] or "",
+                      owner=r["owner_site"] or "")
             if r["final_url"] not in (None, r["url"]):
                 it.final_url = r["final_url"]
             it.why = _why(result, r["reason"], r["status"])
@@ -803,20 +928,36 @@ def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") 
     return fallback
 
 
-def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> bool:
-    """Whether a notice page's platform title and text areas (profiles.Detail.title, Detail.text) are both there to
-    read and both empty: c.nknu shows a notice the school deleted as the site's template with an empty DataFormView
-    (10-26 pilot, 体育室: 26 such pages from the old archive and Common Crawl). Said in the manifest's 备注 only; the
-    page's completeness stays what the views say 【Claude 的执行办法】."""
+NO_AREA = "找不到内文区（网页上没有公告的标题栏和内文栏，多半是学校删掉的公告只剩网站模板）"
+EMPTY_AREA = "内文区是空的（公告的标题栏和内文栏都没有内容，多半是学校删掉的公告）"
+
+
+def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
+    """What a notice page (its platform's detail page: profiles.Detail) lacks in its own areas, in words, or '':
+    NO_AREA when neither its title area nor its text area is on the page, EMPTY_AREA when they are and hold nothing
+    (no words, no picture, link or frame, no attachment link). c.nknu shows a notice the school deleted as the site's
+    template, its DataFormView with neither label in it (10-26 pilot, 体育室: 27 pages from the old archive and Common
+    Crawl, every one 15269 bytes, as the page of a notice number that cannot exist). The crawler's own check
+    (profiles.empty_detail) claims nothing when the text area is not there, so the views call such a page 完整: the
+    export keeps that and says this in 缺什么, and the README names each page (review 10-27, 【Claude 的执行办法】;
+    whether the crawler should call it gone is the main session's call)."""
     prof = profiles.profile_for_site(site)
     if prof is None:
-        return False
+        return ""
     parts = urlsplit(url)
     where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
-    for d in prof.details:
-        if d.text and re.search(d.paths, where):
-            return not _first_text(tree, d.text) and not (d.title and _first_text(tree, d.title))
-    return False
+    d = next((d for d in prof.details if d.text and re.search(d.paths, where)), None)
+    if d is None:
+        return ""
+    areas = [*tree.css(d.text), *(tree.css(d.title) if d.title else [])]
+    if not areas:
+        return NO_AREA
+    for node in areas:
+        if (node.text() or "").strip() or node.css_first("img[src], a[href], iframe[src], embed, object"):
+            return ""
+    if d.files and any((n.attributes.get("href") or "").strip() not in ("", "#") for n in tree.css(d.files)):
+        return ""
+    return EMPTY_AREA
 
 
 def page_texts(tree: LexborHTMLParser, site: str) -> list[str]:
@@ -839,9 +980,11 @@ def page_texts(tree: LexborHTMLParser, site: str) -> list[str]:
 
 
 def safe_name(name: str, max_bytes: int = NAME_BYTES) -> str:
-    """A file name any of the three systems takes: no path separators, control or reserved characters, no dots or
-    spaces at the ends, at most max_bytes of UTF-8 with the extension kept. Chinese stays as it is."""
+    """A file name any of the three systems takes: no path separators, control or reserved characters, no invisible
+    format characters (Unicode Cf: a right-to-left override shows gpj.exe as exe.jpg, a zero-width space hides), no dots
+    or spaces at the ends, at most max_bytes of UTF-8 with the extension kept. Chinese stays as it is."""
     name = unicodedata.normalize("NFC", name or "")
+    name = "".join(c for c in name if unicodedata.category(c) != "Cf")
     name = re.sub(r"\s+", " ", _BAD_CHARS.sub("_", name)).strip(" .")
     if len(name.encode("utf-8")) <= max_bytes:
         return name
@@ -901,10 +1044,15 @@ class Writer:
             if not it.path and it.landing is not None:
                 to = self.items.get(f"u{it.landing}")
                 if to is not None and to.path:
+                    # the row says what its file is (review 10-27 #5): the landing page's size, sha256, format and
+                    # fetch, and its completeness when the views judge the redirect by no row of its own
                     it.path, it.shared = to.path, True
                     it.title = it.title or to.title
                     it.date, it.date_raw = (it.date, it.date_raw) if it.date else (to.date, to.date_raw)
-                    it.notes.append("跳转：内容就是落地那一页的档")
+                    it.size, it.sha256, it.sniff, it.fetched_at = to.size, to.sha256, to.sniff, to.fetched_at
+                    if not it.level:
+                        it.level, it.lacks = to.level, to.lacks
+                    it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间都是落地那一页的）")
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
                 it.bucket = "review"
@@ -961,9 +1109,11 @@ class Writer:
             it.title = page_title(tree, url, self.site, it.title)
             if it.key.startswith("u"):
                 self.titles[int(it.key[1:])] = it.title
-            if empty_detail_area(tree, url, self.site):
-                it.empty_area = True
-                it.notes.append("内文区是空的：学校可能已经删掉这一则（程序看的；完整度照存档的判断）")
+            area = empty_detail_area(tree, url, self.site)
+            if area:
+                it.empty_area = area
+                it.lacks = "、".join(x for x in (it.lacks, area) if x)
+                it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
         if it.page_role != "list" and it.kind != "pager":
             for words in page_texts(tree, self.site):
                 found = find_date(words)
@@ -1026,7 +1176,7 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
     def page_url(pid_: int) -> str:
         return urls.get(pid_, f"u{pid_}")
 
-    rows = [it.row(n, page_url) for n, it in enumerate(ordered, start=1)]
+    rows = [it.row(n, page_url, cap=CAP) for n, it in enumerate(ordered, start=1)]
     missing = sorted(((it, r) for it, r in zip(ordered, rows, strict=True) if not it.path),
                      key=lambda p: (_BUCKET_RANK.get(p[0].bucket, -1), rank[p[0].type], p[0].url))
     missing_items = [it for it, _r in missing]
@@ -1038,40 +1188,103 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
     sign, words, _color = progress.STATE_SHOW.get(state, ("⚠", "没检查", "yellow"))
     state_words = f"{sign} {words}".strip()
     counts = {t: {"got": sum(1 for i in ordered if i.type == t and i.path),
+                  "to_do": sum(1 for i in ordered if i.type == t and i.path and i.bucket not in SETTLED),
                   "missing": sum(1 for i in ordered if i.type == t and not i.path)} for t in TYPES}
     missing_by = Counter(progress.BUCKET_ZH.get(it.bucket, it.bucket) for it in missing_items)
+    left = Left.of(ordered, site)
     meta = {"网站": site, "名称": name, "导出时间": _taipei(now), "存档": str(root),
-            "导出时的状态": state_words, "爬虫正在跑": pid is not None, "还剩网址": snap.left_urls,
-            "还剩按钮": snap.left_presses, "栏位": list(COLUMNS), "项目": rows}
+            "导出时的状态": state_words, "爬虫正在跑": pid is not None, "还在排队的网址": left.urls,
+            "还在排队的按钮": left.presses, "其中归属别的网站": left.other, "栏位": list(COLUMNS),
+            "项目": [it.row(n, page_url) for n, it in enumerate(ordered, start=1)]}
     (out / "manifest.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    readme = _readme(root, site, name, now, snap, state_words, pid, ordered, counts, missing_items, builder, items)
+    readme = _readme(root, site, name, now, snap, state_words, pid, ordered, counts, missing_items, builder, items,
+                     left)
     (out / "README.md").write_text(readme, encoding="utf-8")
-    running = (f"；爬虫正在跑（pid {pid}），这个网站还剩 {snap.left_urls} 个网址、{snap.left_presses} 个按钮"
-               if pid is not None else "")
+    running = f"；爬虫正在跑（pid {pid}），清单里还有 {left.words()}" if pid is not None else ""
     by_bucket = Counter(it.bucket for it in missing_items)
     lines = [f"导出 {name}（{site}）到 {out}",
              f"导出时这个网站的状态：{state_words}{running}",
-             "；".join(f"{t}：抓到 {c['got']}、没抓到 {c['missing']}" for t, c in counts.items() if c["got"] or c["missing"]),
+             "；".join(f"{t}：抓到 {c['got']}" + (f"（其中 {c['to_do']} 个有档但还要处理）" if c["to_do"] else "")
+                      + f"、没抓到 {c['missing']}" for t, c in counts.items() if c["got"] or c["missing"]),
              "没抓到的按原因：" + "、".join(f"{progress.BUCKET_ZH.get(b, b)} {n}" for b, n in sorted(
                  by_bucket.items(), key=lambda kv: _BUCKET_RANK.get(kv[0], -1))) if by_bucket else "没有没抓到的",
              f"先看 {out / 'README.md'}；清单 manifest.csv，没抓到的 missing.csv"]
-    return Result(out, site, name, state, state_words, pid is not None, snap.left_urls, snap.left_presses, counts,
-                  missing_by, lines)
+    return Result(out, site, name, state, state_words, pid is not None, left.urls, left.presses, counts,
+                  missing_by, lines, left.other)
+
+
+# an item with a file whose category is one of these needs nothing more; any other (要人看, 待判定, 下一轮 …) is counted
+# as 有档但还要处理 in the README (review 10-27 #8)
+SETTLED = ("got", outcome.SCHOOL_SIDE)
+
+
+@dataclass
+class Left:
+    """What is still queued, counted from the manifest's rows (分类 还在排队 / 等重试), not from the site's own frontier
+    rows: a page of the site may rest on a row another site owns (a short link, a shared file), which waits in that
+    site's turn (review 10-27 #3)."""
+
+    urls: int
+    presses: int
+    other: int
+
+    @classmethod
+    def of(cls, items: list[Item], site: str) -> Left:
+        queued = [it for it in items if it.bucket == "queued"]
+        presses = sum(1 for it in queued if it.ref.startswith("a"))
+        return cls(len(queued) - presses, presses, sum(1 for it in queued if it.owner and it.owner != site))
+
+    def words(self) -> str:
+        other = (f"；其中 {self.other} 个归属别的网站，是几个网站共用的资源，跟着那个网站的进度抓" if self.other else "")
+        return (f"{self.urls} 个网址、{self.presses} 个按钮在排队（missing.csv 里分类是「还在排队 / 等重试」的"
+                f"{other}）")
+
+
+def _named(it: Item) -> str:
+    """One item in the README, by its name, address and result."""
+    label = it.title or next((t for t in it.texts if t), "") or unquote(it.url) or it.ref
+    where = f" {unquote(it.url)}" if it.url and unquote(it.url) != label else ""
+    because = f"（{it.why}）" if it.why else ""
+    return f"  - {it.type}「{label[:60]}」{where}：{outcome.RESULT_LABEL.get(it.result, it.result)}{because}"
+
+
+def _by_bucket(items: list[Item], then: bool = True) -> list[str]:
+    """The README's lines for these items by category, worst first: how many of each type, and each one by name when
+    a category holds few (规则不抓 never), else its most common reasons."""
+    out = []
+    by, whys, of = defaultdict(Counter), defaultdict(Counter), defaultdict(list)
+    for it in items:
+        by[it.bucket][it.type] += 1
+        of[it.bucket].append(it)
+        if it.why:
+            whys[it.bucket][it.why] += 1
+    for b in sorted(by, key=lambda x: _BUCKET_RANK.get(x, -1)):
+        out.append(f"- **{progress.BUCKET_ZH.get(b, b)} {sum(by[b].values())}**："
+                   + "、".join(f"{t} {n}" for t, n in sorted(by[b].items(), key=lambda kv: TYPES.index(kv[0])))
+                   + (f"（{THEN.get(b, '')}）" if then else ""))
+        if b != "rule" and len(of[b]) <= ITEMS_SHOWN:  # the few that matter most, each by name
+            out += [_named(it) for it in of[b]]
+        else:
+            out += [f"  - {w}：{n}" for w, n in whys[b].most_common(6)]
+    return out
+
+
+EMPTY_SHOWN = 200  # the empty notice pages the README names one by one
 
 
 def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_words: str, pid, ordered: list[Item],
-            counts: dict, missing_items: list[Item], builder: Builder, items: dict[str, Item]) -> str:
+            counts: dict, missing_items: list[Item], builder: Builder, items: dict[str, Item], left: Left) -> str:
     st = snap.status
     why = list(getattr(st, "why", []) or []) if st is not None else [f"网站状态算不出来：{snap.status_error}"]
     warnings = list(getattr(st, "warnings", []) or []) if st is not None else []
+    queued = left.urls or left.presses
     if pid is not None:
-        run = (f"**爬虫正在跑**（pid {pid}）：这个网站还有 {snap.left_urls} 个网址、{snap.left_presses} 个按钮在待抓清单里，"
-               "导出的是这一刻已经抓到的；爬完以后再导一次会更完整")
-    elif snap.left_urls or snap.left_presses:
-        run = (f"爬虫没有在跑，但这个网站还有 {snap.left_urls} 个网址、{snap.left_presses} 个按钮在待抓清单里没抓"
-               "（下一次 nknu archive run 会接着抓）")
+        run = (f"**爬虫正在跑**（pid {pid}）：" + (f"清单里还有 {left.words()}" if queued else "清单里没有还在排队的")
+               + "，导出的是这一刻已经抓到的；爬完以后再导一次会更完整")
+    elif queued:
+        run = f"爬虫没有在跑，但清单里还有 {left.words()}，下一次 nknu archive run 会接着抓"
     else:
-        run = "爬虫没有在跑；这个网站的待抓清单里没有剩下的"
+        run = "爬虫没有在跑；清单里没有还在排队的"
     out = [f"# {name}（{site}）导出", "",
            ("> ⚠ **这份资料有学生全名和学号**（学校公开的荣誉榜、名单照原文收）：只在自己的电脑和实验室机器上用，"
            "**不能上传到公开的地方**（GitHub、公开的云端硬盘、网站、公开分享的对话），也不能进 git。"), "",
@@ -1080,12 +1293,21 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
            f"- **导出时这个网站的状态：{state_words}**（和进度看板同一套判断）"]
     out += [f"  - {w}" for w in why[:8]] + [f"  - 另外：{w}" for w in warnings[:4]]
     out += [f"- 导出时：{run}", "", "## 一共有什么", "",
-            "| 类型 | 抓到（已导出） | 没抓到 |", "|---|---|---|"]
-    out += [f"| {t} | {c['got']} | {c['missing']} |" for t, c in counts.items()
+            "| 类型 | 抓到（已导出） | 其中有档但还要处理 | 没抓到 |", "|---|---|---|---|"]
+    out += [f"| {t} | {c['got']} | {c['to_do']} | {c['missing']} |" for t, c in counts.items()
             if t != BUTTON or c["got"] or c["missing"]]
     pressed = sum(1 for i in ordered if i.type == PAGE and i.path and i.kind in ("pager", "detail"))
     shared = sum(1 for i in ordered if i.shared)
+    empty = [i for i in ordered if i.empty_area and i.path]
+    to_do = [i for i in ordered if i.path and i.bucket not in SETTLED]
     said = []
+    if to_do:
+        said.append("「其中有档但还要处理」：档案导出了，分类却不是「抓到了」（要人看、待判定、下一轮补……），"
+                    "看过或判定以后才算数，见下面「有档但还要处理的」")
+    if empty:
+        said.append(f"网页「抓到」的里面有 {len(empty)} 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的"
+                    "公告只剩网站模板）：分类、完整度照存档算「抓到了」「完整」，「缺什么」栏写着，下面「空的公告页」"
+                    "一节逐页列出")
     if pressed:
         said.append(f"网页里有 {pressed} 页是按按钮才出来的（列表的第 2 页以后、按了才出来的公告内文）")
     if shared:
@@ -1095,37 +1317,15 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
     if said:
         out += [""] + [f"- {x}" for x in said]
     out += ["", f"**没抓到的 {len(missing_items)} 个**，按原因（每一个都在 missing.csv，原因写在「结果」「原因」栏）：", ""]
-    by = defaultdict(Counter)
-    whys = defaultdict(Counter)
-    of = defaultdict(list)
-    for it in missing_items:
-        by[it.bucket][it.type] += 1
-        of[it.bucket].append(it)
-        if it.why:
-            whys[it.bucket][it.why] += 1
-    for b in sorted(by, key=lambda x: _BUCKET_RANK.get(x, -1)):
-        out.append(f"- **{progress.BUCKET_ZH.get(b, b)} {sum(by[b].values())}**："
-                   + "、".join(f"{t} {n}" for t, n in sorted(by[b].items(), key=lambda kv: TYPES.index(kv[0])))
-                   + f"（{THEN.get(b, '')}）")
-        if b != "rule" and len(of[b]) <= ITEMS_SHOWN:  # the few that matter most, each by name
-            for it in of[b]:
-                label = it.title or next((t for t in it.texts if t), "") or unquote(it.url) or it.ref
-                where = f" {unquote(it.url)}" if it.url and unquote(it.url) != label else ""
-                because = f"（{it.why}）" if it.why else ""
-                out.append(f"  - {it.type}「{label[:60]}」{where}：{outcome.RESULT_LABEL.get(it.result, it.result)}{because}")
-        else:
-            out += [f"  - {w}：{n}" for w, n in whys[b].most_common(6)]
-    if not missing_items:
-        out.append("- 没有")
+    out += _by_bucket(missing_items) or ["- 没有"]
+    if to_do:
+        out += ["", f"**有档但还要处理的 {len(to_do)} 个**（本地档案有，分类在「分类」栏）：", ""]
+        out += _by_bucket(to_do, then=False)
     bad_pages = Counter(it.level for it in ordered if it.type == PAGE and it.path and it.level
                         and it.level not in ("complete", "complete_school"))
     if bad_pages:
         out += ["", "抓到了但**不完整**的网页（「完整度」「缺什么」栏）：" + "、".join(
             f"{outcome.LEVEL_LABEL.get(k, k)} {n} 页" for k, n in bad_pages.items())]
-    empty = sum(1 for i in ordered if i.empty_area and i.path)
-    if empty:
-        out += ["", (f"另有 {empty} 页公告的内文区是空的（多半是学校已经删掉的旧公告，从旧存档或 Common Crawl 进来的；"
-                    "完整度照存档的判断，备注栏有写）")]
     other = []
     if builder.counts["data_img"]:
         other.append(f"网页里直接内嵌的小图（data: 网址）{builder.counts['data_img']} 张：本来就在网页档里")
@@ -1164,6 +1364,15 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
                    "导出里）。")
     else:
         out.append("这个网站没有列表的翻页纪录（列表页的完整度栏会写「列表没核对」）。")
+    if empty:
+        out += ["", "## 空的公告页", "",
+                (f"这 {len(empty)} 页是平台的公告页，网页上公告的标题栏和内文栏却找不到或是空的：多半是学校删掉的公告，"
+                 "只剩网站的模板（旧存档、Common Crawl 记得网址，学校那边已经删了）。是程序看出来的；爬虫现在的规则把它们算成"
+                 "「抓到了」「完整」，导出照存档的判断，没有改，只在「缺什么」栏写明。做内容的时候可以跳过。"), "",
+                "| 网址 | 标题 | 缺什么 | 怎么来的 |", "|---|---|---|---|"]
+        out += [f"| {i.url} | {i.title} | {i.empty_area.split('（', 1)[0]} | {i.how} |" for i in empty[:EMPTY_SHOWN]]
+        if len(empty) > EMPTY_SHOWN:
+            out.append(f"\n…另有 {len(empty) - EMPTY_SHOWN} 页，manifest.csv「缺什么」栏有「内文区」的就是。")
     out += ["", "## 资料夹里有什么", "",
             ("- `pages/`：每个网页一个档（.html）。列表按「下一页」按钮翻出来的第 N 页、按按钮才出来的公告内文也各自一个档；"
             "这种页没有自己的网址，清单的「网址」栏写列表网址加 `#第N页` 或 `#按钮=…`，「怎么来的」写是哪个列表、哪个按钮。"),
@@ -1179,11 +1388,14 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
             "## 清单栏位", ""]
     out += [f"- **{k}**：{v}" for k, v in COLUMN_HELP.items()]
     out += ["", "## 日期怎么来的", "",
-            ("「网页上写的日期」是**程序找的**：在网页文字里找「发布、發佈、公告、更新、日期、Date」这类标签后面紧接的日期，"
-            "认得 2025/10/01、2025-10-01、2025.10.01、2025年10月1日，以及民国年 114/10/01、114.10.01、民國114年10月1日"
-            "（民国年加 1911 换成西元）。先找正文区，找不到再找整页，取第一个。**可能不准**（例如抓到的是页尾的「网站更新日期」），"
-            "所以「日期原文」栏附上它在网页上的原样，可以核对；找不到就空白。列表页上有很多条、各有各的日期，所以列表页不填。"
-            "附件、图片看「链到它的网页」那一页的日期。"), "",
+            ("「网页上写的日期」是**程序找的**：在网页文字里找标签后面紧接的日期。先找「发布、發佈、公告、更新、張貼、刊登」"
+            "（后面可以接「日期」或「時間」，例如「更新時間」「公告日期」；英文 Posted、Published、Updated）这类标签，"
+            "找不到才找单独的「日期」「Date」（活动页上「活動日期」写在「公告日期」前面时，取的是公告日期）；「最新公告」"
+            "是侧栏标题，不算标签。认得 2025/10/01、2025-10-01、2025.10.01、2025年10月1日、全形数字 ２０２５／１０／０１，"
+            "以及民国年 114/10/01、114.10.01、民國114年10月1日、中華民國114年10月1日（民国年加 1911 换成西元）。先找正文区，"
+            "找不到再找整页，取第一个。**可能不准**（例如抓到的是页尾的「网站更新日期」），所以「日期原文」栏附上它在网页上"
+            "的原样，可以核对；找不到就空白。列表页上有很多条、各有各的日期，所以列表页不填。附件、图片看「链到它的网页」"
+            "那一页的日期。"), "",
             "「抓取时间」是爬虫抓到它的时间（台北时间）。", "",
             "## 编码", "",
             ("网页档是爬虫解码后的结果，存成 UTF-8（档头有 BOM 记号，浏览器会照 UTF-8 显示），内容没有改。学校有些网页的 "
@@ -1196,14 +1408,17 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
 COLUMN_HELP = {
     "序号": "清单里的顺序：网页、附件、图片、资料、按钮，各自先列抓到的",
     "类型": "网页 / 附件 / 图片 / 资料 / 按钮（网页上要点了才载入、这一轮没办法抓的写法）",
-    "网址": "网页上链的网址；按钮按出来的页是列表网址加 #第N页 或 #按钮=…",
+    "网址": ("网页上链的网址；按钮按出来的页是列表网址加 #第N页 或 #按钮=…（两个按钮的文字一样时，后面再加括号里的存档编号，"
+           "分得开）"),
     "最后落地网址": "跳转以后真正拿到内容的网址（没有跳转就空白）",
     "本地档案": "导出资料夹里的档案；空白就是没抓到",
     "标题": "网页：平台的标题栏，否则第一个 h1、h2，再不然 <title>；附件和图片：档名；按钮按出来的公告：列表上的标题",
     "网页上写的日期": "程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」",
     "日期原文": "找到的日期在网页上的原样（含标签），用来核对",
-    "完整度": "网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他：抓到了、连接失败、要人看……",
-    "缺什么": "网页缺的东西（缺附件、缺图片、连接失败、要人看、列表没翻完……），括号里是几个",
+    "完整度": ("有档的网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他（附件、图片、"
+            "没有档的网页……）：和「分类」一样（抓到了、连接失败、要登录……）"),
+    "缺什么": ("网页缺的东西（缺附件、缺图片、连接失败、要人看、列表没翻完、学校那边已不存在或要登录的资源……），括号里是几个；"
+            "公告页的内文区找不到或是空的（多半是学校删掉的公告），也写在这里"),
     "结果": "这一个网址或按钮本身的结果，和进度看板一样的说法",
     "原因": "结果的原因（连不上服务器、按规则不抓的是哪条规则、下一轮的哪一批……）",
     "分类": "抓到了 / 连接失败 / 要人看 / 待判定 / 下一轮 / 还在排队 / 要登录 / 学校那边已经不存在 / 规则不抓",
@@ -1212,8 +1427,9 @@ COLUMN_HELP = {
     "大小": "存档里原始内容的位元组数",
     "sha256": "存档里原始内容的 sha256（附件、图片和导出的档完全一样）",
     "格式": "看档案开头的位元组判断的格式（pdf、ooxml:docx、jpeg、html……）",
-    "链到它的网页": "附件、图片、按钮：用到它的网页（几个就用 | 隔开）",
-    "链接文字": "那些网页上链接或按钮的文字、图片的替代文字",
+    "链到它的网页": ("附件、图片、按钮：用到它的网页（几个就用 | 隔开）。csv 最多列 20 页，后面写「…等 N 页」（Excel 一格放不下"
+               "几百页）；manifest.json 全部列出"),
+    "链接文字": "那些网页上链接或按钮的文字、图片的替代文字（csv 一样最多 20 个）",
     "怎么来的": "从哪里找到的：列表的哪一则、哪个按钮、哪个网页的附件……",
     "备注": "其他要知道的（跳转、同一个档、云端硬盘的修改时间、编码问题……）",
     "存档编号": "存档里的编号（u 网址、a 按钮），nknu archive browse 看得到",

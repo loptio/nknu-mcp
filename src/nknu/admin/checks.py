@@ -28,6 +28,7 @@ PII_SAMPLES: dict[str, set[str]] = {
     # made-up Google calendar IDs and an event UID: calendar IDs are shaped like email addresses
     "tests/archive/test_google_api.py": {"email:c_0123456789abcdef@group.calendar.google.com", "email:nknuOOO@gmail.com",
                                          "email:holiday@group.v.calendar.google.com", "email:e1@google.com"},
+    "tests/archive/test_export_1027.py": {"email:c_0123456789abcdef@group.calendar.google.com"},
 }
 _SAMPLES_FILE = "src/nknu/admin/checks.py"  # this file: it spells the samples out above, and only those
 _SELF_TESTS = {"test_checks.py"}  # writes the forbidden strings into temp files on purpose
