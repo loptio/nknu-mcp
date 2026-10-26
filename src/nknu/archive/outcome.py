@@ -150,6 +150,11 @@ def _markable_sql(m: str) -> str:
             f" OR substr({m}.reason, 1, {len(FAILED_SCHOOL_PREFIX)}) = '{FAILED_SCHOOL_PREFIX}'))")
 # what jscheck may say of one page it opened (js_page.verdict, §8.4); any other is `unknown`
 JS_PAGE_VERDICTS = ("ok", "js", "frame", "click", "unresolved")
+# a page whose jump menu (or address-building checkbox) its own script fires when it loads (§7.8, §8.4: why
+# select:auto): the crawler writes a mark of its own, page_res res_key auto:<the writing's key>, how auto, need no, beside
+# the writing's own entry (whose need and why the platform file's decision gives), so that jscheck opens the page and
+# the page is 待判定 until it has (review 10-26, 【Claude 的执行办法】: one why cannot hold both)
+AUTO_KEY, AUTO_WHY, AUTO_HOW = "auto:", "select:auto", "auto"
 _CAP_REASONS = ("site_cap", "file_cap", "variant_cap", "depth")  # how the 10-24 crawler wrote a cap: held, not a rule
 _LAB_REASONS = ("dns", "host_unreachable")  # only reachable inside the school's network, or not resolving
 # the reasons a row skipped by the scope rules carries (design §4.5, §7.2, §7.6): out:<rule>, a template image
@@ -158,6 +163,12 @@ _LAB_REASONS = ("dns", "host_unreachable")  # only reachable inside the school's
 # is `unknown`, never a rule (review note medium)
 RULE_PREFIXES = ("out:", "decor:", "album:")
 RULE_REASONS = ("media_type",)
+
+
+def _after(prefix: str) -> str:
+    """The least string after every string that starts with prefix (its last character one higher): a prefix as an
+    index range, which LIKE cannot be (it ignores case)."""
+    return prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
 
 def _sql_list(values) -> str:
@@ -217,8 +228,9 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
     is `unknown`: nothing shows it is not a web page (§7.3 sniffs every 200; the old archive's 25 HTML 'files').
 
     A page (§8.3, §8.4): one that sends the browser on is a redirect, judged where it lands; then the type's verdict and
-    this page's own browser check (js, unresolved, click: the more cautious wins); a page with a strong hint is not
-    checked until the browser opened this very page after its last fetch, whatever its type says. A jscheck record with
+    this page's own browser check (js, unresolved, click: the more cautious wins); a page with a strong hint, and a
+    page whose jump menu fires on load (AUTO_KEY), is not checked until the browser opened this very page after its
+    last fetch, whatever its type says. A jscheck record with
     a verdict these rules do not know is `unknown` (never the type's ok)."""
 
     def has(flag: str) -> str:
@@ -277,6 +289,8 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
             WHEN coalesce({pt}.verdict, 'todo') = 'todo' THEN 'unchecked'
             WHEN {pt}.verdict = 'click' OR {jp}.verdict = 'click' THEN 'click'
             WHEN {has('js_hint')} AND {jp}.url_id IS NULL THEN 'unchecked'
+            WHEN {jp}.url_id IS NULL AND EXISTS (SELECT 1 FROM page_res {u}_auto WHERE {u}_auto.page_id = {u}.id
+                 AND {u}_auto.res_key >= '{AUTO_KEY}' AND {u}_auto.res_key < '{_after(AUTO_KEY)}') THEN 'unchecked'
             WHEN {pt}.verdict IN ('ok', 'frame') THEN 'ok'
             ELSE 'unknown' END
   WHEN {u}.kind IN {_sql_list(FETCHED_KINDS)} AND NOT ({' OR '.join(has(flag) for flag in PAGE_FLAGS)}) THEN 'ok'

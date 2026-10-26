@@ -474,13 +474,56 @@ def test_an_album_folders_pictures_are_listed_not_downloaded(f):
     assert e[f"drive:{FOLDER_ID}"]["need"] == "must"  # the listing itself is needed (§7.6)
 
 
-def test_a_folder_of_pictures_only_is_an_album_whatever_its_name(f):
+def _pictures_folder(f, name: str, mime: str = "image/jpeg") -> tuple[dict, list[str]]:
+    """A page linking a folder of that name whose only listing page holds pictures only."""
     page = add_page(f)
     use(f, page, FOLDER_LINK)
-    answer(f, g.item_url(FOLDER_ID), item(FOLDER_ID, g.FOLDER, name="1130901"))
+    answer(f, g.item_url(FOLDER_ID), item(FOLDER_ID, g.FOLDER, name=name))
     pics = [f"1PiC{i}AbCdEfGhIjKlMnOpQrSt" for i in range(3)]
-    answer(f, g.list_url(FOLDER_ID), {"files": [item(p, "image/png", name="x.png") for p in pics]})
-    assert all(entries(f, page)[f"drive:{p}"]["why"] == "album:drive" for p in pics)
+    answer(f, g.list_url(FOLDER_ID), {"files": [item(p, mime, name=f"scan{i}.jpg", size="1")
+                                                 for i, p in enumerate(pics)]})
+    return page, pics
+
+
+def _got_as_attachments(f, page, pics) -> None:
+    e = entries(f, page)
+    for p in pics:
+        assert (e[f"drive:{p}"]["need"], e[f"drive:{p}"]["why"]) == ("must", None), p
+        assert f.row(g.item_url(p))["state"] == "pending" and f.row(g.item_url(p))["reason"] is None
+    assert f.q("SELECT count(*) FROM drive_item WHERE album=1")[0][0] == 0
+
+
+def test_a_folder_of_scanned_pictures_is_no_album_when_its_name_does_not_say_so(f):
+    # design §7.6 (10-26): 「资料夹里全是图片」不再当相簿的依据: a 公文 scanned to JPG is the notice's attachment (record 三·7)
+    page, pics = _pictures_folder(f, "公文")
+    _got_as_attachments(f, page, pics)
+
+
+def test_a_folder_named_only_for_an_event_is_no_album(f):
+    # 名字只有「活動」也不算: 活動報名表 scanned to pictures are forms to download, never an album's pictures
+    page, pics = _pictures_folder(f, "活動報名表", mime="image/png")
+    _got_as_attachments(f, page, pics)
+    assert g.album_name("活動報名表") is False and g.album_name("活动") is False
+
+
+def test_a_folder_whose_name_says_photos_is_an_album(f):
+    page, pics = _pictures_folder(f, "運動會照片")
+    e = entries(f, page)
+    assert all((e[f"drive:{p}"]["need"], e[f"drive:{p}"]["why"]) == ("no", "album:drive") for p in pics)
+    assert all(f.row(g.item_url(p))["reason"] == "album:drive" for p in pics)
+    assert e[f"drive:{FOLDER_ID}"]["need"] == "must"  # the listing itself is needed (§7.6)
+
+
+@pytest.mark.parametrize("name", ["運動會照片", "113 校慶相片", "畢業典禮花絮", "活動花絮", "系學會相簿", "相册",
+                                  "Photos 2024", "Album", "photo", "Gallery"])
+def test_the_words_that_make_a_folder_an_album(name):
+    assert g.album_name(name), name
+
+
+@pytest.mark.parametrize("name", ["公文", "活動報名表", "活動", "活动海报", "海報", "1130901", "掃描檔", "會議紀錄",
+                                  ""])
+def test_names_that_make_no_album(name):
+    assert not g.album_name(name), name
 
 
 def test_a_picture_a_page_links_itself_is_got_even_from_an_album(f):

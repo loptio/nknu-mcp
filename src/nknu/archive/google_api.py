@@ -102,9 +102,12 @@ QUOTA_REASONS = frozenset({
 LOGIN_REASONS = frozenset({"insufficientFilePermissions", "forbidden", "authError", "required"})
 TOO_LARGE_REASONS = frozenset({"exportSizeLimitExceeded"})
 
-# design §7.6: a folder whose name says it is an album (links.ALBUM, and 活動、照片、相片、花絮) keeps its pictures
-# as a list, never downloaded (record 三·7: 「相簿我觉得不需要」)
-_ALBUM_NAME = re.compile(rf"(?i){links.ALBUM.pattern.removeprefix('(?i)')}|活動|活动|照片|相片|花絮")
+# design §7.6 (10-26): only a folder whose name says outright that it is an album (相簿、照片、相片、花絮、album,
+# photo and their like) keeps its pictures as a list, never downloaded (record 三·7: 「相簿我觉得不需要」). A folder of
+# pictures only is no album by that alone, nor one whose name says only 活動: the school puts scanned notices (公文)
+# and posters there, a notice's attachments, which are downloaded (record 三·7). The words besides the design's (the
+# simplified 相册、the traditional 相冊、gallery) are 【Claude 的执行办法】.
+_ALBUM_NAME = re.compile(r"(?i)相簿|相冊|相册|照片|相片|花絮|album|photo|gallery")
 _ID = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 _DOC_TYPES = frozenset({"document", "spreadsheets", "presentation", "drawings"})
 _FORM_TAILS = ("viewform", "closedform")
@@ -120,6 +123,11 @@ _CALENDAR_ID = re.compile(r"^[A-Za-z0-9._%+#-]+@[A-Za-z0-9.-]+$")
 _HOLIDAY_STUB = re.compile(r"^[a-z]{2,3}(?:[_-][a-z]{2,4})?\.[a-z_]+$")
 GOOGLE_OWN_CALENDARS = "@group.v.calendar.google.com"  # holidays, birthdays, week numbers: Google's, a link only
 _UI_IMAGE_HOSTS = re.compile(r"(?i)(?:^|\.)gstatic\.com$|^(?:www\.)?google\.com$")
+
+
+def album_name(name: str | None) -> bool:
+    """Whether a Drive folder's name says it is an album (design §7.6): its pictures are listed, not downloaded."""
+    return bool(_ALBUM_NAME.search(name or ""))
 
 
 # ---------------------------------------------------------------- what an address is
@@ -1029,11 +1037,8 @@ def _read_list(frontier, row, data, add: Add) -> Reading:
     depth = (folder["depth"] or 0) if folder is not None else 0
     token = data.get("nextPageToken") if isinstance(data.get("nextPageToken"), str) else None
     name = (folder["name"] or "") if folder is not None else ""
-    # an album (design §7.6): its name says so, or the whole listing is one page of pictures only 【Claude 的执行办法:
-    # a listing of several pages is decided by the name alone, so a picture is never skipped before the folder is known
-    # to hold nothing else】
-    album = bool(_ALBUM_NAME.search(name)) or (
-        n == 1 and token is None and bool(files) and all(f["mimeType"].startswith("image/") for f in files))
+    # an album (design §7.6, 10-26): its name says so, and nothing else makes one (a folder of pictures only is not)
+    album = album_name(name)
     children: list[tuple[str, str | None]] = []
     next_page: int | None = None
     for f in files:

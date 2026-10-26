@@ -66,7 +66,7 @@ def _flags(row) -> set[str]:
     return set(filter(None, (row["flags"] or "").split(",")))
 
 
-def url_ok(row, jp) -> bool:
+def url_ok(row, jp, auto: bool = False) -> bool:
     """`ok` as the design means it (§10.2), stated apart from the SQL: fetched with a 200, no flag but a closed form's
     (and, on a page, a strong hint the browser has since cleared on this very copy), the file it should be and sniffed
     to show it, and for a page a type the browser test judged to need nothing more, and nothing this page's own browser
@@ -89,6 +89,8 @@ def url_ok(row, jp) -> bool:
     if seen is not None and seen not in ("ok", "frame"):
         return False
     if "js_hint" in _flags(row) and seen is None:
+        return False
+    if auto and seen is None:  # a jump menu the page fires on load: the browser must have opened it (§8.4)
         return False
     return TYPES.get(row["page_type"]) in ("ok", "frame")
 
@@ -204,6 +206,9 @@ def world(tmp_path):
                 res_id = 10_000_000 + next(_n)  # points to no row
             f.x("INSERT INTO page_res(page_id, res_key, how, role, need, why, res_id, action_id) VALUES (?,?,?,?,?,?,?,?)",
                 (page, f"k{next(_n)}", "get", role, need, why, res_id, act_id))
+        if rng.random() < 0.1:  # the crawler's mark of a jump menu the page fires on load (outcome.AUTO_KEY)
+            f.x("INSERT INTO page_res(page_id, res_key, how, role, need, why) VALUES (?,?,?,?,?,?)",
+                (page, f"auto:select:#m{next(_n)}", "auto", "click", "no", "select:auto"))
         if rng.random() < 0.3:
             f.x("INSERT INTO listwalk(list_id, site, profile, epoch, pages, ended_by, ok) VALUES (?,?,?,?,?,?,?)",
                 (page, SITE, "p", 1, 2, rng.choice(ENDED_BY), rng.choice((None, 0, 1))))
@@ -217,12 +222,14 @@ def world(tmp_path):
 def test_a_url_is_ok_and_got_only_when_every_piece_of_evidence_says_so(world):
     f, _pages = world
     jp = {r["url_id"]: r for r in f.q("SELECT * FROM js_page")}
+    auto = {r[0] for r in f.q("SELECT page_id FROM page_res WHERE res_key LIKE 'auto:%'")}
+    assert auto
     seen = set()
     for r in f.q("SELECT * FROM url_result"):
         result = r["result"]
         seen.add(result)
         assert result in outcome.URL_RESULTS, dict(r)
-        assert (result == "ok") == url_ok(r, jp.get(r["id"])), dict(r)
+        assert (result == "ok") == url_ok(r, jp.get(r["id"]), r["id"] in auto), dict(r)
         assert (outcome.user_bucket(result) == "got") == (result == "ok"), dict(r)
         if r["state"] not in KNOWN_STATES:
             assert result == "unknown", dict(r)
@@ -249,6 +256,7 @@ def test_a_page_is_complete_only_when_it_and_everything_it_needs_was_got(world):
     res = {}
     for r in f.q("SELECT * FROM page_res"):
         res.setdefault(r["page_id"], []).append(r)
+    auto = {r[0] for r in f.q("SELECT page_id FROM page_res WHERE res_key LIKE 'auto:%'")}
     rows = {r["id"]: r for r in f.q("SELECT * FROM page_completeness")}
     levels, labels = set(outcome.LEVEL_LABEL), {c for c, _zh in outcome.LABEL_ORDER}
 
@@ -282,7 +290,7 @@ def test_a_page_is_complete_only_when_it_and_everything_it_needs_was_got(world):
         assert r["level"] in levels and r["label"] in labels
         assert (r["level"] == "complete") == (r["label"] == "complete"), dict(r)
         needed = [pr for pr in res.get(page, []) if pr["need"] != "no"]
-        everything_got = url_ok(own, jp.get(page)) and all(got(pr) for pr in needed)
+        everything_got = url_ok(own, jp.get(page), page in auto) and all(got(pr) for pr in needed)
         walk = walks.get(page)
         if walk is not None:
             everything_got &= walk["ended_by"] in outcome.LIST_ENDS_OK and walk["ok"] != 0

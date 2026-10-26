@@ -77,6 +77,13 @@ row or a page came to is outcome.py's views.
   gone_id); a file the school's page says is missing is looked at once more before it is gone (§10.2).
 - A page fetched again writes its page_res anew; what its embed boxes, forms, tabs, file buttons and pressed details
   brought is read back from the archive (_replay_parts), never lost and never asked for again.
+- A site that finishes (reconcile.site_finished: nothing left this run but retries and the lab, B1) is reconciled
+  offline by this very process, the one writer (design §18.2a step 3: reconcile.site_done, every check but R6, which
+  stays skip until `archive reconcile` runs it once the run stopped), on a thread of its own with a connection of its
+  own (Frontier.sibling: the main loop goes on starting workers and minding a stop, and no worker waits for its long
+  reads; a stop ends it between pages, review 10-26), and again whenever the site got more work and finished again;
+  before run_end at a natural end. Only when given reconcile_sources (`archive run` gives it); a failure is an error
+  event, never the run's end.
 - Nothing is parsed into facts here.
 """
 
@@ -195,6 +202,9 @@ NET_UNDO_S = 300.0
 NETCHECK_CACHE_S = 30.0
 MIN_FREE_BYTES = 5 * 1024**3
 STOP_POLL_S = 1.0  # how often `archive run` looks for STOP, and `archive stop` for the lock to be let go
+# §18.2a step 3: how often (real seconds) the main loop looks for sites that finished, to reconcile them offline: a
+# finished site's look reads all its rows, and a minute's delay changes nothing of an early warning 【Claude 的执行办法】
+SITE_LOOK_S = 60.0
 STOP_WAIT_S = 600.0
 NO_RATE = RateLimit(per_host_concurrency=1, min_interval_s=0.0, jitter_s=0.0)  # the worker waits, per queue
 # B4: where SSO tells a visitor whether they are on the school's network (research/site_probe_2026-10-23: from off
@@ -550,13 +560,16 @@ class Crawler:
                  gap: tuple[float, float] = GAP, sites: frozenset[str] | None = None,
                  campus_url: str | None = CAMPUS_URL, local_address: Callable[[], str | None] = local_address,
                  decide: Callable[[str, str], str | None] | None = profiles.decision, end_wait_s: float = END_WAIT_S,
-                 google_step: bool = True):
+                 google_step: bool = True, reconcile_sources: Any = None):
         """plan: the site list (round1.load() when not given). gap: the run's (check_gap). sites: only these sites'
         rows (`archive run --sites`). campus_url: the campus check (None: no check, campus stays unknown). decide:
         the platform file's decision for a site and a writing's key (profiles.decision; None: nothing decided, every
         writing unknown). end_wait_s: a run ends when what is left comes due later than this (C0, `archive run
         --end-wait`). google_step: Drive, Docs and Calendar addresses go to google_api's step (False: they wait as
-        unhandled:google, B8)."""
+        unhandled:google, B8). reconcile_sources: a reconcile.Sources; given, each round-1 site of the run is
+        reconciled offline by this process as it finishes (design §18.2a step 3: reconcile.site_done, every check but
+        R6), and again whenever it got more work and finished again (`archive run` gives it; None: no reconciling, as
+        a test's crawl and rejudge's offline crawler)."""
         if end_wait_s <= 0:
             raise ValueError(f"end_wait_s is a time in seconds greater than 0 (got {end_wait_s:g})")
         self.root = root
@@ -596,6 +609,14 @@ class Crawler:
         self._doors: dict[str, dict[tuple[str, int], float]] = {}  # queue -> (scheme, port) -> its last answer
         self._stuck = 0  # loops in a row with rows due that no queue takes
         self._probe_tries: dict[tuple[str, str], int] = {}  # (host, detail type) -> id probes that got no answer
+        # §18.2a step 3: the sites to reconcile as they finish (those this run worked on, and those never reconciled),
+        # and those reconciled since they last got work
+        self.reconcile_sources = reconcile_sources
+        self._site_lock = threading.Lock()
+        self._to_reconcile: set[str] = set()
+        self._reconciled_now: set[str] = set()
+        self._site_look_at = -math.inf  # time.monotonic() of the main loop's last look for finished sites
+        self._reconciler: threading.Thread | None = None  # the thread that reconciles finished sites (review 10-26)
 
     def _new_client(self, warc: WarcSink | None) -> Client:
         return archive_client(warc, resend_gap_s=self.gap[0], clock=self.clock, sleep=self.sleep)
@@ -841,6 +862,7 @@ class Crawler:
                                                              "sites": sites, "end_wait_s": self.end_wait_s,
                                                              "school_lock": str(schoollock.lock_path())}))
         workers: dict[str, threading.Thread] = {}
+        self._never_reconciled()
         try:
             self._reresolve(force=True)
             self._place_hosts()
@@ -868,7 +890,13 @@ class Crawler:
                             workers[queue] = t
                             t.start()
                 if not any(t.is_alive() for t in workers.values()) and self._should_end():
+                    if self.end_reason in ("finished", "waiting"):  # the sites it leaves done, before its run_end
+                        self._join_reconciler()
+                        self._reconcile_finished()
                     break
+                if time.monotonic() - self._site_look_at >= SITE_LOOK_S:
+                    self._site_look_at = time.monotonic()
+                    self._reconcile_in_background()
                 self.stop.wait(poll_s)
         except sqlite3.DatabaseError:
             log.exception("the frontier database failed, stopping the run")
@@ -877,6 +905,7 @@ class Crawler:
             self.stop.set()
             for t in workers.values():
                 t.join(timeout=120)
+            self._join_reconciler()  # it stops between pages: the stop above reached it
             with suppress(sqlite3.Error):
                 self.chains.sso_totals()  # §7.5 step 7: SSO 公告中心's categories add up to its whole list
             with suppress(sqlite3.Error):
@@ -936,6 +965,106 @@ class Crawler:
             return False
         self._stuck = 0
         return False
+
+    # ---- a site finished: its offline reconciliation (design §18.2a step 3)
+    def _round1_site(self, site: str | None) -> bool:
+        s = self.plan.site(site) if site else None
+        return s is not None and s.round == "1" and (self.sites is None or site in self.sites)
+
+    def _worked_on(self, site: str | None) -> None:
+        """A row or a press of this site is being handled: the site is to be reconciled (again) once it finishes."""
+        if self.reconcile_sources is not None and self._round1_site(site):
+            with self._site_lock:
+                self._to_reconcile.add(site)
+                self._reconciled_now.discard(site)
+
+    def _never_reconciled(self) -> None:
+        """At the start of a run: the run's round-1 sites that have no reconciliation at all are looked at too (one
+        that finished in a run that ended before it could be reconciled)."""
+        if self.reconcile_sources is None:
+            return
+        have = {r[0] for r in self.frontier.q("SELECT site FROM reconcile_site")}
+        sites = self.sites if self.sites is not None else {s.site for s in self.plan.sites.values() if s.round == "1"}
+        with self._site_lock:
+            self._to_reconcile |= {s for s in sites if s not in have and self._round1_site(s)}
+
+    def _reconcile_in_background(self) -> None:
+        """Start the reconciliation of finished sites on a thread of its own, unless one is at work (review 10-26: on
+        the main loop it kept the loop from starting workers again, looking whether the run should end and minding a
+        stop, for as long as a large site took)."""
+        if self.reconcile_sources is None or (self._reconciler is not None and self._reconciler.is_alive()):
+            return
+        with self._site_lock:
+            if not self._to_reconcile - self._reconciled_now:
+                return
+        self._reconciler = threading.Thread(target=self._reconcile_finished, name="reconcile-sites", daemon=True)
+        self._reconciler.start()
+
+    def _join_reconciler(self) -> None:
+        t = self._reconciler
+        if t is not None and t.is_alive():
+            t.join(timeout=STOP_WAIT_S)
+            if t.is_alive():
+                log.error("the reconciliation of finished sites has not stopped in %.0f s", STOP_WAIT_S)
+
+    def _reconcile_finished(self) -> int:
+        """Reconcile, offline and in this process (the one writer, design §6.9), each site to reconcile that has
+        nothing left this run but retries and the lab (reconcile.site_finished, B1): reconcile.site_done, every check
+        but R6 (skip, so gates_ok 0: 「⚠ 纪录齐了，还没对账」, with what failed already listed); R6 and a person's look
+        wait for `nknu archive reconcile` once the run stopped. A site that gets work again is reconciled again when it
+        finishes again. A failure is an error event, never the run's end. It reads and writes through a connection of
+        its own (Frontier.sibling: a long read never holds the lock every worker takes) and stops between pages when
+        the run stops (reconcile.Stopped: nothing of that site written as done). Returns how many it reconciled."""
+        if self.reconcile_sources is None:
+            return 0
+        from nknu.archive import reconcile
+
+        with self._site_lock:
+            todo = sorted(self._to_reconcile - self._reconciled_now)
+        if not todo:
+            return 0
+        n = 0
+        fr = self.frontier.sibling()
+        try:
+            for site in todo:
+                if self.stop.is_set():
+                    break
+                try:
+                    if not reconcile.site_finished(fr, site):
+                        continue
+                except sqlite3.Error:
+                    log.exception("whether %s finished could not be read", site)
+                    continue
+                with self._site_lock:
+                    if site in self._reconciled_now or site not in self._to_reconcile:
+                        continue
+                    self._reconciled_now.add(site)
+                t0 = time.monotonic()
+                try:
+                    got = reconcile.site_done(fr, self.root, site, plan=self.plan, batch=f"run:{self.run_id}",
+                                              sources=self.reconcile_sources, stop=self.stop.is_set)
+                    n += 1
+                    failing = [c for c, k in got.checks.items() if c in reconcile.GATES and k.status == reconcile.FAIL]
+                    log.info("site %s finished: reconciled offline in %.1f s (R6 waits for the run to stop)%s", site,
+                             time.monotonic() - t0, f"; failed: {', '.join(failing)}" if failing else "")
+                except reconcile.Stopped:
+                    with self._site_lock:
+                        self._reconciled_now.discard(site)
+                    log.info("site %s: its offline reconciliation stopped with the run after %.1f s", site,
+                             time.monotonic() - t0)
+                    with suppress(sqlite3.Error):
+                        fr.event("info", "reconcile_stopped", f"{site}: stopped with the run (nknu archive reconcile, "
+                                 "or the next run, does it again)")
+                    break
+                except Exception as exc:  # a reconciliation that broke never stops the crawl
+                    log.exception("site %s: the offline reconciliation failed", site)
+                    with suppress(sqlite3.Error):
+                        fr.event("error", "reconcile_failed",
+                                 f"{site}: {type(exc).__name__}: {exc} (nknu archive reconcile tries again "
+                                 "once the run stopped)"[:500])
+        finally:
+            fr.close()
+        return n
 
     def _limit_reached(self) -> bool:
         with self._count_lock:
@@ -1041,6 +1170,7 @@ class Crawler:
         address in the other scheme (self._tl.row), whose crash is its own, and the row it came from stays moved
         (second review 10-26: it was left active, and the run never ended)."""
         self._tl.row = row["id"]
+        self._worked_on(row["owner_site"])
         try:
             self._process(queue, client, sink, row)
             self._walk_check(self._tl.row)
@@ -1082,6 +1212,8 @@ class Crawler:
         """One press of a chain or of a file button, whatever happens: a press that never went out (the run stops, the
         queue rests, the network is down) waits as pending; one that may have reached the server is never sent again
         (design §6.4: a POST is sent once). What stops the run stops it."""
+        with suppress(KeyError, IndexError):  # action rows hold their site (postback.Chains.next_action: a.*)
+            self._worked_on(a["site"])
         try:
             self._press_one(queue, client, sink, a)
         except (_Stopped, _Paused, _Offline) as exc:
@@ -2634,6 +2766,9 @@ class Crawler:
         for u in page.unhandled:
             need, why = links.unhandled_need(self.decide(site, u.key))
             put(u.key, how="unhandled", role="click", need=need, why=why, zone=u.zone, text=u.text)
+            if u.auto:  # §8.4: the page fires it on load; jscheck opens the page (outcome.AUTO_KEY)
+                put(outcome.AUTO_KEY + u.key, how=outcome.AUTO_HOW, role="click", need="no", why=outcome.AUTO_WHY,
+                    zone=u.zone, text=u.text)
         for b in page.buttons:
             # with its argument: MasterGrid's Page$N is pressed, its Sort$x is not (profiles._button_key); with its
             # text: a rule that names one holds for that text only (SSO's bare ctlNN 「查詢」, review 10-26 phase 3)

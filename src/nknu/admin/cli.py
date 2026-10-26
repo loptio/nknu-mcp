@@ -645,12 +645,14 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
                                                                        "固定休息的 15 分钟长）")) -> None:
     """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等（默认 2–5 秒）；中断后重跑会接着抓。同一个目录只能有一个在跑，
     同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址、而且最早也要 --end-wait 秒以后才到期时，自己结束，
-    留给下一次。"""
+    留给下一次。一个网站抓完（只剩等重试的），就先对它做不连网的对账（浏览器抽查 R6 等 run 停下后用 archive reconcile 做），
+    看板上它会变成「纪录齐了，还没对账」。"""
     import logging
     import signal
     import threading
 
     from nknu.archive import crawler as archive
+    from nknu.archive import reconcile
     from nknu.crawl import schoollock
 
     root = _round1_root(dir)
@@ -680,7 +682,10 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
         stop_file = root / "STOP"
         stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
         (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
-        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only, end_wait_s=end_wait)
+        # each site that finishes is reconciled offline by this process (design §18.2a step 3; R6 waits for
+        # `archive reconcile` once the run stopped)
+        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only, end_wait_s=end_wait,
+                                  reconcile_sources=reconcile.Sources())
 
         def watch() -> None:
             while not crawler.stop.wait(archive.STOP_POLL_S):
@@ -794,26 +799,28 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
 @archive_app.command("browse")
 def archive_browse(dir: str = typer.Option(None, "--dir"),
                    port: int = typer.Option(8877, "--port", help="本机端口（只开在 127.0.0.1）")) -> None:
-    """在本机浏览器检查抓到的每一页：按单位和网站列出、看文字或不连网的预览、问题清单。Ctrl+C 结束。"""
-    from nknu.archive.viewer import build_index, serve
+    """在本机浏览器看进度看板和抓到的每一页：进度看板（每 30 秒自动更新，只读、不拖慢爬虫）、按单位和网站列出、看文字或
+    不连网的预览、问题清单。Ctrl+C 结束。"""
+    import errno
+
+    from nknu.archive.viewer import index_in_background, serve
 
     root = _archive_root(dir)
     if not (root / "frontier.db").exists():
         typer.echo(f"找不到 {root / 'frontier.db'}")
         raise typer.Exit(1)
-    import errno
-
-    typer.echo("建立存档索引（第一次要几分钟，之后只补新的部分）……")
-    typer.echo(f"新增 {build_index(root)} 笔")
     try:
         server = serve(root, port)
     except OSError as exc:
         if exc.errno != errno.EADDRINUSE:
             raise
-        typer.echo(f"端口 {port} 已经有程序在用：检查工具多半已经开着，直接打开 http://127.0.0.1:{port}/ ；"
+        typer.echo(f"端口 {port} 已经有程序在用：检查工具多半已经开着，直接打开 http://127.0.0.1:{port}/progress ；"
                    f"要另开一个就加 --port 8878")
         raise typer.Exit(0) from None
-    typer.echo(f"打开 http://127.0.0.1:{port}/")
+    typer.echo(f"进度看板：http://127.0.0.1:{port}/progress")
+    typer.echo(f"存档总览：http://127.0.0.1:{port}/")
+    typer.echo("存档索引在背景建立（第一次要几分钟，之后只补新的部分；看板不用等它）")
+    index_in_background(root, lambda added: typer.echo(f"存档索引好了：新增 {added} 笔"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -836,3 +843,280 @@ def archive_choices(dir: str = typer.Option(None, "--dir")) -> None:
     data = build(root)
     (root / "choices-data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     typer.echo("、".join(f"{s['title']} {len(s['items'])} 项" for s in data["sections"]))
+
+
+# ---------------------------------------------------------------- round 1 after the crawl: verify, jscheck, reconcile
+
+
+def _old_of(root, old: str | None):
+    """The 10-24 archive to read (only read): --old, else the one seed noted (meta old_archive), else none."""
+    from pathlib import Path
+
+    from nknu.archive.frontier import Frontier
+
+    if old:
+        return Path(old).expanduser().resolve()
+    f = Frontier(root / "frontier.db", readonly=True)
+    try:
+        noted = f.meta("old_archive")
+    finally:
+        f.close()
+    return Path(noted) if noted else None
+
+
+def _site_list(sites: str | None) -> list[str] | None:
+    return [x.strip() for x in sites.split(",") if x.strip()] if sites else None
+
+
+@archive_app.command("verify")
+def archive_verify(dir: str = typer.Option(None, "--dir"),
+                   golden: str = typer.Option(None, "--golden", help="25 题的答案档（例如 research/project_audit_2026-10-25/"
+                                                                   "web_search_baseline_25q.json），另核对第 G 项")
+                   ) -> None:
+    """第一轮验收（设计第 13 节）：只读、不连网，逐项核对（每项 ✓ 通过 / ⚠ 要看 / ✗ 出错 / 没检查）和每个网站的状态，写
+    reports/verify-<时间>.md。退出码 0 全过、1 有要看的或没检查的、2 有出错的。已知缺口（第 16 项）会一直列着，所以最好
+    也只到「第一轮完成，有已知缺口 N 项」。爬虫在跑时也能看，但第 14 项（存档读得回来）要等它停下。"""
+    from pathlib import Path
+
+    from nknu.archive import monitor, round1
+    from nknu.archive.frontier import OutdatedFrontier
+
+    root = _archive_root(dir)
+    _archive_db(root)
+    gold = Path(golden).expanduser().resolve() if golden else None
+    if gold is not None and not gold.is_file():
+        typer.echo(f"找不到 25 题的答案档：{gold}")
+        raise typer.Exit(1)
+    plan = round1.load()
+    try:
+        got = monitor.verify(root, plan=plan, golden=gold, resource_check=monitor.extract_check(plan))
+    except OutdatedFrontier as exc:
+        typer.echo(f"{exc}。验收只读、不改资料库：这多半是 10-24 旧爬虫的存档，或旧版程序写的待抓清单，先用 --dir 指定第一轮的"
+                   "存档目录。")
+        raise typer.Exit(1) from None
+    typer.echo(got.text)
+    if got.path is not None:
+        typer.echo(f"报告：{got.path}")
+    raise typer.Exit(got.code)
+
+
+def _drop_secrets(names) -> None:
+    """A command that opens Chrome and never needs a credential (jscheck, reconcile's R6) holds none from its start:
+    the shell may have sourced google.env for `archive run` (CLAUDE.md: only the fetch service holds the key), and
+    Playwright's driver takes this process's environment (Chrome itself is started without them: jscheck.chrome_env)
+    【Claude 的执行办法】, review 10-26."""
+    import os
+
+    for name in names:
+        os.environ.pop(name, None)
+
+
+@archive_app.command("jscheck")
+def archive_jscheck(dir: str = typer.Option(None, "--dir"),
+                    old: str = typer.Option(None, "--old", help="10-24 旧存档（只读），给「旧类型这一轮没出现」查样本的状态；"
+                                                             "默认是 seed 记下的那一份"),
+                    gap: str = typer.Option("2-5", "--gap", help="每个回应之后等几秒（下限-上限），和 archive run 一样"),
+                    set_: tuple[str, str] = typer.Option((None, None), "--set", metavar="类型键 ok|js|frame|click",
+                                                         help="人看过以后改判一个网页类型（不发任何请求）"),
+                    note: str = typer.Option(None, "--note", help="--set 的理由")) -> None:
+    """爬虫停下以后，用本机 Chrome（Playwright，选用依赖组 browser）把待判定的网页类型各抽一页打开，和直接抓到的比，只为了
+    判定类型（设计第 8.4 节）：不存内容，也不往待抓清单写要抓的网址。所有请求都经过我们自己的队列（每台服务器 1 条连线、
+    照间隔、拿全机锁）。目录里放 STOP 档、nknu archive stop 或 SIGTERM 会在手上的页面做完后停下。
+    --set <类型键> ok|js|frame|click --note …：人看过以后改判（run 在跑时拒绝）。"""
+    import signal
+
+    from nknu.archive import jscheck
+
+    _drop_secrets(jscheck.SECRET_ENV)
+    root = _round1_root(dir)
+    _archive_db(root)
+    if set_ != (None, None):
+        key, verdict = set_
+        try:
+            stale = jscheck.set_verdict(root, key, verdict, note)
+        except jscheck.JsCheckRefused as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from None
+        typer.echo(f"已改判：{key} → {verdict}（人工）；各页的结果会跟着变")
+        if stale:
+            typer.echo(f"这些网站的对账因此过期，要重新对账（nknu archive reconcile --batch … --sites …）：{'、'.join(stale)}")
+        return
+    if note:
+        typer.echo("--note 只和 --set 一起用")
+        raise typer.Exit(1)
+    span = _gap_option(gap)
+    check = jscheck.JsCheck(root, old=_old_of(root, old), gap=span)
+    signal.signal(signal.SIGTERM, lambda *_: check.halt("stop", "sigterm"))
+    try:
+        report = check.run()
+    except jscheck.JsCheckRefused as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    except jscheck.BrowserMissing as exc:
+        typer.echo(f"打不开浏览器：{exc}。要先装选用依赖组 browser（Playwright {jscheck.PLAYWRIGHT_VERSION}）和本机的 "
+                   "Chrome；网页类型都保持待判定。")
+        raise typer.Exit(1) from None
+    for line in report.lines():
+        typer.echo(line)
+    raise typer.Exit(0 if report.reason == "finished" else 1)
+
+
+@archive_app.command("reconcile")
+def archive_reconcile(batch: str = typer.Option(None, "--batch", help="这一批的名字（写进报告和 reconcile_site）"),
+                      dir: str = typer.Option(None, "--dir"),
+                      sites: str = typer.Option(None, "--sites", help="只对这些网站（网站键，逗号分隔）；默认第一轮全部"),
+                      no_r6: bool = typer.Option(False, "--no-r6", help="不做浏览器抽查（R6）：不连网、不拿全机锁；"
+                                                                    "这样网站不会变成「爬完」"),
+                      old: str = typer.Option(None, "--old", help="10-24 旧存档（只读，R4）；默认是 seed 记下的那一份"),
+                      gap: str = typer.Option("2-5", "--gap", help="R6 每个回应之后等几秒（下限-上限）"),
+                      enqueue: str = typer.Option(None, "--enqueue", help="人看过、要抓的网址清单（一行一个，"
+                                                                        "例如对账写的 -found.txt），写进待抓清单")
+                      ) -> None:
+    """对账（设计第 18.2b 节）：拿 Common Crawl、旧存档、25 题、浏览器抽查和爬虫自己的纪录比，逐站写 reconcile_site 和
+    reports/reconcile-<批>-<时间>.md。R6 用 jscheck 的浏览器和队列打开每站首页加几页（要拿全机锁、run 停着）；其余几项
+    不连网。run 在跑时拒绝。退出码 0 每站关卡全过、1 有没过或没检查的关卡、2 有关卡出错。
+    --enqueue <清单>：把人确认要抓的网址写进待抓清单（found_via=reconcile），下一次 run 照老方法抓。"""
+    from pathlib import Path
+
+    from nknu.archive import crawler as archive
+    from nknu.archive import jscheck, reconcile
+    from nknu.crawl import schoollock
+
+    _drop_secrets(jscheck.SECRET_ENV)
+    root = _round1_root(dir)
+    _archive_db(root)
+    try:
+        if enqueue:
+            listed = Path(enqueue).expanduser()
+            if not listed.is_file():
+                typer.echo(f"找不到清单：{listed}")
+                raise typer.Exit(1)
+            got = reconcile.enqueue(root, reconcile.read_list(listed))
+            queued = sum(v == "queued" for _u, v in got)
+            typer.echo(f"清单 {len(got)} 个网址：写进待抓清单 {queued} 个；其余（已经有了、第二轮、规则不抓）：")
+            for u, v in got:
+                if v != "queued":
+                    typer.echo(f"  {v}  {u}")
+            return
+        if not batch:
+            typer.echo("要给这一批一个名字：--batch <批>（或用 --enqueue <清单> 把网址写进待抓清单）")
+            raise typer.Exit(1)
+        sources = reconcile.Sources(old=_old_of(root, old))
+        if no_r6:
+            got, out = reconcile.reconcile(root, batch=batch, sites=_site_list(sites), sources=sources)
+        else:
+            span = _gap_option(gap)
+            try:
+                school = schoollock.hold()  # R6 opens school pages (design §6.9)
+            except schoollock.SchoolLockBusy as exc:
+                typer.echo(f"另一个程序正在对学校发请求（pid {exc.pid}，全机锁 {exc.path}）：等它停下再对账，或加 --no-r6 "
+                           "只做不连网的几项")
+                raise typer.Exit(1) from None
+            except schoollock.SchoolLockUnshared as exc:
+                typer.echo(_unshared(exc))
+                raise typer.Exit(1) from None
+            try:
+                got, out = reconcile.reconcile(root, batch=batch, sites=_site_list(sites), sources=sources,
+                                               spot_factory=lambda fr: jscheck.SpotChecker(root, fr, gap=span))
+            finally:
+                school.close()
+    except archive.AlreadyRunning as exc:
+        typer.echo(f"archive run（或 jscheck）正在用这个目录（pid {exc.pid}）：先 nknu archive stop，等它停下再对账")
+        raise typer.Exit(1) from None
+    except reconcile.NotRound1 as exc:
+        typer.echo(f"{exc}：对账只对第一轮的存档做，旧存档只读")
+        raise typer.Exit(1) from None
+    except jscheck.BrowserMissing as exc:
+        typer.echo(f"打不开浏览器（R6 要用）：{exc}。装好选用依赖组 browser 和本机 Chrome，或加 --no-r6 只做不连网的几项")
+        raise typer.Exit(1) from None
+    except schoollock.SchoolLockNotHeld as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    worst = 0
+    for res in got.sites:
+        failing = [c for c, k in res.checks.items() if c in reconcile.GATES and k.status == reconcile.FAIL]
+        open_ = [c for c, k in res.checks.items() if c in reconcile.GATES and k.status != reconcile.PASS]
+        worst = max(worst, 2 if failing else 1 if open_ else 0)
+        typer.echo(f"{res.site}：" + ("关卡全过" if res.gates_ok else
+                                      "没过 " + "、".join(f"{c}（{reconcile.STATUS_LABEL[res.checks[c].status]}）"
+                                                         for c in open_)))
+    if got.found:
+        typer.echo(f"对账发现爬虫没找到的网址 {len(got.found)} 个（要人看）：见报告和 -found.txt；要抓的用 "
+                   "nknu archive reconcile --enqueue <清单>")
+    typer.echo(f"报告：{out}")
+    raise typer.Exit(worst)
+
+
+@archive_app.command("rejudge")
+def archive_rejudge(sites: str = typer.Option(..., "--sites", help="要重算的网站（网站键，逗号分隔）"),
+                    dir: str = typer.Option(None, "--dir")) -> None:
+    """不连网重算（设计第 18.2a 节第 4 步）：从存档按位置读回这几个网站已存的网页，用现在的规则和平台档案重算资源、类型、
+    记号和「页面几乎是空的」；新找到的网址写进待抓清单（found_via=rejudge），已经抓过的不重抓。run 在跑时拒绝。之后这几个
+    网站的对账要重做。"""
+    from nknu.archive import crawler as archive
+    from nknu.archive import reconcile
+
+    root = _round1_root(dir)
+    _archive_db(root)
+    only = _site_list(sites)
+    if not only:
+        typer.echo("--sites 要写至少一个网站键")
+        raise typer.Exit(1)
+    try:
+        got = reconcile.rejudge(root, only)
+    except archive.AlreadyRunning as exc:
+        typer.echo(f"archive run 正在用这个目录（pid {exc.pid}）：先 nknu archive stop，改完再 run")
+        raise typer.Exit(1) from None
+    except reconcile.NotRound1 as exc:
+        typer.echo(f"{exc}：rejudge 只对第一轮的存档做，旧存档只读")
+        raise typer.Exit(1) from None
+    typer.echo(f"重算 {len(got.sites)} 个网站：网页 {got.pages} 页、短网址 {got.shortlinks} 个；新找到的网址 {got.new_rows} 个"
+               f"（下一次 archive run 抓）；R7 写回 {got.r7_rows} 行；「页面几乎是空的」新加 {got.thin_set}、拿掉 "
+               f"{got.thin_cleared}")
+    if got.unread:
+        typer.echo(f"有 {len(got.unread)} 页按位置读不回来（见 archive verify 第 14 项）")
+    typer.echo("这几个网站之前的对账已经过期：nknu archive reconcile --batch <批> --sites …")
+
+
+@archive_app.command("review")
+def archive_review(url_id: int = typer.Argument(None, help="要标记的网址编号（不给就列出可以标记的网址）"),
+                   mark: str = typer.Option(None, "--mark", help="标记：school_side（学校那边的问题，人看过）"),
+                   note: str = typer.Option(None, "--note", help="为什么这样标（必填）"),
+                   site: str = typer.Option(None, "--site", help="只列这个网站的"),
+                   dir: str = typer.Option(None, "--dir")) -> None:
+    """人看过、确认是学校那边的问题的网址（例如云端档案不公开、学校的链接坏了），标成「学校那边的问题（人看过）」（设计第
+    10.2.1 节）：nknu archive review --mark school_side <编号> --note …。那个网址再抓一次，标记就作废。不给 --mark 时只
+    列出可以标记的网址（只读）。run 在跑时拒绝标记。"""
+    from nknu.archive import crawler as archive
+    from nknu.archive import outcome, reconcile
+    from nknu.archive.frontier import Frontier
+
+    root = _round1_root(dir)
+    db = _archive_db(root)
+    if mark is None:
+        f = Frontier(db, readonly=True)
+        try:
+            rows = reconcile.markable_rows(f, site)
+        finally:
+            f.close()
+        typer.echo(f"可以标记的网址 {len(rows)} 个（nknu archive review --mark school_side <编号> --note …）：")
+        for r in rows:
+            label = outcome.RESULT_LABEL.get(r["result"], r["result"])
+            typer.echo(f"  {r['id']}  {label}（{r['reason'] or '—'}，{r['status'] or '—'}）  {r['url']}")
+        return
+    if url_id is None:
+        typer.echo("要给网址编号：nknu archive review --mark school_side <编号> --note …")
+        raise typer.Exit(1)
+    try:
+        result = reconcile.review_mark(root, url_id, note=note or "", mark=mark)
+    except archive.AlreadyRunning as exc:
+        typer.echo(f"archive run 正在用这个目录（pid {exc.pid}）：先 nknu archive stop，改完再 run")
+        raise typer.Exit(1) from None
+    except reconcile.NotRound1 as exc:
+        typer.echo(f"{exc}：标记只对第一轮的存档做")
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"没有标记：{exc}")
+        raise typer.Exit(1) from None
+    typer.echo(f"已标记 {url_id}（原来是「{outcome.RESULT_LABEL.get(result, result)}」）为学校那边的问题（人看过）；"
+               "这个网址再抓一次，标记就作废")

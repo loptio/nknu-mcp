@@ -23,6 +23,11 @@ dependencies = [
     "protego>=0.7.0",
 ]
 
+[project.optional-dependencies]
+# `nknu archive jscheck` (round-1 design §8.4): Playwright drives this machine's own Chrome (channel chrome), so no
+# browser is downloaded; the 10-25 test's version. Never a required dependency
+browser = ["playwright==1.64.1"]
+
 [project.scripts]
 nknu = "nknu.admin.cli:app"
 
@@ -38,7 +43,7 @@ packages = ["src/nknu"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not live'"
-markers = ["live: 会连到真实网站"]
+markers = ["live: 会连到真实网站", "browser: 用本机 Chrome（Playwright）跑，只连本机回环的测试服务器；没装就跳过"]
 testpaths = ["tests"]
 # pytest skips dirs named "build" by default; tests/build holds the serve.db tests
 norecursedirs = [".*", "*.egg", "dist", "node_modules", "venv", "prototypes"]

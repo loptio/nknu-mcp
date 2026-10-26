@@ -310,6 +310,18 @@ class Frontier:
         self.conn.executescript(INDEXES)
         outcome.create_views(self.conn)
 
+    def sibling(self) -> Frontier:
+        """Another connection to the same file for another thread of this process (the crawler's reconciliation,
+        review 10-26): its own lock, so that a long read there (page_resource, page_completeness: seconds) never holds
+        this one's, which every worker of the run takes; nothing is made (this one made the tables, indexes and
+        views). WAL lets its reads go on beside this one's writes; its writes wait for this one's (busy timeout)."""
+        f = Frontier.__new__(Frontier)
+        f.path, f.lock = self.path, threading.RLock()
+        f.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
+        f.conn.row_factory = sqlite3.Row
+        f.conn.execute("PRAGMA synchronous=NORMAL")
+        return f
+
     def q(self, sql: str, args=()) -> list[sqlite3.Row]:
         with self.lock:
             return self.conn.execute(sql, args).fetchall()
