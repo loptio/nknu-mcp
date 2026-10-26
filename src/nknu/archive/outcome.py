@@ -91,9 +91,12 @@ def error_signature(url: str) -> ErrorSignature | None:
 # page sends the browser on by a meta refresh or an inline script (§8.3); click_empty: a tab pressed by its platform
 # rule came back with nothing (§7.4); gone_page: the school's own page says what was asked for does not exist, seen
 # twice (SSO's 「附件無法下載：檔案不存在」: the platform file reads it, and the first time the row is retried later;
-# review 10-26 B6); bad_link: the school's page says the link itself is broken (SSO's 「檔案包含不支援的字元」)
+# review 10-26 B6); bad_link: the school's page says the link itself is broken (SSO's 「檔案包含不支援的字元」);
+# in_image: a page whose words alone would be thin, its body a picture (reconcile, design §23 E3: 内容在图片里, for the
+# organising stage's text recognition): said, never a gap, so not one of PAGE_FLAGS
 FLAGS = ("login", "soft404", "decode", "gone_redirect", "gone_id", "error_page", "thin", "empty_detail", "js_hint",
-         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link")
+         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link", "in_image")
+IN_IMAGE_WORDS = "内容在图片里（整理阶段做文字识别）"
 # what a page's text says: on a file or an image, a crawler bug
 PAGE_FLAGS = ("thin", "empty_detail", "js_hint", "js_redirect")
 # what a non-page row may be once fetched: embed is a Google form or a Google Sites embed box, HTML by nature (§4.4)
@@ -103,6 +106,17 @@ FETCHED_KINDS = ("file", "image", "drive", "calendar", "embed")
 _EXPECTED_FILE = ("file", "image", "drive", "drive_list", "calendar", "sitemap", "click", "script")
 # Google's APIs (§7.6): read with a key, a file nobody may read and one deleted both answer 404, so neither is `gone`
 API_HOSTS = ("www.googleapis.com",)
+# google_api.FILE_QUOTA_REASON as the url.reason: one Drive file's downloads used up, three times (design §23 D1): the
+# row failed with it is api_quota (要人看), never a failure of ours or of the school's
+API_QUOTA_REASON = "api:downloadQuotaExceeded"
+# crawler._park_directory: a directory refused twice over (a streak, its rest, a streak again) has its other rows failed
+# with this reason, not one request sent for them (design §23 F1): parked, 要人看, never 「试了 3 次还是失败」 nor a mark
+# of the school's; `nknu archive retry denied_dir` puts them back. A row still waiting out the rest is pending, as any
+PARKED_REASON = "denied_dir"
+# crawler.GSIMG_STALE: a Google Sites runtime picture's address that a new reading of its page replaced (design §23
+# B2): never sent again, its answer (if any) kept; it comes to where its final_url points, the same picture's new
+# address, judged there (redirect), never 连接失败 nor a picture lost
+GSIMG_STALE = "gsimg_stale"
 # a Drive item's metadata row (kind0 drive, §7.6) is evidence only: a redirect that ends on one comes to what the item
 # came to (_drive_settled, review 10-26 phase 3: a page, an attachment or a short link sent to a Drive file counted on
 # the metadata's 200). The Google types read without a download of their own (google_api: a folder's listing, a
@@ -229,7 +243,12 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
     """SQL: the result of url row `u` by its own evidence, before any person's mark (url_result_case).
 
     A file, image, Drive item or calendar (or a row expected to be one) that came back with a 200 and no sniffed format
-    is `unknown`: nothing shows it is not a web page (§7.3 sniffs every 200; the old archive's 25 HTML 'files').
+    is `unknown`: nothing shows it is not a web page (§7.3 sniffs every 200; the old archive's 25 HTML 'files'). An
+    attachment or a picture (kind0, else kind, file or image) answered 200 with no byte at all is not_file (§23 A1 ①;
+    the school's 「檔案不存在」 page stays gone or bad_link, which says more).
+
+    A Google Sites runtime picture's address a new reading of its page replaced (reason gsimg_stale, §23 B2) is a
+    redirect to the same picture's new address (final_url), sent or not.
 
     A page (§8.3, §8.4): one that sends the browser on is a redirect, judged where it lands; then the type's verdict and
     this page's own browser check (js, unresolved, click: the more cautious wins); a page with a strong hint, and a
@@ -250,15 +269,18 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
   WHEN {u}.state = 'later' THEN 'later'
   WHEN {u}.state = 'skipped' THEN
        CASE WHEN {u}.reason = 'too_large' THEN 'too_large'
-            WHEN {u}.reason = 'moved_scheme' THEN 'redirect'
+            WHEN {u}.reason IN ('moved_scheme', '{GSIMG_STALE}') THEN 'redirect'
             WHEN {u}.reason LIKE 'cap:%' OR {u}.reason IN {_sql_list(_CAP_REASONS)} THEN 'held'
             WHEN {_by_rule(u)} THEN 'rule'
             ELSE 'unknown' END
   WHEN {u}.state = 'failed' THEN
        CASE WHEN {u}.reason IN {_sql_list(_LAB_REASONS)} THEN 'lab'
+            WHEN {u}.reason = '{PARKED_REASON}' THEN 'parked'
             WHEN {u}.reason = 'error_page' THEN 'server_error'
+            WHEN {u}.reason = '{API_QUOTA_REASON}' THEN 'api_quota'
             ELSE 'failed' END
   WHEN {u}.state <> 'done' THEN 'unknown'
+  WHEN {u}.reason = '{GSIMG_STALE}' THEN 'redirect'
   WHEN {_unknown_flags(u)} THEN 'unknown'
   WHEN {u}.status BETWEEN 300 AND 399 THEN
        CASE WHEN {has('gone_redirect')} THEN 'gone'
@@ -282,6 +304,7 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
   WHEN {has('error_page')} THEN 'server_error'
   WHEN {has('decode')} THEN 'decode'
   WHEN {expected} AND {u}.sniff = 'html' THEN 'not_file'
+  WHEN coalesce({u}.kind0, {u}.kind) IN ('file', 'image') AND {u}.bytes = 0 THEN 'not_file'
   WHEN {u}.sniff IS NULL AND ({u}.kind <> 'page' OR {expected}) THEN 'unknown'
   WHEN {has('click_empty')} THEN 'thin'
   WHEN {u}.kind = 'page' THEN
@@ -308,25 +331,40 @@ FROM url u LEFT JOIN page_type pt ON pt.key = u.page_type
 """
 URL_RESULTS = ("ok", "gone", "login", "redirect", "rule", "later", "todo", "retry", "lab", "js", "unchecked", "thin",
                "refused", "http_4xx", "decode", "too_large", "failed", "server_error", "not_file", "held", "unknown",
-               "unresolved", "click", "looks_gone", "api_error", "bad_link", "short_dead", "unhandled", SCHOOL_SIDE)
+               "unresolved", "click", "looks_gone", "api_error", "api_quota", "bad_link", "short_dead", "unhandled",
+               "parked", SCHOOL_SIDE)
 
 # ---------------------------------------------------------------- §10.3: one result per button press
 
-# click: a button pressed by its platform rule that posts for a file's address (ee's download buttons, §7.4)
-ACTION_KINDS = ("pager", "detail", "download", "click")
+# click: a button pressed by its platform rule that posts for a file's address (ee's download buttons, §7.4); data:
+# a read of a platform's data address, once per site (cLv2's timeline, design §23 C1)
+ACTION_KINDS = ("pager", "detail", "download", "click", "data")
+# profiles.DATA_READ, profiles.DATA_SCHOOL_ERROR: a data address's answer read (read:empty, read:events:<n>), or one
+# that says the school's server erred (school_error:<its message>)
+DATA_READ, DATA_SCHOOL_ERROR = "read:", "school_error:"
+# what a data address's answer said, in words, after 抓到了 (design §23 C1: 「时间轴是空的」)
+DATA_WORDS = {"read:empty": "时间轴是空的"}
 EMPTY_DETAIL = "empty_detail"  # postback.EMPTY_DETAIL: the action.reason of a detail answered empty
+NOT_FILE = "not_file:"  # postback.NOT_FILE: the action.reason of a download whose answer is no file (§23 A1, A2)
 
 
 def action_result_case(a: str = "a") -> str:
     """SQL: the result of action row `a` (design §10.3). As a row, a press a restart replaced (superseded) and one
     answered with a redirect are `redirect`; page_completeness counts each by the press that replaced it, or by where
-    it led. A download that came back with a 200 and no sniffed format is `unknown`, as a url row's is."""
+    it led. A download that came back with a 200 and no sniffed format is `unknown`, as a url row's is. A download the
+    crawler found no file in (reason not_file:<why>: empty, no name and no file format, the school's 「檔案不存在」, an
+    export GET that redirected twice; design §23 A1, A2) is not_file whatever its status; a press answered too large
+    to keep (failed, reason too_large) is too_large, for a person to decide (§23 A3), never failed. A read of a data
+    address (kind data, §23 C1) is ok only when its answer was read (reason read:…); one that says the school's server
+    erred is server_error; any other 200 is unknown."""
     return f"""CASE
   WHEN {a}.state IN ('pending','active') THEN 'todo'
   WHEN {a}.state = 'superseded' THEN 'redirect'
+  WHEN {a}.state = 'failed' AND {a}.reason = 'too_large' THEN 'too_large'
   WHEN {a}.state = 'failed' THEN 'failed'
   WHEN {a}.state = 'mismatch' THEN 'mismatch'
   WHEN {a}.state <> 'done' THEN 'unknown'
+  WHEN {a}.kind = 'download' AND {a}.reason LIKE '{NOT_FILE}%' THEN 'not_file'
   WHEN {a}.status BETWEEN 300 AND 399 THEN 'redirect'
   WHEN {a}.status IN (401, 403, 451) THEN 'refused'
   WHEN {a}.status >= 500 THEN 'server_error'
@@ -336,6 +374,8 @@ def action_result_case(a: str = "a") -> str:
   WHEN {a}.kind = 'download' AND {a}.sniff = 'html' THEN 'not_file'
   WHEN {a}.kind = 'download' AND {a}.sniff IS NULL THEN 'unknown'
   WHEN {a}.kind = 'detail' AND {a}.reason = '{EMPTY_DETAIL}' THEN 'thin'
+  WHEN {a}.kind = 'data' AND {a}.reason LIKE '{DATA_SCHOOL_ERROR}%' THEN 'server_error'
+  WHEN {a}.kind = 'data' AND ({a}.reason IS NULL OR {a}.reason NOT LIKE '{DATA_READ}%') THEN 'unknown'
   ELSE 'ok' END"""
 
 
@@ -346,7 +386,7 @@ FROM action a
 # thin: a detail a press brought back with nothing in it (action.reason empty_detail, §10.1 nonempty as for a detail
 # got by GET; review 10-26 phase 3, 【Claude 的执行办法】: §10.3's view has no such line)
 ACTION_RESULTS = ("todo", "redirect", "failed", "mismatch", "refused", "server_error", "http_4xx", "not_file", "ok",
-                  "thin", "unknown")
+                  "thin", "too_large", "unknown")
 # a resource of a page: a URL's or a press's result, or not_discovered when the page names it and nothing says what
 # came of it (a crawler bug, never complete), or unhandled: a writing (or a Google address) nobody has decided about
 # yet (§7.6, §7.8)
@@ -364,7 +404,7 @@ GROUPS = {
     # gap in these rules, never a resource fetched
     "bad": ("failed", "not_file", "held", "refused", "http_4xx", "server_error", "mismatch", "unknown",
             "not_discovered", "too_large", "decode", "thin", "redirect", "unresolved", "looks_gone", "api_error",
-            "unhandled", "bad_link", "short_dead"),
+            "api_quota", "unhandled", "bad_link", "short_dead", "parked"),
 }
 SCHOOL = ("gone", "login", SCHOOL_SIDE)  # fetched as far as the school allows (school_side: a person said so)
 LOST = ("not_discovered", "unknown")  # a resource nothing accounts for, or a combination nobody knows: a crawler bug
@@ -373,7 +413,7 @@ FAILED = ("failed", "lab", "server_error", "refused", "http_4xx", "not_file")
 # 要人看: got but maybe wrong, or the crawler stopped by itself, or a person must decide (§10.4). thin here is a
 # resource's: a page that is itself thin has its own label. redirect: a resource whose redirects never land
 REVIEW = ("held", "too_large", "mismatch", "unknown", "not_discovered", "decode", "thin", "unresolved", "looks_gone",
-          "api_error", "unhandled", "redirect", "bad_link", "short_dead")
+          "api_error", "api_quota", "unhandled", "redirect", "bad_link", "short_dead", "parked")
 # a round-1 page whose redirects lead to what the rules leave out (a page that is itself skipped by a rule or too large
 # is not judged at all): a person decides whether the rule or the site list should change
 OWN_REVIEW = ("rule",)
@@ -412,6 +452,8 @@ LABEL_ORDER = (
     ("miss_img", "缺图片"),
     ("miss_other", "缺内嵌页或按钮"),
     ("click", "点了才载入的内容（下一轮补）"),
+    # design §23 B3: what the page lacks is only pictures left for round two (Google Sites' runtime pictures)
+    ("round2_img", "缺图片（下一轮补）"),
     ("round2", "有下一轮补的资源"),
     ("unchecked", "待判定"),
     ("complete_school", "完整（学校那边缺）"),
@@ -431,6 +473,7 @@ _LABEL_WHEN = {
     "miss_img": "miss_img > 0",
     "miss_other": "miss_other > 0 OR frame_missing",
     "click": "own = 'click' OR n_click > 0",
+    "round2_img": "own <> 'later' AND n_round2_img > 0 AND n_round2 = n_round2_img",
     "round2": "own = 'later' OR n_round2 > 0",  # later: a page that now redirects to a second-round address
     "unchecked": "own = 'unchecked' OR n_unchecked > 0",
     "complete_school": f"own IN {_sql_list(SCHOOL)} OR n_school > 0",
@@ -451,7 +494,7 @@ _LEVEL_WHEN = (
     ("complete_school", f"n_school > 0 OR own = '{SCHOOL_SIDE}'"),
 )
 _COUNTS = ("n_must", "n_school", "n_todo", "n_retry", "n_failed", "n_wait", "n_unchecked", "n_round2", "n_click",
-           "n_review", "n_bad", "miss_file", "miss_img", "miss_other", "n_frames")
+           "n_review", "n_bad", "miss_file", "miss_img", "miss_other", "n_frames", "n_round2_img")
 
 
 def _kept_out(verdict: str, link: bool = True) -> str:
@@ -690,6 +733,7 @@ a AS (
     sum({must} AND result = 'unchecked') AS n_unchecked,
     sum(need = 'round2' OR result IN {_sql_list(GROUPS["round2"])}) AS n_round2,
     sum(role = 'click' AND need = 'round2') AS n_click,
+    sum(role = 'img' AND need = 'round2') AS n_round2_img,
     sum(({must} AND result IN {_sql_list(REVIEW)}) OR {lost_later}) AS n_review,
     sum(({must} AND result IN {bad}) OR {lost_later}) AS n_bad,
     sum({must} AND result NOT IN {good} AND (role IN {_sql_list(FILE_ROLES)} OR {carried_file})) AS miss_file,
@@ -774,6 +818,7 @@ RESULT_LABEL = {
     "gone": "学校那边已经不存在",
     "looks_gone": "看起来像不存在（程序比对的）",
     "api_error": "Google API 读不到（不公开或已删除，分不出）",
+    "api_quota": "Google：这个档案的下载次数被用完",
     "login": "要登录，进不去",
     "redirect": "跳到别的网址（目标另算）",
     "rule": "按规则不抓",
@@ -792,7 +837,7 @@ RESULT_LABEL = {
     "too_large": "档案太大，没抓",
     "failed": "试了 3 次还是失败",
     "server_error": "学校服务器出错（出错页或 5xx）",
-    "not_file": "应该是档案，回来是网页",
+    "not_file": "应该是档案，回来不是档案（网页、空白或错误说明）",
     "held": "撞到上限没抓",
     "unknown": "程序不认得的组合",
     "mismatch": "按到的可能是别的公告",
@@ -800,6 +845,7 @@ RESULT_LABEL = {
     "unhandled": "这一轮还没决定怎么处理的写法",
     "bad_link": "学校的链接坏了",
     "short_dead": "短网址已失效",
+    "parked": "这个目录连续被拒两轮，剩下的网址没发请求；用 nknu archive retry denied_dir 放回",
     SCHOOL_SIDE: "学校那边的问题（人看过）",
 }
 # green: fetched; yellow: to look at; red: wrong; none: nothing to do (design §14.5: shown with a sign and words too).
@@ -811,7 +857,8 @@ RESULT_COLOR = {
     "retry": "yellow", "lab": "yellow", "js": "yellow", "click": "yellow", "unchecked": "yellow",
     "failed": "red", "server_error": "red", "not_file": "red", "refused": "red", "http_4xx": "red",
     "held": "red", "unknown": "red", "mismatch": "red", "not_discovered": "red", "thin": "red", "decode": "red",
-    "too_large": "red", "unresolved": "red", "looks_gone": "red", "api_error": "red", "unhandled": "red",
+    "too_large": "red", "unresolved": "red", "looks_gone": "red", "api_error": "red", "api_quota": "red",
+    "unhandled": "red", "parked": "red",
     "bad_link": "red", "short_dead": "red", SCHOOL_SIDE: "green",
 }
 # the categories the user sees instead of the codes (10-25: 「爬不到的放进连接失败」), with what happens next, in the
@@ -822,7 +869,7 @@ BUCKETS = (
     ("failed", "连接失败", "列进「连接失败」清单，之后再想办法；只限校内的到实验室机器再试"),
     ("review", "要人看",
      ("抓到了却可能不全或不对，或爬虫自己停下没抓（撞上限、太大）、判定不了、程序比对像不存在、Google API 读不到、"
-      "还没决定的写法、程序不认得的组合：要人看过再决定")),
+      "Google 档案的下载次数被用完、连续被拒两轮停下没发的目录、还没决定的写法、程序不认得的组合：要人看过再决定")),
     ("login", "要登录", "单独标出，重试没用"),
     ("gone", "学校那边已经不存在", "单独标出，重试没用"),
     (SCHOOL_SIDE, "学校那边的问题（人看过）",
@@ -839,8 +886,9 @@ _BUCKET_OF = {
     "failed": "failed", "lab": "failed", "server_error": "failed", "refused": "failed", "http_4xx": "failed",
     "not_file": "failed",
     "held": "review", "thin": "review", "decode": "review", "mismatch": "review", "not_discovered": "review",
-    "too_large": "review", "unresolved": "review", "looks_gone": "review", "api_error": "review", "unhandled": "review",
-    "unknown": "review", "bad_link": "review", "short_dead": "review",
+    "too_large": "review", "unresolved": "review", "looks_gone": "review", "api_error": "review", "api_quota": "review",
+    "unhandled": "review",
+    "unknown": "review", "bad_link": "review", "short_dead": "review", "parked": "review",
     SCHOOL_SIDE: SCHOOL_SIDE,
     "login": "login",
     "gone": "gone",

@@ -432,7 +432,8 @@ class Client:
         if self._real:
             schoollock.require(host)  # SchoolLockNotHeld before anything is sent (not a FetchError: a program's bug)
         headers, secret = self._headers(target)
-        body = urlencode(target.data).encode() if target.data is not None else None
+        body = target.body if target.body is not None else (
+            urlencode(target.data).encode() if target.data is not None else None)
         client = self._pool(host)
         # a credential never follows a redirect: httpx drops Authorization on another host, but not X-Goog-Api-Key
         follow = secret is None and self._follow

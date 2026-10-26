@@ -82,13 +82,27 @@ MAX_DRIVE_DEPTH = 20  # folders below the linked one; a folder on level 21 gets 
 SITE_DRIVE_CAP = 2000  # Drive downloads (alt=media, export) per site; more are held (cap:drive)
 MAX_LIST_PAGES = 50  # a folder's listing pages; the 51st is held (cap:drive_list)
 MAX_CALENDAR_PAGES = 10  # events.list pages per calendar; the 11th is held (cap:calendar)
-RATE_PAUSE_S = 900.0  # design §7.6: a quota or rate answer without Retry-After rests the googleapis queue 15 min
+RATE_PAUSE_S = 900.0  # design §7.6: a 5xx (no block) rests the googleapis queue 15 min
 MAX_PAUSE_S = 86400.0
 # Google's "automated queries" page (pilot 10-26, F9: after 21 Drive downloads every alt=media answered 403 with it,
-# text/html, no JSON reason): a protection mechanism, never bypassed (CLAUDE.md). The googleapis queue rests an hour
-# at least, doubling while it goes on (crawler._api_error), and the rows lose no attempt 【Claude 的执行办法】
+# text/html, no JSON reason): a protection mechanism, never bypassed (CLAUDE.md). Every block (that page, a quota or
+# rate reason, a 429) rests the googleapis queue an hour at least (a longer Retry-After as it says), doubling while it
+# goes on, at most a day (crawler._api_error), and the rows lose no attempt. Design §23 D1, 【Claude 的执行办法】
 BLOCK_PAUSE_S = 3600.0
 BLOCK_REASON = "automated_queries"
+# the block streak, kept in frontier.db's meta so that it outlives a run (design §23 D2): how many blocks in a row and
+# when the first of them came (wall-clock seconds); a download that gets through clears both. Blocked more than
+# BLOCK_LONG_S since the first, or the BLOCK_LONG_N-th time in a row: an error event google_block_long, for a person
+BLOCK_STREAK_KEY = "google_block:streak"
+BLOCK_FIRST_KEY = "google_block:first_at"
+BLOCK_LONG_N = 6
+BLOCK_LONG_S = 72 * 3600.0
+# downloadQuotaExceeded: one file's downloads are used up for now (Drive API 《Resolve errors》: "The sharing user has
+# exceeded the download quota for this file"), not the project's: only that row waits FILE_QUOTA_WAIT_S, an attempt
+# each time, MAX_FILE_QUOTA_TRIES in all, then failed (url_result api_quota, 要人看). Design §23 D1
+FILE_QUOTA_REASON = "downloadQuotaExceeded"
+FILE_QUOTA_WAIT_S = 86400.0
+MAX_FILE_QUOTA_TRIES = 3
 _SORRY_PAGE = re.compile(r"(?i)automated queries|<title>\s*Sorry\.\.\.\s*</title>")
 # a key Google refuses cannot be fixed inside a running process (fetch.py reads the variable of the running process):
 # the queue rests for the rest of the run, and hold_for_key() lifts that rest when the next run starts 【Claude 的执行办法】
@@ -104,7 +118,10 @@ KEY_REASONS = frozenset({
     "CONSUMER_INVALID", "CONSUMER_SUSPENDED", "CREDENTIALS_MISSING", "BILLING_DISABLED", "USER_PROJECT_DENIED"})
 QUOTA_REASONS = frozenset({
     "rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded", "sharingRateLimitExceeded",
-    "downloadQuotaExceeded", "quotaExceeded", "RATE_LIMIT_EXCEEDED", "RESOURCE_PROJECT_RATE_LIMIT_EXCEEDED"})
+    "quotaExceeded", "RATE_LIMIT_EXCEEDED", "RESOURCE_PROJECT_RATE_LIMIT_EXCEEDED"})
+# the reasons a whole-queue block is written under (url.reason api:<…>; progress words them, §23 D3): the quota and rate
+# reasons, the "automated queries" page, and what a 429 says (its google.rpc status, or none)
+BLOCK_REASONS = QUOTA_REASONS | {BLOCK_REASON, "RESOURCE_EXHAUSTED", "tooManyRequests", "http_429"}
 LOGIN_REASONS = frozenset({"insufficientFilePermissions", "forbidden", "authError", "required"})
 TOO_LARGE_REASONS = frozenset({"exportSizeLimitExceeded"})
 
@@ -479,8 +496,9 @@ class ApiError:
     retry: the googleapis queue rests pause_s and the row is retried as a GET (an attempt; reason url_reason), or,
     when block is set (a quota or rate answer, a 429, Google's "automated queries" page: the service's protection,
     never the URL's fault), the row waits for the rest with no attempt used and the rest grows while the block goes
-    on (crawler._api_error, pilot 10-26 F9); key: the queue rests pause_s, the row back to pending (api_key, no
-    attempt), an event key_check."""
+    on (crawler._api_error, pilot 10-26 F9; an hour at least, §23 D1); key: the queue rests pause_s, the row back to
+    pending (api_key, no attempt), an event key_check; file_quota (downloadQuotaExceeded, §23 D1): that row alone
+    waits FILE_QUOTA_WAIT_S (an attempt), the queue goes on."""
 
     status: int
     reason: str  # Google's (errors[].reason or details[].reason), else http_<status>
@@ -528,20 +546,16 @@ def classify(status: int, body: bytes | str | None, headers: Mapping[str, str] |
     for r in reasons:
         if r in KEY_REASONS:
             return ApiError(status, r, "key", "api_key", KEY_PAUSE_S)
+    if FILE_QUOTA_REASON in reasons:  # this one file, not the project: never a block of the queue (§23 D1)
+        return ApiError(status, FILE_QUOTA_REASON, "file_quota", f"api:{FILE_QUOTA_REASON}", FILE_QUOTA_WAIT_S)
     for r in reasons:
         if r in QUOTA_REASONS:
-            wait = retry_after(headers)
-            return ApiError(status, r, "retry", f"api:{r}",
-                            min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S, block=True)
+            return ApiError(status, r, "retry", f"api:{r}", block_pause(headers), block=True)
     if status in (403, 429, 503) and not reasons and _sorry_page(body, headers):
-        wait = retry_after(headers)
-        return ApiError(status, BLOCK_REASON, "retry", f"api:{BLOCK_REASON}",
-                        max(min(wait, MAX_PAUSE_S), BLOCK_PAUSE_S) if wait is not None else BLOCK_PAUSE_S, block=True)
+        return ApiError(status, BLOCK_REASON, "retry", f"api:{BLOCK_REASON}", block_pause(headers), block=True)
     reason = next((r for r in reasons if r[:1].islower()), None) or (reasons[0] if reasons else f"http_{status}")
     if status == 429:
-        wait = retry_after(headers)
-        return ApiError(status, reason, "retry", f"api:{reason}",
-                        min(max(wait, 0.0), MAX_PAUSE_S) if wait is not None else RATE_PAUSE_S, block=True)
+        return ApiError(status, reason, "retry", f"api:{reason}", block_pause(headers), block=True)
     if status >= 500:
         return ApiError(status, reason, "retry", f"api:{reason}")
     if any(r in TOO_LARGE_REASONS for r in reasons):
@@ -551,6 +565,43 @@ def classify(status: int, body: bytes | str | None, headers: Mapping[str, str] |
     if status in (404, 410) and reason == f"http_{status}":
         reason = "notFound"
     return ApiError(status, reason, "answer", f"api:{reason}")
+
+
+def block_pause(headers: Mapping[str, str]) -> float:
+    """The first rest of a block (§23 D1): an hour at least; a Retry-After that asks longer, as it asks (a day at
+    most). crawler._api_error doubles it while the block goes on."""
+    wait = retry_after(headers)
+    return max(min(wait, MAX_PAUSE_S), BLOCK_PAUSE_S) if wait is not None else BLOCK_PAUSE_S
+
+
+def block_state(src) -> tuple[int, float | None]:
+    """The block streak kept in frontier.db (§23 D2): (blocks in a row, when the first came; None with no streak).
+    src: a Frontier, or a sqlite3 connection (the dashboard's read-only one)."""
+    sql = "SELECT key, value FROM meta WHERE key IN (?, ?)"
+    args = (BLOCK_STREAK_KEY, BLOCK_FIRST_KEY)
+    rows = src.q(sql, args) if hasattr(src, "q") else src.execute(sql, args).fetchall()
+    got = {r[0]: r[1] for r in rows}
+    try:
+        streak = int(got.get(BLOCK_STREAK_KEY) or 0)
+    except ValueError:
+        streak = 0
+    try:
+        first = float(got[BLOCK_FIRST_KEY]) if got.get(BLOCK_FIRST_KEY) else None
+    except ValueError:
+        first = None
+    return (streak, first) if streak > 0 else (0, None)
+
+
+def block_long(streak: int, first: float | None, now: float) -> bool:
+    """Blocked for long (§23 D2): the BLOCK_LONG_N-th block in a row or more, or more than BLOCK_LONG_S since the
+    first: a person must look (no key, address or disguise is changed to get round it)."""
+    return streak >= BLOCK_LONG_N or (streak > 0 and first is not None and now - first > BLOCK_LONG_S)
+
+
+def block_words(streak: int, first: float | None, now: float) -> str:
+    """A long block in plain words (the event, the dashboard, verify's item 17)."""
+    days = (now - first) / 86400.0 if first is not None else 0.0
+    return f"Google 连续挡下载 {streak} 次、已经 {days:.1f} 天：要人看"
 
 
 def _sorry_page(body: bytes | str | None, headers: Mapping[str, str]) -> bool:

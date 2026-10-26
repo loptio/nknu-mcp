@@ -39,6 +39,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 from nknu.archive import links, outcome, profiles, scope
@@ -1350,13 +1352,16 @@ def site_status(src, now: float | None = None, *, pages: Iterable | None = None,
     campus = campus_requests(f)
     homes = home_states(f)
     recs = reconciled(f, fx.rounds)
+    gsimg = dict(f.q("""SELECT p.owner_site, count(DISTINCT pr.res_key) FROM page_res pr JOIN url p ON p.id = pr.page_id
+                        WHERE pr.need = 'round2' AND pr.why = 'round2:google_sites_image' GROUP BY p.owner_site"""))
     from nknu.archive.round1 import TIER_OF_IMP
 
     keys = set(plans) | {s for s in by_site if s} | ({""} if by_site.get("") else set())
     work: dict[str, dict] = {}
     for s in keys:
         work[s] = _judge_site(s, by_site.get(s, []), fx, plans.get(s), rows.get(s, (0, 0)), presses.get(s, 0),
-                              types.get(s, 0), homes.get(s, []), recs.get(s), campus.by_site.get(s, 0))
+                              types.get(s, 0), homes.get(s, []), recs.get(s), campus.by_site.get(s, 0),
+                              gsimg.get(s, 0))
     issues = _issues(f, fx, work)
     out = []
     for s, w in work.items():
@@ -1371,7 +1376,7 @@ def site_status(src, now: float | None = None, *, pages: Iterable | None = None,
 
 
 def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int], presses: int, todo_types: int,
-                homes: list, rec: Reconciled | None, campus_on: int) -> dict:
+                homes: list, rec: Reconciled | None, campus_on: int, gsimg_round2: int = 0) -> dict:
     """§10.5 for one site, in its order: the first of ✗ 出错, ⚠ 要看, 还在抓, ⚠ 纪录齐了，还没对账, ✓ 爬完."""
     js_done = fx.rounds.jscheck_done(s)
     red, yellow, wait, warnings = [], [], [], []
@@ -1472,6 +1477,8 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
         yellow.append(f"{n_lab} 个只限校内网络或查不到主机（等搬到实验室）")
     if tally["next_round"]:
         yellow.append(f"{tally['next_round']} 个下一轮补（要 JavaScript、点了才载入、校外资源、平台档案标 round2 的写法）")
+    if gsimg_round2:  # design §23 B3: written out, never only inside the count above
+        yellow.append(f"协作平台正文图片 {gsimg_round2} 张下一轮补（这一轮拿不到，用浏览器补）")
     if flags["list_unchecked"]:
         yellow.append(f"{flags['list_unchecked']} 个列表没核对（没有翻页纪录）")
     if levels["waiting"]:
@@ -1622,6 +1629,7 @@ class _Ctx:
     wayback_open: bool
     resource_check: Callable | None
     pages: Iterable | None = None
+    now: float | None = None
 
     def facts(self) -> Facts | None:
         """The result views read once, when an item needs them: in the dashboard's cheap round only when it gave its
@@ -1707,6 +1715,46 @@ def _c3(ctx: _Ctx, c: Check) -> None:
                 "「起点不少于旧的」由 seed 的起点报告管（少了就退出码 2）")
 
 
+# design §23 F2: c.nknu's category menu (select:ddl_Class) is ignored because the list without a class parameter shows
+# 「全部」, so a site that ignores it needs that list walked to its last page
+CLASS_MENU = "select:ddl_Class"
+CLASS_LIST_PATH = "/newslist.aspx"
+
+
+def class_all_missing(src, site: str | None = None) -> list[dict]:
+    """The sites (or this site) whose pages ignore c.nknu's category menu (page_res select:ddl_Class, unhandled:ignore)
+    with no newslist.aspx without a class parameter walked to its last page (listwalk.ended_by last_page): their 「全部」
+    is not shown to have been got whole (design §23 F2; reconcile R2 and verify item 4 both read this). Each: site,
+    the lists without a class parameter it has and how their walks ended."""
+    f = _frontier(src)
+    only = " AND u.owner_site = ?" if site is not None else ""
+    args = (site,) if site is not None else ()
+    sites = [r[0] for r in f.q("SELECT DISTINCT u.owner_site FROM page_res pr JOIN url u ON u.id = pr.page_id "
+                               f"WHERE pr.res_key = ? AND pr.why = 'unhandled:ignore'{only} ORDER BY 1",
+                               (CLASS_MENU, *args))]
+    out = []
+    for s in sites:
+        walks = []
+        for r in f.q("SELECT u.url, lw.ended_by, lw.ok FROM url u LEFT JOIN listwalk lw ON lw.list_id = u.id "
+                     "WHERE u.owner_site = ? AND u.kind = 'page' ORDER BY u.id", (s,)):
+            parts = urlsplit(r["url"])
+            if not parts.path.lower().endswith(CLASS_LIST_PATH):
+                continue
+            if any(k.lower() == "class" for k, _v in parse_qsl(parts.query, keep_blank_values=True)):
+                continue
+            walks.append((r["url"], r["ended_by"], r["ok"]))
+        if not any(ended == "last_page" and ok != 0 for _u, ended, ok in walks):
+            out.append({"site": s, "lists": [{"list": u, "ended_by": e} for u, e, _ok in walks]})
+    return out
+
+
+def class_all_words(item: Mapping[str, Any]) -> str:
+    """One class_all_missing item in words."""
+    lists = "；".join(f"{x['list']} 结束于 {x['ended_by'] or '（没翻过）'}" for x in item["lists"])
+    return (f"{item['site']}：分类选单 ddl_Class 记 ignore，却没有一页不带 class 参数的 newslist.aspx（「全部」）翻到最后一页"
+            + (f"（{lists}）" if lists else "（这个网站没有不带 class 的 newslist.aspx）") + "：各分类的公告可能没抓全，要人看")
+
+
 def _c4(ctx: _Ctx, c: Check) -> None:
     rows = ctx.f.q("""SELECT lw.list_id, lw.ended_by, lw.ok, lw.pages, lw.rows, lw.claimed, lw.note, u.url, u.owner_site
                       FROM listwalk lw JOIN url u ON u.id = lw.list_id WHERE u.tier IN (0, 1)
@@ -1726,7 +1774,11 @@ def _c4(ctx: _Ctx, c: Check) -> None:
             claimed = f"，页面写共 {r['claimed']} 筆" if r["claimed"] is not None else ""
             c.add(FAIL, f"{r['owner_site']}：{r['url']} 结束于 {r['ended_by'] or '（没写）'}（{r['pages'] or 0} 页、"
                         f"{r['rows'] or 0} 行{claimed}；{r['note'] or ''}）")
-    c.detail = f"列表 {len(rows)} 个：翻到底 {n['ok']}，还在翻 {n['walking']}，没翻完 {n['bad']}（SSO 公告中心各类加总对不上的记 mismatch:total）"
+    for item in class_all_missing(ctx.f):  # design §23 F2
+        n["class_all"] += 1
+        c.add(FAIL, class_all_words(item))
+    c.detail = (f"列表 {len(rows)} 个：翻到底 {n['ok']}，还在翻 {n['walking']}，没翻完 {n['bad']}（SSO 公告中心各类加总对不上的记 "
+                f"mismatch:total）；分类选单记 ignore 却没有「全部」列表翻到底的网站 {n['class_all']} 个")
 
 
 def _c5(ctx: _Ctx, c: Check) -> None:
@@ -1760,11 +1812,16 @@ def _c6(ctx: _Ctx, c: Check) -> None:
         n[r["result"]] += 1
         seen.add(r["id"])
         c.add(FAIL, f"{r['owner_site']}：{r['url']}：{outcome.RESULT_LABEL[r['result']]}（flags {r['flags'] or '—'}）")
-    for r in f.q("""SELECT a.id, a.kind, a.target, a.result, u.url, u.owner_site FROM action_result a
+    for r in f.q("""SELECT a.id, a.kind, a.target, a.result, a.reason, a.sniff, u.url, u.owner_site FROM action_result a
                     JOIN url u ON u.id = a.list_id WHERE a.result IN ('thin', 'not_file') ORDER BY u.owner_site, a.id"""):
         n[r["result"]] += 1
+        # a download's not_file says why (§23 A1, A2) and how to press it again once a person looked (§23 A3); with no
+        # reason written it is a web page by its first bytes (action_result: sniff html), said in words (§23.9)
+        said = r["reason"] or ("回来是网页" if r["sniff"] == "html" else "没写原因")
+        why = (f"（{said}；看过以后 nknu archive retry download 放回重按）"
+               if r["kind"] == "download" and r["result"] == "not_file" else "")
         c.add(FAIL, f"{r['owner_site']}：{r['url']} 上的按钮 {r['kind']} {r['target']}："
-                    f"{outcome.RESULT_LABEL[r['result']]}")
+                    f"{outcome.RESULT_LABEL[r['result']]}{why}")
     fx = ctx.facts()
     if fx is None:
         c.add(SKIP, "跳转后落在网页上的附件没算（完整度还没算好）")
@@ -1784,7 +1841,12 @@ def _c6(ctx: _Ctx, c: Check) -> None:
     if missing:
         c.add(SKIP, f"「页面几乎是空的」每批对账时才判（reconcile 写 thin 记号），这 {len(missing)} 个网站还没对账，"
                     f"这一部分没检查：{'、'.join(missing[:30])}{'……' if len(missing) > 30 else ''}")
-    c.detail = (f"页面几乎是空的 {n['thin']}、看起来像不存在 {n['looks_gone']}、应该是档案却回来网页 {n['not_file']}；"
+    # design §23 E3: a page whose words alone would be thin, its body a picture, is no empty page (in_image): counted,
+    # never a failure; item 15 shows some of them to a person
+    in_image = f.q(f"SELECT count(*) FROM url u WHERE u.kind = 'page' AND u.tier IN (0, 1) AND "
+                   f"{outcome._has('in_image')}")[0][0]
+    c.detail = (f"页面几乎是空的 {n['thin']}、看起来像不存在 {n['looks_gone']}、应该是档案却回来不是档案 {n['not_file']}；"
+                f"内容在图片里 {in_image} 页（整理阶段做文字识别，不算空页）；"
                 f"还没对账、空页没判的网站 {len(missing)} 个")
 
 
@@ -1922,6 +1984,8 @@ def _c10(ctx: _Ctx, c: Check) -> None:
     for r in f.q("""SELECT owner_site, url, reason FROM url_result WHERE result = 'api_error'
                     ORDER BY owner_site, url"""):
         c.add(FAIL, f"{r['owner_site']}：Google API 读不到 {r['url']}（{r['reason'] or '没写原因'}）")
+    for r in f.q("""SELECT owner_site, url FROM url_result WHERE result = 'api_quota' ORDER BY owner_site, url"""):
+        c.add(FAIL, f"{r['owner_site']}：{outcome.RESULT_LABEL['api_quota']}（隔天试了 3 次）：{r['url']}")
     for r in f.q("""SELECT owner_site, reason, count(*) n FROM url WHERE state = 'held'
                     AND (reason LIKE 'cap:drive%' OR reason = 'cap:calendar') GROUP BY owner_site, reason"""):
         c.add(FAIL, f"{r['owner_site']}：撞到云端硬盘或日历的上限（{r['reason']} × {r['n']}）")
@@ -2072,13 +2136,20 @@ def _c15(ctx: _Ctx, c: Check) -> None:
         total += len(rows)
         for r in rows:
             c.add(WARN, f"{what}：{r['url']}（flags {r['flags'] or '—'}）")
+    # design §23 E3: the pages not called empty because their body is a picture, for a person to see that it is
+    rows = _sample(f, f"SELECT u.url, u.flags FROM url u WHERE u.kind = 'page' AND u.tier IN (0, 1) AND "
+                      f"{outcome._has('in_image')} ORDER BY u.id")
+    total += len(rows)
+    for r in rows:
+        c.add(WARN, f"「{outcome.IN_IMAGE_WORDS}」：{r['url']}（flags {r['flags'] or '—'}）")
     for (why,) in f.q("SELECT DISTINCT why FROM page_res WHERE role = 'img' AND need = 'no' ORDER BY why"):
         rows = _sample(f, "SELECT res_key FROM page_res WHERE role = 'img' AND need = 'no' AND why IS ? "
                           "ORDER BY page_id, res_key", (why,), IMAGE_SAMPLE)
         total += len(rows)
         for r in rows:
             c.add(WARN, f"不收的图片（{why or '没写原因'}）：{r['res_key'][:200]}")
-    c.detail = f"抽了 {total} 个给人看（误判以前没有复核：要登录、像不存在、几乎是空的各 {SAMPLE} 个，不收的图片每种原因 {IMAGE_SAMPLE} 张）"
+    c.detail = (f"抽了 {total} 个给人看（误判以前没有复核：要登录、像不存在、几乎是空的、内容在图片里各 {SAMPLE} 个，"
+                f"不收的图片每种原因 {IMAGE_SAMPLE} 张）")
 
 
 def known_gaps(src, wayback_open: bool = True) -> list[tuple[str, int | None, str]]:
@@ -2107,6 +2178,14 @@ def known_gaps(src, wayback_open: bool = True) -> list[tuple[str, int | None, st
                                           AND reason IN ('round2:offsite', 'round2:offsite_file')"""), "个"))
     out.append(("发布到网络的 Google 文件（round2:google_published），等你决定怎么读",
                 one("SELECT count(DISTINCT res_key) FROM page_res WHERE why = 'round2:google_published'"), "个"))
+    # design §23 B3: Google Sites' runtime pictures a site gave up on (or a page read again twice could not get), by
+    # site; a picture's key names its page, so count(DISTINCT res_key) counts each picture of each page once
+    by_site = f.q("""SELECT p.owner_site, count(DISTINCT pr.res_key) n FROM page_res pr JOIN url p ON p.id = pr.page_id
+                     WHERE pr.need = 'round2' AND pr.why = 'round2:google_sites_image'
+                     GROUP BY p.owner_site ORDER BY n DESC, p.owner_site""")
+    sites = "、".join(f"{r['owner_site']} {r['n']} 张" for r in by_site)
+    out.append(("协作平台正文图片，下一轮用浏览器补（round2:google_sites_image" + (f"：{sites}）" if sites else "）"),
+                sum(r["n"] for r in by_site), "张"))
     return out
 
 
@@ -2126,6 +2205,13 @@ def _c16(ctx: _Ctx, c: Check) -> None:
 
 
 def _c17(ctx: _Ctx, c: Check) -> None:
+    from nknu.archive import google_api
+
+    # Google blocking downloads for long is no one site's (design §23 D2): its own line, first
+    now = ctx.now if ctx.now is not None else time.time()
+    streak, first = google_api.block_state(ctx.f)
+    if google_api.block_long(streak, first, now):
+        c.add(FAIL, f"{google_api.block_words(streak, first, now)}（云端硬盘的下载都在等；不绕过，看过再决定）")
     sts = ctx.sites()
     if sts is None:
         c.add(SKIP, "完整度还没算好（看板背景每 2 分钟算一次）")
@@ -2257,7 +2343,7 @@ def checks(src, now: float | None = None, *, cheap: bool = False, root: Path | N
     if alive is None:
         alive = root is not None and _alive(root) is not None
     ctx = _Ctx(f, root, plan, cheap, fx, statuses, fx.rounds if fx is not None else Rounds(f), alive, wayback_open,
-               resource_check, pages)
+               resource_check, pages, now)
     out = []
     for no, title, fn, is_cheap in ITEMS:
         if cheap and not is_cheap:

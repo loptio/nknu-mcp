@@ -33,6 +33,9 @@ class Target:
     meta: dict = field(default_factory=dict)
     credential: str | None = None  # the name of a secret the client sends as a header (fetch.CREDENTIALS), never the secret
     headers: dict[str, str] = field(default_factory=dict)  # extra request headers, e.g. Drive's X-Goog-Drive-Resource-Keys
+    # a body sent as it is (its Content-Type in headers), instead of data's form fields: a page's own script's JSON
+    # POST to its data address (archive round-1 design §23 C1)
+    body: bytes | None = None
 
     def __post_init__(self) -> None:
         if reserved := sorted(k.lower() for k in self.headers if k.lower() in RESERVED_HEADERS):

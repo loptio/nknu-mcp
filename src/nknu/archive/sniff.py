@@ -82,6 +82,49 @@ def sniff(body: bytes, ctype: str = "") -> str:
     return "other"
 
 
+# what sniff() calls a file by its own first bytes (design §23 A1): a document, an archive, a picture. html, xml, json,
+# text and other are not (a page, an error message, a script's answer, nothing); audio and video have no signature here
+# (round 1 downloads neither, record 一·1)
+FILE_FORMATS = frozenset({"pdf", "ooxml", "zip", "ole", "rtf", "png", "jpeg", "gif", "webp", "tiff"})
+
+
+def is_file_format(sniffed: str | None) -> bool:
+    """Whether sniff() said a file format: FILE_FORMATS, or one of its ooxml:* and odf:* kinds."""
+    return bool(sniffed) and (sniffed in FILE_FORMATS or sniffed.startswith(("ooxml:", "odf:")))
+
+
+# the file name extensions that say a format sniff() knows by its first bytes (design §23.9 A1 ④, 【Claude 的执行办法】):
+# a name ending so whose answer sniffs as none of FILE_FORMATS is no such file. Others (.txt, .csv, .htm, .7z, .rar …)
+# say nothing sniff can check. A .doc that is a docx or RTF, an .xlsx that is an old OLE file: files all the same (the
+# 10-24 archive's 830 named files, through archive-rehearsal-4: no name and sniff disagreed but those)
+NAMED_FORMATS = frozenset({"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "odg", "zip", "rtf",
+                           "jpg", "jpeg", "png", "gif", "webp", "tif", "tiff"})
+PDF_LEEWAY = 1024  # a PDF reader finds %PDF- within its first 1,024 bytes (a line break or two a server put first)
+
+
+def name_ext(name: str | None) -> str:
+    """A file name's extension, lowercase ('' for none)."""
+    base = (name or "").strip().rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[1].strip().lower() if "." in base else ""
+
+
+def not_file(body: bytes, sniffed: str | None, name: str | None) -> str | None:
+    """Why what a download button brought back is no file (design §23 A1 ①②, §23.9 A1 ④, 【Claude 的执行办法】):
+    empty_body (nothing at all), no_name:<sniff> (no Content-Disposition file name, and its first bytes are no file
+    format: a page, a line of text, a JSON answer), name_mismatch:<extension>/<sniff> (a name whose extension says a
+    format sniff knows, NAMED_FORMATS, on an answer that is none: 計畫.pdf holding 「檔案不存在」 or an error page); None
+    when it is a file. The school's own words (③) are profiles.file_says()'."""
+    if not body:
+        return "empty_body"
+    if not name and not is_file_format(sniffed):
+        return f"no_name:{sniffed or 'other'}"
+    ext = name_ext(name)
+    if ext in NAMED_FORMATS and not is_file_format(sniffed) \
+            and not (ext == "pdf" and b"%PDF-" in body[:PDF_LEEWAY]):
+        return f"name_mismatch:{ext}/{sniffed or 'other'}"
+    return None
+
+
 def kind_of(sniffed: str | None) -> str:
     """The url.kind a fetched answer is, by what it is: a web page, an image, or else a file (design §10.2: what is not
     HTML is never a page)."""

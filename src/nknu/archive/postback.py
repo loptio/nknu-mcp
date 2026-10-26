@@ -18,7 +18,8 @@ The chain of one list (§7.5):
 4. A POST is never sent twice: a press that fails (or mismatches) starts the chain again from its GET once (a new
    epoch; rows pressed already are known by their row_key and not pressed again); failing again it stays failed, and a
    pager that fails twice ends the walk as post_failed. A stopped run's chains start again from their GET at the next
-   run (resume): the actions left are superseded.
+   run (resume): the actions left are superseded. `nknu archive retry download` (retry_downloads, §23 A3) puts the
+   downloads that came to no file or failed back: their list's next GET presses only them (REDO_KEY).
 5. listwalk.ended_by says how the walk ended (§7.5 step 7): last_page, no_rows_ok, walking, mismatch:unknown_button
    (a button or a GET pager link the profile does not know: never last_page then), mismatch:no_next, mismatch:page,
    mismatch:empty, mismatch:clv2, mismatch:total, max_pages, post_failed.
@@ -38,11 +39,12 @@ design does not spell out is Claude's (【Claude 的执行办法】).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import unicodedata
 import zlib
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -65,6 +67,9 @@ END_OK = ("last_page", "no_rows_ok")
 ENDS = ("last_page", "no_rows_ok", "walking", "mismatch:unknown_button", "mismatch:no_next", "mismatch:page",
         "mismatch:empty", "mismatch:clv2", "mismatch:total", "max_pages", "post_failed")
 REDIRECTS = (301, 302, 303, 307, 308)
+# presses that belong to no list's chain (never superseded by a new GET of their page, never started again from it, no
+# epoch of a walk): a file button's POST (click, §7.4) and a read of a data address (data, design §23 C1)
+SOLO_KINDS = ("click", "data")
 FAIL_STATUSES = (408, 429)  # with the 5xx: a press that did not go through (the pager's 4xx too)
 _DATE = re.compile(r"\d{4}\s*[-./年]\s*\d{1,2}\s*[-./月]\s*\d{1,2}")
 _INT = re.compile(r"\s*(\d{1,4})\s*")
@@ -539,6 +544,26 @@ def file_followup(html: str, base: str) -> str | None:
     return url if same else None
 
 
+NOT_FILE = outcome.NOT_FILE  # action.reason of a download whose answer is no file: not_file:<why> (§23 A1, A2)
+_TEXTUAL = ("html", "xml", "json", "text")
+
+
+def not_file_reason(body: bytes, sniffed: str | None, name: str | None, text: str | None = None,
+                    ctype: str | None = None) -> str | None:
+    """Why what a download button brought back (its export GET's answer, or the press's own) is no file, as the
+    action's reason (design §23 A1, 【Claude 的执行办法】): not_file:empty_body (①), not_file:saying:gone_page or
+    not_file:saying:bad_link (③: the school's own words, profiles.file_says), not_file:no_name:<sniff> (②: no
+    Content-Disposition name and no file format by its first bytes); None when it is a file."""
+    if not body:
+        return NOT_FILE + "empty_body"
+    if sniffed in _TEXTUAL:
+        said = profiles.file_says(text if text is not None else as_text(body, ctype))
+        if said is not None:
+            return f"{NOT_FILE}saying:{said.flag}"
+    why = sniff.not_file(body, sniffed, name)
+    return NOT_FILE + why if why else None
+
+
 def empty_answer(row_title: str, html: str, rs: profiles.Rows | None) -> bool | None:
     """§10.1 nonempty for a detail a row's press brings back (review 10-26 phase 3), as profiles.empty_detail judges
     one got by GET: True when the row set's body area holds no text but the row's title (cLv2 writes the title inside
@@ -690,6 +715,9 @@ class Chains:
             nobody = tuple(dict.fromkeys((*pr.unplanned, *(button_key(p.target, p.argument)
                                                            for p in (*pr.presses, *([pr.next] if pr.next else []))))))
             return Stored("list" if pr.walk != "none" else None, 0, None, nobody)
+        redo = self._redo(list_id)
+        if redo is not None:  # `retry download` put this list back for these downloads only (§23 A3)
+            return self._redo_stored(row, pr, redo, warc, warc_offset, has_pagers)
         epoch = self._new_epoch(list_id)
         n, ended = self._plan(list_id, epoch, pr, row, warc, warc_offset, pages=1)
         if pr.walk in ("postback", "one_get"):
@@ -711,18 +739,22 @@ class Chains:
     def _new_epoch(self, list_id: int) -> int:
         """A new GET of a list starts a new epoch: what is left of the older one is superseded (§7.5 step 9)."""
         with self.f.lock:
-            prev = self.f.conn.execute("SELECT max(epoch) FROM action WHERE list_id=? AND kind <> 'click'",
+            prev = self.f.conn.execute("SELECT max(epoch) FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
                                        (list_id,)).fetchone()[0]
             if not prev:
                 return 1
             self.f.conn.execute("UPDATE action SET state='superseded', reason='new_epoch' WHERE list_id=? AND "
-                                "kind <> 'click' AND state IN ('pending','active')", (list_id,))
+                                "kind NOT IN ('click', 'data') AND state IN ('pending','active')", (list_id,))
             return prev + 1
 
     def _plan(self, list_id: int, epoch: int, pr: PageRead, list_row, warc: str, offset: int, *, pages: int,
-              base: str | None = None) -> tuple[int, str | None]:
+              base: str | None = None, only: frozenset[tuple[str, str]] | None = None,
+              left: list[str] | None = None) -> tuple[int, str | None]:
         """The presses of one page of the chain (§7.5 step 2), the page's rows as item entries, the next page when
-        there is one. Returns (presses planned, the walk's end at this page, None while it goes on)."""
+        there is one. Returns (presses planned, the walk's end at this page, None while it goes on). only: the
+        (kind, row_key) presses that may be planned anew (`retry download`, §23 A3: _redo_stored); every other press
+        points at what its row has already, the next page is not pressed, and a button no press of any epoch covers
+        goes to left (its button key, for a person)."""
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
         host, queue = self._place(base or list_row["url"], list_row)
         entries = []
@@ -736,14 +768,20 @@ class Chains:
         n = 0
         done_details = []
         for p in pr.presses:
-            aid = self._press(list_id, epoch, p, site, pr, host, queue, warc, offset)
+            aid = self._press(list_id, epoch, p, site, pr, host, queue, warc, offset, only=only)
+            if aid is None:  # not to be pressed now, and never pressed before
+                if left is not None:
+                    left.append(button_key(p.target, p.argument))
+                continue
             entries.append({"res_key": f"pb:{p.kind}:{p.row_key}", "how": "postback", "role": p.kind,
                             "need": "must", "action_id": aid, "text": p.text[:100]})
             n += 1
             if p.kind == "detail":
                 done_details.append(aid)
         ended = None
-        if pr.next is not None and pr.walk == "postback":
+        if only is not None:  # the walk is not walked again: its end stays what it was
+            pass
+        elif pr.next is not None and pr.walk == "postback":
             if pages >= MAX_PAGES:
                 ended = "max_pages"
             else:
@@ -758,13 +796,15 @@ class Chains:
         if entries:
             self.f.add_page_res(list_id, entries)
         for aid in done_details:
-            n += self._detail_files(aid, list_id, epoch, list_row)
+            n += self._detail_files(aid, list_id, epoch, list_row, redo=only is not None, left=left)
         return n, ended if pr.walk in ("postback", "one_get") else None
 
-    def _detail_files(self, action_id: int, list_id: int, epoch: int, list_row) -> int:
+    def _detail_files(self, action_id: int, list_id: int, epoch: int, list_row, *, redo: bool = False,
+                      left: list[str] | None = None) -> int:
         """A detail pressed well in an older epoch is not pressed again; its own buttons (its files) are read again
         from its archived answer, so the list page still names them after its page_res was written anew (a done file
-        stays done, one that failed once is pressed again)."""
+        stays done, one that failed once is pressed again). redo (`retry download`, §23 A3): nothing is pressed anew
+        from an archived answer (its form state is an old POST's: never sent again as it was), only named."""
         got = self.f.q("SELECT * FROM action WHERE id=?", (action_id,))
         if not got:
             return 0
@@ -782,7 +822,8 @@ class Chains:
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
         pr = read_page(prof, url, as_text(body, headers.get("content-type")), site=site, parent_key=a["row_key"],
                        step=a["step"], walks=("none",))
-        n, _end = self._plan(list_id, epoch, pr, list_row, a["warc"], a["warc_offset"], pages=0, base=url)
+        n, _end = self._plan(list_id, epoch, pr, list_row, a["warc"], a["warc_offset"], pages=0, base=url,
+                             only=frozenset() if redo else None, left=left)
         self._unpressed(list_id, pr.unplanned_at)
         return n
 
@@ -791,7 +832,7 @@ class Chains:
         reading of the page again that sends nothing (rejudge), after the crawler wrote the page's own page_res anew.
         Each row's press: a done one, else the newest that is not superseded, else the newest. Returns the entries."""
         best: dict[tuple[str, str], sqlite3.Row] = {}
-        for a in self.f.q("SELECT * FROM action WHERE list_id=? AND kind <> 'click' ORDER BY epoch, id", (list_id,)):
+        for a in self.f.q("SELECT * FROM action WHERE list_id=? AND kind NOT IN ('click', 'data') ORDER BY epoch, id", (list_id,)):
             key = (a["kind"], a["row_key"])
             old = best.get(key)
             if old is None or old["state"] != "done" and (a["state"] == "done" or a["state"] != "superseded"
@@ -808,12 +849,18 @@ class Chains:
         return host, (h["queue"] if h is not None else "?")
 
     def _press(self, list_id: int, epoch: int, p: Press, site: str, pr: PageRead, host: str, queue: str,
-               warc: str, offset: int) -> int:
+               warc: str, offset: int, only: frozenset[tuple[str, str]] | None = None) -> int | None:
         """One action for a press, unless the row was pressed well before (a row's done press, any epoch: §7.5 step
         8, not pressed again) or failed or mismatched twice (left for a person), or is planned already this epoch (a
-        pinned row on every page). The pager is pressed again in each epoch."""
+        pinned row on every page). The pager is pressed again in each epoch. only (§23 A3): a press not in it is never
+        planned; its row's press as rebuild() would pick it, or None when it has none."""
         with self.f.lock:
             c = self.f.conn
+            if only is not None and (p.kind, p.row_key) not in only:
+                had = c.execute("SELECT id FROM action WHERE list_id=? AND kind=? AND row_key=? ORDER BY state='done' "
+                                "DESC, state<>'superseded' DESC, epoch DESC, id DESC LIMIT 1",
+                                (list_id, p.kind, p.row_key)).fetchone()
+                return had[0] if had is not None else None
             if p.kind != "pager":
                 done = c.execute("SELECT id FROM action WHERE list_id=? AND kind=? AND row_key=? AND state='done' "
                                  "ORDER BY epoch DESC, id DESC LIMIT 1", (list_id, p.kind, p.row_key)).fetchone()
@@ -845,7 +892,7 @@ class Chains:
         if not buttons:
             return 0
         planned = {(r[0], r[1]) for r in self.f.q("SELECT DISTINCT target, argument FROM action WHERE list_id=? AND "
-                                                  "kind <> 'click'", (list_id,))}
+                                                  "kind NOT IN ('click', 'data')", (list_id,))}
         keys = tuple(dict.fromkeys(button_key(t, a) for t, a in buttons if (t, a) not in planned))
         if keys:
             self.f.add_page_res(list_id, unpressed_entries(keys))
@@ -870,7 +917,7 @@ class Chains:
         active: a chain's rows before its next page, chains in the order they began; hosts in cool-down or within
         their Crawl-delay wait. sites: only these sites' (a run given --sites)."""
         now = self.clock() if now is None else now
-        only, args = "", [queue, now, now]
+        only, args = "", [queue, now, now, now]
         if sites is not None:
             sites = sorted(sites)
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
@@ -879,7 +926,7 @@ class Chains:
             row = self.f.conn.execute(
                 f"""SELECT a.* FROM action a LEFT JOIN host h ON h.host = a.host
                     WHERE a.queue = ? AND a.state = 'pending' AND coalesce(h.cooldown_until, 0) <= ?
-                      AND coalesce(h.not_before, 0) <= ?{only}
+                      AND coalesce(h.not_before, 0) <= ? AND a.next_at <= ?{only}
                     ORDER BY a.kind = 'click', a.list_id, a.epoch, a.step, a.kind = 'pager', a.id LIMIT 1""",
                 args).fetchone()
             if row is not None:
@@ -890,7 +937,7 @@ class Chains:
         """The queues with a press due now (design §6.7: a chain's next step is that queue's work too), none paused
         (its own pause, its network's or every queue's): the run starts their workers as it does for url rows."""
         now = self.clock() if now is None else now
-        only, args = "", [now, now]
+        only, args = "", [now, now, now]
         if sites is not None:
             sites = sorted(sites)
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
@@ -898,7 +945,7 @@ class Chains:
         queues = [r[0] for r in self.f.q(
             f"""SELECT DISTINCT a.queue FROM action a LEFT JOIN host h ON h.host = a.host
                 WHERE a.state = 'pending' AND coalesce(h.cooldown_until, 0) <= ? AND coalesce(h.not_before, 0) <= ?
-                  AND a.queue NOT IN ('?', '', 'dns-fail'){only}""", args)]
+                  AND a.next_at <= ? AND a.queue NOT IN ('?', '', 'dns-fail'){only}""", args)]
         return [q for q in queues if self.f.paused_until(q) <= now]
 
     def waiting(self, sites: Iterable[str] | None = None) -> tuple[int, float | None, list[sqlite3.Row]]:
@@ -911,7 +958,7 @@ class Chains:
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
             args = sites
         n = self.f.q(f"SELECT count(*) FROM action a WHERE a.state IN ('pending','active'){only}", args)[0][0]
-        due = self.f.q(f"""SELECT min(max(coalesce(h.cooldown_until, 0), coalesce(h.not_before, 0),
+        due = self.f.q(f"""SELECT min(max(coalesce(h.cooldown_until, 0), coalesce(h.not_before, 0), a.next_at,
                               coalesce((SELECT max(p.until) FROM pause p WHERE p.queue IN
                                 (a.queue, '*', 'net:' || CASE WHEN a.queue LIKE 'ip:140.127.%'
                                                           THEN 'school' ELSE 'other' END)), 0)))
@@ -989,6 +1036,20 @@ class Chains:
         takes what comes."""
         a, cols = self._answer(snap, warc)
         out = Followup(action["list_id"])
+        if a.status in REDIRECTS and action["kind"] in ("download", "detail"):
+            # a row's press sent elsewhere (the session or its view state lapsed: SSO's home, a sign-in page) brought
+            # neither its file nor its detail (design §23.9 A2, 【Claude 的执行办法】; §23 A2 for the export GET): the
+            # press failed, the chain walks again from its GET once (a new form state, never this POST again); the
+            # second time a download is not_file:redirect, a detail mismatch (redirect). The Location is never
+            # queued: no 要登录, no 学校那边缺 for where the session went
+            loc = scope.canonical(a.headers.get("location", ""), a.url)
+            out = self.failed(action, "press_redirect", location=loc, **cols)
+            if not out.restart:
+                if action["kind"] == "download":
+                    self._end(action, "done", NOT_FILE + "redirect", location=loc, **cols)
+                else:
+                    self._end(action, "mismatch", "redirect", location=loc, **cols)
+            return out
         if a.status in REDIRECTS:
             loc = scope.canonical(a.headers.get("location", ""), a.url)
             self._end(action, "done", "", location=loc, **cols)
@@ -1017,7 +1078,10 @@ class Chains:
                 self._set(action, **cols)
                 out.file_get = follow
                 return out
-        if action["kind"] == "download" or cols["sniff"] != "html":
+        if action["kind"] == "download":  # the press answered with the file itself, or with something that is none
+            self._end(action, "done", self._not_file(a, cols) or "", **cols)
+            return out
+        if cols["sniff"] != "html":
             self._end(action, "done", "", **cols)
             return out
         html = a.text if a.text is not None else as_text(a.body, cols["ctype"])
@@ -1117,15 +1181,19 @@ class Chains:
 
     def file_answered(self, action: sqlite3.Row, snap, warc: str | None) -> Followup:
         """The answer to the GET a download press's export page named (Followup.file_get): the press's file, judged
-        as any download's answer (its format sniffed, its name from Content-Disposition; a web page again is
-        not_file), with the address it came from (location). A failure of that GET is the crawler's to hand to
-        failed(): the chain starts again from its GET once (§6.4), the press with it."""
+        as any download's answer (its format sniffed, its name from Content-Disposition), with the address it came
+        from (location). What is no file is not_file, never ok (§23 A1: empty, no name and no file format, the school's
+        「檔案不存在」; a web page again). A redirect is no file either (§23 A2): the press failed, the chain starts again
+        from its GET once, and the second time the press is not_file:redirect; its Location is never queued (no
+        要登录, no 学校那边缺: the session's export sent the browser elsewhere). A failure of that GET is the crawler's
+        to hand to failed(): the chain starts again from its GET once (§6.4), the press with it."""
         a, cols = self._answer(snap, warc)
         out = Followup(action["list_id"])
-        if a.status in REDIRECTS:  # the export sends the browser elsewhere: that address is the list page's resource
+        if a.status in REDIRECTS:
             loc = scope.canonical(a.headers.get("location", ""), a.url)
-            self._end(action, "done", "", location=loc, **cols)
-            out.location = loc
+            out = self.failed(action, "file_get_redirect", location=loc, **cols)
+            if not out.restart:  # the chain walked again once already: the press is done, and it is no file
+                self._end(action, "done", NOT_FILE + "redirect", location=loc, **cols)
             return out
         if a.status != 200:
             if a.status >= 500 or a.status in FAIL_STATUSES:
@@ -1133,16 +1201,22 @@ class Chains:
             self._end(action, "done", "", location=a.url, **cols)
             return out
         cols.update(sniff=sniff.sniff(a.body, cols["ctype"]), filename=sniff.filename(a.raw_headers, a.headers))
-        self._end(action, "done", "", location=a.url, **cols)
+        self._end(action, "done", self._not_file(a, cols) or "", location=a.url, **cols)
         return out
 
+    @staticmethod
+    def _not_file(a: _Answer, cols: dict) -> str | None:
+        return not_file_reason(a.body, cols["sniff"], cols["filename"], a.text, cols["ctype"])
+
     def failed(self, action: sqlite3.Row, error: str, **cols) -> Followup:
-        """A press that got no answer (or one that did not go through: a 5xx, a 408, a 429; a pager's 4xx). Never sent
-        again (§6.4): a chain starts again from its GET once (a new epoch); after that, a failed pager ends the walk
-        as post_failed and a failed row stays failed. A file button waits for `retry click`."""
+        """A press that got no answer (or one that did not go through: a 5xx, a 408, a 429; a pager's 4xx; a download
+        whose export GET failed or redirected; a download's or a detail's press that redirected, §23.9 A2). Never sent
+        again as it was (§6.4): a chain starts again from its GET once (a new epoch); after that, a failed pager ends
+        the walk as post_failed and a failed row stays failed. A file button waits for `retry click`, a download for
+        `retry download` (§23 A3)."""
         self._end(action, "failed", error or "failed", **cols)
         out = Followup(action["list_id"], note=error)
-        if action["kind"] == "click":
+        if action["kind"] in SOLO_KINDS:  # no chain's: nothing to start again from a GET
             return out
         if self._may_restart(action["list_id"]):
             self.restart_chain(action["list_id"], f"{action['kind']} {action['row_key'][:12]} failed: {error}")
@@ -1164,20 +1238,22 @@ class Chains:
     def _may_restart(self, list_id: int) -> bool:
         """One automatic start again per list (§7.5 step 8): true while only the newest epoch has a failed or
         mismatched press (a start again after a stop, resume, is no automatic one)."""
-        n = self.f.q("SELECT count(DISTINCT epoch) FROM action WHERE list_id=? AND kind <> 'click' AND state IN "
+        n = self.f.q("SELECT count(DISTINCT epoch) FROM action WHERE list_id=? AND kind NOT IN ('click', 'data') AND state IN "
                      "('failed','mismatch')", (list_id,))[0][0]
         return n <= 1
 
-    def restart_chain(self, list_id: int, why: str) -> None:
+    def restart_chain(self, list_id: int, why: str, *, walk: bool = True) -> None:
         """The chain starts again from its GET (§7.5 steps 8, 9): its presses left are superseded, its list page's url
-        row is pending again (reason chain_restart, prio 0); the GET's answer opens a new epoch (page_stored)."""
+        row is pending again (reason chain_restart, prio 0); the GET's answer opens a new epoch (page_stored). walk
+        False (`retry download`): the list is not walked again, its listwalk row stays as it is."""
         with self.f.lock:
-            self.f.conn.execute("UPDATE action SET state='superseded', reason=? WHERE list_id=? AND kind <> 'click' "
+            self.f.conn.execute("UPDATE action SET state='superseded', reason=? WHERE list_id=? AND kind NOT IN ('click', 'data') "
                                 "AND state IN ('pending','active')", (f"restart: {why}"[:200], list_id))
             self.f.conn.execute("UPDATE url SET state='pending', reason='chain_restart', prio=0, next_at=0 WHERE id=?",
                                 (list_id,))
-            self.f.conn.execute("UPDATE listwalk SET ended_by='walking', ok=NULL, note=?, at=? WHERE list_id=?",
-                                (f"restart: {why}"[:200], self.clock(), list_id))
+            if walk:
+                self.f.conn.execute("UPDATE listwalk SET ended_by='walking', ok=NULL, note=?, at=? WHERE list_id=?",
+                                    (f"restart: {why}"[:200], self.clock(), list_id))
         row = self.f.row_by_id(list_id)
         self.f.event("info", "chain_restart", why, row["host"] if row is not None else None,
                      row["url"] if row is not None else None)
@@ -1185,12 +1261,14 @@ class Chains:
     def resume(self) -> int:
         """At a run's start (§7.5 step 9): every chain with a press pending or active starts again from its GET (an
         active press may have been sent: never sent again); a file button left active is failed (crash:left_active)
-        for a person to put back. Returns the chains started again."""
-        lists = [r[0] for r in self.f.q("SELECT DISTINCT list_id FROM action WHERE kind <> 'click' AND state IN "
-                                        "('pending','active')")]
+        for a person to put back; a read of a data address left active is pending again (it only reads: a new
+        request, design §23 C1). Returns the chains started again."""
+        lists = [r[0] for r in self.f.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
+                                        "state IN ('pending','active')")]
         for list_id in lists:
             self.restart_chain(list_id, "resume")
         self.f.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' AND state='active'")
+        self.f.x("UPDATE action SET state='pending' WHERE kind='data' AND state='active'")
         return len(lists)
 
     def retry_post_failed(self, list_ids: Iterable[int] | None = None) -> int:
@@ -1201,9 +1279,89 @@ class Chains:
         list_ids = list(list_ids)
         for list_id in list_ids:
             self.f.x("UPDATE action SET state='superseded', reason='retried: ' || coalesce(reason, '') WHERE list_id=? "
-                     "AND kind <> 'click' AND state IN ('failed','mismatch')", (list_id,))
+                     "AND kind NOT IN ('click', 'data') AND state IN ('failed','mismatch')", (list_id,))
+            self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{list_id}",))  # the whole walk, every press
             self.restart_chain(list_id, "retry")
         return len(list_ids)
+
+    def retry_downloads(self) -> tuple[int, int]:
+        """`nknu archive retry download` (design §23 A3, 【Claude 的执行办法】; a person looked first): every download
+        press whose row came last to no file (not_file) or failed is put back. Its list page's GET is pending again
+        (restart_chain, chain_restart, prio 0; its walk stays what it was) and that GET presses only these buttons
+        again (REDO_KEY: _redo_stored), with the form state of that new GET: no old POST is sent again as it was.
+        Their older presses (failed, mismatched, not_file) are superseded, the reason kept after "retried: ". A press
+        answered too large is too_large, not failed: a person decides about it, this leaves it. Returns (lists,
+        buttons)."""
+        newest: dict[tuple[int, str], sqlite3.Row] = {}
+        for a in self.f.q("SELECT a.list_id, a.row_key, r.result FROM action a JOIN action_result r ON r.id = a.id "
+                          "WHERE a.kind = 'download' AND a.state <> 'superseded' ORDER BY a.epoch, a.id"):
+            newest[(a["list_id"], a["row_key"])] = a
+        todo: dict[int, list[str]] = defaultdict(list)
+        for (list_id, key), a in newest.items():
+            if a["result"] in ("not_file", "failed"):
+                todo[list_id].append(key)
+        for list_id, keys in sorted(todo.items()):
+            for key in keys:
+                ids = [r[0] for r in self.f.q(
+                    "SELECT a.id FROM action a JOIN action_result r ON r.id = a.id WHERE a.list_id=? AND "
+                    "a.kind='download' AND a.row_key=? AND (r.result IN ('not_file', 'failed') OR a.state='mismatch')",
+                    (list_id, key))]
+                for aid in ids:
+                    self.f.x("UPDATE action SET state='superseded', reason=substr('retried: ' || coalesce(reason, ''), "
+                             "1, 200) WHERE id=?", (aid,))
+            self.f.meta(f"{REDO_KEY}{list_id}", json.dumps(sorted(keys)))
+            self.restart_chain(list_id, f"retry download: {len(keys)}", walk=False)
+        return len(todo), sum(len(k) for k in todo.values())
+
+    def _redo(self, list_id: int) -> frozenset[str] | None:
+        """The download row keys `retry download` put back for this list's next GET, or None."""
+        raw = self.f.meta(f"{REDO_KEY}{list_id}")
+        if raw is None:
+            return None
+        try:
+            return frozenset(str(k) for k in json.loads(raw))
+        except (TypeError, ValueError):
+            return frozenset()
+
+    def _redo_stored(self, row: sqlite3.Row, pr: PageRead, keys: frozenset[str], warc: str, offset: int,
+                     has_pagers: bool) -> Stored:
+        """The new GET of a list `retry download` put back (§23 A3): a new epoch in which only those downloads are
+        pressed, built from this GET's form state; nothing else is pressed (a detail, the next page, a download that
+        came to a file), the walk stays what it was, and the page's press entries come back from the action table
+        (rebuild). One of those buttons this page no longer shows is mismatch row_gone, for a person; a button to press
+        that no press of any epoch covers (a row the school added since) is unpressed, for a person too."""
+        list_id = row["id"]
+        self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{list_id}",))
+        epoch = self._new_epoch(list_id)
+        left: list[str] = []
+        n, _end = self._plan(list_id, epoch, pr, row, warc, offset, pages=1,
+                             only=frozenset(("download", k) for k in keys), left=left)
+        planned = {r[0] for r in self.f.q("SELECT row_key FROM action WHERE list_id=? AND epoch=? AND kind='download'",
+                                          (list_id, epoch))}
+        gone = []
+        for key in sorted(keys - planned):
+            old = self.f.q("SELECT * FROM action WHERE list_id=? AND kind='download' AND row_key=? ORDER BY epoch DESC, "
+                           "id DESC LIMIT 1", (list_id, key))
+            if not old:
+                continue
+            o, now = old[0], self.clock()
+            with self.f.lock:
+                aid = self.f.conn.execute(
+                    "INSERT INTO action(list_id, epoch, step, kind, queue, host, site, profile, form_src_warc, "
+                    "form_src_offset, form_id, target, argument, row_key, row_text, state, reason, created, done) "
+                    "VALUES (?,?,?,'download',?,?,?,?,?,?,?,?,?,?,?,'mismatch','row_gone',?,?)",
+                    (list_id, epoch, o["step"], o["queue"], o["host"], o["site"], o["profile"], warc, offset,
+                     o["form_id"], o["target"], o["argument"], key, o["row_text"], now, now)).lastrowid
+            gone.append({"res_key": f"pb:download:{key}", "how": "postback", "role": "download", "need": "must",
+                         "action_id": aid, "text": (o["row_text"] or "")[:100]})
+        for e in gone:  # in place of any entry of that row written above (a detail's answer read again names it too)
+            self.f.x("DELETE FROM page_res WHERE page_id=? AND res_key=?", (list_id, e["res_key"]))
+        if gone:
+            self.f.add_page_res(list_id, gone)
+        self.rebuild(list_id)
+        lw = self.f.q("SELECT ended_by FROM listwalk WHERE list_id=?", (list_id,))
+        unplanned = tuple(dict.fromkeys((*pr.unplanned, *left)))
+        return Stored("list" if pr.walk != "none" or has_pagers else None, n, lw[0][0] if lw else None, unplanned)
 
     def retry_clicks(self) -> int:
         """`nknu archive retry click`: the file buttons that failed are pending again (a person looked first)."""
@@ -1228,6 +1386,71 @@ class Chains:
                  urlencode(plan.data), plan.row_key, plan.text[:300], self.clock()))
             return self.f.conn.execute("SELECT id FROM action WHERE site=? AND row_key=? AND kind='click'",
                                        (site, plan.row_key)).fetchone()[0]
+
+    # ---- a platform's data address, read once per site (design §23 C1)
+    def data_action(self, page_row: sqlite3.Row, api: profiles.DataApi, value: str, warc: str | None,
+                    warc_offset: int | None) -> int:
+        """The read of a data address for a site (one per site and address: index action_data), planned by the first
+        page of the site that asks it (list_id; its archived page is form_src); target the address, argument the
+        request's body as the page's script writes it. Later pages point their page_res at the same action."""
+        site = page_row["owner_site"] or scope.site_key(page_row["url"])
+        prof = profiles.profile_for_site(site)
+        host, queue = self._place(api.url, page_row)
+        key = f"{api.name}:{value}"
+        with self.f.lock:
+            self.f.conn.execute(
+                "INSERT OR IGNORE INTO action(list_id, epoch, step, kind, queue, host, site, profile, form_src_warc, "
+                "form_src_offset, form_id, target, argument, row_key, row_text, state, created) "
+                "VALUES (?,1,0,'data',?,?,?,?,?,?,NULL,?,?,?,?,'pending',?)",
+                (page_row["id"], queue, host, site, f"{prof.name if prof is not None else GENERIC}/{api.name}",
+                 warc or "", warc_offset if warc_offset is not None else -1, api.url,
+                 profiles.data_api_body(api, value).decode("utf-8"), key, api.row_text or api.name, self.clock()))
+            return self.f.conn.execute("SELECT id FROM action WHERE site=? AND row_key=? AND kind='data'",
+                                       (site, key)).fetchone()[0]
+
+    def data_answered(self, action: sqlite3.Row, snap, warc: str | None) -> profiles.DataRead | None:
+        """A data address's answer (design §23 C1): a 200 read by its platform file (profiles.read_data_api: done with
+        read:empty, read:events:<n> or school_error:<message>, or mismatch); any other answer kept as it came (done:
+        action_result says what its status is). Returns the read, None for no 200; a 5xx, 408 or 429 is the
+        caller's to read again later (data_retry)."""
+        a, cols = self._answer(snap, warc)
+        if a.status != 200:
+            self._end(action, "done", "", **cols)
+            return None
+        cols.update(sniff=sniff.sniff(a.body, cols["ctype"]))
+        api = profiles.data_api(action["profile"].partition("/")[2])
+        if api is None:
+            self._end(action, "mismatch", "no_data_api", **cols)
+            return None
+        got = profiles.read_data_api(api, a.text if a.text is not None else as_text(a.body, cols["ctype"]))
+        self._end(action, got.state, got.reason, **cols)
+        return got
+
+    def retry_data(self) -> int:
+        """`nknu archive retry data` (design §23.9 C1, 【Claude 的执行办法】; a person looked first): every read of a data
+        address (kind data: cLv2's timeline, one per site) that came to nothing — failed (no answer three times),
+        mismatch (no such answer), the school's error, or any other answer that is no read — is pending again, its
+        attempts back, due now: the next run sends a new request (it only reads: no chain's POST is sent again). One
+        answered too large stays, as a download's does (a person decides). Its old reason is kept after "retried: "
+        until the new answer. Returns the reads put back."""
+        ids = [r[0] for r in self.f.q("SELECT a.id FROM action a JOIN action_result r ON r.id = a.id WHERE "
+                                      "a.kind = 'data' AND r.result NOT IN ('ok', 'todo', 'too_large')")]
+        for aid in ids:
+            self.f.x("UPDATE action SET state='pending', attempts=0, next_at=0, done=NULL, "
+                     "reason=substr('retried: ' || coalesce(reason, ''), 1, 200) WHERE id=?", (aid,))
+        return len(ids)
+
+    def data_retry(self, action: sqlite3.Row, error: str, delay: float, max_attempts: int, **cols) -> bool:
+        """A read of a data address that got no answer (a timeout, a TLS failure, a 5xx, a 408, a 429): it only reads,
+        so it is read again with a new request after delay, as a url row is (design §23 C1), until max_attempts;
+        then failed. Returns whether it waits for another try."""
+        attempts = (action["attempts"] or 0) + 1
+        if attempts < max_attempts:
+            self._set(action, state="pending", reason=error[:200], attempts=attempts, next_at=self.clock() + delay,
+                      **cols)
+            return True
+        self._end(action, "failed", error, attempts=attempts, **cols)
+        return False
 
     # ---- SSO 公告中心: the categories add up to the whole (§7.5 step 7, mismatch:total; verify check 4)
     def sso_totals(self) -> tuple[int | None, int | None]:
@@ -1353,6 +1576,7 @@ class Chains:
 # a button the platform file says to press that no press covers (PageRead.unplanned): nobody presses it, so the page
 # waits for a person 【Claude 的执行办法】
 UNPRESSED = "unhandled:unpressed"
+REDO_KEY = "redo_download:"  # meta key + list id: the download row keys (JSON) `retry download` put back (§23 A3)
 
 
 def unpressed_entries(keys: Iterable[str]) -> list[dict]:

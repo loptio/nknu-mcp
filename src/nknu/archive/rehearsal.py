@@ -36,12 +36,20 @@ old archive, the 10-24 one, or a real round-1 archive), and every command that m
 rehearsal:page_types_at_seed, the import's counts by the 10-25 test's types right after the seed (the crawl changes
 them later).
 
+The code that made it (design §23 E1, review of 830c1b7: a --check of a folder an older version made proved nothing
+of the code under review): a new rehearsal writes meta rehearsal:code (code_version: `git describe --always
+--dirty`, a digest of the uncommitted changes under src/ and config/ when dirty, `unknown` when git cannot say), kept
+when the rehearsal goes on in its folder; code_gate() compares it with the code now, and `rehearse --check` fails the
+whole list when they differ, when the folder has none, or when either is unknown.
+
 What is Claude's (【Claude 的执行办法】): the record a GET is answered with when there are several, the placeholder
-key, the fixed address, the per-thread clock, the expectation format (EXPECT_KEYS)."""
+key, the fixed address, the per-thread clock, the expectation format (EXPECT_KEYS), the version's digest and that
+unknown is no pass."""
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import ipaddress
 import json
 import logging
@@ -49,6 +57,7 @@ import os
 import re
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 from collections import Counter
@@ -75,6 +84,68 @@ MAIN_REAL_WAIT_S = 0.02  # how long the main loop's wait really lasts (it moves 
 WORKER_REAL_WAIT_S = 0.002  # how long a worker's idle wait really lasts
 KEEPALIVE_S = 60.0  # fetch.KEEPALIVE_LIMITS' keepalive_expiry: a connection idle longer is a new one
 BATCH = "rehearsal"
+CODE_KEY = "rehearsal:code"  # meta: the code that made the rehearsal (code_version, design §23 E1)
+UNKNOWN_CODE = "unknown"
+REPO = Path(__file__).resolve().parents[3]  # src/nknu/archive/rehearsal.py -> the repository
+CODE_PATHS = ("src", "config")  # what a rehearsal runs: the crawler's code and the round's list
+
+
+def _git(*args: str) -> str | None:
+    try:
+        got = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, timeout=30, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return got.stdout.decode("utf-8", "replace")
+
+
+def code_version() -> str:
+    """The version of the code here (design §23 E1): `git describe --always --dirty`; when the tree is dirty, plus
+    `+` and a digest of what is not committed under CODE_PATHS (the diff against HEAD and each untracked file's name
+    and bytes), so that two different sets of uncommitted changes are two versions; `unknown` when git cannot say."""
+    described = (_git("describe", "--always", "--dirty") or "").strip()
+    if not described:
+        return UNKNOWN_CODE
+    if not described.endswith("-dirty"):
+        return described
+    diff = _git("diff", "HEAD", "--binary", "--", *CODE_PATHS)
+    untracked = _git("ls-files", "--others", "--exclude-standard", "-z", "--", *CODE_PATHS)
+    if diff is None or untracked is None:
+        return UNKNOWN_CODE
+    h = hashlib.sha256(diff.encode("utf-8", "surrogateescape"))
+    for name in sorted(x for x in untracked.split("\0") if x):
+        h.update(b"\0" + name.encode("utf-8", "surrogateescape") + b"\0")
+        try:
+            h.update((REPO / name).read_bytes())
+        except OSError:
+            h.update(b"?")
+    return f"{described}+{h.hexdigest()[:12]}"
+
+
+@dataclass(frozen=True)
+class CodeGate:
+    ok: bool
+    made_by: str | None  # the rehearsal folder's rehearsal:code (None: it has none)
+    now: str
+    why: str
+
+
+def code_gate(root: Path) -> CodeGate:
+    """Whether the rehearsal in root was made by the code here (design §23 E1): its rehearsal:code is code_version()
+    now, and neither is unknown. Read only."""
+    from nknu.archive.frontier import _read_meta
+
+    db = Path(root) / "frontier.db"
+    made_by = _read_meta(f"file:{db}?mode=ro", CODE_KEY) if db.is_file() else None  # what the WAL holds too
+    now = code_version()
+    if made_by is None:
+        why = "彩排库没有记下建它的程式版本（是旧版程式建的）"
+    elif UNKNOWN_CODE in (made_by, now):
+        why = "程式版本读不到（git 不能用），证明不了彩排库是用现在的程式建的"
+    elif made_by != now:
+        why = f"彩排库是 {made_by} 的程式建的，现在的程式是 {now}"
+    else:
+        return CodeGate(True, made_by, now, "彩排库是用现在的程式建的")
+    return CodeGate(False, made_by, now, why + "：整份不算数，用现在的程式全新彩排再 --check")
 
 
 # ---------------------------------------------------------------- the old archive, read only
@@ -546,6 +617,7 @@ class Rehearsed:
     clock_span_h: float
     scanned: list[str] = field(default_factory=list)
     id_probes: dict[str, int] = field(default_factory=dict)  # gone_id's probes sent, and how many were not_archived
+    code: str | None = None  # meta rehearsal:code: the code that made it (§23 E1)
 
 
 def _inside(a: Path, b: Path) -> bool:
@@ -616,6 +688,8 @@ def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan:
             if not resumed:  # a rehearsal's from the moment the file is made, before the crawler or the seed touch it
                 made = Frontier(root / "frontier.db")
                 made.meta(REHEARSAL_STARTED_KEY, stamp)
+                # the code that makes it (§23 E1); a rehearsal that goes on keeps the version that seeded it
+                made.meta(CODE_KEY, code_version())
                 made.close()
             crawler = crawl_mod.Crawler(root, plan=plan, clock=clock, sleep=clock.sleep, resolver=dns.resolve,
                                         client_factory=client, netcheck=lambda: True, campus_url=None,
@@ -649,6 +723,7 @@ def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan:
             got_ids = f.q("SELECT count(*), coalesce(sum(error LIKE 'NotArchived%'), 0) FROM request "
                           "WHERE purpose='id_probe'")[0]
             id_probes = {"sent": got_ids[0], "not_archived": got_ids[1]}
+            code = f.meta(CODE_KEY)
             f.close()
         finally:
             lock.close()
@@ -667,7 +742,7 @@ def rehearse(old: Path, root: Path, *, sites: Sequence[str] | None = None, plan:
                      seed_report=seed_path, reconcile_report=rec_path, reconcile_gates=gates, verify_report=ver_path,
                      verify_code=ver_code, verify_conclusion=ver_conc, summary=reports / f"rehearsal-{stamp}.md",
                      seconds=time.monotonic() - t0, clock_span_h=(clock.latest - start_clock) / 3600,
-                     scanned=archive.scanned, id_probes=id_probes)
+                     scanned=archive.scanned, id_probes=id_probes, code=code)
     _write_summary(done, old, sites, stamp)
     return done
 
@@ -676,6 +751,7 @@ def _write_summary(r: Rehearsed, old: Path, sites: Sequence[str] | None, stamp: 
     s = r.stats
     w = [f"# 离线彩排 {stamp}", "",
          f"- 旧存档（只读）：{old}", f"- 彩排资料夹：{r.root}", f"- 网站：{'、'.join(sites) if sites else '第一轮全部'}",
+         f"- 建这个彩排库的程式版本：{r.code or '（没有记下）'}（--check 时要和当时的程式一样）",
          (f"- {'接着上一次跑（没有重新 seed）' if r.resumed else '新 seed'}；实际花了 {r.seconds / 60:.1f} 分钟，"
          f"彩排时钟走了 {r.clock_span_h:.1f} 小时（最慢那条队的等待加起来）"),
          f"- run 结束：{r.run_end.get('reason')}（剩 {r.run_end.get('pending')} 个网址、{r.run_end.get('presses')} 个按钮）",

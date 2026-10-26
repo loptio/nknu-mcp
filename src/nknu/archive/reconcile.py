@@ -11,7 +11,10 @@ Per site of a batch (reconcile_sites), in this order (the first two change what 
   more, else its site with as many, else nothing taken out; a line on TEMPLATE_SHARE of them or more; a page and its
   copies under other addresses count once), that needs no resource (page_res need must, the pager aside), whose
   type is no js or frame and that is no list walked with rows: url.flags thin, taken off again when that no longer
-  holds (thin_pages; rejudge too).
+  holds (thin_pages; rejudge too). A page whose body is a picture is never thin (design §23 E3): one that needs a
+  picture was not before either (a needed resource); one whose words alone would be thin and that holds, outside its
+  layout areas, a picture left for round two or a data: picture of DATA_PICTURE_MIN bytes or more carries in_image
+  instead (内容在图片里, for the text recognition of the organising stage; no gap), taken off the same way.
 - R7: the school's own .js the page loads (its page_res script rows), read as text with the page's inline scripts by
   the same links.extract (jsread.bindings, selectors matched back to the page's elements): what clicking an element
   does that the page alone does not say is written on the page (page_res, zone r7:<zone>: a click that loads
@@ -106,6 +109,10 @@ STATUS_LABEL = {PASS: "✓ 过", FAIL: "✗ 没过", WARN: "⚠ 要看", SKIP: "
 THIN_CHARS = 30
 TEMPLATE_SHARE = 0.5  # a line on half of the distinct pages or more is the layout's
 TEMPLATE_MIN_PAGES = 5  # distinct pages (a page and its copies under other addresses are one)
+# design §23 E3 (review of 830c1b7): a data: picture carrying this many bytes or more (its base64 decoded) is a body
+# picture; a small icon or a 1×1 placeholder (a few dozen bytes) is not 【Claude 的执行办法】
+DATA_PICTURE_MIN = 1024
+_DATA_URI = re.compile(r"(?i)data:image/[^,\"'\s<>)]*,[^\"'\s<>)]*")
 # R3b, R4b (design §18.2b): below this a warning; set again with the pilot's three sites (§18.2). One constant: the
 # acceptance's (monitor.COVER_MIN), which the dashboard and verify also warn by
 COVER_WARN = monitor.COVER_MIN
@@ -393,6 +400,20 @@ def page_lines(html: str, url: str, parts: Iterable[str] = ()) -> dict[str, int]
     return lines_of(texts)
 
 
+def data_pictures(html: str) -> dict[str, int]:
+    """The data: pictures a page writes (an <img>, a <picture>, a CSS background), by their first characters as
+    links.extract keeps them (links.DATA_SRC_MAX: page_res.res_key): the bytes each carries (base64 decoded; the
+    largest when several begin alike). Design §23 E3."""
+    out: dict[str, int] = {}
+    for m in _DATA_URI.finditer(html or ""):
+        uri = m.group(0)
+        head, _, data = uri.partition(",")
+        n = len(data.rstrip("=")) * 3 // 4 if ";base64" in head.lower() else len(data)
+        key = uri[:links.DATA_SRC_MAX]
+        out[key] = max(out.get(key, 0), n)
+    return out
+
+
 def _distinct(pages: Sequence[Mapping[str, int]]) -> list[Mapping[str, int]]:
     """These pages with each set of lines once: a page and its copies under other addresses (a WordPress listing as
     category/x/page/2 and category/category/x …) are one page of the layout, never several votes for their own
@@ -438,10 +459,38 @@ class ThinResult:
     set_: int = 0
     cleared: int = 0
     unread: list[int] = field(default_factory=list)
+    in_image: list[int] = field(default_factory=list)  # pages whose words alone would be thin, their body a picture
+
+
+IN_IMAGE = "in_image"  # outcome.FLAGS: 内容在图片里 (design §23 E3), never a gap
+
+
+def _pictured(fr: Frontier, site: str, pics: Mapping[int, Mapping[str, int]]) -> set[int]:
+    """The pages of a site whose body is a picture no needed resource stands for (design §23 E3): outside the layout
+    areas (zone chrome), a picture left for round two (Google Sites' runtime pictures, §23 B3) or a data: picture of
+    DATA_PICTURE_MIN bytes or more (pics: data_pictures of each page read). A picture the page needs is a needed
+    resource: such a page was never thin and needs no mark (the 10-27 rehearsal: 277 pages with a short text and a
+    needed picture, most of them a site's icons and banners, would all have said 内容在图片里) 【Claude 的执行办法】."""
+    out = {r[0] for r in fr.q("SELECT DISTINCT pr.page_id FROM page_res pr JOIN url u ON u.id = pr.page_id WHERE "
+                              "u.owner_site=? AND pr.role='img' AND pr.need = 'round2' AND "
+                              "coalesce(pr.zone, '') <> 'chrome'", (site,))}
+    for pid, key in fr.q("SELECT pr.page_id, pr.res_key FROM page_res pr JOIN url u ON u.id = pr.page_id WHERE "
+                         "u.owner_site=? AND pr.role='img' AND pr.why='data' AND coalesce(pr.zone, '') <> 'chrome'",
+                         (site,)):
+        if pics.get(pid, {}).get(key, 0) >= DATA_PICTURE_MIN:
+            out.add(pid)
+    return out
+
+
+def _set_flag(flags: list[str], flag: str, want: bool) -> tuple[list[str], bool]:
+    """flags with flag in it (want) or not, and whether that changed anything."""
+    if want == (flag in flags):
+        return flags, False
+    return ([*flags, flag] if want else [f for f in flags if f != flag]), True
 
 
 def _decide_thin(fr: Frontier, site: str, rows, lines: Mapping[int, Mapping[str, int]], skip: set[int],
-                 write: bool) -> ThinResult:
+                 write: bool, pics: Mapping[int, Mapping[str, int]] | None = None) -> ThinResult:
     out = ThinResult(unread=[r["id"] for r in rows if r["id"] not in lines and r["id"] not in skip])
     by_type: dict[str, list[int]] = defaultdict(list)
     for r in rows:
@@ -458,29 +507,32 @@ def _decide_thin(fr: Frontier, site: str, rows, lines: Mapping[int, Mapping[str,
         "(pt.verdict IN ('js', 'frame') OR jp.verdict IN ('js', 'frame'))", (site,))}
     walked = {r[0] for r in fr.q("SELECT lw.list_id FROM listwalk lw JOIN url u ON u.id = lw.list_id "
                                  "WHERE u.owner_site=? AND coalesce(lw.rows, lw.rows_unique, 0) > 0", (site,))}
+    pictured = _pictured(fr, site, pics or {})
     for r in rows:
         pid = r["id"]
         if pid in skip:
-            want = False
+            want = in_image = False
         elif pid in lines:
             out.judged += 1
             tpl = type_tpl.get(r["page_type"] or "", site_tpl)  # its kind with enough pages, else its site
             chars = sum(n for line, n in lines[pid].items() if line not in tpl)
-            want = chars < THIN_CHARS and pid not in must and pid not in scripted and pid not in walked
+            short = chars < THIN_CHARS and pid not in scripted and pid not in walked and pid not in must
+            in_image = short and pid in pictured  # its words alone would be thin: its body is the picture (§23 E3)
+            want = short and not in_image
         else:
             continue  # not read back: left as it is (V14 says why)
-        flags = _flags(r)
         if want:
             out.thin.append(pid)
-        if want == ("thin" in flags):
-            continue
-        if want:
-            flags.append("thin")
-            out.set_ += 1
-        else:
-            flags = [f for f in flags if f != "thin"]
-            out.cleared += 1
-        if write:
+        if in_image:
+            out.in_image.append(pid)
+        flags, thin_changed = _set_flag(_flags(r), "thin", want)
+        flags, img_changed = _set_flag(flags, IN_IMAGE, in_image)
+        if thin_changed:
+            if want:
+                out.set_ += 1
+            else:
+                out.cleared += 1
+        if write and (thin_changed or img_changed):
             fr.x("UPDATE url SET flags=? WHERE id=?", (",".join(flags) or None, pid))
     return out
 
@@ -495,7 +547,7 @@ def thin_pages(fr: Frontier, root: Path, sites: Iterable[str], *, write: bool = 
     out = {}
     for site in sites:
         rows = fr.q(_PAGES, (site,))
-        lines, skip = {}, set()
+        lines, skip, pics = {}, set(), {}
         for r in rows:
             if set(_flags(r)) & set(_NOT_READ):
                 skip.add(r["id"])
@@ -503,7 +555,8 @@ def thin_pages(fr: Frontier, root: Path, sites: Iterable[str], *, write: bool = 
             html = arc.text(r["warc"], r["warc_offset"])
             if html is not None:
                 lines[r["id"]] = page_lines(html, r["url"], _part_htmls(fr, arc, r["id"]))
-        out[site] = _decide_thin(fr, site, rows, lines, skip, write)
+                pics[r["id"]] = data_pictures(html)
+        out[site] = _decide_thin(fr, site, rows, lines, skip, write, pics)
     return out
 
 
@@ -674,20 +727,26 @@ def _menu_targets(page: links.PageLinks) -> list[str]:
             if page.link_zone.get(href) == "chrome" and (t := scope.canonical(href, page.base)) is not None]
 
 
-def _expected(plan: round1.Plan, row, html: str, url: str, page: links.PageLinks, fr: Frontier
-              ) -> tuple[dict[str, str], dict[str, str]]:
+def _expected(plan: round1.Plan, row, html: str, url: str, page: links.PageLinks, fr: Frontier,
+              src_id: int | None = None) -> tuple[dict[str, str], dict[str, str]]:
     """What the crawler writes of one page (Crawler._parts): the link table's targets ({address: what}) and the
-    page_res keys ({key: what}). A Google address's rows are the Google step's (drive:<id> …): its link only."""
+    page_res keys ({key: what}). A Google address's rows are the Google step's (drive:<id> …): its link only. A
+    Google Sites runtime picture's key is where it sits (links.google_sites_keys, design §23 B2), read against src_id:
+    the row its HTML was read from (the page's own, or an embed box's)."""
     base, site = page.base, row["owner_site"] or ""
     want_links: dict[str, str] = {}
     want_keys: dict[str, str] = {}
     pictures = {scope.canonical(img.src, base) for img in page.images}
+    gsimg = links.google_sites_keys(page, src_id if src_id is not None else row["id"])
     for img in page.images:
         if img.src.startswith("data:"):
             want_keys[img.src] = "image"
             continue
         target = scope.canonical(img.src, base)
         if target is None:
+            continue
+        if img.src in gsimg:
+            want_keys[gsimg[img.src]] = "image"
             continue
         need, _why = links.image_need(img, row["url"], page.profiled)
         if need == "must" and scope.is_google_link(target):
@@ -750,7 +809,7 @@ def _v13_page(fr: Frontier, plan: round1.Plan, row, html: str, url: str, page: l
     srcs = [row["id"]]
     for pid, phtml, purl in parts:
         sub = links.extract(phtml, purl)
-        pl, pk = _expected(plan, row, phtml, purl, sub, fr)
+        pl, pk = _expected(plan, row, phtml, purl, sub, fr, src_id=pid)
         for target, what in pl.items():
             want_links.setdefault(target, what + "@part")
         for key, what in pk.items():
@@ -1004,7 +1063,8 @@ def _r1(fr: Frontier, menus: Mapping[str, str], marks: Mapping[str, Mapping] | N
 def _r2(fr: Frontier, root: Path, site: str, *, write: bool = True) -> Check:
     """Each list's stated total (「共 N 筆」: listwalk.claimed) against the rows got; a walk with no end; SSO 公告中心's
     categories against its whole list (postback.Chains.sso_totals, which marks the whole list mismatch:total: only
-    when this call may write)."""
+    when this call may write); a site that ignores c.nknu's category menu with no 「全部」 list walked to its last page
+    (monitor.class_all_missing, design §23 F2: problem class_all)."""
     items = []
     n = claimed = 0
     for lw in fr.q("SELECT lw.*, u.url FROM listwalk lw JOIN url u ON u.id = lw.list_id WHERE u.owner_site=?",
@@ -1020,6 +1080,9 @@ def _r2(fr: Frontier, root: Path, site: str, *, write: bool = True) -> Check:
                           "note": lw["note"]})
         elif lw["ended_by"] in (None, "walking"):
             items.append({"list": lw["url"], "problem": lw["ended_by"] or "no_end", "note": lw["note"]})
+    for item in monitor.class_all_missing(fr, site):  # design §23 F2: the category menu ignored, 「全部」 not walked whole
+        items.append({"list": f"{site} newslist.aspx（不带 class）", "problem": "class_all",
+                      "note": monitor.class_all_words(item), "lists": item["lists"]})
     sso = None
     if write and fr.q("SELECT 1 FROM listwalk lw JOIN url u ON u.id = lw.list_id WHERE u.owner_site=? AND lw.profile=? "
                       "LIMIT 1", (site, profiles.SSO_NEWS.name)):
@@ -1228,12 +1291,13 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
         if view.error or not view.html:
             items.append({"url": row["url"], "problem": "error", "error": (view.error or "no page")[:200]})
             continue
-        if getattr(view, "data_posts", ()):
-            # the page reads data from an address of its own by a POST the round cannot make (pilot 10-26: cLv2's
-            # ajaxTimeline.aspx): what the browser showed is compared as any page's, and the page's type is judged js
-            # (method data_post, the next round's 读资料网址), so that no page of it ever shows complete
-            posts.append({"url": row["url"], "problem": "data_post", "targets": list(view.data_posts)[:5]})
-            _type_data_post(fr, row, view.data_posts)
+        if data_posts := _data_posts(row, getattr(view, "data_posts", ())):
+            # the page reads data from an address of its own by a POST the round cannot make: what the browser
+            # showed is compared as any page's, and the page's type is judged js (method data_post, the next round's
+            # 读资料网址), so that no page of it ever shows complete. A data address the platform file reads this
+            # round (cLv2's ajaxTimeline.aspx, design §23 C2) is none
+            posts.append({"url": row["url"], "problem": "data_post", "targets": list(data_posts)[:5]})
+            _type_data_post(fr, row, data_posts)
         html = arc.text(row["warc"], row["warc_offset"])
         if html is None:
             items.append({"url": row["url"], "problem": "unreadable"})
@@ -1253,8 +1317,13 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
         missing = []
         candidates = [(h, shown.link_zone.get(h, "unknown"), "link") for h, _t in shown.links]
         candidates += [(f.src, f.zone, "frame") for f in shown.frames]
+        # a Google Sites runtime picture has a new address each reading: it is the stored one where it sits in the
+        # same place (its key, design §23 B2)
+        gs_known = set(links.google_sites_keys(stored, row["id"]).values()) | known
+        gs_shown = links.google_sites_keys(shown, row["id"])
         candidates += [(i.src, i.zone, "image") for i in shown.images
-                       if links.image_need(i, row["url"], shown.profiled)[0] == "must"]
+                       if links.image_need(i, row["url"], shown.profiled)[0] == "must"
+                       and gs_shown.get(i.src) not in gs_known]
         for href, zone, how in candidates:
             target = scope.canonical(href, shown.base)
             if target is None or target in known or target.split("#", 1)[0] == row["url"]:
@@ -1287,14 +1356,21 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
                                       "下一轮用读资料网址补；显示出来的部分没有差异" if posts else "")
 
 
+def _data_posts(row, targets: Sequence[str]) -> tuple[str, ...]:
+    """The data addresses a page asked by a POST (jscheck.data_post) that are no data address its platform file reads
+    this round (profiles.known_data_api: cLv2's timeline, design §23 C2)."""
+    return tuple(t for t in targets if not profiles.known_data_api(row["url"], t))
+
+
 def _type_data_post(fr: Frontier, row, targets: Sequence[str]) -> None:
     """A page's type judged js by the browser spot check (R6): it loads data by a POST the round cannot make. Written
-    only over a verdict that is not js already; a person's verdict (source manual) stands."""
+    only over a verdict that is not js already; the 10-25 import's verdict (source import) and a person's (manual)
+    stand, any difference left to the reconciliation's report (design §23 C2)."""
     key = row["page_type"]
     if not key:
         return
     cur = fr.q("SELECT verdict, source FROM page_type WHERE key=?", (key,))
-    if not cur or cur[0]["verdict"] == "js" or cur[0]["source"] == "manual":
+    if not cur or cur[0]["verdict"] == "js" or cur[0]["source"] in ("manual", "import"):
         return
     # a note token keeps no comma (page_type.note is comma-separated: jscheck.note_token's rule)
     note = "data_post:" + targets[0].replace(",", "%2C") if targets else "data_post"
@@ -1411,6 +1487,7 @@ class _Batch:
         res = SiteResult(site, self.batch, {})
         rows = fr.q(_PAGES, (site,))
         lines: dict[int, dict[str, int]] = {}
+        pics: dict[int, dict[str, int]] = {}
         skip: set[int] = set()
         menus: dict[str, str] = {}
         r7: dict[str, list[tuple[str, R7Page]]] = defaultdict(list)
@@ -1433,6 +1510,7 @@ class _Batch:
                 skip.add(row["id"])
             else:
                 lines[row["id"]] = page_lines(html, row["url"], [p[1] for p in parts])
+                pics[row["id"]] = data_pictures(html)
             if flags & {"login", "soft404"}:
                 continue
             page = _page_read(row, html, url)
@@ -1448,7 +1526,7 @@ class _Batch:
                 r7[key].append((row["url"], got))
             r7_items += self._r7_page_items(row, html, page)
         self.check_stop()
-        thin = _decide_thin(fr, site, rows, lines, skip, self.write)
+        thin = _decide_thin(fr, site, rows, lines, skip, self.write, pics)
         res.thin_set, res.thin_cleared = thin.set_, thin.cleared
         res.checks["R1"], found = _r1(fr, menus, monitor.menu_marks(fr, site))
         res.found += found
@@ -1648,7 +1726,7 @@ class _RejudgeChains(postback.Chains):
         pr = postback.read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page)
         self.f.add_page_res(list_id, self._items(pr, row["url"]))
         self.rebuild(list_id)
-        have = {(a[0], a[1]) for a in self.f.q("SELECT kind, row_key FROM action WHERE list_id=? AND kind <> 'click'",
+        have = {(a[0], a[1]) for a in self.f.q("SELECT kind, row_key FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
                                                 (list_id,))}
         wanted = [*pr.presses, *([pr.next] if pr.next is not None and pr.walk == "postback" else [])]
         unplanned = [*pr.unplanned, *(postback.button_key(p.target, p.argument) for p in wanted

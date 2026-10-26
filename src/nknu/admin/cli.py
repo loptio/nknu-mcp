@@ -540,7 +540,9 @@ def _round1_root(dir: str | None, *, online: bool = False):
         raise typer.Exit(1)
     if online and rehearsal_of(db) is not None:  # online: the command may send requests (or look names up)
         typer.echo(f"{root} 是离线彩排的资料夹（设计第 18.1 节；主机地址是旧存档的或假的）：会连网的命令不在它上面跑。"
-                   "要看彩排结果用 verify、status、browse、reconcile --no-r6，或 nknu archive rehearse --check。")
+                   "要看彩排结果用 verify、status、browse、reconcile --no-r6。验收要用现在的程式全新彩排再 --check"
+                   "（设计 §23 E1）：nknu archive rehearse --old <旧存档的副本> --dir <新的空资料夹>，再 nknu archive "
+                   "rehearse --check <预期清单> --dir <同一个资料夹>；或一步做完：加 --check <预期清单> --fresh。")
         raise typer.Exit(1)
     return root
 
@@ -765,12 +767,19 @@ def archive_stop(dir: str = typer.Option(None, "--dir")) -> None:
 def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头，例如 http_5（所有 5xx）、timeout、connect、dns、"
                                                         "host_unreachable、robots_unreachable、host_cooldown、crash；"
                                                         "post_failed：回传失败的列表从第 1 页重走；click：失败的下载按钮"
-                                                        "（电子系）放回再按"),
+                                                        "（电子系）放回再按；download：SSO 的下载按钮取回来不是档案或"
+                                                        "失败的，重新 GET 列表、只按这些按钮；data：资料接口（cLv2 的"
+                                                        "时间轴）读失败或读不懂的，用新的请求再读一次"),
                   dir: str = typer.Option(None, "--dir")) -> None:
     """把某种原因失败、跳过或在等的网址放回待抓：次数归零，主机的 robots 失败次数、冷却和 DNS 退避也一起清掉。
     已存好的网页不动，只有存成 4xx 拒绝（http_4xx）的才放回。原因开头至少 3 个字。
     post_failed：回传两次都失败的列表（listwalk 记 post_failed）从列表第 1 页的 GET 重走；click：照规则按、失败了的
-    POST 下载按钮放回待按（设计第 7.4、7.5 节；都只在人看过以后用，POST 绝不自动重送）。"""
+    POST 下载按钮放回待按（设计第 7.4、7.5 节；都只在人看过以后用，POST 绝不自动重送）。
+    download：SSO 的下载按钮（单位网站的附件、书表）最后一次的结果是「应该是档案，回来不是档案」或失败的，它们所在的
+    列表重新 GET 一次、只按这些按钮（详情、翻页、已经抓到档案的都不再按；表单状态取自新的 GET，不原样重送旧的 POST）；
+    新的 GET 上找不到的按钮记「按到的可能是别的公告」（row_gone）要人看。档案太大的不放回（设计第 23 节 A3）。
+    data：资料接口（cLv2 单位网站的时间轴，每个网站读一次）试了 3 次都失败、回来读不懂、或学校说出错的，放回待读、次数归零，
+    下一次 archive run 用新的请求再读一次（只是读资料，不是回传；设计第 23.9 节 C1）。"""
     from nknu.archive.frontier import RETRY_MIN_PREFIX, Frontier
 
     if len(reason.strip()) < RETRY_MIN_PREFIX:
@@ -780,7 +789,7 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     db = _archive_db(root)
     lock = _hold_for_writing(root)
     try:
-        if reason.strip() in ("post_failed", "click"):
+        if reason.strip() in ("post_failed", "click", "download", "data"):
             from nknu.archive.postback import Chains
 
             f = Frontier(db)
@@ -788,6 +797,13 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
             if reason.strip() == "post_failed":
                 n = chains.retry_post_failed()
                 msg = f"从第 1 页重走：{n} 个回传失败的列表（列表页放回待抓，下一次 archive run 接着按）"
+            elif reason.strip() == "download":
+                lists, buttons = chains.retry_downloads()
+                msg = (f"放回重按：{lists} 个列表、{buttons} 个下载按钮（列表页放回待抓，下一次 archive run 重新 GET "
+                       "列表、只按这些按钮）")
+            elif reason.strip() == "data":
+                n = chains.retry_data()
+                msg = f"放回再读：{n} 个网站的资料接口（cLv2 时间轴；下一次 archive run 用新的请求再读一次）"
             else:
                 n = chains.retry_clicks()
                 msg = f"放回待按：{n} 个失败的下载按钮（下一次 archive run 再按一次）"
@@ -1126,38 +1142,38 @@ def archive_rehearse(old: str = typer.Option(None, "--old", help="10-24 旧存�
                      dir: str = typer.Option(..., "--dir", help="彩排的新资料夹（不能是旧存档，也不能在它里面）"),
                      sites: str = typer.Option(None, "--sites", help="只跑这些网站（网站键，逗号分隔）；默认第一轮全部"),
                      check: str = typer.Option(None, "--check", help="预期清单（rehearsal_expect.json）：不跑彩排，"
-                                                                    "只拿 --dir 的彩排结果逐条核对"),
+                                                                    "只拿 --dir 的彩排结果逐条核对（彩排库要是现在的程式"
+                                                                    "建的，不然整份 FAIL）"),
+                     fresh: bool = typer.Option(False, "--fresh", help="和 --old、--check 一起用：在新的 --dir（不能已经"
+                                                                      "存在）全新彩排，跑完马上核对"),
                      facts: str = typer.Option(None, "--facts", help="v1 的 facts.db（只读，v1 已知公告当起点）；默认不读")
                      ) -> None:
     """离线彩排（设计第 18.1 节，隐藏命令）：用真的爬虫程序（seed --round 1 + run）跑第一轮，网络换成「从旧存档回答」：同一个
     网址（规范写法相同）的 GET 照旧存档的回应原样回，旧存档没有的（没按过的按钮 POST、没抓过的附件、Google API）回
     not_archived（失败、不重试、不算服务器或网络的）。不连网（断网绊线）、DNS 用旧库 host 表、时钟是假的（等待只把时钟往前拨），
     不拿全机锁、不用金钥。跑完自动 reconcile（不含 R6）和 verify，报告写进 <dir>/reports/。
-    --check <清单> --dir <彩排资料夹>：逐条核对，印出 PASS/FAIL 和理由；全过退出码 0，有 FAIL 退出码 2。"""
+    --check <清单> --dir <彩排资料夹>：逐条核对，印出 PASS/FAIL 和理由；全过退出码 0，有 FAIL 退出码 2。彩排库不是现在的
+    程式建的（设计 §23 E1：版本不一样、没记下或读不到），整份 FAIL、一条都不核对（退出码 2）：验收一律用现在的程式全新彩排
+    再 --check。--old <旧存档> --dir <新资料夹> --check <清单> --fresh：一步做完（资料夹已经存在就拒绝）。"""
     import logging
     from pathlib import Path
 
     from nknu.archive import rehearsal
 
     root = Path(dir).expanduser().resolve()
-    if check:
-        expect = Path(check).expanduser().resolve()
-        if not expect.is_file():
-            typer.echo(f"找不到预期清单：{expect}")
+    expect = Path(check).expanduser().resolve() if check else None
+    if expect is not None and not expect.is_file():
+        typer.echo(f"找不到预期清单：{expect}")
+        raise typer.Exit(1)
+    if fresh:
+        if not old or expect is None:
+            typer.echo("--fresh 要和 --old <旧存档的副本>、--check <预期清单> 一起用")
             raise typer.Exit(1)
-        if not (root / "frontier.db").is_file():
-            typer.echo(f"找不到彩排的待抓清单：{root / 'frontier.db'}")
+        if root.exists():
+            typer.echo(f"{root} 已经存在：--fresh 只在新的资料夹全新彩排（已经有的资料夹会接着跑、不重新 seed）")
             raise typer.Exit(1)
-        try:
-            got = rehearsal.check(expect, root)
-        except (ValueError, KeyError) as exc:
-            typer.echo(f"预期清单读不懂：{exc}")
-            raise typer.Exit(1) from None
-        for r in got:
-            typer.echo(f"{'PASS' if r.ok else 'FAIL'}  {r.id}：{r.why}")
-        failed = [r for r in got if not r.ok]
-        typer.echo(f"共 {len(got)} 条：PASS {len(got) - len(failed)}、FAIL {len(failed)}")
-        raise typer.Exit(2 if failed else 0)
+    if expect is not None and not fresh:
+        _rehearsal_check(rehearsal, expect, root)
     if not old:
         typer.echo("要给旧存档的目录：--old <旧存档>（或用 --check 只核对）")
         raise typer.Exit(1)
@@ -1174,3 +1190,30 @@ def archive_rehearse(old: str = typer.Option(None, "--old", help="10-24 旧存�
         raise typer.Exit(1) from None
     typer.echo(f"彩排完：run 结束原因 {done.run_end.get('reason')}；验收 {done.verify_conclusion}（退出码 "
                f"{done.verify_code}）；摘要 {done.summary}")
+    if fresh and expect is not None:
+        _rehearsal_check(rehearsal, expect, root)
+
+
+def _rehearsal_check(rehearsal, expect, root) -> None:
+    """rehearse --check: the code gate (design §23 E1), then each expectation; exits 0 (all pass), 2 (a FAIL, or a
+    folder other code made: then no item is read, so that nothing looks passed) or 1 (nothing to check)."""
+    if not (root / "frontier.db").is_file():
+        typer.echo(f"找不到彩排的待抓清单：{root / 'frontier.db'}")
+        raise typer.Exit(1)
+    gate = rehearsal.code_gate(root)
+    typer.echo(f"彩排库的程式版本：{gate.made_by or '（没有记下）'}；现在的程式：{gate.now}")
+    if not gate.ok:
+        typer.echo(f"FAIL  rehearsal_code：{gate.why}")
+        typer.echo("整份 FAIL（一条都没核对）：env -u GOOGLE_API_KEY uv run nknu archive rehearse --old <旧存档的副本> "
+                   "--dir <新的空资料夹> --check <预期清单> --fresh")
+        raise typer.Exit(2)
+    try:
+        got = rehearsal.check(expect, root)
+    except (ValueError, KeyError) as exc:
+        typer.echo(f"预期清单读不懂：{exc}")
+        raise typer.Exit(1) from None
+    for r in got:
+        typer.echo(f"{'PASS' if r.ok else 'FAIL'}  {r.id}：{r.why}")
+    failed = [r for r in got if not r.ok]
+    typer.echo(f"共 {len(got)} 条：PASS {len(got) - len(failed)}、FAIL {len(failed)}")
+    raise typer.Exit(2 if failed else 0)

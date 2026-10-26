@@ -100,6 +100,15 @@ URL_CASES = [
                    "host": "www.googleapis.com", "url": API + "&x=403"}),
     ("api_error", {**FILE, "kind": "calendar", "kind0": "calendar", "sniff": "json", "status": 410,
                    "host": "www.googleapis.com", "url": API + "&x=410"}),
+    # api_quota: one Drive file's downloads used up three times over (design §23 D1), 要人看
+    ("api_quota", {**FILE, "state": "failed", "attempts": 3, "reason": "api:downloadQuotaExceeded", "status": None,
+                   "sniff": None, "host": "www.googleapis.com", "url": API + "&x=quota"}),
+    ("retry", {**FILE, "state": "pending", "attempts": 1, "reason": "api:downloadQuotaExceeded", "status": None,
+               "sniff": None, "host": "www.googleapis.com", "url": API + "&x=quota1"}),
+    # parked: a directory refused twice over, its other rows failed with no request sent (design §23 F1), 要人看
+    ("parked", {**FILE, "state": "failed", "attempts": 0, "reason": "denied_dir", "status": None, "sniff": None}),
+    ("todo", {**FILE, "state": "pending", "attempts": 0, "reason": "denied_dir", "status": None, "sniff": None,
+              "url": "https://c.nknu.edu.tw/aca/protected/b.pdf"}),
     # login
     ("login", {"status": 302, "flags": "login"}),
     ("login", {"flags": "login"}),
@@ -185,6 +194,10 @@ URL_CASES = [
     ("not_file", {**FILE, "kind0": "script", "sniff": "html"}),
     ("not_file", {**FILE, "kind0": "click", "sniff": "html"}),
     ("not_file", {**FILE, "kind0": "drive_list", "sniff": "html"}),
+    # an attachment or a picture answered 200 with no byte at all (design §23 A1 ①); the school's own words say more
+    ("not_file", {**FILE, "sniff": "other", "bytes": 0}),
+    ("not_file", {**FILE, "kind0": "image", "sniff": "other", "bytes": 0}),
+    ("gone", {**FILE, "sniff": "html", "bytes": 0, "flags": "gone_page"}),
     # held: a cap stopped it, never silently skipped (§9)
     ("held", {"state": "held", "reason": "cap:site", "status": None}),
     ("held", {"state": "held", "reason": "cap:drive", "status": None}),
@@ -294,11 +307,11 @@ def test_a_type_still_to_judge_stays_unchecked_whatever_one_page_showed(f):
 STATES = ("pending", "active", "done", "failed", "skipped", "held", "later", "parked")
 REASONS = (None, "dns", "host_unreachable", "too_large", "moved_scheme", "error_page", "site_cap", "cap:site",
            "out:login", "http_503", "timeout", "no_api_key", "odd", "robots", "decor:repeat", "album:drive",
-           "media_type")
+           "media_type", "api:downloadQuotaExceeded", "denied_dir")
 STATUSES = (None, 101, 200, 204, 206, 301, 302, 304, 400, 401, 403, 404, 405, 410, 451, 500, 503)
 FLAGS = (None, "", "login", "soft404", "gone_id", "gone_redirect", "error_page", "decode", "thin", "empty_detail",
          "js_hint", "form_closed", "weird", "login,soft404", "form_closed,thin", "decode,", "js_redirect",
-         "js_redirect,login", "click_empty", "gone_page", "bad_link", "bad_link,login")
+         "js_redirect,login", "click_empty", "gone_page", "bad_link", "bad_link,login", "in_image", "thin,in_image")
 KINDS = ("page", "file", "image", "drive", "calendar", "media", "embed")
 KIND0S = (None, "page", "file", "image", "drive", "calendar", "form", "shortlink", "sitemap", "login_check", "click",
           "script", "drive_list", "embed")
@@ -307,10 +320,11 @@ PTYPES = (None, *TYPES, "t:missing")
 
 
 def strictly_ok(r) -> bool:
-    """What `ok` must mean: fetched with a 200, no flag but a closed form's, the file it should be (and sniffed to
-    show it), and for a page a type judged by the browser test to need nothing more."""
+    """What `ok` must mean: fetched with a 200, no flag but a closed form's or in_image (a page whose body is a
+    picture: said, never a gap, design §23 E3), the file it should be (and sniffed to show it), and for a page a type
+    judged by the browser test to need nothing more."""
     flags = set(filter(None, (r["flags"] or "").split(",")))
-    if r["state"] != "done" or r["status"] != 200 or not flags <= {"form_closed"}:
+    if r["state"] != "done" or r["status"] != 200 or not flags <= {"form_closed", "in_image"}:
         return False
     if (r["kind0"] or r["kind"]) == "shortlink":  # a short link is never got itself: where it leads is
         return False
@@ -468,6 +482,12 @@ ACTION_CASES = [
     ("http_4xx", {"status": 404}),
     ("server_error", {"status": 500}),
     ("not_file", {"kind": "download", "sniff": "html"}),
+    # what the crawler found no file in (design §23 A1, A2): its reason, whatever its sniff or status
+    ("not_file", {"kind": "download", "sniff": "text", "reason": "not_file:no_name:text"}),
+    ("not_file", {"kind": "download", "sniff": "other", "bytes": 0, "reason": "not_file:empty_body"}),
+    ("not_file", {"kind": "download", "sniff": "pdf", "reason": "not_file:saying:gone_page"}),
+    ("not_file", {"kind": "download", "status": 302, "reason": "not_file:redirect"}),
+    ("too_large", {"kind": "download", "state": "failed", "reason": "too_large", "status": None}),  # §23 A3
     ("unknown", {"kind": "download", "sniff": None}),  # a download nobody sniffed (§7.3)
     ("ok", {"kind": "download", "sniff": "pdf"}),
     ("ok", {"kind": "pager"}),
@@ -496,12 +516,13 @@ def test_any_button_combination_lands_on_a_known_code_and_never_on_ok_by_acciden
     for state, status, kind, sniff, reason in itertools.product(
             ("pending", "active", "done", "failed", "mismatch", "superseded", "parked"),
             (None, 200, 204, 302, 401, 403, 404, 451, 500), ("pager", "detail", "download", "click", "select"),
-            (None, "html", "pdf"), (None, "empty_detail")):
+            (None, "html", "pdf"), (None, "empty_detail", "not_file:empty_body", "too_large")):
         add_action(f, lid, state=state, status=status, kind=kind, sniff=sniff, reason=reason)
     for r in f.q("SELECT * FROM action_result"):
         assert r["result"] in outcome.ACTION_RESULTS
         ok = (r["state"] == "done" and r["status"] == 200 and r["kind"] in ("pager", "detail", "download", "click")
               and not (r["kind"] == "download" and r["sniff"] in ("html", None))
+              and not (r["kind"] == "download" and (r["reason"] or "").startswith("not_file:"))
               and not (r["kind"] == "detail" and r["reason"] == "empty_detail"))
         assert (r["result"] == "ok") == ok, dict(r)
 
@@ -527,7 +548,7 @@ def test_every_result_has_a_label_a_colour_and_a_category():
     ("next_round", ("later", "js", "click")),
     ("rule", ("rule", "redirect")),
     ("review", ("held", "thin", "decode", "mismatch", "not_discovered", "unknown", "too_large", "unresolved",
-                "looks_gone", "api_error", "unhandled", "bad_link", "short_dead")),
+                "looks_gone", "api_error", "unhandled", "bad_link", "short_dead", "parked")),
     ("school_side", ("school_side",)),
 ])
 def test_user_categories(bucket, codes):
@@ -1158,8 +1179,8 @@ def test_every_level_and_label_is_reached_and_named():
                                         "partial", "complete"}
     assert [c for c, _zh in outcome.LABEL_ORDER] == [
         "todo", "retry", "failed", "thin", "review", "js", "list", "list_unchecked", "miss_file", "miss_img",
-        "miss_other", "click", "round2", "unchecked", "complete_school", "complete"]
-    assert len({c for c, _zh in outcome.LABEL_ORDER}) == len(outcome.LABEL_ORDER) == 16
+        "miss_other", "click", "round2_img", "round2", "unchecked", "complete_school", "complete"]
+    assert len({c for c, _zh in outcome.LABEL_ORDER}) == len(outcome.LABEL_ORDER) == 17
     zh = dict(outcome.LABEL_ORDER)
     assert (zh["thin"], zh["js"], zh["click"], zh["round2"], zh["unchecked"]) == (
         "要人看：页面几乎是空的", "要 JavaScript（下一轮补）", "点了才载入的内容（下一轮补）", "有下一轮补的资源", "待判定")

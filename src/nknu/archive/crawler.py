@@ -256,6 +256,28 @@ _KIND_OF0 = {"page": "page", "login_check": "page", "file": "file", "sitemap": "
 _PRIO_OF0 = {"page": 1, "login_check": 0, "sitemap": 0, "click": 0, "file": 2, "form": 2, "embed": 2,
              "shortlink": 2, "drive": 2, "drive_list": 2, "calendar": 2, "image": 3, "script": 3}
 PRIO_LIST = 0
+# Google Sites' runtime pictures (design §23 B, 【用户同意 Claude 的建议】 10-27: 「可以，听你的」; how and the numbers
+# 【Claude 的执行办法】): a page's pictures go first on their queue right after the page is stored (PRIO_NOW, below every
+# other row's, frontier.next_for), the hop a picture's 302 leads to before the next picture (PRIO_HOP), and the page
+# read again for new addresses (PRIO_NOW, its own prio back once it is taken). A page whose pictures start to answer
+# 403 halfway is read again at most GSIMG_REREADS times; a site none of whose pictures came yet reads its page again
+# once at its first 403, and when the first GSIMG_TRIES pictures tried after that both answer 403 it sends no more of
+# them (round2:google_sites_image, meta GSIMG_GIVEUP_KEY<site>: across runs). meta GSIMG_SITE_KEY<site>: whether a
+# picture came, whether the page was read again for none having come, the tries since; GSIMG_PAGE_KEY<page id>: how
+# often the page was read again and its own prio
+PRIO_NOW, PRIO_HOP = -1, -2
+GSIMG_REREADS = 2
+GSIMG_TRIES = 2
+GSIMG_HOW = links.GSIMG.rstrip(":")  # page_res.how of such a picture
+GSIMG_STALE = "gsimg_stale"  # url.reason of an address a new reading of the page replaced (outcome: redirect)
+GSIMG_REREAD = "gsimg_reread"  # url.reason of a page waiting to be read again for new addresses
+GSIMG_GIVEUP_KEY, GSIMG_SITE_KEY, GSIMG_PAGE_KEY = "gsimg_giveup:", "gsimg_site:", "gsimg_reread:"
+# a page read again for its pictures' new addresses keeps its stored answer when that reading brings no web page (a 403,
+# a 5xx, a timeout, no connection …: design §23.9 B2, 【Claude 的执行办法】): these columns of the row as it stood when
+# the reading was planned (meta GSIMG_PAGE_KEY<page id> "keep"), put back as they were, no attempt spent
+GSIMG_KEEP_COLS = ("state", "reason", "next_at", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc",
+                   "title", "flags", "fetched_at", "elapsed_ms", "n_links", "n_postbacks", "kind", "page_role",
+                   "page_type", "sniff", "text_chars", "filename", "size_declared", "warc_offset", "warc_len")
 # a resource row's redirect is the same resource (Heritrix's TransclusionDecideRule: an embedded resource's redirect
 # may leave the scope); a page's is a link of that page
 # the missing-page probe's path: PROBE_PREFIX, 12 hex digits, .html (the 10-24 crawler's too: the offline rehearsal
@@ -627,7 +649,6 @@ class Crawler:
         self._last_kind: dict[str, str] = {}
         self._prefer: dict[str, str] = {}
         self._deny_rests: dict[str, int] = {}  # directory -> streaks of refusals answered by a wait this run
-        self._google_blocks = 0  # blocks of the googleapis queue in a row (google_api.ApiError.block), 0 once answered
         self._answered_off: set[str] = set()
         self._dns_timed: dict[str, float] = {}
         self._doors: dict[str, dict[tuple[str, int], float]] = {}  # queue -> (scheme, port) -> its last answer
@@ -641,6 +662,7 @@ class Crawler:
         self._reconciled_now: set[str] = set()
         self._site_look_at = -math.inf  # time.monotonic() of the main loop's last look for finished sites
         self._reconciler: threading.Thread | None = None  # the thread that reconciles finished sites (review 10-26)
+        self._gsimg_lock = threading.RLock()  # a site's Google Sites picture state (design §23 B): one writer at a time
 
     def _new_client(self, warc: WarcSink | None) -> Client:
         return archive_client(warc, resend_gap_s=self.gap[0], clock=self.clock, sleep=self.sleep)
@@ -718,7 +740,8 @@ class Crawler:
     def _enqueue(self, href: str, *, base: str | None = None, from_row: Mapping[str, Any] | None = None,
                  how: str = "link", depth: int = 0, found_via: str = "link", prio: int | None = None,
                  kind0: str | None = None, old_ref: int | None = None, found_from: int | None = None,
-                 placement: round1.Placement | None = None, url: str | None = None) -> Enqueued:
+                 placement: round1.Placement | None = None, url: str | None = None,
+                 referrer: str | None = None) -> Enqueued:
         if placement is None:
             adm = self.admit(href, base, from_row, how)
             if adm is None:
@@ -755,7 +778,7 @@ class Crawler:
                                   tier=placement.tier, kind=kind, depth=depth, found_via=found_via,
                                   found_from=found_from, state=state, reason=reason, next_at=next_at,
                                   owner_site=owner, prio=prio, leaf=placement.leaf, kind0=kind0,
-                                  added_at=self.clock(), old_ref=old_ref)
+                                  added_at=self.clock(), old_ref=old_ref, referrer=referrer)
         row = self.frontier.row(url)
         if not added:
             return Enqueued("scheme_switch" if rewritten else "dup", url, row["id"] if row else None, placement)
@@ -953,10 +976,12 @@ class Crawler:
             log.info("nothing left to fetch")
             return True
         if active:  # presses left active with no worker holding them (a bug's): sent or not, never sent again
-            for list_id in sorted({a["list_id"] for a in active if a["kind"] != "click"}):
+            for list_id in sorted({a["list_id"] for a in active if a["kind"] not in postback.SOLO_KINDS}):
                 self.chains.restart_chain(list_id, "crash:left_active")
             n = self.frontier.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' "
                                 "AND state='active'")
+            # a read of a data address only reads (design §23 C1): read again with a new request
+            self.frontier.x("UPDATE action SET state='pending' WHERE kind='data' AND state='active'")
             self.frontier.event("error", "left_active", f"{len(active)} presses were left active with no worker "
                                 f"holding them (a crawler bug): their lists start again from their GET, {n} file "
                                 "buttons failed as crash:left_active (nknu archive retry click puts them back)")
@@ -1268,7 +1293,8 @@ class Crawler:
     def _press_dead(self, a, reason: str) -> None:
         """A press that came to nothing the chain can go on from, and that no automatic start again would mend (an
         answer too large to keep, a crash): failed; a next page's ends its walk as post_failed (`nknu archive retry
-        post_failed` walks it again once a person looked)."""
+        post_failed` walks it again once a person looked). reason too_large is the result too_large (要人看: a person
+        decides, design §23 A3), never 连接失败; a download that failed otherwise goes back with `retry download`."""
         self.frontier.x("UPDATE action SET state='failed', reason=?, done=? WHERE id=? AND state IN ('active',"
                         "'pending')", (reason, self.clock(), a["id"]))
         if a["kind"] == "pager":
@@ -1285,6 +1311,9 @@ class Crawler:
         list_row = self.frontier.row_by_id(a["list_id"])
         if list_row is None:
             self._press_dead(a, "no_list_row")
+            return
+        if a["kind"] == "data":  # a read of a platform's data address, no button's press (design §23 C1)
+            self._data_press(queue, client, sink, a, list_row)
             return
         target = self.chains.target_for(a)
         if target is None:  # the press cannot be built from its page (mismatch, written by target_for)
@@ -1360,11 +1389,12 @@ class Crawler:
     def _press_file(self, queue: str, client: Client, sink, a, list_row, url: str):
         """The GET a download press's export page named (postback.file_followup; pilot 10-26 F3: SSO's download
         buttons answer with the page again and an iframe at /WebServices/ajaxDownloadFile.aspx, which the session
-        answers with the file once): asked for at once on the list's own queue, after the gap like any request, on
-        the connection that pressed (its cookies), and handed back as the press's answer (chains.file_answered).
-        What goes wrong is the press's: nothing is sent twice (§6.4), the chain starts again from its GET once
-        (chains.failed), a server's refusal to connect pauses the server as any (B2). Returns the Followup, or None
-        when there is nothing more to do."""
+        answers with the file once): the next request on the list's own queue, after the gap like any request (2–5 s,
+        --gap, a longer Crawl-delay), on the connection that pressed (its cookies), and handed back as the press's
+        answer (chains.file_answered: what is no file is not_file, a redirect a failure, design §23 A1, A2). What goes
+        wrong is the press's: the same POST is never sent again as it was (§6.4), the chain starts again from its GET
+        once (chains.failed) and the button is pressed again in that new walk; a server's refusal to connect pauses
+        the server as any (B2). Returns the Followup, or None when there is nothing more to do."""
         host = urlsplit(url).hostname or a["host"]
         try:
             got = self._request(queue, client, Target(url), "postback", scope_reason=self._admitted_as(list_row))
@@ -1401,6 +1431,101 @@ class Crawler:
             return None
         self._answered(host, url, got.status)
         return self.chains.file_answered(a, got, self._warc_path(sink))
+
+    # ---- a platform's data address, read once per site (design §23 C, 【用户同意 Claude 的建议】 10-27; how: 【Claude 的执行办法】)
+    def _data_press(self, queue: str, client: Client, sink, a, list_row) -> None:
+        """The read of a data address (design §23 C1): the POST the page's own script sends (profiles.DataApi: its
+        address, headers and body as written there), on the site's server queue after the gap like any request, a
+        request row (purpose data_api) and the WARC's request (its body too) and response. It only reads, so what
+        goes wrong is read again with a new request, as a url row is (30 min × attempts, three in all; a server's
+        refusal to connect or its Retry-After: no attempt used), never a chain started again; the same POST is no
+        回传 to keep from sending twice. Its answer read (Chains.data_answered): an event's links are the site's home
+        page's (the page that asked it first; _data_links)."""
+        api = profiles.data_api((a["profile"] or "").partition("/")[2])
+        if api is None:
+            self._press_dead(a, "no_data_api")
+            return
+        target = Target(a["target"], "POST", body=(a["argument"] or "").encode("utf-8"), headers=dict(api.headers),
+                        meta={"action": a["id"], "kind": "data", "list_id": a["list_id"]})
+        host = urlsplit(target.url).hostname or a["host"]
+
+        def back() -> None:
+            self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+
+        got = self._request(queue, client, target, "data_api", scope_reason=self._admitted_as(list_row))
+        if isinstance(got, HostCircuitOpen):  # nothing was sent
+            self._cool_host(host)
+            client.reset_host(host)
+            back()
+            return
+        self._count()
+        if isinstance(got, RetryLater):  # the server asked us to wait: no attempt used
+            self._rest_queue(queue, client, host, target.url, got)
+            back()
+            return
+        if isinstance(got, TooLarge):
+            self._press_dead(a, "media_type" if isinstance(got, UnwantedType) else "too_large")
+            return
+        if isinstance(got, FetchError):
+            kind = error_kind(got)
+            if kind == NOT_ARCHIVED:  # the rehearsal: no answer will come (§18.1)
+                self._press_dead(a, kind)
+                return
+            if kind in CONN_KINDS:  # it never reached the server (B2): the server pauses, no attempt used
+                self._conn_failed(queue, client, {"host": host, "id": None}, target.url, got, back=back,
+                                  fail=lambda: self._data_again(a, kind))
+                return
+            self._data_again(a, kind)
+            return
+        self._answered(host, target.url, got.status)
+        warc = self._warc_path(sink)
+        if got.status >= 500 or got.status in postback.FAIL_STATUSES:
+            _ans, cols = postback.Chains._answer(got, warc)
+            self._data_again(a, f"http_{got.status}", **cols)
+            return
+        read = self.chains.data_answered(a, got, warc)
+        if read is not None and read.html:
+            self._data_links(self._site_home(a["site"], list_row), read.html)
+
+    def _data_again(self, a, error: str, **cols) -> None:
+        attempts = (a["attempts"] or 0) + 1
+        delay = RETRY_AFTER_S * attempts + self.rng.uniform(0, RETRY_JITTER_S)
+        self.chains.data_retry(a, error, delay, MAX_ATTEMPTS, **cols)
+
+    def _site_home(self, site: str, fallback):
+        """A site's home page as stored (the site list's home, a web page fetched), else the given row (the page that
+        asked first)."""
+        s = self.plan.site(site) if site else None
+        canon = scope.canonical(s.home) if s is not None and s.home else None
+        home = self.frontier.row(canon) if canon else None
+        return home if home is not None and home["kind"] == "page" and home["state"] == "done" else fallback
+
+    def _data_links(self, page_row, html: str) -> None:
+        """What a data address's events link (profiles.read_data_api wrote them out), as the links and parts of the
+        page that asked it first (the site's home: its page_res and link table, judged by round1.admit as any of its
+        links; design §23 C1, §4.4)."""
+        page = extract(html, page_row["url"])
+        entries, _n = self._parts(page_row, page, page_row["id"])
+        self.frontier.add_page_res(page_row["id"], entries)
+        google_api.resync(self.frontier, page_row["id"])
+
+    def _data_entries(self, row, html: str, warc: str | None, warc_offset: int | None) -> list[dict]:
+        """A round-1 page's data addresses its platform file reads (profiles.data_api_reads, design §23 C1): one
+        page_res entry each, res_key data:<name>:<value>, role data, need must, pointing at the site's one read of it
+        (Chains.data_action: planned by the first page that asks it). A page that asks it with no value to send:
+        unhandled:data_api_value (要人看), nothing sent."""
+        if row["tier"] not in round1.TIER_OF_IMP.values():
+            return []
+        out = []
+        for api, value in profiles.data_api_reads(row["owner_site"] or row["site"], html):
+            key = profiles.data_api_key(api, value)
+            if value is None:
+                out.append({"res_key": key, "how": "unhandled", "role": "data", "need": "must",
+                            "why": "unhandled:data_api_value"})
+                continue
+            aid = self.chains.data_action(row, api, value, warc, warc_offset)
+            out.append({"res_key": key, "how": "data_api", "role": "data", "need": "must", "action_id": aid})
+        return out
 
     def _resource_of(self, target: str, page_row, found_via: str, via, page_ids: list[int],
                      kind0: str | None = None) -> Enqueued:
@@ -1775,6 +1900,19 @@ class Crawler:
             return Robots(h["robots_state"], h["robots_body"] or "")
         if answer.state == "unreachable" and kind in CONN_KINDS:
             return Robots("conn")
+        if answer.state == "unreachable" and kind == "tls_cert":
+            # the certificate failed its check (expired, set up wrong, an intermediate missing: design §23 F5): no
+            # robots.txt can be read on that door, and it says nothing of the host being down. What was known stays,
+            # it is read again in an hour, the host waits for nothing; each URL meets the same check on its own and
+            # ends as tls_cert by the TLS rules (§6.6, §6.10), never as robots_unreachable
+            known = h is not None and h["robots_state"] in ("rules", "none")
+            self.frontier.set_host(host, robots_state=h["robots_state"] if known else "none",
+                                   robots_at=self.clock() - FRESH_S + RETRY_UNREACHABLE_S, robots_fail=0)
+            self.frontier.event("warn", "robots_tls_cert", "robots.txt: the certificate failed its check (tls_cert); "
+                                "read as no new rules, read again in an hour; the URLs go on and fail on their own",
+                                host, url)
+            h = self.frontier.host(host)
+            return Robots(h["robots_state"], h["robots_body"] or "")
         if answer.state == "unreachable" and h is not None and h["robots_state"] in ("rules", "none"):
             # keep the last good copy, try again in an hour
             self.frontier.set_host(host, robots_at=self.clock() - FRESH_S + RETRY_UNREACHABLE_S)
@@ -1944,7 +2082,17 @@ class Crawler:
 
     # ---- one row
     def _process(self, queue: str, client: Client, sink: WarcSink, row) -> None:
+        """One row's request and its answer (_process_row). A page read again only for its pictures' new addresses
+        (§23 B2) that brings no web page keeps the answer it had (_gsimg_reread_end, §23.9 B2)."""
+        keep = self._gsimg_keep(row)
+        self._process_row(queue, client, sink, row)
+        if keep is not None:
+            self._gsimg_reread_end(row["id"], *keep)
+
+    def _process_row(self, queue: str, client: Client, sink: WarcSink, row) -> None:
         kind0 = row["kind0"] or row["kind"]
+        if row["prio"] < 0 and kind0 == "page":  # a page read again for its pictures' new addresses (§23 B2)
+            self._gsimg_prio_back(row)
         # an API row is the Google step's own address (design §7.6): never judged again by scope (a listing's next
         # page carries its token and may pass 1,000 characters, which scope would read as too_long)
         api = google_api.is_api(row["url"])
@@ -1953,6 +2101,8 @@ class Crawler:
             if verdict.reason in _HARD_SKIP and not (kind0 == "script" and verdict.reason == "media"):
                 self.frontier.finish(row["id"], state="skipped", reason=f"out:{verdict.reason}", fetched_at=None)
                 return
+        if row["referrer"] and not self._gsimg_live(row):  # a runtime picture no longer to ask for (§23 B2, B3)
+            return
         if self.disk_free(self.root) < MIN_FREE_BYTES:
             self.frontier.event("error", "disk_low", f"less than {MIN_FREE_BYTES // 1024**3} GB free under "
                                 f"{self.root}: the run stops before the archive cannot be written", row["host"],
@@ -2008,7 +2158,9 @@ class Crawler:
         if kind0 == "image" and self._decor_repeat(row):
             self.frontier.finish(uid, state="skipped", reason="decor:repeat", fetched_at=None)
             return
-        target = google_api.target(self.frontier, url) if api else Target(url)
+        # a Google Sites runtime picture carries the Referer its page's referrer policy gives, and nothing else of a
+        # browser's (design §23 B1); every other request carries none
+        target = google_api.target(self.frontier, url) if api else Target(url, headers=self._referer(row, url))
         got = self._request(queue, client, target, "page", scope_reason=admitted, robots_sha=robots.sha,
                             max_bytes=google_api.max_bytes(url) if api else MAX_BYTES)
         if isinstance(got, HostCircuitOpen):  # nothing was sent
@@ -2044,37 +2196,69 @@ class Crawler:
             return
         if api and got.status >= 400 and self._api_error(queue, row, got, sink):
             return
-        self._answered(host, url, got.status)
+        if not (row["referrer"] and got.status in DENY_STATUSES):  # a runtime picture's 403 is §23 B2's, no streak
+            self._answered(host, url, got.status)
         self._store(queue, row, got, sink)
+        if row["referrer"]:
+            self._gsimg_after(row)
         if api and got.status == 200 and kind0 in ("drive", "drive_list", "calendar"):
             stored = self.frontier.row_by_id(uid)
             if stored is not None and stored["state"] == "done":  # what the answer holds (google_api.read)
                 google_api.read(self.frontier, stored, got, self._google_add)
 
     # ---- Google's APIs (design §7.6)
+    @property
+    def _google_blocks(self) -> int:
+        """Google's blocks in a row (google_api.block_state: kept in frontier.db, across runs; design §23 D2)."""
+        return google_api.block_state(self.frontier)[0]
+
     def _api_error(self, queue: str, row, got: Snapshot, sink) -> bool:
         """A 4xx of Google's API, sorted by its reason (google_api.classify, design §7.6's table): kept as answered
         (api_error, login, too_large: _store, then the columns it says); a quota or rate answer rests the queue and
-        retries the row as any GET; a key problem rests the queue for the run and puts the row back, no attempt used
-        (the next run's hold_for_key lifts the rest). Never a refusal streak of a directory (_answered: ten 403s of
-        quota would pause /drive/v3/files whole). Whether it handled the answer."""
+        retries the row as any GET; one file's downloads used up puts that row alone off a day (§23 D1); a key problem
+        rests the queue for the run and puts the row back, no attempt used (the next run's hold_for_key lifts the
+        rest). Never a refusal streak of a directory (_answered: ten 403s of quota would pause /drive/v3/files whole).
+        Whether it handled the answer."""
         err = google_api.classify(got.status, got.body, got.headers)
         if err is None:
             return False
         now = self.clock()
+        if err.action == "file_quota":
+            # downloadQuotaExceeded: this one file's downloads are used up, not ours (§23 D1, 【Claude 的执行办法】):
+            # the row alone waits a day, an attempt each time, the queue goes on; the third time it is api_quota
+            attempts = row["attempts"] + 1
+            last = attempts >= google_api.MAX_FILE_QUOTA_TRIES
+            if last:
+                self.frontier.finish(row["id"], state="failed", attempts=attempts, reason=err.url_reason)
+            else:
+                self.frontier.finish(row["id"], state="pending", attempts=attempts, reason=err.url_reason,
+                                     next_at=now + (err.pause_s or google_api.FILE_QUOTA_WAIT_S), fetched_at=None)
+            self.frontier.event("warn", "google_file_quota", (
+                f"Google：这个档案的下载次数被用完（第 {attempts} 次）：" + (
+                    "试了 3 次还是这样，记下来要人看" if last else "只有这一个档案 24 小时后再试，其他照常")),
+                row["host"], row["url"])
+            return True
         if err.action == "retry" and err.block:
             # the service's protection (a quota, a rate, Google's "automated queries" page; pilot 10-26 F9): the
             # queue rests, longer each time the block goes on (doubling, at most MAX_PAUSE_S), and the row waits for
-            # the rest with no attempt used: nothing about the row is wrong, and nothing is bypassed (CLAUDE.md)
-            self._google_blocks += 1
-            base = err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S
-            wait = min(base * 2 ** (self._google_blocks - 1), google_api.MAX_PAUSE_S)
+            # the rest with no attempt used: nothing about the row is wrong, and nothing is bypassed (CLAUDE.md). The
+            # streak is kept in frontier.db, so the next run goes on doubling (§23 D2); blocked for long, a person
+            # must look (google_block_long)
+            streak, first = google_api.block_state(self.frontier)
+            streak, first = streak + 1, first if first is not None else now
+            self.frontier.meta(google_api.BLOCK_STREAK_KEY, str(streak))
+            self.frontier.meta(google_api.BLOCK_FIRST_KEY, repr(first))
+            base = err.pause_s if err.pause_s is not None else google_api.BLOCK_PAUSE_S
+            wait = min(base * 2 ** (streak - 1), google_api.MAX_PAUSE_S)
             until = now + wait
             self.frontier.pause(queue, until, f"{row['host']}: {err.url_reason}")
             self.frontier.finish(row["id"], state="pending", reason=err.url_reason, next_at=until, fetched_at=None)
-            self.frontier.event("warn", "google_block", f"Google 回「{err.reason}」（这次 run 第 {self._google_blocks} "
-                                f"次）：googleapis 这条队休息 {wait / 60:.0f} 分钟再试；这一行放回待抓、不算失败；这是 "
+            self.frontier.event("warn", "google_block", f"Google 回「{err.reason}」（连续第 {streak} 次）：Google 暂时挡"
+                                f"下载，googleapis 这条队休息 {wait / 60:.0f} 分钟再试；这一行放回待抓、不算失败；这是 "
                                 "Google 的保护机制，不绕过", row["host"], row["url"])
+            if google_api.block_long(streak, first, now):
+                self.frontier.event("error", "google_block_long", google_api.block_words(streak, first, now) +
+                                    "（不换金钥、不换 IP、不伪装；看过以后决定要不要再等）", row["host"], row["url"])
             return True
         if err.action == "retry":
             self.frontier.pause(queue, now + (err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S),
@@ -2271,6 +2455,340 @@ class Crawler:
                                      (row["owner_site"],))[0][0]
         return links.decor_repeat(row["url"], got[0], site_pages, bool(got[1]))
 
+    # ---- Google Sites' runtime pictures (design §23 B, 【用户同意 Claude 的建议】 10-27; how: 【Claude 的执行办法】)
+    def _referer(self, row, url: str) -> dict[str, str]:
+        """The Referer of a runtime picture's request (or of its hop): what its page's referrer policy gives for this
+        address (links.referrer_for, W3C Referrer Policy); no header for any other row, or when the policy says none."""
+        if not row["referrer"]:
+            return {}
+        try:
+            ref = json.loads(row["referrer"])
+        except (TypeError, ValueError):
+            return {}
+        value = links.referrer_for(str(ref.get("policy") or ""), str(ref.get("from") or ""), url)
+        return {"Referer": value} if value else {}
+
+    def _gsimg_part(self, row, page: links.PageLinks, img: links.Image, key: str, need: str, why: str,
+                    depth: int) -> dict:
+        """A page's runtime picture as its page_res entry (how gsimg, res_key by where it sits). One the ordinary rules
+        leave out is that (need no); one of a site given up is round two's, no row (§23 B3); one this page got
+        already (its row from an earlier reading came to the picture) keeps that row and its new address is never
+        asked for; else its address of this reading is queued first on its queue (PRIO_NOW) with the page's referrer
+        policy, and the address of an earlier reading this one replaces is stale (_gsimg_replaced). The same address
+        again from a reading of the page for new ones, answered already without the picture: round two's."""
+        entry = {"res_key": key, "how": GSIMG_HOW, "role": "img", "zone": img.zone, "text": img.alt}
+        if need != "must":
+            return {**entry, "need": need, "why": why}
+        if self._gsimg_given_up(row["owner_site"] or row["site"]):
+            return {**entry, "need": "round2", "why": links.GOOGLE_SITES_ROUND2}
+        old = self.frontier.q("SELECT res_id FROM page_res WHERE page_id=? AND res_key=?", (row["id"], key))
+        old_id = old[0]["res_id"] if old else None
+        if old_id is not None and self._gsimg_got(old_id):
+            return {**entry, "need": "must", "res_id": old_id}
+        adm = self.admit(img.src, page.base, row, "image")
+        if adm is None:
+            return {**entry, "need": "no", "why": "bad_url"}
+        known = self.frontier.row(adm.url)
+        if known is not None and known["state"] == "later" and known["reason"] == links.GOOGLE_SITES_ROUND2:
+            # an address another page's picture already left for round two (refused, or as old as one that was):
+            # the same for this page, never asked again
+            return {**entry, "need": "round2", "why": links.GOOGLE_SITES_ROUND2}
+        ref = json.dumps({"policy": page.policy, "from": row["url"]}, ensure_ascii=False)
+        e = self._enqueue(img.src, base=page.base, placement=adm.placement, url=adm.url, from_row=row, how="image",
+                          depth=depth, found_via="link", prio=PRIO_NOW, referrer=ref)
+        if e.id is None:  # a rule leaves the address out: as any picture's (_parts' use)
+            pl = e.placement
+            return {**entry, "how": "link_only", "need": "must", "why": (pl.reason if pl is not None else None)}
+        if old_id is not None and old_id != e.id:
+            self._gsimg_replaced(old_id, adm.url)
+        elif old_id == e.id and self._gsimg_refused_end(e.id):
+            # the page read again for new addresses gave this picture the address that was just refused: nothing new
+            # to ask for, round two's (another page that shows the same address shares its row and its outcome)
+            self._gsimg_rows_later(e.id)
+            return {**entry, "need": "round2", "why": links.GOOGLE_SITES_ROUND2}
+        return {**entry, "need": "must", "res_id": e.id}
+
+    def _gsimg_chain(self, res_id: int) -> list:
+        """A runtime picture's rows, its address first, then each 3xx's target (its hop to lh*-rt), as far as known."""
+        out, seen = [], set()
+        cur = self.frontier.row_by_id(res_id)
+        while cur is not None and cur["id"] not in seen and len(out) < outcome.MAX_HOPS:
+            out.append(cur)
+            seen.add(cur["id"])
+            if not (cur["state"] == "done" and cur["status"] in REDIRECTS and cur["final_url"]
+                    and cur["final_url"] != cur["url"]):
+                break
+            cur = self.frontier.row(cur["final_url"])
+        return out
+
+    def _gsimg_landing(self, res_id: int):
+        chain = self._gsimg_chain(res_id)
+        return chain[-1] if chain else None
+
+    def _gsimg_got(self, res_id: int) -> bool:
+        """Whether a runtime picture's rows came to the picture: a 200 that sniffed as an image, where they land."""
+        end = self._gsimg_landing(res_id)
+        return end is not None and end["state"] == "done" and end["status"] == 200 and end["kind"] == "image"
+
+    def _gsimg_replaced(self, old_id: int, new_url: str) -> None:
+        """A picture's rows of an earlier reading of its page, now that a new reading gives it a new address
+        (§23 B2): none is sent any more (pending: skipped), each answer stays as it was (status, WARC), and each that
+        is no redirect points at the new address (reason gsimg_stale, final_url): its result is redirect, the new
+        row's is the picture's, so it is never 连接失败 nor a picture lost."""
+        for r in self._gsimg_chain(old_id):
+            if r["state"] == "active":
+                continue  # in flight on another queue: its answer comes back to _gsimg_after, where it is no one's
+            if r["state"] == "done" and r["status"] in REDIRECTS:
+                continue  # it leads to the next row of the chain, which is marked
+            state = "done" if r["state"] == "done" else "skipped"
+            self.frontier.x("UPDATE url SET state=?, reason=?, final_url=?, next_at=0 WHERE id=?",
+                            (state, GSIMG_STALE, new_url, r["id"]))
+
+    def _gsimg_refused_end(self, res_id: int) -> bool:
+        """Whether a runtime picture's rows came to a refusal (401, 403, 451 where they land)."""
+        end = self._gsimg_landing(res_id)
+        return end is not None and end["state"] == "done" and end["status"] in DENY_STATUSES
+
+    def _gsimg_waits(self, res_id: int | None) -> bool:
+        """Whether a runtime picture is still to be asked for, or was refused: what §23 B2, B3 leave for round two. One
+        that came, failed (a timeout, a 5xx: the URL's failure, 连接失败 as any) or is in flight stays as it is."""
+        if res_id is None:
+            return True
+        end = self._gsimg_landing(res_id)
+        return end is not None and (end["state"] == "pending" or self._gsimg_refused_end(res_id))
+
+    def _gsimg_rows_later(self, res_id: int) -> None:
+        """A picture left for round two (§23 B2, B3): its rows not sent wait there, the one it came to (a 403) too,
+        its answer kept (state later, reason round2:google_sites_image: neither 连接失败 nor a row nobody uses)."""
+        for r in self._gsimg_chain(res_id):
+            if r["state"] == "pending" or (r["state"] == "done" and r["status"] in DENY_STATUSES):
+                self.frontier.x("UPDATE url SET state='later', reason=?, next_at=0 WHERE id=?",
+                                (links.GOOGLE_SITES_ROUND2, r["id"]))
+
+    def _gsimg_round2(self, page_id: int, keys) -> None:
+        """These pictures of a page wait for round two's browser (page_res need round2, why
+        round2:google_sites_image, no row: §23 B3), and their rows with them: those not sent yet, or refused
+        (_gsimg_waits); one that came, failed or is in flight keeps its row and its result."""
+        for key in dict.fromkeys(keys):
+            got = self.frontier.q("SELECT res_id FROM page_res WHERE page_id=? AND res_key=?", (page_id, key))
+            if not got or not self._gsimg_waits(got[0]["res_id"]):
+                continue
+            self.frontier.x("UPDATE page_res SET need='round2', why=?, res_id=NULL WHERE page_id=? AND res_key=?",
+                            (links.GOOGLE_SITES_ROUND2, page_id, key))
+            if got[0]["res_id"] is not None:
+                self._gsimg_rows_later(got[0]["res_id"])
+
+    def _gsimg_entry(self, row) -> tuple[int, str] | None:
+        """The page and the picture (page_res page_id, res_key) whose current address this row is, or whose hop it is;
+        None when no page's picture is this row any more."""
+        cur = row
+        for _ in range(outcome.MAX_HOPS):
+            got = self.frontier.q("SELECT page_id, res_key FROM page_res WHERE res_id=? AND how=? LIMIT 1",
+                                  (cur["id"], GSIMG_HOW))
+            if got:
+                return got[0]["page_id"], got[0]["res_key"]
+            if cur["found_via"] != "redirect" or cur["found_from"] is None:
+                return None
+            cur = self.frontier.row_by_id(cur["found_from"])
+            if cur is None or not cur["referrer"]:
+                return None
+        return None
+
+    def _gsimg_live(self, row) -> bool:
+        """Before a runtime picture's request (§23 B2, B3): whether it is still a page's picture to ask for. A row no
+        page's picture is any more is not sent (stale; round two's again when it had been left there: a retry of
+        round two's rows sends none of them); one of a site given up waits for round two."""
+        entry = self._gsimg_entry(row)
+        if entry is None:
+            if row["reason"] == links.GOOGLE_SITES_ROUND2:
+                self.frontier.x("UPDATE url SET state='later' WHERE id=?", (row["id"],))
+            else:
+                self.frontier.x("UPDATE url SET state='skipped', reason=? WHERE id=?", (GSIMG_STALE, row["id"]))
+            return False
+        if self._gsimg_given_up(row["owner_site"] or ""):
+            self.frontier.x("UPDATE url SET state='pending' WHERE id=?", (row["id"],))  # not sent: round two's
+            with self._gsimg_lock:
+                self._gsimg_round2(entry[0], [entry[1]])
+            return False
+        return True
+
+    def _gsimg_given_up(self, site: str) -> bool:
+        return bool(site) and self.frontier.meta(GSIMG_GIVEUP_KEY + site) is not None
+
+    def _gsimg_state(self, site: str) -> dict:
+        raw = self.frontier.meta(GSIMG_SITE_KEY + site)
+        try:
+            st = json.loads(raw) if raw else {}
+        except ValueError:
+            st = {}
+        return {"ok": bool(st.get("ok")), "reread": bool(st.get("reread")), "tries": list(st.get("tries") or [])}
+
+    def _gsimg_save(self, site: str, st: dict) -> None:
+        self.frontier.meta(GSIMG_SITE_KEY + site, json.dumps(st, ensure_ascii=False))
+
+    def _gsimg_after(self, row) -> None:
+        """A runtime picture's answer (§23 B): a picture marks its site as one whose pictures come; a refusal (403) is
+        an address that expired, or a site whose pictures never come (_gsimg_refused); a 302's hop is queued by
+        _redirect (_follow), with the same Referer, first on its server's queue."""
+        stored = self.frontier.row_by_id(row["id"])
+        if stored is None or stored["state"] != "done":
+            return
+        site = stored["owner_site"] or ""
+        if stored["status"] == 200 and stored["kind"] == "image":
+            with self._gsimg_lock:
+                st = self._gsimg_state(site)
+                if not st["ok"]:
+                    st["ok"] = True
+                    self._gsimg_save(site, st)
+            return
+        if stored["status"] in DENY_STATUSES:
+            self._gsimg_refused(stored)
+
+    def _gsimg_refused(self, row) -> None:
+        """A runtime picture refused (§23 B2, B3; 【Claude 的执行办法】). A site whose pictures come: the page is read
+        again for new addresses (GSIMG_REREADS times at most); after that, this picture and the page's pictures not
+        sent yet (their addresses as old as this one) wait for round two. A site none of whose pictures came yet:
+        its page is read again once, at the first refusal; each refusal after that leaves that picture for round two,
+        and the GSIMG_TRIES-th gives the site up (_gsimg_giveup)."""
+        entry = self._gsimg_entry(row)
+        if entry is None:
+            return
+        page_id, key = entry
+        site = row["owner_site"] or ""
+        with self._gsimg_lock:
+            if self._gsimg_given_up(site):
+                self._gsimg_round2(page_id, [key])
+                return
+            st = self._gsimg_state(site)
+            if st["ok"]:
+                if not self._gsimg_reread(page_id):
+                    self._gsimg_round2(page_id, [key, *self._gsimg_unsent(page_id)])
+                return
+            if not st["reread"] and self._gsimg_reread(page_id):
+                st["reread"] = True
+                self._gsimg_save(site, st)
+                return
+            st["tries"].append([row["url"], row["status"]])
+            self._gsimg_save(site, st)
+            self._gsimg_round2(page_id, [key])
+            if len(st["tries"]) >= GSIMG_TRIES:
+                self._gsimg_giveup(site, st["tries"], row)
+
+    def _gsimg_unsent(self, page_id: int) -> list[str]:
+        """The page's runtime pictures to fetch whose rows are not sent yet."""
+        out = []
+        for r in self.frontier.q("SELECT res_key, res_id FROM page_res WHERE page_id=? AND how=? AND need='must' "
+                                 "AND res_id IS NOT NULL", (page_id, GSIMG_HOW)):
+            end = self._gsimg_landing(r["res_id"])
+            if end is not None and end["state"] == "pending":
+                out.append(r["res_key"])
+        return out
+
+    def _gsimg_reread(self, page_id: int) -> bool:
+        """The page read again for new addresses of its pictures (§23 B2): pending, first on its queue (PRIO_NOW; its
+        own prio kept in meta, back once it is taken). False when it was read again GSIMG_REREADS times already;
+        True when it waits for that already."""
+        page = self.frontier.row_by_id(page_id)
+        if page is None:
+            return False
+        if page["state"] in ("pending", "active"):
+            return True
+        raw = self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}")
+        try:
+            st = json.loads(raw) if raw else {}
+        except ValueError:
+            st = {}
+        n = int(st.get("n") or 0)
+        if n >= GSIMG_REREADS or page["state"] != "done" or page["status"] != 200 or page["kind"] != "page":
+            return False  # only a web page stored well is read again for new addresses (§23.9 B2)
+        prio = st.get("prio", page["prio"]) if page["prio"] >= 0 else st.get("prio", 1)
+        keep = {k: page[k] for k in GSIMG_KEEP_COLS}
+        self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}", json.dumps({"n": n + 1, "prio": prio, "keep": keep},
+                                                                    ensure_ascii=False))
+        self.frontier.x("UPDATE url SET state='pending', reason=?, next_at=0, prio=? WHERE id=? AND state='done'",
+                        (GSIMG_REREAD, PRIO_NOW, page_id))
+        self.frontier.event("info", "gsimg_reread", f"Google Sites pictures answered 403 halfway: the page is read "
+                            f"again for new addresses ({n + 1}/{GSIMG_REREADS})", page["host"], page["url"])
+        return True
+
+    def _gsimg_prio_back(self, row) -> None:
+        """A page taken to be read again for its pictures (§23 B2): its own place in its queue back."""
+        raw = self.frontier.meta(f"{GSIMG_PAGE_KEY}{row['id']}")
+        try:
+            prio = int(json.loads(raw).get("prio", 1)) if raw else 1
+        except (ValueError, TypeError, AttributeError):
+            prio = 1
+        self.frontier.x("UPDATE url SET prio=? WHERE id=? AND prio < 0", (max(prio, 0), row["id"]))
+
+    def _gsimg_page_meta(self, page_id: int) -> dict:
+        raw = self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}")
+        try:
+            st = json.loads(raw) if raw else {}
+        except ValueError:
+            st = {}
+        return st if isinstance(st, dict) else {}
+
+    def _gsimg_keep(self, row) -> tuple[dict, list[dict]] | None:
+        """For a page about to be read again for its pictures' new addresses (§23 B2): its answer as stored when the
+        reading was planned, and its page_res as it stands now (§23.9 B2); None for any other row."""
+        if (row["kind0"] or row["kind"]) != "page":
+            return None
+        keep = self._gsimg_page_meta(row["id"]).get("keep")
+        if not isinstance(keep, dict):
+            return None
+        res = [dict(r) for r in self.frontier.q("SELECT * FROM page_res WHERE page_id=?", (row["id"],))]
+        return keep, res
+
+    def _gsimg_reread_end(self, page_id: int, keep: dict, res: list[dict]) -> None:
+        """A page read again for its pictures' new addresses (§23 B2), after that reading (design §23.9 B2,
+        【Claude 的执行办法】). A web page stored (a 200, read as a page, no sign-in or soft 404): done. Anything else (a 403,
+        a 5xx, a timeout, no connection, a wait that sent nothing, a sign-in page …): that reading only was for new
+        addresses, so the page keeps the answer it had (GSIMG_KEEP_COLS, no attempt spent; its page_res back too when
+        the reading emptied it), it is not read again for its pictures, and those of them not got wait for round two
+        (round2:google_sites_image: the known gaps, the dashboard's 下一轮). What the reading answered stays in the
+        request table and the WARC; a warn event gsimg_reread_failed. A row the rules of today leave out (out:…)
+        keeps that."""
+        st = self._gsimg_page_meta(page_id)
+        st.pop("keep", None)
+        row = self.frontier.row_by_id(page_id)
+        if row is None:
+            return
+        flags = set((row["flags"] or "").split(","))
+        if (row["state"] == "done" and row["status"] == 200 and row["kind"] == "page"
+                and not flags & {"login", "soft404"}):
+            self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}", json.dumps(st, ensure_ascii=False))
+            return
+        if row["state"] == "skipped" and (row["reason"] or "").startswith("out:"):
+            self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}", json.dumps(st, ensure_ascii=False))
+            return
+        got = f"{row['state']} {row['status'] or ''} {row['reason'] or ''}".strip()
+        st["n"] = GSIMG_REREADS  # never read again for its pictures
+        self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}", json.dumps(st, ensure_ascii=False))
+        self.frontier.finish(page_id, **{k: keep[k] for k in GSIMG_KEEP_COLS if k in keep})
+        if res and not self.frontier.q("SELECT 1 FROM page_res WHERE page_id=? LIMIT 1", (page_id,)):
+            self.frontier.set_page_res(page_id, res)  # a sign-in page or a soft 404 emptied it: back as it was
+        self.frontier.event("warn", "gsimg_reread_failed", f"the page read again for its Google Sites pictures' new "
+                            f"addresses brought no web page ({got}): it keeps the answer it had, its pictures not got "
+                            "wait for round two (round2:google_sites_image)"[:1000], row["host"], row["url"])
+        with self._gsimg_lock:
+            keys = [r["res_key"] for r in self.frontier.q("SELECT res_key FROM page_res WHERE page_id=? AND how=? AND "
+                                                           "need='must'", (page_id, GSIMG_HOW))]
+            self._gsimg_round2(page_id, keys)  # those not sent yet or refused (_gsimg_waits)
+
+    def _gsimg_giveup(self, site: str, tries: list, row) -> None:
+        """No runtime picture of this site comes (§23 B3): kept in meta (across runs), a warn event, and every picture
+        of the site not got yet waits for round two's browser, none of them sent."""
+        self.frontier.meta(GSIMG_GIVEUP_KEY + site, json.dumps({"at": self.clock(), "tries": tries},
+                                                               ensure_ascii=False))
+        said = "; ".join(f"{u} {st}" for u, st in tries)
+        self.frontier.event("warn", "gsimg_giveup", f"{site}: the first {len(tries)} Google Sites pictures tried "
+                            f"after the page was read again answered 403 ({said}): its other runtime pictures are "
+                            "not asked for, round2:google_sites_image (the next round's browser)"[:1000],
+                            row["host"], row["url"])
+        for r in self.frontier.q("SELECT pr.page_id, pr.res_key FROM page_res pr JOIN url p ON p.id = pr.page_id "
+                                 "WHERE pr.how=? AND pr.need='must' AND p.owner_site=?", (GSIMG_HOW, site)):
+            self._gsimg_round2(r["page_id"], [r["res_key"]])  # those not sent yet or refused (_gsimg_waits)
+
     def _failed(self, queue: str, row, exc: FetchError | None = None, kind: str | None = None) -> None:
         """A request for this row reached no answer (or an error page): tried again later (30 min × attempts), three
         attempts in all."""
@@ -2294,10 +2812,11 @@ class Crawler:
         h = self.frontier.host(host)
         if h is None:
             return
-        if host == google_api.API_HOST and status < 400 and google_api.is_download(url):
+        if host == google_api.API_HOST and status < 400 and google_api.is_download(url) and self._google_blocks:
             # a download got through: the next block's rest starts from the first again. Metadata and listings answer
             # 200 while downloads are blocked (pilot 10-26), so they say nothing of the block (review of the fixes)
-            self._google_blocks = 0
+            self.frontier.x("DELETE FROM meta WHERE key IN (?, ?)",
+                            (google_api.BLOCK_STREAK_KEY, google_api.BLOCK_FIRST_KEY))
         directory = deny_dir(url)
         if status in DENY_STATUSES and host != google_api.API_HOST:  # an API's 403 is its reason's (_api_error)
             run = self.frontier.deny(directory, host)
@@ -2567,8 +3086,11 @@ class Crawler:
                 # waits for the Google step, both as the page's resource (the resource row stands for the page)
                 return self._enqueue(target, placement=adm.placement, url=adm.url, depth=row["depth"],
                                      found_via=found_via, found_from=row["id"])
+            # a Google Sites runtime picture's hop (lh*-rt): the same picture, its Referer worked out from the same
+            # page and policy, first on its own server's queue (design §23 B1)
             return self._enqueue(target, placement=self._transclude(target, row, kind0), url=target,
-                                 depth=row["depth"], found_via=found_via, found_from=row["id"], kind0=kind0)
+                                 depth=row["depth"], found_via=found_via, found_from=row["id"], kind0=kind0,
+                                 prio=PRIO_HOP if row["referrer"] else None, referrer=row["referrer"])
         if (row["depth"] == 0 and row["found_via"] in _SEED_VIAS and row["owner_site"]
                 and scope.site_key(target) != scope.site_key(row["url"])
                 and not self.plan.adopt(target, row["owner_site"], row["url"])):
@@ -2601,6 +3123,8 @@ class Crawler:
         uid, kind0 = row["id"], row["kind0"] or row["kind"]
         css = profiles.content_css(row["url"])  # the platform file's content area (design §7.2, §7.4)
         page = extract(text, snap.url, css)
+        # its referrer policy: the answer's Referrer-Policy header, then its <meta name="referrer"> (design §23 B1)
+        page.policy = links.referrer_policy(snap.headers.get("referrer-policy"), page.referrer_meta)
         # a GET-walked list's pages its platform file's pager box names (WebIdx: sort=date, review 10-26 phase 3)
         page.pagers.extend(u for u in postback.profile_pagers(row["owner_site"] or row["site"], snap.url, text,
                                                               page.base) if u not in page.pagers)
@@ -2651,6 +3175,7 @@ class Crawler:
         if page.pagers:
             cols["page_role"] = "list"  # a list by its GET paging (design §7.5 generic); its walk is listwalk's
         entries, n = self._parts(row, page, uid, html=text, warc=cols.get("warc"), warc_offset=snap.warc_offset)
+        entries += self._data_entries(row, text, cols.get("warc"), snap.warc_offset)  # design §23 C1
         keys = {e["res_key"] for e in entries}
         self.frontier.set_page_res(uid, entries + [g for g in google if g["res_key"] not in keys])
         google_api.resync(self.frontier, uid)  # a folder or calendar read meanwhile brings what it holds
@@ -2746,6 +3271,15 @@ class Crawler:
                  if (u := self.frontier.row(a["location"])) is not None]
         if files:
             self.frontier.add_page_res(page_id, files)
+        for a in self.frontier.q("SELECT * FROM action WHERE site=? AND kind='data' AND state='done' AND reason "
+                                 "LIKE 'read:events:%' AND warc IS NOT NULL AND warc_offset IS NOT NULL",
+                                 (page["owner_site"] or page["site"],)):
+            if self._site_home(a["site"], self.frontier.row_by_id(a["list_id"]) or page)["id"] != page_id:
+                continue  # its events' links are the site's home page's (design §23 C1)
+            api = profiles.data_api((a["profile"] or "").partition("/")[2])
+            text = self._archived_text(a["warc"], a["warc_offset"]) if api is not None else None
+            if text is not None and (read := profiles.read_data_api(api, text)).html:
+                self._data_links(page, read.html)
         for a in self.frontier.q("SELECT * FROM action WHERE list_id=? AND kind='detail' AND state='done' "
                                  "AND sniff='html' AND warc IS NOT NULL AND warc_offset IS NOT NULL", (page_id,)):
             text = self._archived_text(a["warc"], a["warc_offset"])
@@ -2851,6 +3385,7 @@ class Crawler:
                     zone=zone, text=text)
 
         depth = row["depth"] + 1
+        gsimg = links.google_sites_keys(page, src_id)  # Google Sites' runtime pictures, by where they sit (§23 B2)
         for img in page.images:
             if img.src.startswith("data:"):
                 put(img.src, how="get", role="img", need="no", why="data", zone=img.zone, text=img.alt)
@@ -2859,7 +3394,10 @@ class Crawler:
             if target is None:
                 continue
             need, why = links.image_need(img, url, page.profiled)
-            if need != "must":  # no (with why), or round2 (Google Sites' session-bound pictures: the next round's)
+            if img.src in gsimg:
+                entries.setdefault(gsimg[img.src], self._gsimg_part(row, page, img, gsimg[img.src], need, why, depth))
+                continue
+            if need != "must":  # no, with why
                 put(target, how="get", role="img", need=need, why=why, zone=img.zone, text=img.alt)
                 continue
             e = admit(img.src, "image", depth, img.zone, img.alt)

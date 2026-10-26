@@ -640,12 +640,16 @@ def err(status, reason=None, details=None, status_name=None):
 @pytest.mark.parametrize("status, body, headers, action, url_reason, pause", [
     (404, err(404, "notFound"), {}, "answer", "api:notFound", None),
     (404, b"<html>Not Found</html>", {}, "answer", "api:notFound", None),
-    (403, err(403, "rateLimitExceeded"), {}, "retry", "api:rateLimitExceeded", 900.0),
-    (403, err(403, "userRateLimitExceeded"), {"retry-after": "120"}, "retry", "api:userRateLimitExceeded", 120.0),
-    (403, err(403, "dailyLimitExceeded"), {}, "retry", "api:dailyLimitExceeded", 900.0),
-    (403, err(403, "downloadQuotaExceeded"), {}, "retry", "api:downloadQuotaExceeded", 900.0),
+    # a block rests an hour at least, a longer Retry-After as it asks; one file's downloads used up is that row's alone
+    # (design §23 D1: they were 15 min, and downloadQuotaExceeded a block of the whole queue)
+    (403, err(403, "rateLimitExceeded"), {}, "retry", "api:rateLimitExceeded", g.BLOCK_PAUSE_S),
+    (403, err(403, "userRateLimitExceeded"), {"retry-after": "120"}, "retry", "api:userRateLimitExceeded",
+     g.BLOCK_PAUSE_S),
+    (403, err(403, "userRateLimitExceeded"), {"retry-after": "7200"}, "retry", "api:userRateLimitExceeded", 7200.0),
+    (403, err(403, "dailyLimitExceeded"), {}, "retry", "api:dailyLimitExceeded", g.BLOCK_PAUSE_S),
+    (403, err(403, "downloadQuotaExceeded"), {}, "file_quota", "api:downloadQuotaExceeded", g.FILE_QUOTA_WAIT_S),
     (429, err(429, details="RATE_LIMIT_EXCEEDED", status_name="RESOURCE_EXHAUSTED"), {}, "retry",
-     "api:RATE_LIMIT_EXCEEDED", 900.0),
+     "api:RATE_LIMIT_EXCEEDED", g.BLOCK_PAUSE_S),
     (403, err(403, "insufficientFilePermissions"), {}, "login", "api:insufficientFilePermissions", None),
     (403, err(403, "forbidden"), {}, "login", "api:forbidden", None),
     (403, err(403, "exportSizeLimitExceeded"), {}, "too_large", "too_large", None),

@@ -14,6 +14,11 @@ anything, and no script is run (jsread reads them as text).
 - images: every way a page writes an image (src, the lazy loaders' attributes, the largest srcset entry,
   <picture><source>, background images, an <a> straight to an image file) with its alt text, size and zone;
   image_need() says whether the round downloads it and, when not, why (each one has its reason, design §7.2).
+  Google Sites' own body pictures (sites.google.com/sitesv-images-rt/…) are fetched as soon as their page is stored,
+  with the Referer the page's referrer policy gives (design §23 B: fetching them in round 1 【用户同意 Claude 的建议】
+  10-27, the owner's 「可以，听你的」 to Claude's proposal; how 【Claude 的执行办法】): google_sites_keys() names each by
+  where it sits on the page (res_key gsimg:<page>/<n>/<element id>), since its address changes with every reading of
+  the page; referrer_policy() and referrer_for() work out that Referer as a browser would (W3C Referrer Policy).
 - buttons: ASP.NET postbacks (__doPostBack, WebForm_PostBackOptions) in hrefs, event handlers and inline scripts, with
   target, argument, text, form and trigger: recorded, never sent here (postback.py presses the allowed ones).
 - clicks: elements whose click handler (an attribute, Vue's or Alpine's @click, or a handler an inline script binds)
@@ -75,7 +80,7 @@ _ZONE_RANK = {"chrome": 0, "unknown": 1, "body": 2}
 _LAZY = ("data-src", "data-original", "data-lazy-src")
 _BLANK_SRC = ("about:", "javascript:")  # a lazy loader's placeholder: the real address is in one of _LAZY
 _HIDDEN_STYLE = re.compile(r"(?i)(?:^|[;\s])(?:display\s*:\s*none|visibility\s*:\s*hidden)")
-_DATA_SRC_MAX = 60  # a data: image is listed by its first characters only
+DATA_SRC_MAX = 60  # a data: image is listed by its first characters only (reconcile reads its size by them, §23 E3)
 # design §8.3: a page of fewer words than this that sends the browser on is a redirect; a script redirect is read only
 # on such a page (a long page's scripts write redirects for its menus)
 JS_REDIRECT_MAX_CHARS = 150
@@ -106,12 +111,26 @@ MIN_SIZE = 80  # a width or height under this is an icon or a tracking pixel
 # never count. Kept 【Claude 的执行办法, 10-26】: a skipped picture is never fetched, so a lower share risks content for
 # a few requests saved (each picture is fetched once however many pages use it)
 REPEAT_PAGES, REPEAT_SHARE = 5, 0.3
-IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:repeat", "round2:google_sites_image")
-# Google Sites serves a page's own pictures through its runtime picture service, at an address bound to the browser's
-# session (pilot 10-26, F8: 106 pictures of the counselling centre's home answered 403 from the first request, a
-# plain "Your client does not have permission"); a plain GET never gets them, and the round bypasses no protection
-# (CLAUDE.md). They are the next round's, where a browser's own loading of the page brings them 【Claude 的执行办法】
-_GOOGLE_SITES_RUNTIME_IMAGE = re.compile(r"(?i)^https://sites\.google\.com/sitesv-images-rt/")
+# round2:google_sites_image is the crawler's (design §23 B3): a Google Site whose first two pictures tried after its
+# page was read again both answered 403, so that the rest of its runtime pictures wait for the next round's browser
+GOOGLE_SITES_ROUND2 = "round2:google_sites_image"
+IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:repeat", GOOGLE_SITES_ROUND2)
+# Google Sites serves a page's own pictures through its runtime picture service (sitesv-images-rt), at addresses that
+# change with each reading of the page and last about 30 s (review of 830c1b7, 10-27: the pilot asked 80 s after the
+# page and got 403; a browser asking at once, with the Referer the page's <meta name="referrer"> gives, gets a 302 to
+# lh*-rt.googleusercontent.com and the picture). Round 1 fetches them right after their page (design §23 B,
+# 【用户同意 Claude 的建议】 10-27: 「可以，听你的」; how 【Claude 的执行办法】), by the ordinary rules of a picture (image_need)
+GOOGLE_SITES_IMAGE = re.compile(r"(?i)^https://sites\.google\.com/sitesv-images-rt/")
+GSIMG = "gsimg:"  # page_res.res_key and how of such a picture: gsimg:<page id>/<n>/<element id> (google_sites_keys)
+# the W3C Referrer Policy's tokens (§11: a browser ignores any other), the legacy keywords the HTML standard still maps
+# for <meta name="referrer">, and the default a browser uses when a page says nothing (Fetch: the request's policy is
+# the document's, and the document's is strict-origin-when-cross-origin when neither its header nor a meta sets one)
+REFERRER_POLICIES = ("no-referrer", "no-referrer-when-downgrade", "same-origin", "origin", "strict-origin",
+                     "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url")
+_LEGACY_REFERRER = {"never": "no-referrer", "default": "strict-origin-when-cross-origin", "always": "unsafe-url",
+                    "origin-when-crossorigin": "origin-when-cross-origin"}
+DEFAULT_REFERRER_POLICY = "strict-origin-when-cross-origin"
+_REFERRER_MAX = 4096  # Referrer Policy §8.3 step 6: a longer referrer URL is sent as its origin
 
 # GET paging (design §9): one parameter of these names changes, or WordPress's /page/N/; the link reads as a number
 # or "next". c.nknu's pn is a page's number, not paging.
@@ -128,6 +147,10 @@ class Image:
     alt: str = ""
     width: int | None = None
     height: int | None = None
+    # a Google Sites runtime picture only (GOOGLE_SITES_IMAGE): the id of the element that writes it, or of the
+    # nearest one above it with an id (Google Sites gives each content block one, h.<hex>_<n>): where it sits on the
+    # page, which stays when its address changes (google_sites_keys)
+    node_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -285,6 +308,10 @@ class PageLinks:
     login_form: bool = False
     title: str = ""
     profiled: bool = False  # zones come from a platform profile's content area
+    # the page's referrer policy (REFERRER_POLICIES): its <meta name="referrer"> when it writes a valid one, else the
+    # default; the crawler sets it again with the answer's Referrer-Policy header (referrer_policy)
+    referrer_meta: str = ""
+    policy: str = DEFAULT_REFERRER_POLICY
 
     @property
     def postbacks(self) -> list[str]:
@@ -353,6 +380,15 @@ def _merge(old: Image, new: Image) -> Image:
                    width=_largest(old.width, new.width), height=_largest(old.height, new.height))
 
 
+def _id_above(node: LexborNode | None) -> str:
+    """The element's own id, or that of the nearest element above it that has one; '' when none has."""
+    while node is not None:
+        if node_id := (node.attributes.get("id") or "").strip():
+            return node_id
+        node = node.parent
+    return ""
+
+
 def _form_id(node: LexborNode | None) -> str:
     while node is not None:
         if node.tag == "form":
@@ -403,10 +439,11 @@ class _Collect:
         if not src:
             return
         if src.startswith("data:"):
-            src = src[:_DATA_SRC_MAX]
+            src = src[:DATA_SRC_MAX]
         a = node.attributes
         new = Image(src, how, self.zones.of(node), (alt or a.get("alt") or a.get("title") or "").strip()[:100],
-                    _size(node, "width"), _size(node, "height"))
+                    _size(node, "width"), _size(node, "height"),
+                    _id_above(node) if GOOGLE_SITES_IMAGE.match(src) else "")
         old = self.images.get(src)
         self.images[src] = new if old is None else _merge(old, new)
         self.video(src, new.alt, "image", new.zone)  # a YouTube thumbnail stands for its video (second look F7)
@@ -481,6 +518,10 @@ def extract(html: str, url: str, content_css: str | None = None, _depth: int = 0
     title = tree.css_first("title")
     out.title = title.text(strip=True)[:200] if title else ""
     out.login_form = tree.css_first("input[type=password]") is not None
+    for node in tree.css("meta[name]"):  # the last valid one wins, as each is applied in turn (HTML §4.2.5.4)
+        if (node.attributes.get("name") or "").strip().lower() == "referrer":
+            out.referrer_meta = meta_referrer(node.attributes.get("content")) or out.referrer_meta
+    out.policy = referrer_policy(None, out.referrer_meta)
     got = _Collect(out, zones)
     page = scope.canonical(url) or url
     inline = [node.text() or "" for node in tree.css("script") if not node.attributes.get("src")
@@ -869,7 +910,9 @@ def _data_code(tree: LexborHTMLParser, got: _Collect, url: str, depth: int) -> i
         got.out.frames += [replace(f, zone=zone) for f in sub.frames]
         for img in sub.images:
             old = got.images.get(img.src)
-            img = replace(img, zone=zone)
+            # a runtime picture with no id above it inside the block sits where the block does
+            img = replace(img, zone=zone,
+                          node_id=img.node_id or (_id_above(node) if GOOGLE_SITES_IMAGE.match(img.src) else ""))
             got.images[img.src] = img if old is None else _merge(old, img)
         got.out.buttons += sub.buttons
         for u in sub.unhandled:
@@ -1051,17 +1094,15 @@ def album_page(url: str) -> bool:
 
 
 def image_need(img: Image, page_url: str, profiled: bool = False) -> tuple[str, str]:
-    """("must", ""), ("no", why) or ("round2", why), every why in IMAGE_WHY: a captcha's picture (scope.CAPTCHA: never
-    fetched, and never content, so never a picture the page lacks; 【Claude 的执行办法】, review 10-26), a data: image,
-    a size under 80, an album page, a decoration file name outside the body, a layout area on a site without a
-    profile; Google Sites' session-bound pictures are the next round's (a page_res row with need round2, no url row).
-    decor:repeat is the crawler's, once it has seen the site's pages (decor_repeat)."""
+    """("must", "") or ("no", why), every why in IMAGE_WHY: a captcha's picture (scope.CAPTCHA: never fetched, and never
+    content, so never a picture the page lacks; 【Claude 的执行办法】, review 10-26), a data: image, a size under 80, an
+    album page, a decoration file name outside the body, a layout area on a site without a profile. A Google Sites
+    runtime picture is judged by the same rules (design §23 B1: a body picture is fetched this round, right after its
+    page); decor:repeat and round2:google_sites_image are the crawler's (decor_repeat; §23 B3)."""
     if scope.CAPTCHA.search(unquote(img.src.split("?", 1)[0])):
         return "no", "captcha"
     if img.src.startswith("data:"):
         return "no", "data"
-    if _GOOGLE_SITES_RUNTIME_IMAGE.match(img.src):
-        return "round2", "round2:google_sites_image"
     if any(x is not None and x < MIN_SIZE for x in (img.width, img.height)):
         return "no", "tiny"
     if album_page(page_url):
@@ -1073,6 +1114,113 @@ def image_need(img: Image, page_url: str, profiled: bool = False) -> tuple[str, 
         if not profiled:
             return "no", "chrome"
     return "must", ""
+
+
+def is_google_sites_image(url: str | None) -> bool:
+    """A Google Sites runtime picture's address (sites.google.com/sitesv-images-rt/…, design §23 B)."""
+    return bool(url) and GOOGLE_SITES_IMAGE.match(url) is not None
+
+
+def google_sites_keys(page: PageLinks, page_id: int) -> dict[str, str]:
+    """Each Google Sites runtime picture of a page read (design §23 B2, 【Claude 的执行办法】), by its address as
+    written: its res_key gsimg:<page_id>/<n>/<element id>, n its place among the page's runtime pictures (each address
+    once, in the order the page's pictures are read: <img> and <picture> in document order, then backgrounds), the
+    element id Image.node_id. Its address changes with every reading of the page; where it sits does not, so the same
+    picture of the page read again has the same key (and a page_res row is never added for it twice)."""
+    out: dict[str, str] = {}
+    for img in page.images:
+        if img.src in out or not GOOGLE_SITES_IMAGE.match(img.src):
+            continue
+        out[img.src] = f"{GSIMG}{page_id}/{len(out) + 1}/{img.node_id}"
+    return out
+
+
+# ---------------------------------------------------------------- the Referer a browser sends (W3C Referrer Policy)
+
+
+def meta_referrer(content: str | None) -> str:
+    """A <meta name="referrer"> content as the HTML standard reads it: lowercased, a legacy keyword mapped (never,
+    default, always, origin-when-crossorigin), then a policy token; '' for anything else (it is ignored)."""
+    value = (content or "").strip().lower()
+    value = _LEGACY_REFERRER.get(value, value)
+    return value if value in REFERRER_POLICIES else ""
+
+
+def header_referrer(value: str | None) -> str:
+    """A Referrer-Policy header's policy (W3C Referrer Policy §8.1): the last token of its comma-separated list that is
+    a policy; '' when none is."""
+    out = ""
+    for token in (value or "").split(","):
+        token = token.strip().lower()
+        if token in REFERRER_POLICIES:
+            out = token
+    return out
+
+
+def referrer_policy(header: str | None, meta: str | None) -> str:
+    """A page's referrer policy: its Referrer-Policy header's, then its <meta name="referrer">'s, which comes later and
+    wins when it is valid (HTML: it updates the document's policy); the browser's default when neither says one."""
+    return meta_referrer(meta) or header_referrer(header) or DEFAULT_REFERRER_POLICY
+
+
+def _origin(parts) -> tuple[str, str, int]:
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme, 0)
+    return parts.scheme, (parts.hostname or "").lower(), port
+
+
+def _trustworthy(parts) -> bool:
+    """A potentially trustworthy URL (Secure Contexts §3.1), as far as the crawler ever sends one: https, or the
+    loopback."""
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" or host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
+def _stripped(parts, origin_only: bool) -> str:
+    """Referrer Policy §8.4 strip url for use as referrer: no user, password or fragment; origin only: no path or
+    query either, written as the origin and a slash."""
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host + (f":{parts.port}" if parts.port is not None else "")
+    if origin_only:
+        return f"{parts.scheme}://{netloc}/"
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme}://{netloc}{parts.path or '/'}{query}"
+
+
+def referrer_for(policy: str, page_url: str, target: str) -> str | None:
+    """The Referer a browser sends with a request from page_url for target under policy (W3C Referrer Policy §8.3
+    determine request's referrer); None: no Referer. An unknown policy is the default (a browser ignores it)."""
+    try:
+        src, dst = urlsplit(page_url), urlsplit(target)
+    except ValueError:
+        return None
+    if src.scheme not in ("http", "https"):
+        return None
+    policy = policy if policy in REFERRER_POLICIES else DEFAULT_REFERRER_POLICY
+    full, origin = _stripped(src, False), _stripped(src, True)
+    if len(full) > _REFERRER_MAX:
+        full = origin
+    same = _origin(src) == _origin(dst)
+    downgrade = _trustworthy(src) and not _trustworthy(dst)
+    if policy == "no-referrer":
+        return None
+    if policy == "origin":
+        return origin
+    if policy == "unsafe-url":
+        return full
+    if policy == "strict-origin":
+        return None if downgrade else origin
+    if policy == "same-origin":
+        return full if same else None
+    if policy == "origin-when-cross-origin":
+        return full if same else origin
+    if policy == "no-referrer-when-downgrade":
+        return None if downgrade else full
+    # strict-origin-when-cross-origin
+    if same:
+        return full
+    return None if downgrade else origin
 
 
 def never_template(url: str) -> bool:

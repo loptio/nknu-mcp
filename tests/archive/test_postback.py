@@ -679,12 +679,18 @@ def test_max_pages(world, monkeypatch):
 
 
 def test_redirect_and_file_answers(world):
+    """A detail's press answered with a redirect brought no detail: since 10-27 (design §23.9 A2, second review of
+    830c1b7) it is a failed press, the chain walks again from its GET once and the Location is never queued (it used
+    to be followed as the list page's resource, result redirect). A download answered with the file itself is ok."""
     world.stored(CLV2 + "&page=5", "sso.nknu.edu.tw/site/105000", fx("clv2_index.html"))
     a, target = world.press()
     out = world.answer(a, target.url, b"", status=302,
                        headers={"location": "/webservices/download.aspx?f=1", "content-type": "text/html"})
-    assert out.location == "https://sso.nknu.edu.tw/webservices/download.aspx?f=1"
-    assert world.f.q("SELECT result FROM action_result WHERE id=?", (a["id"],))[0][0] == "redirect"
+    assert out.location is None and out.restart
+    assert world.f.q("SELECT state, reason, location FROM action WHERE id=?", (a["id"],))[0][:] == (
+        "failed", "press_redirect", "https://sso.nknu.edu.tw/webservices/download.aspx?f=1")
+    assert world.f.q("SELECT result FROM action_result WHERE id=?", (a["id"],))[0][0] == "failed"
+    world.stored(CLV2 + "&page=5", "sso.nknu.edu.tw/site/105000", fx("clv2_index.html"))  # its GET again
     world.f.x("UPDATE action SET kind='download' WHERE state='pending'")
     b, target = world.press()
     world.answer(b, target.url, b"%PDF-1.4 test", headers={"content-type": "application/octet-stream",

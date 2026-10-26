@@ -51,7 +51,11 @@ CREATE TABLE IF NOT EXISTS url(
   -- rejudge (§18.2a)
   owner_site TEXT, prio INTEGER NOT NULL DEFAULT 1, leaf INTEGER NOT NULL DEFAULT 0, kind0 TEXT, page_role TEXT,
   page_type TEXT, sniff TEXT, text_chars INTEGER, filename TEXT, size_declared INTEGER,
-  warc_offset INTEGER, warc_len INTEGER, added_at REAL, old_ref INTEGER);
+  warc_offset INTEGER, warc_len INTEGER, added_at REAL, old_ref INTEGER,
+  -- design §23 B1: a Google Sites runtime picture (and the hop its 302 leads to): the referrer policy of the page that
+  -- shows it and that page's address, as JSON {"policy", "from"}, from which the Referer of its request is worked out
+  -- (links.referrer_for); NULL for every other row, whose requests carry no Referer
+  referrer TEXT);
 CREATE TABLE IF NOT EXISTS link(src INTEGER NOT NULL, dst TEXT NOT NULL, text TEXT, verdict TEXT NOT NULL,
   PRIMARY KEY(src, dst)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS offsite(domain TEXT PRIMARY KEY, n INTEGER NOT NULL, first_src INTEGER, sample TEXT);
@@ -116,13 +120,18 @@ CREATE TABLE IF NOT EXISTS page_res(page_id INTEGER NOT NULL, res_key TEXT NOT N
   PRIMARY KEY(page_id, res_key)) WITHOUT ROWID;
 -- one press of an ASP.NET button (§7.5), built from the form state of the list page archived at form_src_*; the
 -- pager's row_key is 'p<step>'. kind: pager/detail/download, or click (a button pressed by its platform rule that posts
--- for a file's address, §7.4: list_id is the page; one press per site and row_key, action_click)
+-- for a file's address, §7.4: list_id is the page; one press per site and row_key, action_click), or data (a platform's
+-- data address its pages ask by script, read once per site, §23 C1: list_id is the first page that asked it, target
+-- the address, argument the request's body, row_key <data api>:<value>; action_data)
 CREATE TABLE IF NOT EXISTS action(id INTEGER PRIMARY KEY, list_id INTEGER NOT NULL, epoch INTEGER NOT NULL,
   step INTEGER NOT NULL, kind TEXT NOT NULL, queue TEXT NOT NULL, host TEXT NOT NULL, site TEXT NOT NULL,
   profile TEXT NOT NULL, form_src_warc TEXT NOT NULL, form_src_offset INTEGER NOT NULL, form_id TEXT,
   target TEXT NOT NULL, argument TEXT NOT NULL DEFAULT '', row_key TEXT NOT NULL, row_text TEXT,
   state TEXT NOT NULL DEFAULT 'pending', reason TEXT, status INTEGER, ctype TEXT, bytes INTEGER, sha256 TEXT,
   sniff TEXT, filename TEXT, location TEXT, warc TEXT, warc_offset INTEGER, warc_len INTEGER, created REAL, done REAL,
+  -- a read of a platform's data address (kind data, design §23 C1): read again after a failure as a url row is (30 min
+  -- × attempts, three in all), never before next_at; 0 for every press of a chain
+  next_at REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
   UNIQUE(list_id, epoch, kind, row_key));
 -- the evidence that a list was walked to its last page (§7.5 step 7): claimed is the 「共 N 筆」 the page states
 CREATE TABLE IF NOT EXISTS listwalk(list_id INTEGER PRIMARY KEY, site TEXT, profile TEXT, epoch INTEGER,
@@ -186,6 +195,7 @@ CREATE INDEX IF NOT EXISTS page_res_res ON page_res(res_id);
 CREATE INDEX IF NOT EXISTS page_res_action ON page_res(action_id);
 CREATE INDEX IF NOT EXISTS action_list ON action(list_id, state);
 CREATE UNIQUE INDEX IF NOT EXISTS action_click ON action(site, row_key) WHERE kind = 'click';
+CREATE UNIQUE INDEX IF NOT EXISTS action_data ON action(site, row_key) WHERE kind = 'data';
 CREATE INDEX IF NOT EXISTS request_started ON request(started);
 CREATE INDEX IF NOT EXISTS url_sha ON url(sha256);
 -- a Drive item by its id and a folder's items (google_api._item, expand, resync, resource_keys): without these each
@@ -354,16 +364,17 @@ class Frontier:
             found_via: str, found_from: int | None, state: str = "pending", reason: str | None = None,
             next_at: float = 0.0, directory: bool = False, owner_site: str | None = None, prio: int = 1,
             leaf: int = 0, kind0: str | None = None, added_at: float | None = None,
-            old_ref: int | None = None) -> bool:
+            old_ref: int | None = None, referrer: str | None = None) -> bool:
         """A new URL; False when it is already known (the first discovery keeps its tier, owner and depth).
-        owner_site, prio, leaf, kind0: round 1's (design §4.3, §6.7, §4.4, §12); old_ref: its id in the old archive."""
+        owner_site, prio, leaf, kind0: round 1's (design §4.3, §6.7, §4.4, §12); old_ref: its id in the old archive;
+        referrer: a Google Sites runtime picture's (design §23 B1, the column's comment)."""
         with self.lock:
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO url(url, path, host, site, unit, tier, kind, depth, found_via, found_from, state, "
-                "reason, next_at, directory, owner_site, prio, leaf, kind0, added_at, old_ref) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "reason, next_at, directory, owner_site, prio, leaf, kind0, added_at, old_ref, referrer) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (url, url.split("?", 1)[0], host, site, unit, tier, kind, depth, found_via, found_from, state, reason,
-                 next_at, int(directory), owner_site, prio, leaf, kind0, added_at, old_ref))
+                 next_at, int(directory), owner_site, prio, leaf, kind0, added_at, old_ref, referrer))
             return cur.rowcount == 1
 
     def row(self, url: str) -> sqlite3.Row | None:
@@ -399,8 +410,11 @@ class Frontier:
         """The next URL of one queue (its hosts), skipping hosts in cool-down or still within their Crawl-delay
         (design §6.7): important sites first (tier), then lists, seeds and sitemaps before pages before files before
         images (prio), the host the queue's connection is on now before another name of that server (prefer_host:
-        its connection is warm), shallower first, then in discovery order. sites: only rows that count for these
-        sites (a run given --sites). The row is marked active. (Queue pauses are the caller's check.)"""
+        its connection is warm), shallower first, then in discovery order. A row whose prio is below 0 goes before
+        all of them, the lowest first (design §23 B1: a Google Sites page's runtime pictures right after the page,
+        the hop a picture's 302 leads to before the next picture, the page read again for new addresses). sites: only
+        rows that count for these sites (a run given --sites). The row is marked active. (Queue pauses are the
+        caller's check.)"""
         if not hosts:
             return None
         marks = ",".join("?" * len(hosts))
@@ -413,7 +427,7 @@ class Frontier:
                 f"""SELECT u.* FROM url u JOIN host h ON h.host = u.host
                      WHERE u.host IN ({marks}) AND u.state = 'pending' AND u.next_at <= ? AND h.cooldown_until <= ?
                        AND h.not_before <= ?{only}
-                     ORDER BY u.tier, u.prio, u.host = ? DESC, u.depth, u.id LIMIT 1""",
+                     ORDER BY min(u.prio, 0), u.tier, u.prio, u.host = ? DESC, u.depth, u.id LIMIT 1""",
                 (*args, prefer_host or "")).fetchone()
             if row is not None:
                 self.conn.execute("UPDATE url SET state='active' WHERE id=?", (row["id"],))

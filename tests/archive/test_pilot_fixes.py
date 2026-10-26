@@ -1,8 +1,8 @@
 """What the 10-26 pilot on four sites found (research/pilot_findings_2026-10-26.md), each as a test written before its
 fix: SSO's download buttons answer with an export page whose iframe names the file (F3); Google's "automated queries"
 page on Drive downloads is a block to rest from, never a final api_error (F9); every host gets the TWCA-bundled
-certificate check (F1); a Drive preview picture is the Drive file (F2); Google Sites' session-bound body pictures are
-the next round's (F8); a directory that keeps refusing is parked, not drained for hours; the browser check's refused
+certificate check (F1); a Drive preview picture is the Drive file (F2); Google Sites' runtime body pictures (F8, since
+10-27 fetched right after their page: design §23 B); a directory that keeps refusing is parked, not drained for hours; the browser check's refused
 data POSTs are a sign of a data address (cLv2's timeline), not no conclusion. All offline: fake networks, fake clocks,
 made-up titles and ids, no person's name."""
 
@@ -11,8 +11,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import httpx
+import pytest
+
 from nknu.archive import postback
 from nknu.archive.crawler import Crawler
+from nknu.crawl.fetch import FetchError, RetryLater
 from nknu.crawl.warc import WarcSink
 from tests.archive.plans import OpenPlan
 from tests.archive.test_archive import Clock, Net, seed, snap
@@ -109,21 +113,41 @@ def test_the_file_an_export_page_names_is_fetched_at_once_on_the_same_queue(tmp_
     assert sent  # the chain pressed something
 
 
-def test_a_file_get_that_fails_starts_the_chain_again_from_its_get_once(tmp_path):
+def _busy(export):
+    return snap(export, 503, html="busy")
+
+
+def _too_many(export):
+    raise RetryLater(f"{export}: HTTP 429", 600.0)
+
+
+def _timed_out(export):
+    exc = FetchError(f"{export}: timed out")
+    exc.__cause__ = httpx.ReadTimeout("timed out")
+    raise exc
+
+
+@pytest.mark.parametrize("answer, reason", [(_busy, "http_503"), (_too_many, "retry_after"), (_timed_out, "timeout")])
+def test_a_file_get_that_fails_starts_the_chain_again_from_its_get_once(tmp_path, answer, reason):
+    """Design §23 F6 (with A4 ④): a 5xx, a Retry-After and a timeout of the WebIdx export GET each start the chain
+    again from its GET exactly once; the second failure is the button's (failed), never a third walk."""
     export = postback.file_followup(fx("sso_download_export.html"), MORE)
-    crawler, net, _clock = make(tmp_path, {
+    crawler, net, clock = make(tmp_path, {
         ("GET", "/robots.txt"): snap("x", 404),
         ("GET", MORE): snap(MORE, html=fx("webidx_morenews.html")),
         ("POST", "webidx=3"): _sso_press,
-        ("GET", export): snap(export, 503, html="busy"),
+        ("GET", export): lambda t: answer(export),
     }, queues={"sso.nknu.edu.tw": SSO_Q})
     seed(crawler, MORE)
-    work(crawler, net, SSO_Q, rounds=12)
     f = crawler.frontier
-    states = [(r["epoch"], r["state"], r["reason"]) for r in f.q("SELECT epoch, state, reason FROM action WHERE "
-                                                                 "kind='download' ORDER BY id")]
-    assert states[0][1] == "failed" and states[0][2].startswith("http_503")
-    assert f.q("SELECT count(*) FROM event WHERE code='chain_restart'")[0][0] >= 1
+    for _ in range(6):  # the rests (a busy server, a Retry-After) end, the chain walks again, fails again
+        work(crawler, net, SSO_Q, rounds=40)
+        clock.t += 3 * 3600
+    assert f.q("SELECT count(*) FROM event WHERE code='chain_restart'")[0][0] == 1
+    live = f.q("SELECT state, reason FROM action WHERE kind='download' AND state <> 'superseded' ORDER BY id")
+    assert live and all(r["state"] == "failed" and r["reason"].startswith(reason) for r in live), \
+        [tuple(r) for r in live]
+    assert len([m for m, u in net.seen if m == "GET" and u == export]) == 2  # once per walk
 
 
 # ---------------------------------------------------------------- F9: Google's block page on Drive downloads
@@ -235,33 +259,63 @@ def test_a_page_whose_picture_is_a_drive_preview_counts_the_drive_file(tmp_path,
     assert f"drive:{FID}" in entries and entries[f"drive:{FID}"]["need"] == "must"
 
 
-# ---------------------------------------------------------------- F8: Google Sites' session-bound body pictures
+# ---------------------------------------------------------------- F8: Google Sites' runtime body pictures
+# F8 left them all for round two (830c1b7); design §23 B replaced it (10-27, 【用户同意 Claude 的建议】): they are
+# fetched right after their page with the page's Referer (tests/archive/test_gsites_images_1027.py holds the rest)
 
 
-def test_google_sites_runtime_pictures_are_the_next_rounds():
+def test_google_sites_runtime_pictures_are_body_pictures_since_10_27():
     img = links.Image("https://sites.google.com/sitesv-images-rt/AMxu72uc32nFHxEN3BPfa=w1280", "src", "body", "首頁")
-    assert links.image_need(img, "https://sites.google.com/mail.nknu.edu.tw/counseling-center") == \
-        ("round2", "round2:google_sites_image")
+    assert links.image_need(img, "https://sites.google.com/mail.nknu.edu.tw/counseling-center") == ("must", "")
     plain = links.Image("https://sites.google.com/mail.nknu.edu.tw/counseling-center/a.png", "src", "body")
     assert links.image_need(plain, "https://sites.google.com/mail.nknu.edu.tw/counseling-center") == ("must", "")
 
 
-def test_a_page_with_a_runtime_picture_is_partial_not_failed_and_asks_google_for_nothing(tmp_path):
-    pic = "https://sites.google.com/sitesv-images-rt/AMxu72uc32nFHxEN3BPfa=w1280"
+RUNTIME_PIC = "https://sites.google.com/sitesv-images-rt/AMxu72uc32nFHxEN3BPfa=w1280"
+
+
+def _runtime_picture_page(tmp_path, picture):
+    """A page whose body is one line and a runtime picture, crawled; then the reconciliation's thin judgement, as after
+    a real round (design §23 F6: the test asserts on what thin_pages leaves, never on a state made up by hand)."""
     crawler, net, _clock = make(tmp_path, {
         ("GET", "/robots.txt"): snap("x", 404),
-        ("GET", "/a/home"): snap(HOME, html=f'<p>辅导中心的页</p><img src="{pic}" alt="首頁">'),
-    })
+        ("GET", "/a/home"): lambda t: snap(HOME, html=f'<p>辅导中心的页</p><img src="{RUNTIME_PIC}" alt="首頁">'),
+        ("GET", "sitesv-images-rt"): picture,
+    }, queues={"w.nknu.edu.tw": WQ, "sites.google.com": WQ})
     seed(crawler, HOME)
-    work(crawler, net, WQ)
+    work(crawler, net, WQ, rounds=60)
     f = crawler.frontier
-    assert all("sitesv-images-rt" not in u for _m, u in net.seen)
-    assert f.q("SELECT count(*) FROM url WHERE url=?", (pic,))[0][0] == 0
-    e = f.q("SELECT need, why FROM page_res pr JOIN url u ON u.id=pr.page_id WHERE u.url=? AND res_key=?", (HOME, pic))
-    assert e[0][:] == ("round2", "round2:google_sites_image")
-    f.x("UPDATE page_type SET verdict='ok', source='manual' WHERE key=(SELECT page_type FROM url WHERE url=?)", (HOME,))
-    level = f.q("SELECT level, reasons FROM page_completeness WHERE id=(SELECT id FROM url WHERE url=?)", (HOME,))[0]
-    assert level["level"] == "partial" and "round2" in level["reasons"]
+    page = f.row(HOME)
+    thin = reconcile.thin_pages(f, tmp_path, [page["owner_site"]])[page["owner_site"]]
+    # what a person's (or jscheck's) verdict on the page's type says: the page itself is fine to read
+    f.x("UPDATE page_type SET verdict='ok', source='manual' WHERE key=?", (page["page_type"],))
+    return crawler, net, f, page, thin
+
+
+def test_a_page_with_a_runtime_picture_asks_for_it_right_after_the_page(tmp_path):
+    jpeg = snap(RUNTIME_PIC, body=b"\xff\xd8\xff\xe0\x00\x10JFIF\x00made up", headers={"content-type": "image/jpeg"})
+    _crawler, net, f, page, thin = _runtime_picture_page(tmp_path, jpeg)
+    asked = [u for _m, u in net.seen if "/robots.txt" not in u and "nknu-archive-probe" not in u]
+    assert asked[:2] == [HOME, RUNTIME_PIC]
+    e = f.q("SELECT res_key, how, need, res_id FROM page_res pr JOIN url u ON u.id=pr.page_id WHERE u.url=? AND "
+            "pr.how='gsimg'", (HOME,))
+    assert len(e) == 1 and e[0]["need"] == "must" and e[0]["res_id"] == f.row(RUNTIME_PIC)["id"]
+    # one line of words and the picture got: a needed resource, never thin, and the page is complete
+    assert page["id"] not in thin.thin and thin.in_image == []
+    assert f.q("SELECT result FROM url_result WHERE id=?", (page["id"],))[0][0] == "ok"
+    row = f.q("SELECT level, label FROM page_completeness WHERE id=?", (page["id"],))[0]
+    assert tuple(row) == ("complete", "complete")
+
+
+def test_a_page_whose_runtime_picture_never_comes_lacks_a_picture_for_round_two_and_is_not_thin(tmp_path):
+    refused = lambda t: snap(t.url, 403, body=b"<html>Your client does not have permission</html>")
+    _crawler, _net, f, page, thin = _runtime_picture_page(tmp_path, refused)
+    e = f.q("SELECT need, why FROM page_res pr JOIN url u ON u.id=pr.page_id WHERE u.url=? AND pr.how='gsimg'",
+            (HOME,))
+    assert [tuple(x) for x in e] == [("round2", links.GOOGLE_SITES_ROUND2)]
+    assert page["id"] not in thin.thin and thin.in_image == [page["id"]]  # never 「页面几乎是空的」
+    row = f.q("SELECT level, label FROM page_completeness WHERE id=?", (page["id"],))[0]
+    assert tuple(row) == ("partial", "round2_img")  # 缺图片（下一轮补）
 
 
 # ---------------------------------------------------------------- a directory that keeps refusing is parked
@@ -299,9 +353,11 @@ def _obs(url, log):
 
 
 def test_a_data_post_the_round_cannot_send_makes_the_page_a_data_address_type_not_no_conclusion():
+    # a data address of the page's own server that no platform file reads (cLv2's timeline is read since 10-27,
+    # design §23 C: tests/archive/test_clv2_timeline_1027.py)
     page = "https://sso.nknu.edu.tw/services/site/index.aspx?clv2=100061"
     own = jscheck.Exchange(page, "document", "GET", True, 200, "<html><body>" + "消息" * 200 + "</body></html>")
-    xhr = jscheck.Exchange("https://sso.nknu.edu.tw/Unit/Info/ajaxServices/ajaxTimeline.aspx", "xhr", "POST", False,
+    xhr = jscheck.Exchange("https://sso.nknu.edu.tw/Unit/Info/ajaxServices/ajaxOther.aspx", "xhr", "POST", False,
                            unsent="post_body")
     v = jscheck.judge(_obs(page, [own, xhr]))
     assert (v.verdict, v.method) == ("js", "data_post")

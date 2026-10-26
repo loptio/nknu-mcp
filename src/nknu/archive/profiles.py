@@ -16,6 +16,10 @@ A profile holds, for the sites it covers (by site key, scope.site_key / url.owne
   the owner 10-25 22:19 「可以，照这样改」): oia's tabs (a GET per tab), ee's download buttons (a POST per file number);
 - says: what the school's own page says of a missing file (gone_page, seen twice) or a broken link (bad_link) (§10.1,
   §10.2; review 10-26 B6).
+- data_apis: a data address the platform's pages ask by script, which the crawler reads itself once per site with the
+  request the page's own script sends (DataApi: cLv2's timeline, design §23 C: reading it in round 1 【用户同意 Claude 的建议】
+  10-27, how 【Claude 的执行办法】); the
+  browser check never counts it as a data address the round cannot read (known_data_api).
 
 decision(site, res_key) is the one answer the crawler, rejudge and verify check 8 share (design §15): for a button's
 key (postback:<control, ctlNN as ctl*>[|<argument>], with the button's text, page_res.text, where a rule names one:
@@ -192,6 +196,35 @@ class Saying:
 
 
 @dataclass(frozen=True)
+class DataApi:
+    """A data address a platform's pages ask by script (design §23 C1): read by the crawler itself, once per site, a
+    POST written exactly as the page's script writes it (url, headers, body: JSON.stringify of the script's object
+    literal, its members in the script's order, no spaces). calls: what a page's HTML holds when its script asks it;
+    value: group 1 is the value the request carries (a page that asks it with no value found sends nothing:
+    unhandled:data_api_value); body: the object's members, (name, literal) or (name, None) for the value."""
+
+    name: str
+    url: str
+    calls: str
+    value: str
+    body: tuple[tuple[str, str | None], ...]
+    headers: tuple[tuple[str, str], ...]
+    why: str
+    row_text: str = ""
+
+
+@dataclass(frozen=True)
+class DataRead:
+    """What a data address answered (read_data_api): state done or mismatch; reason read:empty, read:events:<n>,
+    school_error:<its message> (the answer says the school's server erred), or why it is no answer of that address
+    (not_json, shape); html: what its entries link, written out for links.extract (the site's home page's, §4.4)."""
+
+    state: str
+    reason: str
+    html: str = ""
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     platform: str
@@ -208,6 +241,7 @@ class Profile:
     detail_paths: str = ""  # detail pages (free of the caps)
     download_paths: str = ""
     pending_r7: tuple[str, ...] = ()  # function names R7 reads in the school's .js before deciding
+    data_apis: tuple[DataApi, ...] = ()  # read by the crawler once per site (design §23 C1)
 
     def covers(self, site: str) -> bool:
         return _re(self.sites).fullmatch(site or "") is not None
@@ -319,8 +353,25 @@ SSO_WEBIDX = Profile(
     pending_r7=("toggleMobileSub", "currentSlide", "moveSlide", "toggleClearBtn", "setSearch", "clearSearchInput"),
 )
 
+# design §23 C1. Who decided (record 五·17): Claude's proposal 「第一轮直接读这个接口一次……网页照常算抓好」, the owner
+# 10-27 「可以，听你的」 【用户同意 Claude 的建议】; how it is read (this request, once per site, the answer's shapes)
+# 【Claude 的执行办法】. The request as written here is what the 10-26 pilot's archive holds, read only: site/100061's index.aspx, $(document).ready → getTimeLine()
+# → json('/Unit/Info/ajaxServices/ajaxTimeline.aspx', {cFunction: "getTimelineJson", pLv2: cLv2}), and json() in
+# /include/js/extend_NKNU/ajaxAnalysis.js: jQuery $.ajax, type POST, data JSON.stringify(oData), contentType
+# "application/json", dataType 'json' (jQuery's Accept for it); cLv2 from the page's `var cLv2 = '100061';`. No
+# X-Requested-With: the design names only these; the User-Agent stays the crawler's)
+CLV2_TIMELINE = DataApi(
+    "sso_clv2_timeline", "https://sso.nknu.edu.tw/Unit/Info/ajaxServices/ajaxTimeline.aspx",
+    calls=r"ajaxServices/ajaxTimeline\.aspx", value=r"var\s+cLv2\s*=\s*'(\d+)'",
+    body=(("cFunction", "getTimelineJson"), ("pLv2", None)),
+    headers=(("Content-Type", "application/json"), ("Accept", "application/json, text/javascript, */*; q=0.01")),
+    why="cLv2 单位网站的时间轴：网页载入时用 POST 向这个接口要资料；第一轮直接读一次（每个网站一次），空的记「时间轴是空的」，"
+        "有事件就把事件里的链接收进来（§23 C，用户 10-27 同意 Claude 的建议）",
+    row_text="时间轴（ajaxTimeline）")
+
 SSO_CLV2 = Profile(
     name="sso_clv2", platform="SSO 单位网站（cLv2）", sites=r"sso\.nknu\.edu\.tw/site/\d+", forms=("form1",),
+    data_apis=(CLV2_TIMELINE,),
     content_css="#uSSONews_PanelList, #divContent, #uDataContentPos2_UpdatePanel2",
     list_paths=r"/services/site/index\.aspx$",
     rows=(
@@ -380,8 +431,10 @@ CNKNU = Profile(
                 "站内搜索的条件（组别、类别，配合「搜尋」按钮）：搜索结果页不抓；各类别另有自己的列表网址"),
         Writing(r"select:ddl_Sort", "ignore", "排序方式（日期、标题、单位）：只换排序，行还是同一批"),
         Writing(r"select:ddl_FileKind", "ignore", "体育室表格下载的「類別索引」：载入时是「全部」，列表已列出全部类别"),
-        Writing(r"select:ddl_Class", "ignore", "newslist.aspx 的分类筛选：载入时是「全部」，列表翻到底就是全部（试跑 10-26：体育"
-                "室 99 条，和 v1 已知的一样多）；各分类是同一批的子集，?class= 的分类页另有自己的列表"),
+        Writing(r"select:ddl_Class", "ignore", "newslist.aspx 的分类筛选：只有不带 class 参数的 newslist.aspx 载入时是「全部」，"
+                "翻到底就是全部（试跑 10-26：体育室 99 条，和 v1 已知的一样多）；带 ?class= 的列表载入时就是那一类，是同一批的"
+                "子集。所以记 ignore 的网站一定要有一页不带 class 的 newslist.aspx 翻到最后一页（对账 R2、验收第 4 项查，"
+                "monitor.class_all_missing；设计 §23 F2）"),
     ),
     pending_r7=("WdatePicker",),
 )
@@ -465,6 +518,110 @@ def page_kind(url: str) -> str | None:
     if p.list_paths and re.search(p.list_paths, path):
         return "list"
     return None
+
+
+# ---------------------------------------------------------------- data addresses read once per site (design §23 C)
+
+DATA_KEY = "data:"  # page_res.res_key of a data address: data:<its name>:<value>
+DATA_READ, DATA_SCHOOL_ERROR = "read:", "school_error:"  # action.reason of an answer read, of the school's error
+
+
+def data_api_reads(site: str | None, html: str | None) -> list[tuple[DataApi, str | None]]:
+    """The data addresses of a site's platform a page's HTML asks (calls), each with the value its request carries,
+    None when the page names none (nothing is sent: unhandled, 要人看)."""
+    p = profile_for_site(site)
+    if p is None or not html:
+        return []
+    out = []
+    for api in p.data_apis:
+        if re.search(api.calls, html):
+            m = re.search(api.value, html)
+            out.append((api, m.group(1) if m else None))
+    return out
+
+
+def data_api(name: str) -> DataApi | None:
+    return next((a for p in PROFILES for a in p.data_apis if a.name == name), None)
+
+
+def data_api_key(api: DataApi, value: str | None) -> str:
+    return f"{DATA_KEY}{api.name}:{value if value is not None else '?'}"
+
+
+def data_api_body(api: DataApi, value: str) -> bytes:
+    """The request's body as the page's script writes it: JSON.stringify of its object (members in order, no
+    spaces, characters as they are)."""
+    return json.dumps({k: (value if v is None else v) for k, v in api.body}, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def known_data_api(page_url: str, request_url: str) -> bool:
+    """Whether a request a page made is a data address its platform file reads this round (design §23 C2): on the
+    page's own host, the address's host and path (any case). The browser check counts it neither as data_post nor
+    as a request the page needed and did not get."""
+    try:
+        page, req = urlsplit(page_url), urlsplit(request_url)
+    except ValueError:
+        return False
+    host = (req.hostname or "").lower()
+    if host != (page.hostname or "").lower():
+        return False
+    p = profile_for(page_url)
+    return p is not None and any((urlsplit(a.url).hostname or "").lower() == host
+                                 and urlsplit(a.url).path.lower() == req.path.lower() for a in p.data_apis)
+
+
+def read_data_api(api: DataApi, text: str | None) -> DataRead:
+    """What a data address answered (design §23 C1), as the page's json() reads it: the newer shape {bErrOn, cMessage,
+    oData}, the older {result: {bErrOn: "true"/"false", cMessage}, data}. An error the answer says is the school's
+    server's (school_error:<message>); the timeline is (oData or data)[0].events: empty ({} or []) is read:empty,
+    else read:events:<n>, its events' links written out for links.extract (TimelineJS: media.url, media.link,
+    media.thumbnail, background.url, the <a href> and <img src> of text.headline, text.text, media.caption and
+    media.credit; the title's too). Not JSON, or no such shape: mismatch, never ok."""
+    try:
+        got = json.loads(text or "")
+    except ValueError:
+        return DataRead("mismatch", "not_json")
+    if not isinstance(got, dict):
+        return DataRead("mismatch", "shape")
+    new = "result" not in got
+    if new:
+        error, message, data = bool(got.get("bErrOn")), got.get("cMessage"), got.get("oData")
+    else:
+        res = got.get("result") if isinstance(got.get("result"), dict) else {}
+        error, message, data = str(res.get("bErrOn", "")).lower() == "true", res.get("cMessage"), got.get("data")
+    if error:
+        return DataRead("done", f"{DATA_SCHOOL_ERROR}{str(message or '')[:150]}")
+    first = data[0] if isinstance(data, list) and data else None
+    if not isinstance(first, dict) or not isinstance(first.get("events"), dict | list):
+        return DataRead("mismatch", "shape")
+    events = first["events"]
+    items = list(events.values()) if isinstance(events, dict) else list(events)
+    if not items:
+        return DataRead("done", f"{DATA_READ}empty")
+    parts = []
+    for ev in [first.get("title"), *items]:
+        if not isinstance(ev, dict):
+            continue
+        text_ = ev.get("text") if isinstance(ev.get("text"), dict) else {}
+        media = ev.get("media") if isinstance(ev.get("media"), dict) else {}
+        # HTML TimelineJS shows as written: the text's headline and body, the media's caption and credit (second
+        # review 10-27: every field an event can link from, §23.9 C1)
+        for box, key in ((text_, "headline"), (text_, "text"), (media, "caption"), (media, "credit")):
+            if isinstance(box.get(key), str):
+                parts.append(f"<div>{box[key]}</div>")
+        # addresses: the media (and the link its picture opens), its thumbnail, the slide's background
+        for box, key, tag in ((media, "url", "a"), (media, "link", "a"), (media, "thumbnail", "img"),
+                              (ev.get("background"), "url", "img")):
+            url = box.get(key) if isinstance(box, dict) else None
+            if isinstance(url, str) and url.strip():
+                attr = "href" if tag == "a" else "src"
+                parts.append(f'<{tag} {attr}="{_attr(url.strip())}">' + ("[timeline]</a>" if tag == "a" else ""))
+    return DataRead("done", f"{DATA_READ}events:{len(items)}", "<html><body>" + "".join(parts) + "</body></html>")
+
+
+def _attr(value: str) -> str:
+    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # ---------------------------------------------------------------- buttons and writings
@@ -745,6 +902,30 @@ def school_says(url: str, html: str | None) -> Saying | None:
             if re.search(s.words, text):
                 return s
     return None
+
+
+# design §23.9 A1 ③ (second review 10-27, 【Claude 的执行办法】): a short answer (FILE_SHORT_BYTES at most, as text)
+# to a download button whose words say only that the file is not there is the school's gone page too, whatever the
+# name its header gives (計畫.pdf holding the one line 「檔案不存在」). A long page that mentions the words in passing
+# is no such answer (it is not_file all the same when it is no file: no name, or a name it is not)
+FILE_SHORT_BYTES = 1024
+FILE_SHORT_SAYS = (Saying("", r"檔案不存在|档案不存在", GONE_PAGE,
+                          "下载按钮取回来的是很短的一句「檔案不存在」：学校说档案不在（§23.9 A1 ③）"),)
+
+
+def file_says(text: str | None) -> Saying | None:
+    """What the school's words in a download button's answer say (design §23 A1 ③, 【Claude 的执行办法】): SSO's
+    sayings (SSO_NEWS.says: 「附件無法下載…檔案不存在」, 「檔案包含不支援的字元」) matched by their words alone, for
+    every SSO button (WebIdx's, cLv2's): the export GET's address is no attachment page to match their paths against;
+    and an answer of FILE_SHORT_BYTES or less that says 「檔案不存在」 alone (FILE_SHORT_SAYS, §23.9). text: the answer as
+    text (a web page or plain text); None when it says neither."""
+    if not text:
+        return None
+    plain = _text(text)
+    said = next((s for s in SSO_NEWS.says if re.search(s.words, plain)), None)
+    if said is None and len(text.encode("utf-8", "replace")) <= FILE_SHORT_BYTES:
+        said = next((s for s in FILE_SHORT_SAYS if re.search(s.words, plain)), None)
+    return said
 
 
 def says_step(said: Saying, reason: str | None, attempts: int, now: float) -> dict:

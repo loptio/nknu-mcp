@@ -98,7 +98,7 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import google_api, links, outcome, pagetypes, round1, scope
+from nknu.archive import google_api, links, outcome, pagetypes, profiles, round1, scope
 from nknu.archive.crawler import (
     _KIND_OF0,
     _LOGIN_TITLE,
@@ -190,10 +190,12 @@ BLOCK_HOSTS = re.compile(r"(?i)(^|\.)(youtube\.com|youtube-nocookie\.com|ytimg\.
 # and the internal web services that answer with student records (scope.INTERNAL_HOSTS) 【Claude 的执行办法】
 NEVER_SEND = frozenset({"login", "internal_service"})
 # Google's own bookkeeping a page's scripts call (pilot 10-26, F10: the browser sent Google Sites' impression log and
-# Drive's auth warm-up): tracking, never content, never sent. Google's sign-in (accounts.google.com) stays what
-# scope.judge says, a login (NEVER_SEND: inconclusive:not_sent, for a person) 【Claude 的执行办法】
-BLOCK_PATHS = re.compile(r"(?i)^https://(?:sites\.google\.com/_/|drive\.google\.com/(?:auth_warmup|_/)|"
-                         r"www\.google\.com/(?:log|gen_204|recaptcha/))")
+# Drive's auth warm-up; the review of 830c1b7: play.google.com/log too): tracking, never content, never sent. Only
+# the exact logging paths seen (Google Sites': /_/view/naLogImpressions; another one is added when it is seen), never
+# all of sites.google.com/_/ (design §23 F4). Google's sign-in (accounts.google.com) and reCAPTCHA stay what
+# scope.judge says, a login: _blocked asks NEVER_SEND first (inconclusive:not_sent, for a person) 【Claude 的执行办法】
+BLOCK_PATHS = re.compile(r"(?i)^https://(?:(?:sites\.google\.com/_/view/naLogImpressions|drive\.google\.com/auth_warmup|"
+                         r"www\.google\.com/(?:log|gen_204)|play\.google\.com/log)(?:[/?#]|$)|drive\.google\.com/_/)")
 # every 4xx and 5xx is the server's answer, handed to the browser as it is (408, 429 and the retried 5xx are failures)
 ANSWERS = frozenset(range(400, 600))
 JS_CHARS, JS_RATIO, FRAME_CHARS = 200, 1.3, 200  # jstest.py:259-265
@@ -455,10 +457,12 @@ def judge(obs: Observation, clicks: Sequence[Mapping[str, Any]] = ()) -> PageVer
         return PageVerdict(None, "inconclusive:direct0", **common)
     if obs.slow or obs.not_idle:
         return PageVerdict(None, "inconclusive:slow", **common)
-    needed = [e for e in obs.log if not e.navigation and e.kind in NEEDED_KINDS]
-    if any((e.unsent or e.error) and not data_post(e) for e in needed):
+    # a data address the platform file reads this round (cLv2's timeline, design §23 C2) is no request the page
+    # needed and the check did not get: the crawler reads it itself
+    needed = [e for e in obs.log if not e.navigation and e.kind in NEEDED_KINDS and not read_api(e, obs.url)]
+    if any((e.unsent or e.error) and not data_post(e, obs.url) for e in needed):
         return PageVerdict(None, "inconclusive:request_failed", **common)
-    if any(data_post(e) for e in needed):
+    if any(data_post(e, obs.url) for e in needed):
         # a data request the round cannot make (a POST with a JSON or text body: cLv2's timeline, pilot 10-26): the
         # page reads data from an address of its own, the next round's way (读资料网址), whatever else it showed
         return PageVerdict("js", None, method="data_post", **common)
@@ -481,8 +485,9 @@ def incomplete(obs: Observation) -> str | None:
     if obs.not_idle:
         return "not_idle"
     for e in obs.log:
-        if e.navigation or e.kind not in NEEDED_KINDS or data_post(e):
-            continue  # a data POST the round cannot make is the type's (judge: js, data_post), not an unseen page
+        if e.navigation or e.kind not in NEEDED_KINDS or data_post(e, obs.url) or read_api(e, obs.url):
+            continue  # a data POST the round cannot make is the type's (judge: js, data_post), not an unseen page;
+            # one the platform file reads (design §23 C2) is the crawler's
         if e.unsent or e.error:
             return f"{e.kind} {e.url[:200]}: {e.error or e.unsent}"
         if e.blocked in NEVER_SEND:
@@ -490,10 +495,26 @@ def incomplete(obs: Observation) -> str | None:
     return None
 
 
-def data_post(e: Exchange) -> bool:
+def data_post(e: Exchange, page_url: str) -> bool:
     """A data request (xhr, fetch) with a body the client does not send (post_body: JSON, text), which the page asks
-    its own data address for: the next round's way of reading it (pilot 10-26: SSO cLv2's ajaxTimeline.aspx)."""
-    return e.kind in DATA_KINDS and e.unsent == "post_body"
+    its own data address for, on its own host: the next round's way of reading it. Never one the page's platform file
+    reads this round (read_api: cLv2's ajaxTimeline.aspx, design §23 C2), nor another host's (§8.4's rule: a request
+    the page needed that was not sent)."""
+    return (e.kind in DATA_KINDS and e.unsent == "post_body" and _same_host(e.url, page_url)
+            and not read_api(e, page_url))
+
+
+def read_api(e: Exchange, page_url: str) -> bool:
+    """A POST to a data address the page's platform file reads this round (profiles.known_data_api, design §23 C2):
+    the browser check never sends it (a check is no fetch), and it says nothing of the page's type."""
+    return e.method.upper() == "POST" and profiles.known_data_api(page_url, e.url)
+
+
+def _same_host(a: str, b: str) -> bool:
+    try:
+        return (urlsplit(a).hostname or "").lower() == (urlsplit(b).hostname or "").lower()
+    except ValueError:
+        return False
 
 
 def type_verdict(looks: Sequence[PageVerdict]) -> PageVerdict | None:
@@ -686,13 +707,15 @@ class PageBridge:
             return "type"
         if BLOCK_HOSTS.search(host):
             return "host"
-        if BLOCK_PATHS.match(a.url):
-            return "tracking"
         url = scope.canonical(a.url)
         if url is None:
             return "scheme"
         reason = scope.judge(url).reason
-        return reason if reason in NEVER_SEND else None
+        if reason in NEVER_SEND:  # a login (reCAPTCHA too) before tracking: for a person, never held back unseen (§23 F4)
+            return reason
+        if BLOCK_PATHS.match(a.url):
+            return "tracking"
+        return None
 
     def observation(self, *, final_url: str, rendered: str, frames: Sequence[str] = (), slow: bool = False,
                     not_idle: bool = False, error: str | None = None, seconds: float = 0.0,
@@ -1542,7 +1565,7 @@ class SpotChecker:
             with contextlib.suppress(ValueError):
                 shot = str(Path(obs.screenshot).relative_to(self.check.root))
         return SpotLook(url, obs.final_url, obs.rendered or None, shot, error, None if error else incomplete(obs),
-                        tuple(dict.fromkeys(e.url[:300] for e in obs.log if data_post(e))))
+                        tuple(dict.fromkeys(e.url[:300] for e in obs.log if data_post(e, obs.url))))
 
     async def _open(self, url: str, rel: Path | None) -> Observation:
         return await self.browser.open(url, PageBridge(self.check, url), None if rel is None else self.check.root / rel)

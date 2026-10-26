@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from selectolax.lexbor import LexborHTMLParser
 from warcio.archiveiterator import ArchiveIterator
 
-from nknu.archive import progress
+from nknu.archive import outcome, progress
 
 log = logging.getLogger("nknu.archive.viewer")
 INDEX_SCHEMA = """
@@ -763,6 +763,8 @@ def progress_site_html(d: dict) -> str:
             extra.append(f"由 {p['came_from']} 个网址跳来")
         if p.get("landing"):
             extra.append(f"跳到 {p['landing']}")
+        if p.get("in_image"):
+            extra.append(outcome.IN_IMAGE_WORDS)
         lost = "".join(f"<li>{_e(x['zh'])}：<code>{_e(x['res_key'])}</code> <span class='dim'>{_e(x['why'])}</span></li>"
                        for x in p["lost"])
         rows.append(f"<tr><td>{_e(p['level_zh'])}</td><td>{_mark(p['color'], p['zh'])}</td>"

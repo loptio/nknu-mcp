@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from nknu.archive import outcome
+from nknu.archive import google_api, outcome
 from nknu.archive.frontier import ALL_QUEUES, Frontier, OutdatedFrontier, _missing, net_key, network_of
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -89,7 +89,7 @@ _STATE_WORDS = {"出错": "error", "要看": "look", "还在抓": "crawling", "�
                 "爬完": "done", "没检查": "unchecked", "red": "error", "green": "done"}
 # the order one site's pages are listed in (§14.2: 连接失败 → 要人看 → … → 完整), by page_completeness.label
 PAGE_ORDER = ("failed", "thin", "review", "list", "list_unchecked", "miss_file", "miss_img", "miss_other", "unchecked",
-              "js", "click", "round2", "retry", "todo", "complete_school", "complete")
+              "js", "click", "round2_img", "round2", "retry", "todo", "complete_school", "complete")
 LABEL_ZH = dict(outcome.LABEL_ORDER)
 # the order of the other addresses (§14.2: the ten categories, 抓到了 last)
 BUCKET_ORDER = ("failed", "review", "pending_check", "next_round", "queued", "login", "gone", outcome.SCHOOL_SIDE,
@@ -102,7 +102,8 @@ BUCKET_COLOR = {"failed": "red", "review": "red", "pending_check": "yellow", "ne
 # walked to its end are red)
 LABEL_COLOR = {"todo": "none", "retry": "yellow", "failed": "red", "thin": "red", "review": "red", "js": "yellow",
                "list": "red", "list_unchecked": "yellow", "miss_file": "yellow", "miss_img": "yellow",
-               "miss_other": "yellow", "click": "yellow", "round2": "yellow", "unchecked": "yellow",
+               "miss_other": "yellow", "click": "yellow", "round2_img": "yellow", "round2": "yellow",
+               "unchecked": "yellow",
                "complete_school": "green", "complete": "green"}
 # round-two rows by why (url.reason of a later row): what the batch is, in words
 ROUND2_ZH = {
@@ -114,7 +115,12 @@ ROUND2_ZH = {
     "round2:jscheck_redirect": "浏览器停在别的网址",
     "round2:google_published": "发布到网络的 Google 文件",
     "round2:click": "点了才载入的内容",
+    # design §23 B3: no url row of its own (page_res.why), counted by picture (_round2)
+    "round2:google_sites_image": "协作平台正文图片",
 }
+# what round two holds that has no url row: a page's resource by its page_res.why, counted once per page and picture
+# (count DISTINCT res_key: a picture's key names its page, design §23 B2)
+ROUND2_RES = ("round2:google_sites_image",)
 RUN_END_ZH = {
     "finished": "抓完了",
     "waiting": "先停下等重试",
@@ -138,7 +144,7 @@ PLAIN = {
     "connect": "连不上这台服务器：整台暂停 15 分钟，不扣重试次数",
     "conn_pause": "连不上这台服务器：整台暂停 15 分钟，不扣重试次数",
     "tls": "加密连线握手失败：算这个网址失败，隔 30 分钟再试，共 3 次",
-    "tls_cert": "学校的证书没通过检查（过期或设定错）：算这个网址失败，3 次后列进「连接失败」",
+    "tls_cert": "证书检查没过（过期、设定错或缺中继证书）：算这个网址失败，3 次后列进「连接失败」",
     "timeout": "服务器太久没回应：隔 30 分钟再试，共 3 次",
     "too_slow": "下载太久没完成：隔 30 分钟再试，共 3 次",
     "net": "连线到一半被中断：隔 30 分钟再试，共 3 次",
@@ -167,6 +173,19 @@ PLAIN = {
     "scheme_switch": "http 和 https 自动改试：照能连的那一种抓",
     "soft404_host": "这台主机不存在的网页也回 200：长得一样的页面会被标出来",
     "key_check": "Google 不接受金钥：云端硬盘和日历这次先不读，不算失败",
+    # Google's protection and limits (design §23 D3): never 「隔 30 分钟再试，共 3 次」
+    "google_block": "Google 暂时挡下载：整条 Google 队至少休息 1 小时，连续被挡就加倍，不扣重试次数",
+    "google_file_quota": "Google：这个档案的下载次数被用完：只有这一个档案 24 小时后再试，3 次还不行就要人看",
+    "google_block_long": "Google 连续挡下载超过 3 天或 6 次：要人看（不绕过：不换金钥、不换 IP、不伪装）",
+    # a 5xx of Google's API (backendError, internalError …: §7.6), Google's server, never the school's (§23.9 D3)
+    "google_5xx": "Google 服务器出错：Google 那条队休息 15 分钟，这个网址隔 30 分钟再试，共 3 次",
+    "api_error": f"{outcome.RESULT_LABEL['api_error']}：照它的回应记下，归「要人看」",
+    # Google Sites' runtime pictures (design §23 B2, B3)
+    "gsimg_reread": "协作平台正文图片的网址过期（抓到一半开始 403）：重抓这一页拿新网址，每页最多 2 次",
+    "gsimg_giveup": ("协作平台正文图片：重抓页面以后最先试的 2 张都被拒（403）：这个网站剩下的这种图不再发请求，"
+                     "记下一轮用浏览器补（列在已知缺口和「下一轮」）"),
+    "gsimg_reread_failed": ("协作平台网页为拿新图片网址重抓，没拿到网页（403、出错或逾时）：这一页保留原来存好的答案、不扣重试"
+                            "次数，没拿到的正文图片记下一轮用浏览器补（列在已知缺口和「下一轮」）"),
     "campus": "校内还是校外网络的判断",
     "stuck": "有该抓的网址却没有服务器接得了：爬虫的 bug，这次 run 停下",
     "left_active": "有网址卡在「抓取中」没人处理：爬虫的 bug，已记成失败，可以 retry crash 放回",
@@ -196,12 +215,34 @@ _MESSAGE_KINDS = (  # a free-text error (request.error, an event's message) → 
     (re.compile(r"^crash:"), "crash"),
 )
 _HTTP = re.compile(r"(?:http_|HTTP )([1-5]\d\d)\b")
+_API_HOST_FIRST = re.compile(r"^[\w.-]+:\s+(?=api:)")  # a pause's why: "www.googleapis.com: api:automated_queries"
+_API_SERVER = frozenset({"backendError", "internalError", "backendFailure", "INTERNAL", "UNAVAILABLE"})
+
+
+def _api_code(text: str | None, status: int | None = None) -> str | None:
+    """The plain-words key of a Google API reason as the crawler writes it (url.reason, a pause's why: api:<reason>,
+    the host first in a pause's why; design §23 D3): a block (google_api.BLOCK_REASONS, a 429), one file's downloads
+    used up, a 5xx (Google's server: google_5xx, never the school's, §23.9 D3), else what api_error says; None when
+    the text is no api: reason."""
+    t = _API_HOST_FIRST.sub("", (text or "").strip(), count=1)
+    if not t.startswith("api:"):
+        return None
+    reason = re.split(r"[\s,;()]", t[4:], maxsplit=1)[0]
+    if reason == google_api.FILE_QUOTA_REASON:
+        return "google_file_quota"
+    if reason in google_api.BLOCK_REASONS or reason == "http_429" or status == 429:
+        return "google_block"
+    if reason.startswith("http_5") or reason in _API_SERVER or (status or 0) >= 500:
+        return "google_5xx"
+    return "api_error"
 
 
 def error_code(code: str | None, message: str | None = None, status: int | None = None) -> str:
     """The plain-words key of a failure: its code as the crawler wrote it (url.reason, an event's code, error_kind),
     else what its free-text message or its status says; '' when nothing is known."""
     c = (code or "").strip()
+    if (api := _api_code(c, status)) is not None:
+        return api
     if c.startswith("net_"):
         return "net"
     if c.startswith("crash"):
@@ -219,6 +260,8 @@ def error_code(code: str | None, message: str | None = None, status: int | None 
     if c in PLAIN:
         return c
     text = message or ""
+    if (api := _api_code(text, status)) is not None:
+        return api
     for pattern, kind in _MESSAGE_KINDS:
         if pattern.search(text):
             return kind
@@ -610,7 +653,8 @@ def _run_state(conn: sqlite3.Connection, now: float, running: str | None, stop_f
     last_req = conn.execute("SELECT max(ended) FROM request").fetchone()[0]
     out: dict[str, Any] = {"running": running, "stop_file": stop_file, "started_at": started_at,
                            "ended_at": ended_at, "end_reason": end.get("reason"), "last_request": last_req,
-                           "gap": start.get("gap"), "sites": start.get("sites"), "pending": end.get("pending"),
+                           "gap": start.get("gap"), "sites": start.get("sites"), "pid": start.get("pid"),
+                           "pending": end.get("pending"),
                            "next_due": end.get("next_due"), "pauses": [], "stalled": []}
     if running:
         out["state"] = "running"
@@ -658,13 +702,16 @@ def snapshot(conn: sqlite3.Connection, now: float, *, tracker: Tracker | None = 
         acts = conn.execute("""SELECT coalesce(u.owner_site, a.site) site, a.result, count(*) n
                                FROM action_result a LEFT JOIN url u ON u.id = a.list_id
                                WHERE a.state <> 'superseded' GROUP BY 1, 2""").fetchall()
-        by_host = _by_host(rows)
-        server_rows = _servers(conn, now, speeds, by_host)
         run = _run_state(conn, now, running, stop_file)
         # a run of some sites only (--sites: the pilot, a sample) is estimated on those sites' rows and presses, not
-        # the whole round's (pilot 10-26, F6: the 4-site pilot showed the round's 27k URLs and 13 h)
-        sites = sorted(set(run["sites"])) if running and run.get("sites") else None
-        scoped = _by_host([r for r in rows if r["owner_site"] in sites]) if sites else by_host
+        # the whole round's (pilot 10-26, F6: the 4-site pilot showed the round's 27k URLs and 13 h); the servers'
+        # rows left and their time over the same sites (design §23 F3), and only when the last run_start is the
+        # running run's own (its pid is the one in run.lock: a run that has not logged its start yet is not narrowed
+        # by the one before it)
+        own = running is not None and str(run.get("pid")) == str(running)
+        sites = sorted(set(run["sites"])) if own and run.get("sites") else None
+        scoped = _by_host([r for r in rows if r["owner_site"] in sites]) if sites else _by_host(rows)
+        server_rows = _servers(conn, now, speeds, scoped, sites=sites)
         est = eta(conn, now, speeds, {h: (v["left"], v["last_retry"]) for h, v in scoped.items()}, sites=sites)
         est["sites"] = sites
         errors = _errors(conn, now)
@@ -714,9 +761,11 @@ def _by_host(rows) -> dict[str, dict]:
     return out
 
 
-def _servers(conn: sqlite3.Connection, now: float, speeds: dict[str, dict], by_host: dict[str, dict]
-             ) -> dict[str, dict]:
-    """Each server queue: its hosts, rows fetched and left, speed, Crawl-delay, pauses, cool-downs and failures."""
+def _servers(conn: sqlite3.Connection, now: float, speeds: dict[str, dict], by_host: dict[str, dict],
+             sites: list[str] | None = None) -> dict[str, dict]:
+    """Each server queue: its hosts, rows fetched and left, speed, Crawl-delay, pauses, cool-downs and failures.
+    by_host: the rows counted by host (a --sites run's own sites only); sites: then only their presses count too (as
+    in eta)."""
     out: dict[str, dict] = {}
     hosts = conn.execute("SELECT host, queue, crawl_delay, cooldown_until FROM host").fetchall()
     host_queue = {h["host"]: h["queue"] for h in hosts}
@@ -725,9 +774,11 @@ def _servers(conn: sqlite3.Connection, now: float, speeds: dict[str, dict], by_h
     pauses = {r["queue"]: (r["until"], r["why"]) for r in conn.execute("SELECT queue, until, why FROM pause "
                                                                        "WHERE until > ?", (now,))}
     fails = {r["queue"]: r for r in conn.execute("SELECT queue, conn_fail, err_fail FROM server")}
+    blocks = google_api.block_state(conn)  # Google's blocks in a row and since when (§23 D2)
     presses, press_host = {}, {}
-    for r in conn.execute("SELECT queue, count(*) n, max(host) host FROM action WHERE state IN ('pending', 'active') "
-                          "GROUP BY queue"):
+    only = f" AND site IN ({','.join('?' * len(sites))})" if sites else ""
+    for r in conn.execute("SELECT queue, count(*) n, max(host) host FROM action WHERE state IN ('pending', 'active')"
+                          + only + " GROUP BY queue", tuple(sites or ())):
         presses[r["queue"]], press_host[r["queue"]] = r["n"], r["host"]
     def server(queue: str) -> dict:
         return out.setdefault(queue, {"queue": queue, "hosts": Counter(), "fetched": 0, "left": 0, "delay": 0.0,
@@ -766,6 +817,8 @@ def _servers(conn: sqlite3.Connection, now: float, speeds: dict[str, dict], by_h
             sign, words, color = "", "还没查地址：下一次开跑时先查", "none"
         elif f is not None and (f["conn_fail"] or 0) >= CONN_GIVE_UP:
             sign, words, color = "✗", f"连续 {f['conn_fail']} 次连不上：要人看是不是永久下线", "red"
+        elif queue == google_api.QUEUE and google_api.block_long(*blocks, now):  # §23 D2
+            sign, words, color = "✗", google_api.block_words(*blocks, now), "red"
         elif pause[0] > now:
             sign, words, color = "⚠", f"暂停中，{fmt_clock(pause[0], now)} 继续（{plain_error(None, pause[1])}）", "yellow"
         elif s["cooling"]:
@@ -793,16 +846,33 @@ def _errors(conn: sqlite3.Connection, now: float) -> list[dict]:
         out.append({"at": _ts(r["at"]), "level": r["level"], "code": r["code"], "where": r["host"] or "",
                     "plain": plain_error(r["code"], r["message"]), "raw": (r["message"] or "")[:300], "n": 1})
     groups: dict[str, dict] = {}
-    for r in conn.execute("""SELECT host, url, status, error, started FROM request
-                             WHERE started > ? AND (error IS NOT NULL OR status >= 400) ORDER BY id DESC LIMIT 2000""",
-                          (now - HOUR_S,)):
+    # what Google answered a request with while it blocked downloads, or used up a file's (§23 D3): the crawler's
+    # events of the hour name the address, the row's reason says it too; such a 403 or 429 is no 「被拒绝」
+    google = {r["url"]: r["code"] for r in conn.execute(
+        "SELECT url, code FROM event WHERE code IN ('google_block', 'google_file_quota') AND at >= ? AND url IS NOT "
+        "NULL", (since,))}
+    for r in conn.execute("""SELECT q.host, q.url, q.status, q.error, q.started, u.reason FROM request q
+                             LEFT JOIN url u ON u.url = q.url
+                             WHERE q.started > ? AND (q.error IS NOT NULL OR q.status >= 400)
+                             ORDER BY q.id DESC LIMIT 2000""", (now - HOUR_S,)):
         key = error_code(None, r["error"], r["status"])
+        if r["host"] == google_api.API_HOST and r["status"] in (403, 429):
+            key = google.get(r["url"]) or _google_kind(r["reason"]) or key
+        elif r["host"] == google_api.API_HOST and (r["status"] or 0) >= 500:
+            key = "google_5xx"  # Google's server, never 学校服务器出错 (§23.9 D3)
         g = groups.setdefault(key, {"at": r["started"], "level": "request", "code": key, "where": r["host"],
-                                    "plain": plain_error(None, r["error"], r["status"]),
+                                    "plain": PLAIN[key] if key.startswith("google_") else
+                                    plain_error(None, r["error"], r["status"]),
                                     "raw": (r["error"] or f"HTTP {r['status']}")[:300], "n": 0, "example": r["url"]})
         g["n"] += 1
     out += sorted(groups.values(), key=lambda g: -g["n"])
     return out
+
+
+def _google_kind(reason: str | None) -> str | None:
+    """google_block or google_file_quota when a Google API row's reason says so (api:<reason>), else None."""
+    code = _api_code(reason)
+    return code if code in ("google_block", "google_file_quota") else None
 
 
 def _totals(rows, acts, plan: dict[str, dict], slow: dict | None):
@@ -1124,11 +1194,21 @@ def _reconciled(conn: sqlite3.Connection) -> tuple[dict, list[dict]]:
 
 
 def _round2(conn: sqlite3.Connection) -> dict:
-    """What round two holds (§14.2): rows by why, by the seed list they came from, and the top off-campus domains."""
+    """What round two holds (§14.2): rows by why, by the seed list they came from, and the top off-campus domains. A
+    resource that has no url row of its own (ROUND2_RES: Google Sites' runtime pictures, design §23 B3) is counted by
+    its page_res rows, once per picture of a page; its rows, when it has any, are not counted again."""
+    marks = ",".join("?" * len(ROUND2_RES))
+    rows = [dict(r) for r in conn.execute(f"""SELECT reason, count(*) n, count(DISTINCT owner_site) sites FROM url
+                                              WHERE state = 'later' AND coalesce(reason, '') NOT IN ({marks})
+                                              GROUP BY reason""", ROUND2_RES)]
+    rows += [dict(r) for r in conn.execute(f"""SELECT pr.why AS reason, count(DISTINCT pr.res_key) n,
+                                                      count(DISTINCT p.owner_site) sites
+                                               FROM page_res pr JOIN url p ON p.id = pr.page_id
+                                               WHERE pr.need = 'round2' AND pr.why IN ({marks}) GROUP BY pr.why""",
+                                           ROUND2_RES) if r["n"]]
+    rows.sort(key=lambda r: -r["n"])
     by_why = [{"why": r["reason"] or "", "zh": ROUND2_ZH.get(r["reason"] or "", r["reason"] or "（没写原因）"),
-               "n": r["n"], "sites": r["sites"]}
-              for r in conn.execute("""SELECT reason, count(*) n, count(DISTINCT owner_site) sites FROM url
-                                       WHERE state = 'later' GROUP BY reason ORDER BY n DESC""")]
+               "n": r["n"], "sites": r["sites"]} for r in rows]
     by_source = [dict(r) for r in conn.execute("""SELECT s.source, count(*) n FROM url u
                                                    JOIN seed_src s ON s.url = u.url
                                                    WHERE u.state = 'later' GROUP BY s.source ORDER BY n DESC""")]
@@ -1171,7 +1251,7 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
         if p is None:
             return None
         info = {r["id"]: dict(r) for r in conn.execute(
-            "SELECT id, url, title, page_type, final_url FROM url WHERE owner_site=? AND kind='page'", (site,))}
+            "SELECT id, url, title, page_type, final_url, flags FROM url WHERE owner_site=? AND kind='page'", (site,))}
         came = dict(conn.execute("""SELECT final_url, count(*) FROM url WHERE owner_site=? AND final_url IS NOT NULL
                                     AND final_url <> url AND (status BETWEEN 300 AND 399 OR reason = 'moved_scheme'
                                          OR ',' || coalesce(flags, '') || ',' LIKE '%,js_redirect,%')
@@ -1213,6 +1293,8 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
                       "color": LABEL_COLOR.get(row["label"], "red"),
                       "reasons_zh": [LABEL_ZH.get(c, c) for c in (row["reasons"] or "").split(",") if c],
                       "came_from": came.get(u.get("url"), 0), "landing": (landing or {}).get("url"),
+                      # design §23 E3: its words alone would be thin, its body a picture (内容在图片里)
+                      "in_image": "in_image" in (u.get("flags") or "").split(","),
                       "lost": lost.get(row["id"], [])})
     order = {c: i for i, c in enumerate(PAGE_ORDER)}
     pages.sort(key=lambda x: (order.get(x["label"], -1), x["id"]))
@@ -1229,8 +1311,10 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
                      "reason": r["reason"] or "", "status": r["status"], "bucket": b,
                      "type": r["page_type"] if b == "pending_check" else None, "type_why": r["type_why"] or ""})
     for a in acts:
+        said = outcome.DATA_WORDS.get(a["reason"] or "") if a["kind"] == "data" else None  # 「时间轴是空的」 (§23 C1)
         rows.append({"what": "press", "id": a["id"], "url": a["target"], "title": a["row_text"] or "",
-                     "kind": a["kind"], "result": a["result"], "zh": outcome.RESULT_LABEL.get(a["result"], a["result"]),
+                     "kind": a["kind"], "result": a["result"],
+                     "zh": outcome.RESULT_LABEL.get(a["result"], a["result"]) + (f"：{said}" if said else ""),
                      "reason": a["reason"] or "", "status": a["status"], "bucket": outcome.user_bucket(a["result"]),
                      "list_id": a["list_id"], "type": None, "type_why": ""})
     border = {b: i for i, b in enumerate(BUCKET_ORDER)}

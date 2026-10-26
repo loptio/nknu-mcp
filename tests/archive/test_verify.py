@@ -544,7 +544,7 @@ def test_item_15_samples_for_a_person_and_item_6_counts_what_may_be_wrong(a):
     a.file(h, "s.nknu.edu.tw", "/x.doc", sniff="html")
     a.res(h, "https://s.nknu.edu.tw/banner.png", role="img", need="no", why="decor:repeat")
     cs = by_no(a.read(monitor.checks))
-    assert cs["6"].status == monitor.FAIL and "页面几乎是空的 1、看起来像不存在 1、应该是档案却回来网页 1" in cs["6"].detail
+    assert cs["6"].status == monitor.FAIL and "页面几乎是空的 1、看起来像不存在 1、应该是档案却回来不是档案 1" in cs["6"].detail
     assert any("还没对账" in x for x in cs["6"].lines)  # thin is judged per batch: that part is 没检查
     assert cs["15"].status == monitor.WARN
     assert any("/empty" in x for x in cs["15"].lines) and any("decor:repeat" in x for x in cs["15"].lines)

@@ -17,7 +17,8 @@ READ = {
     "url": {"id", "url", "path", "host", "site", "unit", "tier", "kind", "depth", "found_via", "found_from", "state",
             "reason", "next_at", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc", "title",
             "flags", "fetched_at", "owner_site", "prio", "leaf", "kind0", "page_role", "page_type", "sniff", "text_chars",
-            "filename", "size_declared", "warc_offset", "warc_len", "added_at", "old_ref"},
+            "filename", "size_declared", "warc_offset", "warc_len", "added_at", "old_ref",
+            "referrer"},  # design §23 B1: a Google Sites runtime picture's page and referrer policy
     "host": {"host", "queue", "ip", "crawl_delay", "cooldown_until", "not_before", "dns_fail", "scheme_only", "dns_ms",
              "answered_off"},
     # review 10-26 B4, B7: where its answer is archived and where it was made from
@@ -36,7 +37,7 @@ READ = {
     "action": {"id", "list_id", "epoch", "step", "kind", "queue", "host", "site", "profile", "form_src_warc",
                "form_src_offset", "form_id", "target", "argument", "row_key", "row_text", "state", "reason", "status",
                "ctype", "bytes", "sha256", "sniff", "filename", "location", "warc", "warc_offset", "warc_len",
-               "created", "done"},
+               "created", "done", "next_at", "attempts"},  # design §23 C1: a data address's read, read again later
     "listwalk": {"list_id", "site", "profile", "epoch", "pages", "rows", "rows_unique", "claimed", "ended_by", "ok",
                  "note", "at"},
     "drive_item": {"url_id", "file_id", "name", "mime", "size", "md5", "modified", "parent_id", "resource_key", "depth",
@@ -57,9 +58,11 @@ VIEW_ADDS = {
     "page_resource": {"page_id", "res_key", "role", "need", "result", "res", "via", "marked"},
     "page_completeness": {"id", "site", "tier", "content_id", "page_type", "page_role", "own", "n_must", "n_school",
                           "n_wait", "n_unchecked", "n_round2", "n_bad", "n_failed", "n_click", "n_review", "miss_file",
-                          "miss_img", "miss_other", "ended_by", "list_ok", "level", "label", "reasons"},
+                          "miss_img", "miss_other", "ended_by", "list_ok", "level", "label", "reasons",
+                          "n_round2_img"},
 }
 NEW_INDEXES = {"url_next2", "url_owner", "url_ptype", "url_added", "page_res_res", "page_res_action", "action_list",
+               "action_data",
                "action_click", "request_started", "url_sha", "url_owner_path_state"}
 
 # the frontier.db of the 10-24 run (commit 8c8d23b): no column or table of the round-1 design
