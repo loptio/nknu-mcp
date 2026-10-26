@@ -816,6 +816,31 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     typer.echo(f"放回待抓：{n} 个网址（{hosts} 台主机一起重设）；还没查过地址的主机，下一次 archive run 开始时先查")
 
 
+@archive_app.command("export")
+def archive_export(dir: str = typer.Option(None, "--dir", help="存档目录，默认是仓库里的 archive/"),
+                   site: str = typer.Option(..., "--site", help="网站键，例如 c.nknu.edu.tw/aca（进度看板上的网站网址）"),
+                   out: str = typer.Option(..., "--out", help="导出到哪个新资料夹（不存在或空的；不能在 git 会追踪的地方，"
+                                                              "放 archive-export/ 或仓库外）")) -> None:
+    """把一个网站从存档导出成一个资料夹（给「内容优化」用）：每个网页一个档、附件和正文图片保留原档，加一份清单
+    manifest.csv（网址、标题、网页上写的日期、完整度、结果……，没抓到的也列，另有 missing.csv）和中文 README.md。只读、
+    不连网；爬虫在跑也能导，README 会写明导出时这个网站的状态。资料里有学生全名和学号：不能进 git、不能放公开的地方。"""
+    from pathlib import Path
+
+    from nknu.archive import export, scope
+
+    root = _archive_root(dir)
+    _archive_db(root)
+    key = site.strip()
+    key = scope.site_key(key) if key.startswith(("http://", "https://")) else key.strip("/")
+    try:
+        got = export.export_site(root, key, Path(out))
+    except export.ExportRefused as exc:
+        typer.echo(f"没有导出：{exc}")
+        raise typer.Exit(1) from None
+    for line in got.lines:
+        typer.echo(line)
+
+
 @archive_app.command("browse")
 def archive_browse(dir: str = typer.Option(None, "--dir"),
                    port: int = typer.Option(8877, "--port", help="本机端口（只开在 127.0.0.1）")) -> None:
