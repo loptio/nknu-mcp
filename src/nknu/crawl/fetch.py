@@ -89,6 +89,15 @@ class DecodeError(FetchError):
     pass
 
 
+class NotArchived(FetchError):
+    """The offline rehearsal's answer to a request its old archive holds no response for (round-1 design §18.1): a
+    POST no one pressed, an attachment the old crawl never got, a Google API call. Its transport (offline = True)
+    raises it; no server was asked. The client lets it through as it is: no retry, nothing counted against the host
+    (no breaker). The archive crawl takes it as the URL's own failure, once (crawler.NOT_ARCHIVED: state failed,
+    reason not_archived), never as a connection error or a 5xx, so that no server rests and no network pauses for it
+    【Claude 的执行办法】."""
+
+
 class RetryLater(FetchError):
     """The server asked us to come back later, and the client will not wait in place: a Retry-After longer than a run
     waits (the host is skipped for the rest of this run), or the last try answered with a Retry-After or a 429. The

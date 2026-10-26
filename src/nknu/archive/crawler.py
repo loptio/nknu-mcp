@@ -48,6 +48,9 @@ row or a page came to is outcome.py's views.
   (server_down), and a school host that never answered us off campus waits for the lab machine (host_unreachable). A
   door of a server that answers on another (a closed port, or a scheme that only sends the visitor back) is the URL's
   failure instead: no server pause. Ten 401/403/451 in a row from one directory make that directory wait 15 min.
+  The offline rehearsal's not_archived (fetch.NotArchived: its old archive holds no answer, design §18.1) fails the
+  URL or the press at once, never retried, nothing held against its server or the network; a robots.txt it lacks
+  reads as no new rules, an id probe it lacks is not asked again that run.
 - Network down: a connection failure on a network that answered nothing for 2 min asks the connectivity check; a
   failed check pauses the networks that answer nothing, 5 min at a time; three school servers failing while the
   check passes pause the school's queues 15 min (B2: the school's network is down, not ours). What those failures
@@ -137,6 +140,7 @@ from nknu.crawl.fetch import (
     DecodeError,
     FetchError,
     HostCircuitOpen,
+    NotArchived,
     RetryableStatus,
     RetryLater,
     Snapshot,
@@ -189,6 +193,9 @@ CONN_KINDS = frozenset({"connect"})  # B2: refused, connect timeout, TLS handsha
 TLS_KINDS = frozenset({"tls", "tls_cert"})  # a TLS failure; tls_cert: the certificate failed its check (expired …)
 SWITCH_KINDS = CONN_KINDS | TLS_KINDS  # §6.6: a scheme the host may not speak
 TRANSPORT_KINDS = frozenset({"dns", "connect", "tls", "tls_cert", "timeout"})  # reached no server (and net_<type>)
+# the offline rehearsal's answer for what its old archive does not hold (design §18.1, fetch.NotArchived): the URL's
+# own failure at once (state failed, reason not_archived), never retried, never a server's or a network's
+NOT_ARCHIVED = "not_archived"
 # the id probe (design §10.1, once per platform host and detail type): one that got no answer is asked again with a
 # later detail page; a timeout or a broken answer (net_*) may have reached the server, so at most PROBE_TRIES of those
 # a run; a lookup, a connection or a handshake that failed sent nothing, and does not count (review 10-26 phase 3,
@@ -241,6 +248,9 @@ _PRIO_OF0 = {"page": 1, "login_check": 0, "sitemap": 0, "click": 0, "file": 2, "
 PRIO_LIST = 0
 # a resource row's redirect is the same resource (Heritrix's TransclusionDecideRule: an embedded resource's redirect
 # may leave the scope); a page's is a link of that page
+# the missing-page probe's path: PROBE_PREFIX, 12 hex digits, .html (the 10-24 crawler's too: the offline rehearsal
+# answers a probe with the old probe of the same host, rehearsal.OldArchive)
+PROBE_PREFIX = "/nknu-archive-probe-"
 _TRANSCLUDE = frozenset({"file", "image", "form", "script", "click", "embed", "sitemap", "drive", "drive_list",
                          "calendar"})
 _ROLE_OF0 = {"file": "file", "image": "img", "form": "form", "shortlink": "shortlink", "script": "script",
@@ -373,6 +383,8 @@ def local_address() -> str | None:
 def error_kind(exc: Exception) -> str:
     """A failure's category for url.reason and the monitor (the full message stays in request.error): http_<status>,
     timeout, connect, dns, tls, retry_after, too_large, decode, host_cooldown, net_<type> or fetch."""
+    if isinstance(exc, NotArchived):
+        return NOT_ARCHIVED
     if isinstance(exc, RetryLater):
         return "retry_after"
     if isinstance(exc, UnwantedType):
@@ -1285,6 +1297,9 @@ class Crawler:
             return
         if isinstance(got, FetchError):
             kind = error_kind(got)
+            if kind == NOT_ARCHIVED:  # the rehearsal: failed, never pressed again, no start again from the GET (§18.1)
+                self._press_dead(a, kind)
+                return
             if kind in CONN_KINDS:  # it never reached the server: the server's failure (B2), the press waits
 
                 def back() -> None:
@@ -1444,6 +1459,8 @@ class Crawler:
             return got
         host = urlsplit(target.url).hostname or ""
         kind = error_kind(got) if isinstance(got, FetchError) else None
+        if kind == NOT_ARCHIVED:  # the rehearsal's old archive holds no answer: nothing of the server or the network
+            return got
         if kind is not None:
             self._last_kind[host] = kind
         if kind is None or kind.startswith("http_") or kind == "retry_after":  # an answer, a 5xx too: it is there
@@ -1674,6 +1691,14 @@ class Crawler:
                 answer, kind = alt, alt_kind
         if answer.state == "wait":
             return answer
+        if answer.state == "unreachable" and kind == NOT_ARCHIVED:
+            # the rehearsal's old archive has no robots.txt of this host (design §18.1): what was known stays (the seed
+            # brought the old rules), else none; not asked again for FRESH_S, and no host waits or fails for it
+            known = h is not None and h["robots_state"] in ("rules", "none")
+            self.frontier.set_host(host, robots_state=h["robots_state"] if known else "none", robots_at=self.clock(),
+                                   robots_fail=0)
+            h = self.frontier.host(host)
+            return Robots(h["robots_state"], h["robots_body"] or "")
         if answer.state == "unreachable" and (kind is None or kind.startswith("http_")):
             # a 5xx: an answer with no rules this time; what was known stays (B3), and it is asked again in an hour
             self.frontier.set_host(host, robots_state=(h["robots_state"] if h is not None and h["robots_state"]
@@ -1787,7 +1812,7 @@ class Crawler:
         h = self.frontier.host(host)
         if h is not None and h["probe_status"] is not None:
             return None
-        target = f"{parts.scheme}://{parts.netloc}/nknu-archive-probe-{secrets.token_hex(6)}.html"
+        target = f"{parts.scheme}://{parts.netloc}{PROBE_PREFIX}{secrets.token_hex(6)}.html"
         got = self._request(queue, client, Target(target), "probe", scope_reason=scope_reason, robots_sha=robots.sha)
         if isinstance(got, HostCircuitOpen):
             return None  # nothing was sent; the page request meets the same breaker
@@ -1813,17 +1838,44 @@ class Crawler:
     def _admitted_as(self, row) -> str:
         """What let a row in, for its requests' request.scope (B7; second review 10-26: it said admit:<kind0> for
         every row, so the audit could tell nothing): admit:<verdict>:<owner site>:<kind0>, verdict r1 (a page of its
-        own round-1 site, or an extra page), resource (a part of a round-1 page, or a page of a site a seed moved to),
-        or round2 (a round-two row `retry` brought back: its reason says why)."""
+        own round-1 site inside the list's paths for it, as round1.verdict() places one, or an extra page), resource
+        (a part of a round-1 page, on its own site's host outside those paths too, or a page of a site a seed moved
+        to), or round2 (a round-two row `retry` brought back: its reason says why). The 10-26 rehearsal: ksped's
+        pictures and attachments under /uploadfile/ (its list entry is /resource/ only) said r1, and the scope audit
+        (monitor._placement_breach) read 13 requests as out of bounds. Its review (清单①): on its own site's host
+        outside the paths, only a part that is no page, or a page some page uses (a frame: _used_by_a_page), is a
+        resource; any other page there says r1, so that the audit reads it against the list and sees a page a bug let
+        in, never a resource that proves itself 【Claude 的执行办法】."""
         kind0 = row["kind0"] or row["kind"]
         owner = row["owner_site"] or "-"
+        own = self.plan.site(owner) if owner == scope.site_key(row["url"]) else None
         if row["tier"] not in round1.TIER_OF_IMP.values():
             verdict = "round2"
-        elif owner == scope.site_key(row["url"]) or self.plan.is_extra(row["url"]):
+        elif self.plan.is_extra(row["url"]) or (own is not None and own.round == "1" and own.holds(row["url"])):
             verdict = "r1"
+        elif own is not None and kind0 == "page" and not self._used_by_a_page(row):
+            verdict = "r1"  # a page of its own site's host outside the list's paths that no page uses: a breach
         else:
             verdict = "resource"
         return f"admit:{verdict}:{owner}:{kind0}"
+
+    def _used_by_a_page(self, row) -> bool:
+        """Whether a page uses this row as its part (a page_res entry points at it), or uses the row it was found from
+        when that is no page (a short link, a redirecting part: what it leads to stands for it, _users_of). A row found
+        on a page as a link is not used by it."""
+        cur, seen = row, {row["id"]}
+        for _ in range(outcome.MAX_HOPS):
+            if self.frontier.q("SELECT 1 FROM page_res WHERE res_id=? LIMIT 1", (cur["id"],)):
+                return True
+            up = cur["found_from"]
+            if up is None or up in seen or cur["found_via"] not in ("redirect", "js_redirect"):
+                return False
+            seen.add(up)
+            parent = self.frontier.row_by_id(up)
+            if parent is None or parent["kind"] == "page":
+                return False
+            cur = parent
+        return False
 
     # ---- one row
     def _process(self, queue: str, client: Client, sink: WarcSink, row) -> None:
@@ -2028,6 +2080,9 @@ class Crawler:
         cols: dict[str, Any] = {"url": probe_url, "at": self.clock()}
         if isinstance(got, FetchError):
             kind = error_kind(got)
+            if kind == NOT_ARCHIVED:  # the rehearsal: no answer to keep, and none will come this run (design §18.1)
+                self._probe_tries[(host, ptype)] = PROBE_TRIES
+                return None
             if kind in TRANSPORT_KINDS or kind.startswith("net_"):
                 if kind not in PROBE_UNSENT:  # a timeout or a broken answer may have reached the server (review
                     key = (host, ptype)       # 10-26 phase 3): not asked again before every detail page of this run
@@ -2142,6 +2197,9 @@ class Crawler:
         attempts in all."""
         uid, kind = row["id"], kind or error_kind(exc)
         attempts = row["attempts"] + 1
+        if kind == NOT_ARCHIVED:  # the rehearsal: no answer will ever come from its old archive (design §18.1)
+            self.frontier.finish(uid, state="failed", attempts=attempts, reason=kind)
+            return
         if kind in NET_KINDS:
             self.net.charge(queue, "url", uid, row["attempts"])
         if attempts < MAX_ATTEMPTS:
@@ -2463,12 +2521,21 @@ class Crawler:
         redirect = page.js_redirect
         google: list[dict] = []  # what a script or a refresh sends the page to on Drive, Docs or a calendar
         if redirect is not None and (target := scope.canonical(redirect.href, page.base)) and target != row["url"]:
-            e = self._follow(row, target, "js_redirect", google)
-            self.frontier.link(uid, target, "[js_redirect]" if redirect.how == "script" else "[refresh]", e.verdict)
-            flags.append("js_redirect")
-            cols["final_url"] = e.url or target
-            if e.verdict == "out:login" or urlsplit(target).hostname == "accounts.google.com":
-                flags.append("login")
+            tag = "[js_redirect]" if redirect.how == "script" else "[refresh]"
+            sig = outcome.error_signature(target)
+            if sig is not None:  # a school error page (§10.1), as a 3xx to it (_redirect): never queued; the page is
+                # gone (gone_redirect) or the server's error (error_page: server_error, 连接失败), its words kept as
+                # archived. Not retried as a 3xx's failure is: the page itself answered 200 (【Claude 的执行办法】)
+                self.frontier.link(uid, target, tag, outcome.ERROR_LINK)
+                flags += ["js_redirect", sig.flag if sig.result == outcome.GONE and sig.flag else "error_page"]
+                cols["final_url"] = target
+            else:
+                e = self._follow(row, target, "js_redirect", google)
+                self.frontier.link(uid, target, tag, e.verdict)
+                flags.append("js_redirect")
+                cols["final_url"] = e.url or target
+                if e.verdict == "out:login" or urlsplit(target).hostname == "accounts.google.com":
+                    flags.append("login")
         cols["flags"] = ",".join(dict.fromkeys(flags)) or None
         if "login" in flags or "soft404" in flags:  # archived as it is; not a place to look for more pages
             cols["n_links"] = 0

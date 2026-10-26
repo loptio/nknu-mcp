@@ -900,7 +900,8 @@ class Orphan:
 
 def _landed_nowhere(f: Frontier, uid: int) -> str | None:
     """What a redirecting row comes to when its redirects land on no row (page_completeness's moved: a loop or too
-    many hops is a server error; else the last hop's link verdict: out:login, out:<rule>, unhandled:<why>, or lost);
+    many hops is a server error; else the last hop's link verdict: a school error page's address (bad_link),
+    out:login, out:<rule>, unhandled:<why>, or lost);
     None when they land on a row."""
     end, nowhere = landing(f, uid)
     if nowhere is None:
@@ -910,6 +911,8 @@ def _landed_nowhere(f: Frontier, uid: int) -> str | None:
     to = end["final_url"] if end is not None else None
     got = f.q("SELECT verdict FROM link WHERE src=? AND dst=?", (end["id"], to)) if end is not None and to else []
     verdict = (got[0][0] or "") if got else ""
+    if verdict == outcome.ERROR_OUT:  # a school error page's address (outcome._kept_out)
+        return "bad_link"
     if verdict.startswith("out:login"):
         return "login"
     if verdict.startswith("out:"):

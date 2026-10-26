@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
-from nknu.archive import links, scope
+from nknu.archive import links, outcome, scope
 from nknu.settings import load_settings
 
 PLAN_NAME = "archive_round1.json"
@@ -277,6 +277,15 @@ class Admission:
 GoogleStep = Callable[[str, Mapping[str, Any] | None, str], Admission | None]
 _SHORT_HOW = ("link", "frame", "image")  # how a page may use a short link (a script, a tab or a hidden frame never)
 GOOGLE_UNHANDLED = "unhandled:google"  # a Google address with no Google step to read it (design §7.6)
+# a school error page (outcome.ERROR_SIGNATURES, design §10.1 「错误页本身不入队」, §18.1 「/errorpage/... 那几行本身不
+# 算内容」): never a url row, whoever brings it (a seed list, a page's link or part, a short link's answer). The 10-26
+# rehearsal found the 10-24 archive's url table and Common Crawl bringing 12 of them in as round-1 pages (news.nknu's
+# /errorpage/pagenotfound.aspx, c.nknu's filenotfound.htm?aspxerrorpath= and default.aspx?aspxerrorpath=, ksped's),
+# counted incomplete or thin; only a 3xx to one was kept out (crawler._redirect, which writes outcome.ERROR_LINK and
+# judges the page that redirected). What one holds is the error, never the school's content: a seed or an ordinary link
+# to it is left out (规则不抓, the link table and the seed report list it); a part of a page whose address is one (a
+# picture, a frame, a short link's target) is a broken link of the school's (outcome._kept_out: bad_link, 要人看)
+ERROR_PAGE = outcome.ERROR_OUT
 
 
 def admit(plan: Plan, href: str, base: str | None = None, from_row: Mapping[str, Any] | None = None,
@@ -298,10 +307,13 @@ def admit(plan: Plan, href: str, base: str | None = None, from_row: Mapping[str,
       address, a form's page aside, is unhandled:google (要人看): never out:never_host, which would read 规则不抓 while
       the file it stands for was never read (design §7.6: 认不出的 Google 网址不落到 never_host; second look F2);
     4 place(): scope.judge(), then verdict().
+    Before all of them, a school error page (outcome.error_signature) is left out (ERROR_PAGE), whoever brings it.
     A script a page loads and a tab its platform rule presses are placed directly (never a short link nor Google's)."""
     url = scope.canonical(href, base)
     if url is None:
         return None
+    if outcome.error_signature(url) is not None:  # 0 a school error page: never queued (ERROR_PAGE)
+        return Admission(url, url, Placement("out", ERROR_PAGE, None, None, 0, _kind0(url, how)), "place")
     if how in _SHORT_HOW and scope.is_shortlink(url):
         v = scope.judge(url, directory_sites)
         if v.ok or v.reason in scope.SOFT_OUT:

@@ -1129,7 +1129,8 @@ def _round2(conn: sqlite3.Connection) -> dict:
 
 def _no_row_result(need: str, why: str | None, res_id: int | None = None, action_id: int | None = None) -> str:
     """A page's resource with neither a url row nor a press there (outcome._resource_ctes, r00's branches): one that
-    names a row or a press that is not there is lost; one that names none is what its why says."""
+    names a row or a press that is not there is lost; one that names none is what its why says: a school error page's
+    address is the school's broken link (bad_link, 要人看: outcome._kept_out; review 10-26, it read 规则不抓)."""
     why = why or ""
     if res_id is not None or action_id is not None:
         return "not_discovered"
@@ -1137,6 +1138,8 @@ def _no_row_result(need: str, why: str | None, res_id: int | None = None, action
         return "later"
     if need == "must" and why.startswith("unhandled:"):
         return "unhandled"
+    if why == outcome.ERROR_OUT:
+        return "bad_link"
     if why.startswith("out:login"):
         return "login"
     if why.startswith("out:"):
@@ -1170,7 +1173,7 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
                                  WHERE pg.owner_site = ? AND pr.need IN ('must', 'round2')
                                    AND x.id IS NULL AND a.id IS NULL""", (site,)):
             res = _no_row_result(r["need"], r["why"], r["res_id"], r["action_id"])
-            if res in ("not_discovered", "unhandled"):
+            if res in ("not_discovered", "unhandled", "bad_link"):
                 lost[r["page_id"]].append({"res_key": r["res_key"], "role": r["role"], "result": res,
                                            "zh": outcome.RESULT_LABEL[res], "why": r["why"] or ""})
         others = conn.execute("""SELECT r.id, r.url, r.title, r.kind, r.kind0, r.tier, r.state, r.reason, r.status,

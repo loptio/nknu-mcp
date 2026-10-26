@@ -215,6 +215,10 @@ def net_key(network: str) -> str:
 
 ROUND_KEY = "round"  # meta: the round a frontier.db was made for, written when this version creates the file
 ROUND = "1"
+REHEARSAL_KEY = "rehearsal:seeded"  # meta: the offline rehearsal seeded this archive (rehearsal.py), when
+# meta: the offline rehearsal made this frontier.db (written as the file is made, before its seed: review 10-26, so that
+# a rehearsal stopped in its seed is still a rehearsal's, never taken for a real archive by either side)
+REHEARSAL_STARTED_KEY = "rehearsal:started"
 
 
 def round_of(path: Path) -> str | None:
@@ -226,19 +230,31 @@ def round_of(path: Path) -> str | None:
     writes the -shm: second review, 10-26, the 10-24 archive's -shm). Only when that finds no round and a -wal with
     something in it is there (a new archive whose writer was killed before a checkpoint keeps its first rows there) is
     the file read once more through its WAL; the 10-24 archive's -wal is empty."""
+    return _meta_of(path, ROUND_KEY)
+
+
+def rehearsal_of(path: Path) -> str | None:
+    """When the offline rehearsal seeded this frontier.db (meta REHEARSAL_KEY, design §18.1), or made it and was
+    stopped before its seed ended (REHEARSAL_STARTED_KEY): its hosts' addresses are the old archive's or a made-up
+    private one, so no command that sends requests may run on it. None for any other archive. Read like round_of:
+    never migrates, never creates the file."""
+    return _meta_of(path, REHEARSAL_KEY) or _meta_of(path, REHEARSAL_STARTED_KEY)
+
+
+def _meta_of(path: Path, key: str) -> str | None:
     if not path.exists():
         return None
-    got = _read_round(f"file:{path}?mode=ro&immutable=1")
+    got = _read_meta(f"file:{path}?mode=ro&immutable=1", key)
     wal = Path(f"{path}-wal")
     if got is None and wal.exists() and wal.stat().st_size > 0:
-        got = _read_round(f"file:{path}?mode=ro")
+        got = _read_meta(f"file:{path}?mode=ro", key)
     return got
 
 
-def _read_round(uri: str) -> str | None:
+def _read_meta(uri: str, key: str) -> str | None:
     conn = sqlite3.connect(uri, uri=True)
     try:
-        row = conn.execute("SELECT value FROM meta WHERE key=?", (ROUND_KEY,)).fetchone()
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     except sqlite3.OperationalError:  # no meta table: the 10-24 crawler's
         return None
     finally:

@@ -26,6 +26,10 @@ from urllib.parse import parse_qsl, urlsplit
 GONE, ERROR = "gone", "error"
 SSO_HOSTS = frozenset({"sso.nknu.edu.tw", "news.nknu.edu.tw"})  # the SSO server (140.127.40.173) and its notices
 ERROR_LINK = "error_page"  # the link verdict of an error page: it is never queued (it holds nothing of the school's)
+# what round1.admit() makes of an error page anything else brings (a seed list, a page's link or part, a short link's
+# answer; review of the 10-26 rehearsal): left out, no url row. As a part of a page (page_res.why) or where a short link
+# leads (the link verdict) it is the school's broken link (bad_link, 要人看), never 规则不抓 (_kept_out)
+ERROR_OUT = "out:error_page"
 
 
 @dataclass(frozen=True)
@@ -452,11 +456,13 @@ _COUNTS = ("n_must", "n_school", "n_todo", "n_retry", "n_failed", "n_wait", "n_u
 
 def _kept_out(verdict: str, link: bool = True) -> str:
     """SQL: what a resource or a redirect target with no url row came to, by the verdict that kept it out of the queue
-    (the link table's, or page_res.why): behind a sign-in, left out by a rule, or else lost (never complete). A link
+    (the link table's, or page_res.why): a school error page's address (ERROR_OUT: the school's broken link), behind a
+    sign-in, left out by a rule, or else lost (never complete). A link
     verdict unhandled:<why> (a Google address with no Google step to read it, round1.admit) is unhandled, for a person;
     a page_res.why of that kind is placed before this (need must), and with any other need is lost as before."""
     unhandled = f"WHEN {verdict} LIKE 'unhandled:%' THEN 'unhandled' " if link else ""
-    return (f"CASE WHEN {verdict} LIKE 'out:login%' THEN 'login' WHEN {verdict} LIKE 'out:%' THEN 'rule' "
+    return (f"CASE WHEN {verdict} = '{ERROR_OUT}' THEN 'bad_link' "
+            f"WHEN {verdict} LIKE 'out:login%' THEN 'login' WHEN {verdict} LIKE 'out:%' THEN 'rule' "
             f"{unhandled}ELSE 'not_discovered' END")
 
 

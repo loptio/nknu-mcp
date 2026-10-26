@@ -517,10 +517,14 @@ def test_a_redirect_to_an_error_page_is_retried_then_a_server_error(tmp_path, to
 
 
 def test_ssos_not_found_page_fetched_directly_is_gone(tmp_path):
+    """Only a row an older version let in (round1.admit keeps error pages out since the 10-26 rehearsal:
+    test_rehearsal_fixes) can be the not-found page itself; fetched, it is gone, never a page with content."""
     url = "https://sso.nknu.edu.tw/errorpage/pagenotfound.aspx?aspxerrorpath=/x"
     crawler, net, _ = crawl(tmp_path, {"pagenotfound": page("<p>404</p>")},
                             plan=plan(NEWS, site("sso.nknu.edu.tw/errorpage")))
-    seed(crawler, url)
+    assert seed(crawler, url) == round1.ERROR_PAGE and url not in rows(crawler)
+    placed = round1.Placement("r1", None, "sso.nknu.edu.tw/errorpage", 1, 0, "page")
+    crawler._enqueue(url, placement=placed, url=url, found_via="seed")  # what admit() let in before 10-26
     drive(crawler, net, QS)
     assert result(crawler, url) == "gone"
 

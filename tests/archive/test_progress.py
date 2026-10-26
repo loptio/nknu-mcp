@@ -625,6 +625,22 @@ def test_resources_with_no_row_are_listed_under_their_page(arch):
     assert home["label"] == "review"
 
 
+def test_a_resource_whose_address_is_an_error_page_is_listed_under_its_page_as_a_broken_link(arch):
+    """Review 10-26 (清单②): outcome._kept_out says bad_link (要人看) for a part whose address is a school error page;
+    the site's page said 规则不抓 and listed nothing under the page."""
+    from nknu.archive import outcome
+
+    f, ids, root = arch
+    err = "https://c.nknu.edu.tw/aca/filenotfound.htm?aspxerrorpath=/aca/uploadfile/a.jpg"
+    res(f, ids["aca_home"], err, "img", None, why=outcome.ERROR_OUT)
+    d = dash(root)
+    d.refresh_slow()
+    home = next(p for p in d.site(ACA)["pages"] if p["id"] == ids["aca_home"])
+    assert {(x["res_key"], x["result"]) for x in home["lost"]} == {(err, "bad_link")}
+    assert home["label"] != "complete"
+    assert "学校的链接坏了" in visible(progress_site_html(d.site(ACA)))
+
+
 def test_a_sites_page_filters_by_category_and_by_page_label(arch):
     _f, ids, root = arch
     d = dash(root)

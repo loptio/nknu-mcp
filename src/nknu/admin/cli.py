@@ -524,19 +524,23 @@ def _archive_root(path: str | None):
     return Path(path).expanduser().resolve() if path else REPO_ROOT / "archive"
 
 
-def _round1_root(dir: str | None):
+def _round1_root(dir: str | None, *, online: bool = False):
     """The archive directory of a command that writes to frontier.db (seed, run, retry): never the 10-24 crawler's
     archive, which is kept as it is (design §3, record 二·8) and whose crawl is not resumed (CLAUDE.md: 全新重爬). Its
     frontier.db has no round mark (frontier.round_of), and opening it to write would add the new columns and tables;
     run would clear its STOP and go on with the old crawl. Without --dir that is the repository's archive/ until it is
     renamed archive-2026-10-24. Review 10-26; 【Claude 的执行办法】."""
-    from nknu.archive.frontier import round_of
+    from nknu.archive.frontier import rehearsal_of, round_of
 
     root = _archive_root(dir)
     db = root / "frontier.db"
     if db.exists() and round_of(db) is None:
         typer.echo(f"{root} 是 10-24 旧爬虫的存档（frontier.db 没有第一轮的标记）：第一轮不在旧存档上续跑，也不改它。"
                    "先照设计第 3 节把它改名成 archive-2026-10-24/（改名前先问用户），或用 --dir 指定新的存档目录。")
+        raise typer.Exit(1)
+    if online and rehearsal_of(db) is not None:  # online: the command may send requests (or look names up)
+        typer.echo(f"{root} 是离线彩排的资料夹（设计第 18.1 节；主机地址是旧存档的或假的）：会连网的命令不在它上面跑。"
+                   "要看彩排结果用 verify、status、browse、reconcile --no-r6，或 nknu archive rehearse --check。")
         raise typer.Exit(1)
     return root
 
@@ -587,7 +591,7 @@ def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起�
     if round_ != 1:
         typer.echo("现在只有第一轮的起点（--round 1）")
         raise typer.Exit(1)
-    root = _round1_root(dir)
+    root = _round1_root(dir, online=True)
     old_path = Path(old).expanduser().resolve()
     old_db = old_path if old_path.is_file() else old_path / "frontier.db"
     if not old_db.exists():
@@ -655,7 +659,7 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
     from nknu.archive import reconcile
     from nknu.crawl import schoollock
 
-    root = _round1_root(dir)
+    root = _round1_root(dir, online=True)
     span = _gap_option(gap)
     if end_wait <= 0:
         typer.echo("--end-wait 是秒数，要大于 0（默认 1800）")
@@ -928,7 +932,7 @@ def archive_jscheck(dir: str = typer.Option(None, "--dir"),
     from nknu.archive import jscheck
 
     _drop_secrets(jscheck.SECRET_ENV)
-    root = _round1_root(dir)
+    root = _round1_root(dir, online=set_ == (None, None))
     _archive_db(root)
     if set_ != (None, None):
         key, verdict = set_
@@ -983,7 +987,7 @@ def archive_reconcile(batch: str = typer.Option(None, "--batch", help="这一批
     from nknu.crawl import schoollock
 
     _drop_secrets(jscheck.SECRET_ENV)
-    root = _round1_root(dir)
+    root = _round1_root(dir, online=not (no_r6 or enqueue))
     _archive_db(root)
     try:
         if enqueue:
@@ -1120,3 +1124,58 @@ def archive_review(url_id: int = typer.Argument(None, help="要标记的网址�
         raise typer.Exit(1) from None
     typer.echo(f"已标记 {url_id}（原来是「{outcome.RESULT_LABEL.get(result, result)}」）为学校那边的问题（人看过）；"
                "这个网址再抓一次，标记就作废")
+
+
+@archive_app.command("rehearse", hidden=True)
+def archive_rehearse(old: str = typer.Option(None, "--old", help="10-24 旧存档的目录（只读：数据库按 immutable 打开，WARC 只读）"),
+                     dir: str = typer.Option(..., "--dir", help="彩排的新资料夹（不能是旧存档，也不能在它里面）"),
+                     sites: str = typer.Option(None, "--sites", help="只跑这些网站（网站键，逗号分隔）；默认第一轮全部"),
+                     check: str = typer.Option(None, "--check", help="预期清单（rehearsal_expect.json）：不跑彩排，"
+                                                                    "只拿 --dir 的彩排结果逐条核对"),
+                     facts: str = typer.Option(None, "--facts", help="v1 的 facts.db（只读，v1 已知公告当起点）；默认不读")
+                     ) -> None:
+    """离线彩排（设计第 18.1 节，隐藏命令）：用真的爬虫程序（seed --round 1 + run）跑第一轮，网络换成「从旧存档回答」：同一个
+    网址（规范写法相同）的 GET 照旧存档的回应原样回，旧存档没有的（没按过的按钮 POST、没抓过的附件、Google API）回
+    not_archived（失败、不重试、不算服务器或网络的）。不连网（断网绊线）、DNS 用旧库 host 表、时钟是假的（等待只把时钟往前拨），
+    不拿全机锁、不用金钥。跑完自动 reconcile（不含 R6）和 verify，报告写进 <dir>/reports/。
+    --check <清单> --dir <彩排资料夹>：逐条核对，印出 PASS/FAIL 和理由；全过退出码 0，有 FAIL 退出码 2。"""
+    import logging
+    from pathlib import Path
+
+    from nknu.archive import rehearsal
+
+    root = Path(dir).expanduser().resolve()
+    if check:
+        expect = Path(check).expanduser().resolve()
+        if not expect.is_file():
+            typer.echo(f"找不到预期清单：{expect}")
+            raise typer.Exit(1)
+        if not (root / "frontier.db").is_file():
+            typer.echo(f"找不到彩排的待抓清单：{root / 'frontier.db'}")
+            raise typer.Exit(1)
+        try:
+            got = rehearsal.check(expect, root)
+        except (ValueError, KeyError) as exc:
+            typer.echo(f"预期清单读不懂：{exc}")
+            raise typer.Exit(1) from None
+        for r in got:
+            typer.echo(f"{'PASS' if r.ok else 'FAIL'}  {r.id}：{r.why}")
+        failed = [r for r in got if not r.ok]
+        typer.echo(f"共 {len(got)} 条：PASS {len(got) - len(failed)}、FAIL {len(failed)}")
+        raise typer.Exit(2 if failed else 0)
+    if not old:
+        typer.echo("要给旧存档的目录：--old <旧存档>（或用 --check 只核对）")
+        raise typer.Exit(1)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per replayed request is noise here
+    try:
+        done = rehearsal.rehearse(Path(old).expanduser(), root, sites=_site_list(sites),
+                                  facts_db=Path(facts).expanduser() if facts else None, say=typer.echo)
+    except rehearsal.RehearsalRefused as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from None
+    except FileNotFoundError as exc:
+        typer.echo(f"找不到：{exc}")
+        raise typer.Exit(1) from None
+    typer.echo(f"彩排完：run 结束原因 {done.run_end.get('reason')}；验收 {done.verify_conclusion}（退出码 "
+               f"{done.verify_code}）；摘要 {done.summary}")

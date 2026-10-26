@@ -7,10 +7,11 @@ command runs it only when no run holds run.lock and this process holds the machi
 Per site of a batch (reconcile_sites), in this order (the first two change what the result views say):
 - thin: a 200 web page whose body (its platform's content area, else the whole page; a Google Sites embed-code
   block's words and what its pressed tabs and embed boxes brought counted in) has fewer than THIN_CHARS characters
-  once the lines most pages of its kind repeat are taken out (its page type with TEMPLATE_MIN_PAGES pages or more,
-  else its site with as many, else nothing taken out; a line on TEMPLATE_SHARE of them or more), that needs no
-  resource (page_res need must, the pager aside), whose type is no js or frame and that is no list walked with rows:
-  url.flags thin, taken off again when that no longer holds (thin_pages; rejudge too).
+  once the lines most pages of its kind repeat are taken out (its page type with TEMPLATE_MIN_PAGES distinct pages or
+  more, else its site with as many, else nothing taken out; a line on TEMPLATE_SHARE of them or more; a page and its
+  copies under other addresses count once), that needs no resource (page_res need must, the pager aside), whose
+  type is no js or frame and that is no list walked with rows: url.flags thin, taken off again when that no longer
+  holds (thin_pages; rejudge too).
 - R7: the school's own .js the page loads (its page_res script rows), read as text with the page's inline scripts by
   the same links.extract (jsread.bindings, selectors matched back to the page's elements): what clicking an element
   does that the page alone does not say is written on the page (page_res, zone r7:<zone>: a click that loads
@@ -84,11 +85,22 @@ CHECK_LABEL = {
 }
 STATUS_LABEL = {PASS: "✓ 过", FAIL: "✗ 没过", WARN: "⚠ 要看", SKIP: "没检查"}
 
-# thin (design §10.1): the design's numbers, to be set again by the offline rehearsal (§18.1) against the 25 questions'
-# answer pages, none of which may be thin
+# thin (design §10.1): the design's numbers, checked by the offline rehearsal (§18.1) on 10-26 (archive-rehearsal-2:
+# 7,197 stored pages of 46 sites read back; the 25 questions' answer pages: 137 addresses, 59 of them stored pages
+# there). None of the 59 is thin at any setting tried (THIN_CHARS 10–100, TEMPLATE_SHARE 0.3–0.9, TEMPLATE_MIN_PAGES
+# 3–20), so they set no bound; what is left of the thin pages does. Pages counted page by page (before 10-26):
+# 30/0.5/5 made 59 thin; 20 → 56, 40 → 145 (+86: album and tag pages with a title of 30–40 characters, a contact
+# box); share 0.4 → 67, 0.6 → 49; min pages 3 → 76, 8 → 52. Every change of share or min pages moved only id.nknu's
+# copies: its WordPress shows one listing under several addresses, so a listing's lines were on half of its kind and
+# went out as layout (9 listings of 150–200 characters thin). Distinct pages counted once (_distinct): 50 thin, and
+# share 0.4/0.5/0.6 → 50/50/49, min pages 3/5/8 → 53/50/48: the numbers no longer swing. What is thin then: school
+# 404 pages answered 200 (「404: File not found」 16 characters, tecs's nodata.html 14), empty details and categories
+# (0–8), album pages whose pictures are not fetched (ksped 8, tecs 29), one-post tag listings (17–20). Kept as the
+# design has them 【Claude 的执行办法, 10-26】: 30 keeps every 404 page and empty page in with a margin (the highest is
+# 16) and leaves out what has a title and a line of its own (the cluster at 30–40); 0.5 and 5 sit in the flat part.
 THIN_CHARS = 30
-TEMPLATE_SHARE = 0.5  # a line on half of the pages or more is the layout's
-TEMPLATE_MIN_PAGES = 5
+TEMPLATE_SHARE = 0.5  # a line on half of the distinct pages or more is the layout's
+TEMPLATE_MIN_PAGES = 5  # distinct pages (a page and its copies under other addresses are one)
 # R3b, R4b (design §18.2b): below this a warning; set again with the pilot's three sites (§18.2). One constant: the
 # acceptance's (monitor.COVER_MIN), which the dashboard and verify also warn by
 COVER_WARN = monitor.COVER_MIN
@@ -379,8 +391,20 @@ def page_lines(html: str, url: str, parts: Iterable[str] = ()) -> dict[str, int]
     return lines_of(texts)
 
 
+def _distinct(pages: Sequence[Mapping[str, int]]) -> list[Mapping[str, int]]:
+    """These pages with each set of lines once: a page and its copies under other addresses (a WordPress listing as
+    category/x/page/2 and category/category/x …) are one page of the layout, never several votes for their own
+    words (the 10-26 rehearsal; near-duplicates are taken out before template detection, as Bar-Yossef &
+    Rajagopalan 2002 do with mirrors; 【Claude 的执行办法】)."""
+    return list({frozenset(p): p for p in pages}.values())
+
+
 def _template(pages: Sequence[Mapping[str, int]]) -> frozenset[str]:
-    """The lines TEMPLATE_SHARE of these pages or more hold (each page counted once per line)."""
+    """The lines TEMPLATE_SHARE of these pages or more hold (each distinct page counted once per line), or none when
+    there are fewer than TEMPLATE_MIN_PAGES distinct pages."""
+    pages = _distinct(pages)
+    if len(pages) < TEMPLATE_MIN_PAGES:
+        return frozenset()
     seen = Counter(line for p in pages for line in p)
     least = TEMPLATE_SHARE * len(pages)
     return frozenset(line for line, n in seen.items() if n >= least)
@@ -421,8 +445,9 @@ def _decide_thin(fr: Frontier, site: str, rows, lines: Mapping[int, Mapping[str,
     for r in rows:
         if r["id"] in lines:
             by_type[r["page_type"] or ""].append(r["id"])
-    site_tpl = _template([lines[i] for i in lines]) if len(lines) >= TEMPLATE_MIN_PAGES else frozenset()
-    type_tpl = {t: _template([lines[i] for i in ids]) for t, ids in by_type.items() if len(ids) >= TEMPLATE_MIN_PAGES}
+    site_tpl = _template([lines[i] for i in lines])
+    type_tpl = {t: _template([lines[i] for i in ids]) for t, ids in by_type.items()
+                if len(_distinct([lines[i] for i in ids])) >= TEMPLATE_MIN_PAGES}
     must = {r[0] for r in fr.q("SELECT DISTINCT pr.page_id FROM page_res pr JOIN url u ON u.id = pr.page_id "
                                "WHERE u.owner_site=? AND pr.need='must' AND pr.role <> 'pager'", (site,))}
     scripted = {r[0] for r in fr.q(
@@ -902,14 +927,17 @@ def verify_archive(fr: Frontier, root: Path, sites: Iterable[str], *, cache: boo
 
 
 def _menu_status(fr: Frontier, target: str) -> str:
-    """has (a row with a result), waiting (a row still waiting: todo, retry), rule (the rules make no row: the link
-    table or scope.judge says so; a Google address is its API rows), or missing."""
+    """has (a row with a result), waiting (a row still waiting: todo, retry), bad_link (a school error page's address,
+    outcome.ERROR_OUT: the school's broken link, 要人看, never a rule: review 10-26), rule (the rules make no row: the
+    link table or scope.judge says so; a Google address is its API rows), or missing."""
     row = _row_of(fr, target)
     if row is not None:
         return "waiting" if _result(fr, row["id"]) in ("todo", "retry") else "has"
     verdict = fr.q("SELECT verdict FROM link WHERE dst=? LIMIT 1", (target,))
     if verdict:
         v = verdict[0][0] or ""
+        if v == outcome.ERROR_OUT:
+            return "bad_link"
         if v.startswith(("out:", "unhandled:", "bad_url")):
             return "rule"
         return "has" if scope.is_google_link(target) else "missing"
@@ -924,12 +952,15 @@ def _r1(fr: Frontier, menus: Mapping[str, str]) -> tuple[Check, list[Found]]:
     for target, page in sorted(menus.items()):
         s = _menu_status(fr, target)
         counts[s] += 1
-        if s in ("waiting", "missing"):
+        if s in ("waiting", "missing", "bad_link"):
             items.append({"target": target, "page": page, "status": s})
         if s == "missing":
             found.append(Found("R1", target, f"选单项目，在 {page}"))
-    status = FAIL if counts["missing"] or counts["waiting"] else PASS
-    out = Check(status, {"menu_links": len(menus), **{k: counts[k] for k in ("has", "rule", "waiting", "missing")},
+    # the school's broken menu link: nothing the crawler missed (no Found), but never a pass unseen (outcome: bad_link
+    # is 要人看 and a page using one is never complete) 【Claude 的执行办法】
+    status = FAIL if counts["missing"] or counts["waiting"] else WARN if counts["bad_link"] else PASS
+    out = Check(status, {"menu_links": len(menus),
+                         **{k: counts[k] for k in ("has", "rule", "waiting", "missing", "bad_link")},
                          "compared": bool(menus)}, items)
     if not menus:  # review 10-26: 「没发现」 is no 「没有」
         out.note = ("没认出选单（这个网站的网页没有 nav、header、footer、aside，也没有平台档案）：这一项没比到，"

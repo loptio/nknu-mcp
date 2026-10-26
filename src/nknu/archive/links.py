@@ -96,7 +96,16 @@ DECOR_FILE = re.compile(r"(?i)(logo|icon|banner|arrow|btn|button|bg[_.-]|spacer|
 # uploads are content, never a template, however often they repeat: editors' upload folders, Joomla's dated images
 _NEVER_TEMPLATE = re.compile(r"(?i)/(?:uploadfile|userfiles)/|/images/\d{4}/")
 MIN_SIZE = 80  # a width or height under this is an icon or a tracking pixel
-REPEAT_PAGES, REPEAT_SHARE = 5, 0.3  # the repeat rule: on 5 pages and 30% of a site's stored pages, never in a body
+# the repeat rule (design §7.2 版型图): on 5 pages and 30% of a site's stored pages, never in a body. Checked by the
+# offline rehearsal on 10-26 (archive-rehearsal-2, 7,437 pictures round-1 pages need, counted at the end of the run):
+# 64 are layout by the rule, the same 64 the run skipped. The page count hardly matters (2 → 64, 10 → 61, 20 → 59);
+# the share does: 0.5 → 54 (it loses elec's zh and en layout, each on 48–50% of a bilingual site's pages: logo, icons,
+# header background), 0.2 → 76 (+12: clcts's section icons on 21%, layout too), 0.1 → 97 (adds the 10–20% band, where
+# english's and ee's banners under /upload/ and Google Sites pictures are not plainly layout). The 64 are logos, menu
+# buttons, icons and header pictures (where they sit: div#top, WUC_Flash_Header, a.logo); uploads (_NEVER_TEMPLATE)
+# never count. Kept 【Claude 的执行办法, 10-26】: a skipped picture is never fetched, so a lower share risks content for
+# a few requests saved (each picture is fetched once however many pages use it)
+REPEAT_PAGES, REPEAT_SHARE = 5, 0.3
 IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:repeat")
 
 # GET paging (design §9): one parameter of these names changes, or WordPress's /page/N/; the link reads as a number
