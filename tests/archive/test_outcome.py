@@ -472,6 +472,8 @@ ACTION_CASES = [
     ("ok", {"kind": "download", "sniff": "pdf"}),
     ("ok", {"kind": "pager"}),
     ("ok", {}),
+    ("thin", {"kind": "detail", "reason": "empty_detail"}),  # a detail a press brought back empty (§10.1 nonempty)
+    ("ok", {"kind": "pager", "reason": "empty_detail"}),  # only a detail is judged by its content
     ("unknown", {"state": "parked"}),
     ("unknown", {"status": None}),
     ("unknown", {"status": 204}),
@@ -491,15 +493,16 @@ def test_every_action_result_code_has_a_case():
 
 def test_any_button_combination_lands_on_a_known_code_and_never_on_ok_by_accident(f):
     lid = add_url(f, page_role="list")
-    for state, status, kind, sniff in itertools.product(
+    for state, status, kind, sniff, reason in itertools.product(
             ("pending", "active", "done", "failed", "mismatch", "superseded", "parked"),
             (None, 200, 204, 302, 401, 403, 404, 451, 500), ("pager", "detail", "download", "click", "select"),
-            (None, "html", "pdf")):
-        add_action(f, lid, state=state, status=status, kind=kind, sniff=sniff)
+            (None, "html", "pdf"), (None, "empty_detail")):
+        add_action(f, lid, state=state, status=status, kind=kind, sniff=sniff, reason=reason)
     for r in f.q("SELECT * FROM action_result"):
         assert r["result"] in outcome.ACTION_RESULTS
         ok = (r["state"] == "done" and r["status"] == 200 and r["kind"] in ("pager", "detail", "download", "click")
-              and not (r["kind"] == "download" and r["sniff"] in ("html", None)))
+              and not (r["kind"] == "download" and r["sniff"] in ("html", None))
+              and not (r["kind"] == "detail" and r["reason"] == "empty_detail"))
         assert (r["result"] == "ok") == ok, dict(r)
 
 

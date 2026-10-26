@@ -140,9 +140,11 @@ CREATE TABLE IF NOT EXISTS js_page(url_id INTEGER PRIMARY KEY, page_type TEXT, a
 -- discovery coverage (NULL when it cannot be estimated), and whether every gate passed (a site is 爬完 only then)
 CREATE TABLE IF NOT EXISTS reconcile_site(site TEXT PRIMARY KEY, batch TEXT NOT NULL, at TEXT NOT NULL,
   checks TEXT NOT NULL, cover_cc REAL, cover_old REAL, gates_ok INTEGER NOT NULL);
--- what a detail page for an id that does not exist looks like, per platform host (§10.1)
+-- what a detail page for an id that does not exist looks like, per platform host and detail type (§10.1); empty: 1
+-- when that page is an empty detail by the platform file's nonempty (profiles.empty_detail), the second of the three
+-- things gone_id needs (NULL: not a 200 page, or no body area to judge)
 CREATE TABLE IF NOT EXISTS id_probe(host TEXT NOT NULL, page_type TEXT NOT NULL, url TEXT, status INTEGER,
-  final_url TEXT, sha256 TEXT, len INTEGER, title TEXT, at REAL, PRIMARY KEY(host, page_type));
+  final_url TEXT, sha256 TEXT, len INTEGER, title TEXT, at REAL, empty INTEGER, PRIMARY KEY(host, page_type));
 CREATE TABLE IF NOT EXISTS seed_src(url TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(url, source)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 -- a person looked at a row and says what it came to is the school's to answer for (mark school_side, review 10-26
@@ -186,6 +188,11 @@ CREATE INDEX IF NOT EXISTS action_list ON action(list_id, state);
 CREATE UNIQUE INDEX IF NOT EXISTS action_click ON action(site, row_key) WHERE kind = 'click';
 CREATE INDEX IF NOT EXISTS request_started ON request(started);
 CREATE INDEX IF NOT EXISTS url_sha ON url(sha256);
+-- a Drive item by its id and a folder's items (google_api._item, expand, resync, resource_keys): without these each
+-- lookup reads the whole table, mostly under the frontier's lock (review 10-26 phase 3: 52k items, 2,000 in one folder,
+-- expand 4.1 s and resync 3.5 s, 0.02 s and 0.07 s with them)
+CREATE INDEX IF NOT EXISTS drive_item_file ON drive_item(file_id);
+CREATE INDEX IF NOT EXISTS drive_item_parent ON drive_item(parent_id);
 """
 ALL_QUEUES = "*"  # the pause row that holds every queue (our network is down)
 NETWORKS = ("school", "other")  # the school's addresses (140.127.*) and everything else, told apart when one is down

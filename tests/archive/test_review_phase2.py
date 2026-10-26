@@ -509,10 +509,15 @@ def test_a_new_archives_round_is_read_from_its_wal_when_the_writer_never_closed(
 
 
 def test_the_seed_report_lists_what_waits_for_the_google_step_apart_from_the_rules_and_v1s_left_out(tmp_path):
+    from nknu.archive import google_api
     from tests.archive.test_seeds_round1 import cc, crawler_for, old_archive, probe
 
-    drive_url = "https://drive.google.com/file/d/1AbCdEfGhIjK/view"
+    # with the Google step in, a Drive file is its metadata row; a writing nobody has seen waits for a person
+    file_url = "https://drive.google.com/file/d/1AbCdEfGhIjK/view"
+    drive_url = "https://drive.google.com/viewer?srcid=1AbCdEfGhIjK"
     old = old_archive(tmp_path, extra_urls=[(50, drive_url, "drive.google.com", "page", 1, "link", 1, "done", None, 0,
+                                             0),
+                                            (51, file_url, "drive.google.com", "page", 1, "link", 1, "done", None, 0,
                                              0)])
     facts = tmp_path / "facts.db"
     conn = sqlite3.connect(facts)
@@ -524,8 +529,10 @@ def test_the_seed_report_lists_what_waits_for_the_google_step_apart_from_the_rul
     report = seeds.seed_round1(c, old=old, facts_db=facts, cc_dir=cc(tmp_path), probe=probe(tmp_path))
     assert any(b.source == "v1_known" and b.reason == "out:login" for b in report.blocked)
     text = report.text()
-    google, rules = text.split("## 等 Google 那一步")[1], text.split("## 被新规则挡掉的网址")[1].split("## ")[0]
+    google, rules = text.split("## 认不出的 Google 网址")[1], text.split("## 被新规则挡掉的网址")[1].split("## ")[0]
     assert drive_url in google and drive_url not in rules
+    assert file_url not in google and file_url not in rules
+    assert c.frontier.row(google_api.item_url("1AbCdEfGhIjK"))["kind0"] == "drive"
     assert "v1_known" in rules
 
 

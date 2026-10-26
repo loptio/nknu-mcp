@@ -8,13 +8,16 @@ row or a page came to is outcome.py's views.
   §6.9), which fetch.Client itself asks for before every request to a school host.
 - Every address goes in through round1.admit() (review 10-26 A2, B7): a page's links and parts, a 3xx, a script
   redirect, a short link's answer, the seeds. Wrappers come off, a short link is one GET whose answer
-  (round1.short_answer) is judged as if the page had linked its target, a Drive, Docs or Calendar address waits for
-  the Google step as unhandled:google (要人看, never 规则不抓: B8), and the rest is scope.judge() then round1.verdict():
+  (round1.short_answer) is judged as if the page had linked its target, a Drive, Docs or Calendar address goes to
+  the Google step (google_api.step; one it cannot read is unhandled:google, 要人看, never 规则不抓: B8, as every such
+  address is with google_step=False), and the rest is scope.judge() then round1.verdict():
   this round's (pending, owner_site, tier, leaf, kind0, prio), round two's (later, round2:<why>), or no row (out:<rule>,
   the link table only). A round-1 page's attachments, images, frames, forms, short links and school scripts are its
   resources: page_res rows with their need (must, no with why, round2), so nothing it uses is dropped unseen.
-- Caps hold rows back (held, cap:site/file/image/variant/depth: design §9); a pager link adds no depth.
-- Queue = the server that answers (getaddrinfo, the lowest IPv4); Google's names share one named queue. A name that
+- Caps hold rows back (held, cap:site/file/image/variant/depth: design §9); a pager link adds no depth. A platform's
+  list page goes first (prio 0) and has no variant cap; its detail pages have no page cap (§7.4).
+- Queue = the server that answers (getaddrinfo, the lowest IPv4); Google's web names share one named queue (google),
+  its APIs another (googleapis: google_api.queue_for). A name that
   does not resolve is tried again after 10 min, doubling up to 6 h, then given up (`archive retry dns`). The order in
   a queue (§6.7): tier, prio, the host the connection is on, depth, id.
 - The gap after every response (§6.3, B6): a random wait inside the run's gap (default 2–5 s; 1–2 s once the pilot
@@ -53,10 +56,27 @@ row or a page came to is outcome.py's views.
 - No request goes out on a queue that is paused, nor to a host before its Crawl-delay is over.
 - A run looks up the hosts of the rows it may fetch that nobody looked up (`retry` brings back round two's and held
   rows; the old archive's hosts are seeded with queue '?'), and ends when nothing is left, or when nothing left comes
-  due within END_WAIT_S (B1: retries, DNS back-off, cool-downs and server pauses are left for the next run instead of
-  holding the locks for hours); a row left active with no worker holding it is a crash (crash:left_active), and rows
-  due that no queue can take end the run (stuck). run_end says why (finished, waiting, stuck, stop_file, sigterm,
-  limit, warc_write, disk_low, db_error, no_school_lock) and which sites the run covered.
+  due within end_wait_s (B1: retries, DNS back-off, cool-downs and server pauses are left for the next run instead of
+  holding the locks for hours; C0: END_WAIT_S by default, `archive run --end-wait`, RUN_END_WAIT_S there); a row left
+  active with no worker holding it is a crash (crash:left_active), and rows due that no queue can take end the run
+  (stuck). run_end says why (finished, waiting, stuck, stop_file, sigterm, limit, warc_write, disk_low, db_error,
+  no_school_lock), which sites the run covered and how many presses wait.
+- Platform files (profiles.py, design §7.4) and their postbacks (postback.py, §7.5): a page of a profiled site is read
+  with its content area; once stored, its presses as archived (a list's next page, a row's detail or download) are
+  action rows of its own server queue, which a worker takes before its url rows, builds from that very page in the
+  WARC, sends once (a POST is never sent again by itself: a failure starts the chain again from its GET once, then
+  post_failed) and hands back (an answer's links count on the list page, a Location is its resource). A click whose
+  writing a clicks rule reads is a GET row (oia's tabs: their JSON's content counts on the page) or a POST press (ee's
+  file buttons: the address they answer is the page's attachment). A button to press that no press covers is
+  unhandled:unpressed (要人看). Every GET-paged list's walk is written again when one of its pages has its answer.
+- Google (google_api.py, §7.6): a Drive, Docs or Calendar address is the Google step's API rows on the googleapis queue
+  (its key in its header only), each answer read for the rows it makes; their entries are written on every page that
+  uses them, a short link's or an attachment's way there too. With no key the queue waits (no_api_key, no failure).
+- Page types (pagetypes.py, §8.3): each 200 web page gets its type and the signs it reads, before it is finished.
+- A platform's detail page is checked against its host's id probe once per detail type (§10.1: empty_detail,
+  gone_id); a file the school's page says is missing is looked at once more before it is gone (§10.2).
+- A page fetched again writes its page_res anew; what its embed boxes, forms, tabs, file buttons and pressed details
+  brought is read back from the archive (_replay_parts), never lost and never asked for again.
 - Nothing is parsed into facts here.
 """
 
@@ -87,7 +107,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
 
-from nknu.archive import links, outcome, round1, scope, sniff
+from nknu.archive import google_api, links, outcome, pagetypes, postback, profiles, round1, scope, sniff
 from nknu.archive.frontier import ALL_QUEUES, NETWORKS, Frontier, net_key, network_of, wall
 from nknu.archive.links import extract
 from nknu.archive.robots import (
@@ -140,6 +160,9 @@ CONN_PAUSE_S = 900.0  # B2: a server that does not connect: its whole queue rest
 CONN_GIVE_UP = 8  # B2: that many in a row (about two hours): a warning, and the lab for school hosts never answered off
 DOOR_WINDOW_S = 120.0  # a door (scheme, port) of a server that answers on another within this long is closed, not down
 END_WAIT_S = 600.0  # B1: a run whose soonest row is due later than this ends, leaving its rows for the next run
+# C0 (design §11): `archive run --end-wait`'s own default, longer than the fixed 15-minute rest of a server (and the
+# pause of one that does not connect), so that one such rest never ends a long run nobody watches 【Claude 的执行办法】
+RUN_END_WAIT_S = 1800.0
 DNS_TIME_EVERY_S = 3600.0  # §6.2: each host's name lookup is timed again this often (host.dns_ms)
 IDLE_EXIT_S = 30
 IDLE_POLL_S = 5.0  # an idle queue looks again this often, or when its next row is due if that is sooner
@@ -159,6 +182,12 @@ CONN_KINDS = frozenset({"connect"})  # B2: refused, connect timeout, TLS handsha
 TLS_KINDS = frozenset({"tls", "tls_cert"})  # a TLS failure; tls_cert: the certificate failed its check (expired …)
 SWITCH_KINDS = CONN_KINDS | TLS_KINDS  # §6.6: a scheme the host may not speak
 TRANSPORT_KINDS = frozenset({"dns", "connect", "tls", "tls_cert", "timeout"})  # reached no server (and net_<type>)
+# the id probe (design §10.1, once per platform host and detail type): one that got no answer is asked again with a
+# later detail page; a timeout or a broken answer (net_*) may have reached the server, so at most PROBE_TRIES of those
+# a run; a lookup, a connection or a handshake that failed sent nothing, and does not count (review 10-26 phase 3,
+# 【Claude 的执行办法】)
+PROBE_TRIES = 2
+PROBE_UNSENT = frozenset({"dns", "connect", "tls", "tls_cert"})
 NET_WINDOW_S = 120.0
 NET_QUEUES = 3
 NET_PAUSE_S = 300.0
@@ -209,6 +238,9 @@ _ROLE_OF0 = {"file": "file", "image": "img", "form": "form", "shortlink": "short
 _HARD_SKIP = scope.HARD_OUT | {"trap", "too_long"}  # a pending row the rules of today leave out
 # what a page uses when it links it, on its own site too (design §4.4: a link to an attachment, a form, a short link)
 _USED_KINDS = frozenset({"file", "form", "shortlink", "image"})
+# a button the platform file says to press that no press of its page covers (postback.PageRead.unplanned: outside
+# the grid the walk reads, a row without its title …): nobody presses it, so the page waits for a person 【Claude 的执行办法】
+UNPRESSED = postback.UNPRESSED
 
 
 class _Stopped(Exception):
@@ -517,10 +549,16 @@ class Crawler:
                  disk_free: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free,
                  gap: tuple[float, float] = GAP, sites: frozenset[str] | None = None,
                  campus_url: str | None = CAMPUS_URL, local_address: Callable[[], str | None] = local_address,
-                 decide: Callable[[str, str], str | None] | None = None):
+                 decide: Callable[[str, str], str | None] | None = profiles.decision, end_wait_s: float = END_WAIT_S,
+                 google_step: bool = True):
         """plan: the site list (round1.load() when not given). gap: the run's (check_gap). sites: only these sites'
         rows (`archive run --sites`). campus_url: the campus check (None: no check, campus stays unknown). decide:
-        the platform file's decision for a site and a writing's key (profiles.decision; none yet: unknown)."""
+        the platform file's decision for a site and a writing's key (profiles.decision; None: nothing decided, every
+        writing unknown). end_wait_s: a run ends when what is left comes due later than this (C0, `archive run
+        --end-wait`). google_step: Drive, Docs and Calendar addresses go to google_api's step (False: they wait as
+        unhandled:google, B8)."""
+        if end_wait_s <= 0:
+            raise ValueError(f"end_wait_s is a time in seconds greater than 0 (got {end_wait_s:g})")
         self.root = root
         self.gap = check_gap(gap)
         self.plan = plan if plan is not None else round1.load()
@@ -539,7 +577,11 @@ class Crawler:
         self.campus = "unknown"  # on, off or unknown: written on every request row (B4)
         self._campus_at, self._campus_addr = -math.inf, None
         self.decide = decide or (lambda _site, _key: None)
-        self.google: round1.GoogleStep | None = None  # the Google step (google_api.py, a later phase): B8 meanwhile
+        self.end_wait_s = float(end_wait_s)
+        # the Google step (design §7.6): a Drive, Docs or Calendar address becomes its API rows; None: B8's wait
+        self.google: round1.GoogleStep | None = google_api.step(self.plan) if google_step else None
+        # the platform chains (design §7.5): the presses planned from stored pages, and every list's walk
+        self.chains = postback.Chains(self.frontier, root, clock=clock)
         self._real_net = client_factory is None  # the real network: run() needs the machine-wide lock
         self._fetched = 0
         self._count_lock = threading.Lock()
@@ -553,6 +595,7 @@ class Crawler:
         self._dns_timed: dict[str, float] = {}
         self._doors: dict[str, dict[tuple[str, int], float]] = {}  # queue -> (scheme, port) -> its last answer
         self._stuck = 0  # loops in a row with rows due that no queue takes
+        self._probe_tries: dict[tuple[str, str], int] = {}  # (host, detail type) -> id probes that got no answer
 
     def _new_client(self, warc: WarcSink | None) -> Client:
         return archive_client(warc, resend_gap_s=self.gap[0], clock=self.clock, sleep=self.sleep)
@@ -568,6 +611,10 @@ class Crawler:
         row = self.frontier.host(host)
         if row is not None and row["queue"] not in ("?", "", None):
             return row["queue"]
+        named = google_api.queue_for(host)  # Google's APIs and its forms' host: a named queue each (design §6.1)
+        if named is not None:
+            self.frontier.set_host(host, queue=named, dns_at=self.clock(), dns_fail=0)
+            return named
         started = time.perf_counter()
         queue, ip, cname = self.resolver(host)
         self.frontier.set_host(host, queue=queue, ip=ip, cname=cname, dns_at=self.clock(),
@@ -641,6 +688,8 @@ class Crawler:
         if placement.state == "pending":
             moved = self._scheme_rewrite(url)
             rewritten, url = moved != url, moved
+        if prio is None and kind0 == "page" and profiles.page_kind(url) == "list":
+            prio = PRIO_LIST  # a platform's list page (design §7.4 list_paths: prio 0)
         prio = _PRIO_OF0.get(kind0, 1) if prio is None else prio
         existing = self.frontier.row(url)
         if existing is not None:
@@ -675,6 +724,8 @@ class Crawler:
             h = self.frontier.host(host)
             state = "failed" if h["dns_fail"] >= DNS_GIVE_UP else "pending"
             return state, "dns", h["dns_at"] + _dns_wait(h["dns_fail"])
+        if host == google_api.API_HOST and not google_api.key_set():
+            return "pending", "no_api_key", 0.0  # §7.6: waits for a run with the key (hold_for_key), no failure
         if (until := self.frontier.deny_until(deny_dir(url))) > self.clock():
             return "pending", "denied_dir", until  # its directory is waiting out a streak of refusals
         return "pending", None, 0.0
@@ -701,13 +752,16 @@ class Crawler:
             return "cap:depth"
         if owner is None:
             return None
+        pk = profiles.page_kind(url)
+        if pk == "detail" and kind == "page":
+            return None  # a platform's detail pages are free of the caps (design §7.4 detail_paths: 免上限)
         if kind == "file" and self.frontier.count_site(owner, "file") >= self.file_cap:
             return "cap:file"
         if kind == "image" and self.frontier.count_site(owner, "image") >= self.image_cap:
             return "cap:image"
         if kind == "page" and self.frontier.count_site(owner, "page") >= self.site_cap:
             return "cap:site"
-        if (kind in ("page", "file") and not scope.is_platform_path(url)
+        if (kind in ("page", "file") and not scope.is_platform_path(url) and pk != "list"  # lists: no variant cap
                 and self.frontier.count_path(owner, url.split("?", 1)[0]) >= self.variant_cap):
             return "cap:variant"
         return None
@@ -778,9 +832,13 @@ class Crawler:
         n = self.frontier.requeue_active()
         if n:
             log.info("requeued %d URLs left active by the last run", n)
+        chains = self.chains.resume()  # §7.5 step 9: a chain left pressing starts again from its GET
+        if chains:
+            log.info("%d lists start their walk again from their GET (left pressing by the last run)", chains)
+        google_api.hold_for_key(self.frontier, self.clock())  # §7.6: no key, the googleapis queue waits (no failure)
         sites = sorted(self.sites) if self.sites else None
         self.frontier.event("info", "run_start", json.dumps({"pid": os.getpid(), "gap": list(self.gap),
-                                                             "sites": sites,
+                                                             "sites": sites, "end_wait_s": self.end_wait_s,
                                                              "school_lock": str(schoollock.lock_path())}))
         workers: dict[str, threading.Thread] = {}
         try:
@@ -794,6 +852,8 @@ class Crawler:
                 if not self._paused():
                     now = self.clock()
                     due = self.frontier.queues(now, self.sites)
+                    for q in self.chains.due_queues(now, self.sites):  # a queue whose only work is a press
+                        due.setdefault(q, [])
                     # the campus check goes on SSO's queue, and only when that queue may send: a worker started for a
                     # check its paused queue cannot make would idle, and keep the run from ever ending (second review)
                     if (self._campus_due() and (cq := self.campus_queue()) not in (None, "dns-fail")
@@ -818,9 +878,14 @@ class Crawler:
             for t in workers.values():
                 t.join(timeout=120)
             with suppress(sqlite3.Error):
+                self.chains.sso_totals()  # §7.5 step 7: SSO 公告中心's categories add up to its whole list
+            with suppress(sqlite3.Error):
                 left, nxt = self.frontier.waiting(self.sites)
+                presses, p_nxt, _active = self.chains.waiting(self.sites)
+                nxt = min((t for t in (nxt, p_nxt) if t is not None), default=None)
                 self.frontier.event("info", "run_end", json.dumps({"reason": self.end_reason or "stop", "sites": sites,
-                                                                   "pending": left, "next_due": nxt}))
+                                                                   "pending": left, "presses": presses,
+                                                                   "next_due": nxt}))
 
     def _should_end(self) -> bool:
         """With no worker alive: whether the run ends now (and why, in end_reason). Nothing left: finished. Rows still
@@ -829,21 +894,36 @@ class Crawler:
         dispatch): the hosts are looked up once more, and if that is not it two loops in a row, the run ends (stuck),
         with an error event, instead of waiting for ever with both locks held."""
         left, nxt = self.frontier.waiting(self.sites)
-        if left == 0:
+        presses, p_nxt, active = self.chains.waiting(self.sites)
+        if left == 0 and presses == 0:
             self.end_reason = self.end_reason or "finished"
             log.info("nothing left to fetch")
             return True
+        if active:  # presses left active with no worker holding them (a bug's): sent or not, never sent again
+            for list_id in sorted({a["list_id"] for a in active if a["kind"] != "click"}):
+                self.chains.restart_chain(list_id, "crash:left_active")
+            n = self.frontier.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' "
+                                "AND state='active'")
+            self.frontier.event("error", "left_active", f"{len(active)} presses were left active with no worker "
+                                f"holding them (a crawler bug): their lists start again from their GET, {n} file "
+                                "buttons failed as crash:left_active (nknu archive retry click puts them back)")
+            return False
+        if presses:  # what the presses wait for counts as the rows' waits do
+            nxt = min((t for t in (nxt, p_nxt) if t is not None), default=None)
+            if nxt is None:
+                return False  # only active rows and presses being restarted: the run looks again
         if nxt is None:  # only active rows, and no worker holds them
             n = self.frontier.x("UPDATE url SET state='failed', reason='crash:left_active' WHERE state='active'")
             self.frontier.event("error", "left_active", f"{n} URLs were left active with no worker holding them (a "
                                 "crawler bug): failed as crash:left_active (nknu archive retry crash tries again)")
             return False
         now = self.clock()
-        if nxt - now > END_WAIT_S:
+        if nxt - now > self.end_wait_s:
             self.end_reason = self.end_reason or "waiting"
-            log.info("only rows that wait for later are left (%d): left for the next run", left)
+            log.info("only rows that wait for later are left (%d, %d presses): left for the next run", left, presses)
             return True
-        if nxt <= now and not [q for q in self.frontier.queues(now, self.sites) if q != "dns-fail"]:
+        if (nxt <= now and not [q for q in self.frontier.queues(now, self.sites) if q != "dns-fail"]
+                and not self.chains.due_queues(now, self.sites)):
             if self._place_hosts():
                 self._stuck = 0
                 return False
@@ -911,6 +991,13 @@ class Crawler:
                 if not paused and self._step(self._campus_step, queue, client, sink):
                     continue
                 self._dns_step(queue)
+                # a chain's next press goes before the queue's url rows (design §6.7, §7.5 step 4)
+                press = None if paused else self.chains.next_action(queue, self.clock(), self.sites)
+                if press is not None:
+                    idle_since = None
+                    self._prefer[queue] = press["host"]
+                    self._press(queue, client, sink, press)
+                    continue
                 row = None if paused else self._next(queue)
                 if row is None:
                     idle_since = idle_since or self.clock()
@@ -956,6 +1043,7 @@ class Crawler:
         self._tl.row = row["id"]
         try:
             self._process(queue, client, sink, row)
+            self._walk_check(self._tl.row)
         except (_Stopped, _Paused):
             self.frontier.finish(self._tl.row, state="pending", fetched_at=None)
         except _Offline:
@@ -980,6 +1068,147 @@ class Crawler:
             self.frontier.finish(current["id"], state="failed", reason=f"crash:{type(exc).__name__}")
             self.frontier.event("error", "crash", f"{type(exc).__name__}: {exc}"[:500], current["host"],
                                 current["url"])
+
+    def _walk_check(self, uid: int) -> None:
+        """A row some GET-paged list's pager links to has its answer, or none for good (failed, held, skipped, a file
+        where a page was expected): that list's walk again (postback.get_walk_for), so that it never stays walking
+        or claims an end its last page did not show. A row still waiting changes nothing."""
+        r = self.frontier.row_by_id(uid)
+        if r is not None and r["state"] not in ("pending", "active"):
+            self.chains.get_walk_for(uid)
+
+    # ---- a press (design §7.4 clicks, §7.5)
+    def _press(self, queue: str, client: Client, sink: WarcSink, a) -> None:
+        """One press of a chain or of a file button, whatever happens: a press that never went out (the run stops, the
+        queue rests, the network is down) waits as pending; one that may have reached the server is never sent again
+        (design §6.4: a POST is sent once). What stops the run stops it."""
+        try:
+            self._press_one(queue, client, sink, a)
+        except (_Stopped, _Paused, _Offline) as exc:
+            self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+            if isinstance(exc, _Offline):
+                for h in self.frontier.hosts_of(queue):
+                    client.reset_host(h)
+        except _DiskLow:
+            self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+            self.halt("disk_low")
+        except ArchiveWriteError as exc:  # sent, its answer not kept: failed, never sent again
+            self.chains.failed(a, "warc_write")
+            self.frontier.event("error", "warc_write", f"{exc} — the run stops; fix the archive directory, then "
+                                "nknu archive run again"[:500], a["host"], a["target"])
+            self.halt("warc_write")
+        except sqlite3.DatabaseError:
+            log.exception("queue %s: the frontier database failed, stopping the run", queue)
+            self.halt("db_error")
+        except schoollock.SchoolLockNotHeld as exc:
+            self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+            self._no_school_lock(exc, None)
+        except Exception as exc:  # one bad press never stops the queue
+            log.exception("queue %s: press %s", queue, a["id"])
+            self._press_dead(a, f"crash:{type(exc).__name__}")
+            self.frontier.event("error", "crash", f"press {a['id']}: {type(exc).__name__}: {exc}"[:500], a["host"],
+                                a["target"])
+
+    def _press_dead(self, a, reason: str) -> None:
+        """A press that came to nothing the chain can go on from, and that no automatic start again would mend (an
+        answer too large to keep, a crash): failed; a next page's ends its walk as post_failed (`nknu archive retry
+        post_failed` walks it again once a person looked)."""
+        self.frontier.x("UPDATE action SET state='failed', reason=?, done=? WHERE id=? AND state IN ('active',"
+                        "'pending')", (reason, self.clock(), a["id"]))
+        if a["kind"] == "pager":
+            self.chains._walk_end(a, "post_failed", f"page {a['step']}: {reason}")
+
+    def _press_one(self, queue: str, client: Client, sink: WarcSink, a) -> None:
+        """Build the POST from the page it was planned on as archived (postback.target_for), send it once on the
+        list's own server queue after the gap like any request, and hand the answer back (_press_answer)."""
+        if self.disk_free(self.root) < MIN_FREE_BYTES:
+            self.frontier.event("error", "disk_low", f"less than {MIN_FREE_BYTES // 1024**3} GB free under "
+                                f"{self.root}: the run stops before the archive cannot be written", a["host"],
+                                a["target"])
+            raise _DiskLow
+        list_row = self.frontier.row_by_id(a["list_id"])
+        if list_row is None:
+            self._press_dead(a, "no_list_row")
+            return
+        target = self.chains.target_for(a)
+        if target is None:  # the press cannot be built from its page (mismatch, written by target_for)
+            if a["kind"] == "pager":  # the walk cannot go on: never last_page
+                reason = self.frontier.q("SELECT reason FROM action WHERE id=?", (a["id"],))[0][0]
+                self.chains._walk_end(a, "mismatch:page", f"page {a['step']}: no press could be built ({reason})")
+            return
+        host = urlsplit(target.url).hostname or a["host"]
+        got = self._request(queue, client, target, "postback", scope_reason=self._admitted_as(list_row))
+        if isinstance(got, HostCircuitOpen):  # nothing was sent
+            self._cool_host(host)
+            client.reset_host(host)
+            self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+            return
+        self._count()
+        if isinstance(got, RetryLater):  # the server asked us to wait: it may have read the POST, never sent again
+            self._rest_queue(queue, client, host, target.url, got)
+            self.chains.failed(a, "retry_after")
+            return
+        if isinstance(got, TooLarge):  # answered, too large to keep: nobody presses it again by itself
+            self._press_dead(a, "media_type" if isinstance(got, UnwantedType) else "too_large")
+            return
+        if isinstance(got, FetchError):
+            kind = error_kind(got)
+            if kind in CONN_KINDS:  # it never reached the server: the server's failure (B2), the press waits
+
+                def back() -> None:
+                    self.frontier.x("UPDATE action SET state='pending' WHERE id=? AND state='active'", (a["id"],))
+
+                self._conn_failed(queue, client, {"host": host, "id": None}, target.url, got, back=back,
+                                  fail=lambda: self.chains.failed(a, kind))
+                return
+            self.chains.failed(a, kind)  # a timeout, a TLS failure, a 5xx: the chain starts again from its GET once
+            return
+        self._answered(host, target.url, got.status)
+        self._press_answer(a, list_row, got, sink)
+
+    def _press_answer(self, a, list_row, got: Snapshot, sink) -> None:
+        """An answer to a press (design §7.5 step 6). A page that answers a detail or a next page is read as the list
+        page's (its links and parts, _parts with the list row) before postback.answered() checks it; a redirect's
+        Location is the list page's resource (link table: [postback]); a file button's address is the attachment of
+        every page that shows the button (§7.4)."""
+        warc = self._warc_path(sink)
+        list_id = a["list_id"]
+        ctype = got.headers.get("content-type", "")
+        if got.status == 200 and a["kind"] in ("pager", "detail") and sniff.sniff(got.body, ctype) == "html":
+            text = got.text if got.text is not None else _lenient(got.body, ctype)
+            page = extract(text, got.url, profiles.content_css(got.url))
+            entries, _n = self._parts(list_row, page, list_id, html=text, warc=warc, warc_offset=got.warc_offset)
+            self.frontier.add_page_res(list_id, entries)
+            google_api.resync(self.frontier, list_id)
+        out = self.chains.answered(a, got, warc)
+        if out.location is not None:
+            e = self._resource_of(out.location, list_row, "redirect", list_row, [list_id])
+            self.frontier.link(list_id, out.location, "[postback]", e.verdict)
+        for f in out.files:
+            pages = [r[0] for r in self.frontier.q("SELECT DISTINCT page_id FROM page_res WHERE action_id=?",
+                                                   (a["id"],))] or [list_id]
+            e = self._resource_of(f, list_row, "click", list_row, pages, kind0="file")
+            self.frontier.link(list_id, f, "[click]", e.verdict)
+            if e.id is not None:
+                for pid in pages:
+                    self.frontier.add_page_res(pid, [{"res_key": f, "how": "get", "role": "file", "need": "must",
+                                                      "res_id": e.id}])
+
+    def _resource_of(self, target: str, page_row, found_via: str, via, page_ids: list[int],
+                     kind0: str | None = None) -> Enqueued:
+        """An address a press led to, as the page's (design §7.5 step 6, §7.4): judged like a link of that page (a
+        Drive or Docs address by the Google step, its entries on the pages; a short link asked where it leads);
+        kind0 file: a file button's answer, the page's attachment unless a rule leaves the address out."""
+        adm = self.admit(target, None, page_row, "link")
+        if adm is None:
+            return Enqueued("bad_url", None, None, None)
+        if adm.step == "google" and self.google is not None:
+            return self._google_users(adm, page_row, via, "link", found_via, page_ids)
+        placement = adm.placement
+        if kind0 == "file" and adm.step == "place" and placement.verdict in ("r1", "round2"):
+            placement = self._transclude(adm.url, page_row, "file")  # the page's attachment, wherever it is
+        return self._enqueue(target, placement=placement, url=adm.url, from_row=page_row,
+                             depth=page_row["depth"] + 1, found_via=found_via, found_from=via["id"])
 
     # ---- the wait after each request (design §6.3)
     def _gap(self, host: str, took: float) -> None:
@@ -1011,7 +1240,7 @@ class Crawler:
             self.sleep(min(wait, MAX_CRAWL_DELAY_S))
 
     def _send(self, queue: str, client: Client, target: Target, purpose: str, pass_statuses: frozenset[int] | None,
-              scope_reason: str | None, robots_sha: str | None) -> Snapshot | FetchError:
+              scope_reason: str | None, robots_sha: str | None, max_bytes: int = MAX_BYTES) -> Snapshot | FetchError:
         """One fetch. Whatever follows a request that may have reached the server (an answer, a failure, an
         exception of any kind), each request it put on the wire is logged and the full gap is waited."""
         host = urlsplit(target.url).hostname or ""
@@ -1022,7 +1251,7 @@ class Crawler:
         self._crawl_delay(host)
         started, status, error, sent, got = self.clock(), None, None, True, None
         try:
-            got = client.fetch(target, NO_RATE, max_bytes=MAX_BYTES, pass_statuses=pass_statuses)
+            got = client.fetch(target, NO_RATE, max_bytes=max_bytes, pass_statuses=pass_statuses)
             status = got.status
             return got
         except HostCircuitOpen as exc:  # refused before sending: nothing reached the server, nothing to wait for
@@ -1077,8 +1306,8 @@ class Crawler:
 
     def _request(self, queue: str, client: Client, target: Target, purpose: str,
                  pass_statuses: frozenset[int] | None = None, scope_reason: str | None = None,
-                 robots_sha: str | None = None) -> Snapshot | FetchError:
-        got = self._send(queue, client, target, purpose, pass_statuses, scope_reason, robots_sha)
+                 robots_sha: str | None = None, max_bytes: int = MAX_BYTES) -> Snapshot | FetchError:
+        got = self._send(queue, client, target, purpose, pass_statuses, scope_reason, robots_sha, max_bytes)
         if isinstance(got, HostCircuitOpen):
             return got
         host = urlsplit(target.url).hostname or ""
@@ -1205,7 +1434,8 @@ class Crawler:
         return until
 
     # ---- a server that does not connect (B2)
-    def _conn_failed(self, queue: str, client: Client, row, url: str, exc: FetchError | None) -> None:
+    def _conn_failed(self, queue: str, client: Client, row, url: str, exc: FetchError | None, *,
+                     back: Callable[[], None] | None = None, fail: Callable[[], None] | None = None) -> None:
         """No connection at this address. A door (scheme, port) of a server that answers on its other doors is closed:
         the URL's failure (_failed: an attempt, retried later), no server pause (second review 10-26: else one such
         address would pause its whole server each time it came up, for ever). Otherwise the server does not connect:
@@ -1213,10 +1443,14 @@ class Crawler:
         review: it used to cost every row of the server one attempt every CONN_GIVE_UP failures). The failure counts
         against the server only while its network is known to work: not during a pause of that network, nor after
         the school's pause until one of its servers answered (_NetWatch.unsure). At CONN_GIVE_UP in a row,
-        _server_down."""
+        _server_down. back, fail: what a press does instead of a row (a POST that never reached the server waits;
+        one at a closed door fails, never sent again)."""
         host = row["host"]
         if self._closed_door(queue, url):
-            self._failed(queue, row, exc, kind="connect")
+            if fail is not None:
+                fail()
+            else:
+                self._failed(queue, row, exc, kind="connect")
             return
         now = self.clock()
         before, before_pause = self.frontier.server_fails(queue), self.frontier.pause_of(queue)
@@ -1229,7 +1463,10 @@ class Crawler:
         self.net.charge(queue, "conn", queue, before, before_pause)
         for h in self.frontier.hosts_of(queue):
             client.reset_host(h)
-        self._back(row["id"], "conn_pause")
+        if back is not None:
+            back()
+        else:
+            self._back(row["id"], "conn_pause")
         if n == 1 and not unsure:
             self.frontier.event("warn", "conn_pause", f"{host} does not connect: server queue {queue} rests "
                                 f"{CONN_PAUSE_S / 60:.0f} min (no URL loses an attempt)", host, url)
@@ -1459,7 +1696,10 @@ class Crawler:
     # ---- one row
     def _process(self, queue: str, client: Client, sink: WarcSink, row) -> None:
         kind0 = row["kind0"] or row["kind"]
-        if kind0 != "login_check":  # the rules of today, for rows that entered under older ones
+        # an API row is the Google step's own address (design §7.6): never judged again by scope (a listing's next
+        # page carries its token and may pass 1,000 characters, which scope would read as too_long)
+        api = google_api.is_api(row["url"])
+        if kind0 != "login_check" and not api:  # the rules of today, for rows that entered under older ones
             verdict = scope.judge(row["url"])
             if verdict.reason in _HARD_SKIP and not (kind0 == "script" and verdict.reason == "media"):
                 self.frontier.finish(row["id"], state="skipped", reason=f"out:{verdict.reason}", fetched_at=None)
@@ -1508,10 +1748,20 @@ class Crawler:
             if self._not_due(host):  # the Crawl-delay after the probe
                 self.frontier.finish(uid, state="pending", fetched_at=None)
                 return
+        if kind0 == "page":  # a platform's detail page: its host's id probe once per detail type (design §10.1)
+            waited = self._id_probe(queue, client, row, robots, admitted)
+            if waited is not None:
+                self.frontier.finish(uid, state="pending", reason="retry_after", next_at=waited, fetched_at=None)
+                return
+            if self._not_due(host):
+                self.frontier.finish(uid, state="pending", fetched_at=None)
+                return
         if kind0 == "image" and self._decor_repeat(row):
             self.frontier.finish(uid, state="skipped", reason="decor:repeat", fetched_at=None)
             return
-        got = self._request(queue, client, Target(url), "page", scope_reason=admitted, robots_sha=robots.sha)
+        target = google_api.target(self.frontier, url) if api else Target(url)
+        got = self._request(queue, client, target, "page", scope_reason=admitted, robots_sha=robots.sha,
+                            max_bytes=google_api.max_bytes(url) if api else MAX_BYTES)
         if isinstance(got, HostCircuitOpen):  # nothing was sent
             h = self.frontier.host(host)
             before = (h["cooldown_until"], h["cooldown_s"])
@@ -1543,8 +1793,129 @@ class Crawler:
                 return
             self._failed(queue, row, got)
             return
+        if api and got.status >= 400 and self._api_error(queue, row, got, sink):
+            return
         self._answered(host, url, got.status)
         self._store(queue, row, got, sink)
+        if api and got.status == 200 and kind0 in ("drive", "drive_list", "calendar"):
+            stored = self.frontier.row_by_id(uid)
+            if stored is not None and stored["state"] == "done":  # what the answer holds (google_api.read)
+                google_api.read(self.frontier, stored, got, self._google_add)
+
+    # ---- Google's APIs (design §7.6)
+    def _api_error(self, queue: str, row, got: Snapshot, sink) -> bool:
+        """A 4xx of Google's API, sorted by its reason (google_api.classify, design §7.6's table): kept as answered
+        (api_error, login, too_large: _store, then the columns it says); a quota or rate answer rests the queue and
+        retries the row as any GET; a key problem rests the queue for the run and puts the row back, no attempt used
+        (the next run's hold_for_key lifts the rest). Never a refusal streak of a directory (_answered: ten 403s of
+        quota would pause /drive/v3/files whole). Whether it handled the answer."""
+        err = google_api.classify(got.status, got.body, got.headers)
+        if err is None:
+            return False
+        now = self.clock()
+        if err.action == "retry":
+            self.frontier.pause(queue, now + (err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S),
+                                f"{row['host']}: {err.url_reason}")
+            self._failed(queue, row, kind=err.url_reason)
+            return True
+        if err.action == "key":
+            # the reason starts with api_key, which hold_for_key() reads as a key's rest when the next run starts
+            self.frontier.pause(queue, now + (err.pause_s or google_api.KEY_PAUSE_S), f"api_key: {err.reason}")
+            self.frontier.event("warn", "key_check", f"Google 不接受金钥（{err.reason}）：googleapis 这条队这次 run "
+                                "暂停，下次 nknu archive run 开跑时再试；这一行放回待抓，不算失败", row["host"],
+                                row["url"])
+            self.frontier.finish(row["id"], state="pending", reason="api_key", fetched_at=None)
+            return True
+        self._store(queue, row, got, sink)
+        cols = google_api.error_cols(err)
+        if cols:
+            if "flags" in cols:
+                old = self.frontier.row_by_id(row["id"])["flags"]
+                cols["flags"] = ",".join(dict.fromkeys(filter(None, [*(old or "").split(","), cols["flags"]])))
+            self.frontier.finish(row["id"], **cols)
+        return True
+
+    def _google_add(self, url: str, placement: round1.Placement, from_row, found_via: str) -> tuple[int | None, bool]:
+        """google_api.read()'s way to make a row (google_api.Add): a content row, a listing's next page, a child."""
+        e = self._enqueue(url, placement=placement, url=url, from_row=from_row, found_via=found_via,
+                          found_from=from_row["id"], depth=from_row["depth"])
+        return e.id, e.verdict not in ("dup", "scheme_switch")
+
+    def _google(self, adm: round1.Admission, *, from_row, how: str, depth: int, found_via: str,
+                found_from: int | None = None, zone: str | None = None,
+                text: str | None = None) -> tuple[Enqueued, list[dict]]:
+        """An address the Google step took (design §7.6): every row it makes and the page_res entries of the page that
+        uses it (google_api.uses: an embed showing three calendars makes three; attach: a folder read already brings
+        all it holds). Returns the Enqueued of its first row (else of its first use) for the link table, and the
+        entries."""
+        first: Enqueued | None = None
+        entries: list[dict] = []
+        for u in google_api.uses(self.plan, adm.link, from_row, how):
+            e = self._enqueue(u.url or u.link, placement=u.placement, url=u.url or u.link, from_row=from_row,
+                              depth=depth, found_via=found_via, found_from=found_from)
+            if first is None or (first.id is None and e.id is not None):
+                first = e
+            entries += google_api.attach(self.frontier, u, e.id if u.url is not None else None, zone=zone, text=text)
+        return first or Enqueued(adm.placement.reason or "out", None, None, adm.placement), entries
+
+    def _google_users(self, adm: round1.Admission, from_row, via, how: str, found_via: str,
+                      page_ids: list[int]) -> Enqueued:
+        """A resource row `via` (a short link, an attachment, a frame) that leads to a Drive, Docs or Calendar address:
+        the pages that use it get the address's entries as if they had linked it (design §7.7), each brought up to
+        date. from_row: the round-1 row its placement is by (the page, or the resource row, which has its owner and
+        tier)."""
+        e, entries = self._google(adm, from_row=from_row, how=how, depth=via["depth"], found_via=found_via,
+                                  found_from=via["id"])
+        for pid in page_ids:
+            self.frontier.add_page_res(pid, entries)
+            google_api.resync(self.frontier, pid)
+        return e
+
+    # ---- the id probe (design §10.1)
+    def _id_probe(self, queue: str, client: Client, row, robots: Robots, admitted: str) -> float | None:
+        """Once per platform host and detail type, before its first detail page: the address of an item that cannot
+        exist (profiles.id_probe_url: SSO's UNID of 40 zeros, c.nknu's nid=999999999), its answer kept in id_probe
+        (with whether it is an empty detail). A page is gone_id only when the probe answered 200 with an empty detail
+        and the page is itself one (_page). Returns the time the server queue rests until (Retry-After), else None. A
+        probe that got no answer is asked again with a later page (one that may have reached the server, a timeout or
+        a broken answer, at most PROBE_TRIES times a run); any answer, an error too, is kept."""
+        probe_url = profiles.id_probe_url(row["url"])
+        if probe_url is None:
+            return None
+        host, ptype = row["host"], pagetypes.type_key(row["url"], row["site"])
+        if self.frontier.q("SELECT 1 FROM id_probe WHERE host=? AND page_type=?", (host, ptype)):
+            return None
+        if self._probe_tries.get((host, ptype), 0) >= PROBE_TRIES:
+            return None  # it timed out (or broke off) that often this run: the next run asks again
+        got = self._request(queue, client, Target(probe_url), "id_probe", scope_reason=admitted,
+                            robots_sha=robots.sha)
+        if isinstance(got, HostCircuitOpen):
+            return None
+        if isinstance(got, RetryLater):
+            return self._rest_queue(queue, client, host, probe_url, got)
+        cols: dict[str, Any] = {"url": probe_url, "at": self.clock()}
+        if isinstance(got, FetchError):
+            kind = error_kind(got)
+            if kind in TRANSPORT_KINDS or kind.startswith("net_"):
+                if kind not in PROBE_UNSENT:  # a timeout or a broken answer may have reached the server (review
+                    key = (host, ptype)       # 10-26 phase 3): not asked again before every detail page of this run
+                    self._probe_tries[key] = self._probe_tries.get(key, 0) + 1
+                return None
+            cols["status"] = int(kind[5:]) if kind.startswith("http_") and kind[5:].isdigit() else 0
+        else:
+            text = None
+            if got.status == 200 and sniff.sniff(got.body, got.headers.get("content-type", "")) == "html":
+                text = got.text if got.text is not None else _lenient(got.body, got.headers.get("content-type", ""))
+            empty = profiles.empty_detail(probe_url, text) if text is not None else None
+            cols.update(status=got.status, sha256=got.sha256, len=len(got.body),
+                        final_url=scope.canonical(got.headers.get("location", ""), probe_url)
+                        if got.status in REDIRECTS else None,
+                        title=extract(text, probe_url).title if text else None,
+                        empty=None if empty is None else int(empty))
+        names = ["host", "page_type", *cols]
+        self.frontier.x(f"INSERT OR REPLACE INTO id_probe({', '.join(names)}) VALUES ({','.join('?' * len(names))})",
+                        (host, ptype, *cols.values()))
+        return None
 
     def _door_failed(self, queue: str, client: Client, sink: WarcSink, row, exc: FetchError, kind: str) -> None:
         """The row's address refused a connection or a TLS handshake (its probe's, or its own): its other scheme once
@@ -1655,7 +2026,7 @@ class Crawler:
         if h is None:
             return
         directory = deny_dir(url)
-        if status in DENY_STATUSES:
+        if status in DENY_STATUSES and host != google_api.API_HOST:  # an API's 403 is its reason's (_api_error)
             run = self.frontier.deny(directory, host)
             if run >= DENY_STREAK:
                 until = self.clock() + DENY_WAIT_S
@@ -1776,22 +2147,37 @@ class Crawler:
             cols["kind"] = "embed"  # the page's part, never a round-1 page itself (design §4.4, §7.6)
             if kind0 == "form" and ("closedform" in row["url"] or _FORM_CLOSED.search(text or "")):
                 flags.append("form_closed")
-            if kind0 == "embed":
-                self._embed(row, snap, text or "")
             cols["flags"] = ",".join(flags) or None
             self.frontier.finish(uid, **cols)
+            # what an embed box holds, and what a form's description holds (B12), count on the pages that use it
+            self._part_answer(row, text or "", cols["warc"], snap.warc_offset, self._users_of(row))
             return
         if kind0 in outcome._EXPECTED_FILE:
             cols["kind"] = _KIND_OF0.get(kind0, "file") if sniffed == "html" else sniff.kind_of(sniffed)
             if sniffed == "html" and "<input" in (text or "").lower() and \
                     re.search(r"(?i)<input[^>]+type\s*=\s*['\"]?password", text or ""):
                 flags.append("login")  # an attachment that sends a sign-in page (not_file otherwise: never followed)
+            said = profiles.school_says(row["url"], text) if sniffed == "html" else None
+            if said is not None:  # the school's own page says the file is missing, or its link broken (§10.2, B6)
+                step = profiles.says_step(said, row["reason"], row["attempts"], self.clock())
+                if "flags" in step:
+                    flags.append(step.pop("flags"))
+                cols.update(step)
+                if cols["state"] == "pending":
+                    cols["fetched_at"] = None  # looked at once more GONE_RECHECK_S later: the same twice is gone
             if kind0 == "image" and cols["kind"] == "file":  # a scan sent as a picture: the page's attachment
                 self.frontier.x("UPDATE page_res SET role='file' WHERE res_id=? AND role='img'", (uid,))
             if kind0 == "sitemap" and sniffed != "html":
                 self._sitemap(row, snap)
-            cols["flags"] = ",".join(flags) or None
+            content = None
+            if kind0 == "click" and sniffed != "html":  # a tab pressed by its platform rule (§7.4): oia's JSON
+                content = profiles.tab_content(text)
+                if content is None:
+                    flags.append("click_empty")  # success is not true, or the content is empty: 要人看 (thin)
+            cols["flags"] = ",".join(dict.fromkeys(flags)) or None
             self.frontier.finish(uid, **cols)
+            if content is not None:  # the tab's content is part of the pages that use it
+                self._part_answer(row, content, cols["warc"], snap.warc_offset, self._users_of(row))
             return
         if sniffed != "html":  # a page address that answers a PDF, a picture, a JSON: a file (design §7.3)
             cols.update(kind=sniff.kind_of(sniffed), flags=",".join(flags) or None)
@@ -1814,8 +2200,16 @@ class Crawler:
         target = scope.canonical(answer.target) if answer.target else None
         if target is not None:
             page = self.frontier.row_by_id(row["found_from"])
-            e = self._enqueue(target, from_row=page, how=self._use_of(row), depth=row["depth"], found_via="redirect",
-                              found_from=row["id"])
+            how = self._use_of(row)
+            adm = self.admit(target, None, page, how)
+            if adm is not None and adm.step == "google" and self.google is not None and page is not None:
+                # a short link to Drive, Docs or a calendar: the pages that name it use what it leads to (§7.7)
+                e = self._google_users(adm, page, row, how, "redirect", self._users_of(row))
+            elif adm is not None:
+                e = self._enqueue(target, placement=adm.placement, url=adm.url, from_row=page, depth=row["depth"],
+                                  found_via="redirect", found_from=row["id"])
+            else:
+                e = Enqueued("bad_url", None, None, None)
             self.frontier.link(row["id"], target, "[shortlink]", e.verdict)
             cols["final_url"] = e.url or target
         self.frontier.finish(row["id"], **cols)
@@ -1844,20 +2238,34 @@ class Crawler:
             return
         if target != row["url"] and self._scheme_rewrite(target) == row["url"]:
             self._unlearn_scheme(row["host"], target)  # it sends the visitor to the scheme it was moved away from
-        e = self._follow(row, target, "redirect")
+        google: list[dict] = []
+        e = self._follow(row, target, "redirect", google)
         self.frontier.link(uid, target, "[redirect]", e.verdict)
         if e.verdict == "out:login" or urlsplit(target).hostname == "accounts.google.com":
             cols["flags"] = "login"  # the page sends visitors to a sign-in
         cols["final_url"] = e.url or target
+        if google:  # a page sent to Drive, Docs or a calendar: what it leads to is all this reading of it uses
+            self.frontier.set_page_res(uid, google)
+            google_api.resync(self.frontier, uid)
         self.frontier.finish(uid, **cols)
 
-    def _follow(self, row, target: str, found_via: str) -> Enqueued:
+    def _follow(self, row, target: str, found_via: str, entries: list[dict] | None = None) -> Enqueued:
         """Where a row sends the browser (a 3xx, a script or a refresh: design §8.3), no depth added. A resource's
         redirect stays that page's resource (Heritrix's TransclusionDecideRule), unless a rule leaves the address out;
-        a page's is that page's link; a seed's redirect to another site is the same important site (it moved)."""
+        a page's is that page's link; a seed's redirect to another site is the same important site (it moved).
+
+        A page sent to a Drive, Docs or Calendar address uses what it leads to as if it linked it (the Google step's
+        rows, and their page_res entries added to `entries` for the caller to write on the page): its completeness is
+        the item's, every file of a folder included, never the metadata row's 200 (review 10-26 phase 3, 【Claude 的执行
+        办法】)."""
         kind0 = row["kind0"] or row["kind"]
         if kind0 in _TRANSCLUDE:
-            adm = self.admit(target, None, row, {"image": "image", "embed": "frame"}.get(kind0, "link"))
+            how = {"image": "image", "embed": "frame"}.get(kind0, "link")
+            adm = self.admit(target, None, row, how)
+            if adm is not None and adm.step == "google" and self.google is not None:
+                # an attachment, a frame or a picture that leads to Drive, Docs or a calendar: the pages that use the
+                # row use what it leads to (its rows and their entries, design §7.6)
+                return self._google_users(adm, row, row, how, found_via, self._users_of(row))
             if adm is not None and adm.step in ("shortlink", "google"):
                 # the one way in (B7; second review 10-26): a short link is asked where it leads, a Google address
                 # waits for the Google step, both as the page's resource (the resource row stands for the page)
@@ -1870,7 +2278,17 @@ class Crawler:
                 and not self.plan.adopt(target, row["owner_site"], row["url"])):
             self.frontier.event("info", "seed_moved", f"a seed of {row['owner_site']} redirects to {target}, which "
                                 "is not taken as the same site: judged as any link", row["host"], row["url"])
-        return self._enqueue(target, from_row=row, depth=row["depth"], found_via=found_via)
+        adm = self.admit(target, None, row, "link")
+        if adm is None:
+            return Enqueued("bad_url", None, None, None)
+        if adm.step == "google" and self.google is not None:
+            e, got = self._google(adm, from_row=row, how="link", depth=row["depth"], found_via=found_via,
+                                  found_from=row["id"])
+            if entries is not None:
+                entries += got
+            return e
+        return self._enqueue(target, placement=adm.placement, url=adm.url, from_row=row, depth=row["depth"],
+                             found_via=found_via)
 
     def _transclude(self, target: str, row, kind0: str) -> round1.Placement:
         """Where a resource's redirect goes that admit() places by the rules (no short link, no Google address): the
@@ -1881,8 +2299,15 @@ class Crawler:
         return round1.Placement("resource", None, row["owner_site"], row["tier"], 1, kind0)
 
     def _page(self, row, snap: Snapshot, text: str, cols: dict, flags: list[str]) -> None:
+        """A web page of this round: its parts (page_res, _parts), its page type and the signs it reads (design §8.3:
+        pagetypes.measure and observe, before finish), its platform's presses and walk (postback.page_stored, after
+        finish), and what its embed boxes, forms, tabs and pressed details brought before (_replay_parts)."""
         uid, kind0 = row["id"], row["kind0"] or row["kind"]
-        page = extract(text, snap.url)
+        css = profiles.content_css(row["url"])  # the platform file's content area (design §7.2, §7.4)
+        page = extract(text, snap.url, css)
+        # a GET-walked list's pages its platform file's pager box names (WebIdx: sort=date, review 10-26 phase 3)
+        page.pagers.extend(u for u in postback.profile_pagers(row["owner_site"] or row["site"], snap.url, text,
+                                                              page.base) if u not in page.pagers)
         h = self.frontier.host(row["host"])
         root = urlsplit(row["url"]).path in ("", "/") or row["found_via"] == "seed"
         if not root and h is not None and h["probe_status"] == 200 and (snap.sha256 == h["probe_sha"] or (
@@ -1896,10 +2321,17 @@ class Crawler:
             cols["reason"] = "has_login_box"  # followed: the form is a sidebar box on an ordinary page
         if kind0 == "login_check" and "login" not in flags and _LOGIN_WORDS.search(text):
             flags.append("login")  # design §4.2: 請登入, 無權限, 請連線 VPN
+        if profiles.detail_of(row["url"]) is not None and profiles.empty_detail(row["url"], text):
+            flags.append("empty_detail")  # design §10.1 nonempty: no body text, attachment, picture or related link
+            probe = self.frontier.q("SELECT status, empty FROM id_probe WHERE host=? AND page_type=?",
+                                    (row["host"], pagetypes.type_key(row["url"], row["site"])))
+            if probe and profiles.gone_id(probe[0]["status"], bool(probe[0]["empty"]), True, True):
+                flags.append("gone_id")  # the three at once: the probe's 200 empty detail, and this one empty too
         cols.update(kind="page", title=page.title, n_postbacks=len(page.buttons), text_chars=page.text_chars)
         redirect = page.js_redirect
+        google: list[dict] = []  # what a script or a refresh sends the page to on Drive, Docs or a calendar
         if redirect is not None and (target := scope.canonical(redirect.href, page.base)) and target != row["url"]:
-            e = self._follow(row, target, "js_redirect")
+            e = self._follow(row, target, "js_redirect", google)
             self.frontier.link(uid, target, "[js_redirect]" if redirect.how == "script" else "[refresh]", e.verdict)
             flags.append("js_redirect")
             cols["final_url"] = e.url or target
@@ -1913,21 +2345,140 @@ class Crawler:
             return
         if page.pagers:
             cols["page_role"] = "list"  # a list by its GET paging (design §7.5 generic); its walk is listwalk's
-        entries, n = self._parts(row, page, uid)
-        self.frontier.set_page_res(uid, entries)
+        entries, n = self._parts(row, page, uid, html=text, warc=cols.get("warc"), warc_offset=snap.warc_offset)
+        keys = {e["res_key"] for e in entries}
+        self.frontier.set_page_res(uid, entries + [g for g in google if g["res_key"] not in keys])
+        google_api.resync(self.frontier, uid)  # a folder or calendar read meanwhile brings what it holds
+        # design §8.3: the page's type and its signs, after its page_res (a click it cannot press is read from it)
+        # and before finish (observe reads the row's js_hint of its last fetch)
+        m = pagetypes.measure(text, content_css=css, text_chars=page.text_chars)
+        seen = pagetypes.observe(self.frontier, url_id=uid, url=row["url"], m=m, site=row["site"])
+        flags += seen.flags
+        cols["flags"] = ",".join(dict.fromkeys(flags)) or None
         cols["n_links"] = n
         self.frontier.finish(uid, **cols)
+        # design §7.5: the platform's presses of this page as archived (actions), and how its list is walked
+        stored = self.chains.page_stored(self.frontier.row_by_id(uid), text, cols.get("warc"), snap.warc_offset, page)
+        if stored.page_role == "list" and cols.get("page_role") != "list":
+            self.frontier.x("UPDATE url SET page_role='list' WHERE id=?", (uid,))
+        if stored.unplanned:  # buttons the platform file says to press that no press of this page covers: 要人看
+            self.frontier.add_page_res(uid, postback.unpressed_entries(stored.unplanned))
+        self._replay_parts(uid)
 
-    def _embed(self, row, snap: Snapshot, text: str) -> None:
-        """A Google Sites embed box (design §4.4): what it holds counts on the page that embeds it, its words too."""
-        parent = self.frontier.row_by_id(row["found_from"])
-        if parent is None:
+    # ---- what a page's parts brought (design §4.4, §7.4, §7.5, §7.6)
+    def _users_of(self, row) -> list[int]:
+        """The pages that use a resource row (their page_res points at it), or the page it was found on. A row found
+        from another resource (a redirect's target, what a short link leads to) is used by that resource's pages:
+        page_res is a page's, never written on an attachment's or a short link's row (review 10-26 phase 3)."""
+        cur, seen = row, {row["id"]}
+        for _ in range(outcome.MAX_HOPS):
+            ids = [r[0] for r in self.frontier.q("SELECT DISTINCT page_id FROM page_res WHERE res_id=? ORDER BY "
+                                                 "page_id", (cur["id"],))]
+            if ids:
+                return [i for i in ids if i != row["id"]]
+            up = cur["found_from"]
+            if up is None or up in seen:
+                return []
+            seen.add(up)
+            parent = self.frontier.row_by_id(up)
+            if parent is None or parent["kind"] == "page":
+                return [up]
+            cur = parent
+        return []
+
+    def _part_answer(self, row, text: str, warc: str | None, warc_offset: int | None, page_ids: list[int]) -> None:
+        """What a page's part brought counts on the pages that use it, their parts and their words (design §4.4): a
+        Google Sites embed box (kind0 embed), a form's description (form: google_api.form_parts, B12: its attachments,
+        Drive files and other forms, never its ordinary links; its words are the form's, not the page's) and a tab's
+        content its platform rule pressed for (click: oia's load_content.php, read as part of the page, relative
+        addresses by the page's own)."""
+        kind0 = row["kind0"] or row["kind"]
+        for pid in page_ids:
+            parent = self.frontier.row_by_id(pid)
+            if parent is None:
+                continue
+            if kind0 == "form":
+                page = google_api.form_parts(text, row["url"])
+            else:
+                page = extract(text, parent["url"] if kind0 == "click" else row["url"])
+            entries, _n = self._parts(parent, page, row["id"], html=text, warc=warc, warc_offset=warc_offset)
+            self.frontier.add_page_res(pid, entries)
+            google_api.resync(self.frontier, pid)
+            if kind0 in ("embed", "click"):
+                self.frontier.x("UPDATE url SET text_chars = coalesce(text_chars, 0) + ? WHERE id=?",
+                                (page.text_chars, pid))
+
+    def _replay_parts(self, page_id: int) -> None:
+        """A page fetched again writes its page_res anew; what its parts brought when they were fetched (an embed box,
+        a form, a tab, a file button's address, a detail pressed by POST: none of them is fetched or pressed again)
+        is read back from the archive, so that it is never lost from the page unseen. Sends nothing."""
+        page = self.frontier.row_by_id(page_id)
+        if page is None:
             return
-        page = extract(text, snap.url)
-        entries, _n = self._parts(parent, page, row["id"])
-        self.frontier.add_page_res(parent["id"], entries)
-        self.frontier.x("UPDATE url SET text_chars = coalesce(text_chars, 0) + ? WHERE id=?",
-                        (page.text_chars, parent["id"]))
+        for r in self.frontier.q(
+                "SELECT u.* FROM page_res pr JOIN url u ON u.id = pr.res_id WHERE pr.page_id=? AND u.state='done' "
+                "AND u.status=200 AND u.kind0 IN ('embed', 'form', 'click') AND u.warc IS NOT NULL "
+                "AND u.warc_offset IS NOT NULL", (page_id,)):
+            text = self._archived_text(r["warc"], r["warc_offset"])
+            if text is None:
+                continue
+            if (r["kind0"] or "") == "click":
+                text = profiles.tab_content(text)
+                if text is None:
+                    continue
+            elif r["sniff"] != "html":
+                continue
+            self._part_answer(r, text, r["warc"], r["warc_offset"], [page_id])
+        for r in self.frontier.q(
+                "SELECT DISTINCT u.* FROM page_res pr JOIN url u ON u.id = pr.res_id WHERE pr.page_id=? AND "
+                "u.state='done' AND u.final_url IS NOT NULL AND u.final_url <> u.url AND "
+                "(u.status BETWEEN 300 AND 399 OR u.kind0='shortlink')", (page_id,)):
+            self._replay_google(page, r)
+        files = [{"res_key": a["location"], "how": "get", "role": "file", "need": "must", "res_id": u["id"]}
+                 for a in self.frontier.q("SELECT a.location FROM page_res pr JOIN action a ON a.id = pr.action_id "
+                                          "WHERE pr.page_id=? AND a.kind='click' AND a.state='done' "
+                                          "AND a.location IS NOT NULL", (page_id,))
+                 if (u := self.frontier.row(a["location"])) is not None]
+        if files:
+            self.frontier.add_page_res(page_id, files)
+        for a in self.frontier.q("SELECT * FROM action WHERE list_id=? AND kind='detail' AND state='done' "
+                                 "AND sniff='html' AND warc IS NOT NULL AND warc_offset IS NOT NULL", (page_id,)):
+            text = self._archived_text(a["warc"], a["warc_offset"])
+            if text is not None:
+                got = extract(text, page["url"], profiles.content_css(page["url"]))
+                entries, _n = self._parts(page, got, page_id, html=text, warc=a["warc"], warc_offset=a["warc_offset"])
+                self.frontier.add_page_res(page_id, entries)
+                google_api.resync(self.frontier, page_id)
+
+    def _replay_google(self, page, row) -> None:
+        """A resource of the page that redirects (a 3xx, a short link's target) and, hop by hop, ends on a Drive, Docs
+        or Calendar address: that address's entries on the page again (the Google step's rows, all known already), as
+        when the redirect was first read (_follow, _shortlink → _google_users), so that the page fetched again keeps
+        them (review 10-26 phase 3). Sends nothing."""
+        how = self._use_of(row)
+        cur, seen = row, set()
+        for _ in range(outcome.MAX_HOPS):
+            if cur is None or cur["id"] in seen or cur["state"] != "done":
+                return
+            seen.add(cur["id"])
+            to = cur["final_url"]
+            if not to or to == cur["url"] or not (cur["status"] in REDIRECTS
+                                                  or (cur["kind0"] or cur["kind"]) == outcome.SHORTLINK):
+                return
+            for link in self.frontier.q("SELECT dst FROM link WHERE src=?", (cur["id"],)):  # [redirect], [shortlink]
+                adm = self.admit(link["dst"], None, page, how)
+                if adm is not None and adm.step == "google" and self.google is not None and adm.url == to:
+                    self._google_users(adm, page, cur, how, "redirect", [page["id"]])
+                    return
+            cur = self.frontier.row(to)
+
+    def _archived_text(self, warc: str, offset: int) -> str | None:
+        """A response record's body as text (postback.read_response), None when it cannot be read back."""
+        try:
+            _url, _status, headers, body = postback.read_response(self.root, warc, offset)
+        except (OSError, ValueError, StopIteration):
+            return None
+        return postback.as_text(body, headers.get("content-type"))
 
     def _sitemap(self, row, snap: Snapshot) -> None:
         """A sitemap (sitemaps.org; design §5 ⑥): an index's sitemaps are sitemaps again, a list's addresses are
@@ -1950,15 +2501,36 @@ class Crawler:
             if (canon := scope.canonical(href)) is not None:
                 self.frontier.link(row["id"], canon, "[sitemap]", e.verdict)
 
-    def _parts(self, row, page: links.PageLinks, src_id: int) -> tuple[list[dict], int]:
+    def _parts(self, row, page: links.PageLinks, src_id: int, *, html: str | None = None, warc: str | None = None,
+               warc_offset: int | None = None) -> tuple[list[dict], int]:
         """Admit what a page links and uses (design §4.4, §7.1, §7.2, §7.8): its links (the link table), and a
         page_res entry for each thing it uses, with its need and why. row: the page these count for (an embed box's
-        parent); src_id: where they were read (the link table's src). Returns (page_res entries, links seen)."""
+        parent); src_id: where they were read (the link table's src). html: what was read (a click rule reads the
+        bound elements' values from it); warc, warc_offset: where it is archived (a file button's press keeps it as
+        its evidence). A Drive, Docs or Calendar address the Google step takes makes its rows and entries
+        (google_api.uses, attach: design §7.6); a click its platform rule presses is a GET row or a POST press
+        (profiles.click_plan, design §7.4). Returns (page_res entries, links seen)."""
         base, url = page.base, row["url"]
         entries: dict[str, dict] = {}
+        google_done: set[str] = set()
 
         def put(key: str, **e) -> None:
             entries.setdefault(key, {"res_key": key, **e})
+
+        def admit(href: str, how: str, depth_: int, zone: str | None = None, text: str | None = None,
+                  prio: int | None = None) -> Enqueued:
+            adm = self.admit(href, base, row, how)
+            if adm is None:
+                return Enqueued("bad_url", None, None, None)
+            if adm.step == "google" and self.google is not None:
+                e, got = self._google(adm, from_row=row, how=how, depth=depth_, found_via="link", zone=zone,
+                                      text=text)
+                for x in got:
+                    entries.setdefault(x["res_key"], x)
+                google_done.add(adm.link)
+                return e
+            return self._enqueue(href, base=base, placement=adm.placement, url=adm.url, from_row=row, how=how,
+                                 depth=depth_, found_via="link", prio=prio)
 
         def use(key: str, e: Enqueued, role: str, zone: str | None = None, text: str | None = None) -> None:
             pl = e.placement
@@ -1985,19 +2557,21 @@ class Crawler:
             if need != "must":
                 put(target, how="get", role="img", need="no", why=why, zone=img.zone, text=img.alt)
                 continue
-            use(target, self._enqueue(img.src, base=base, from_row=row, how="image", depth=depth, found_via="link"),
-                "img", img.zone, img.alt)
+            e = admit(img.src, "image", depth, img.zone, img.alt)
+            if target not in google_done:
+                use(target, e, "img", img.zone, img.alt)
         frame_srcs = set()
         for fr in page.frames:
             target = scope.canonical(fr.src, base)
             if target is None:
                 continue
             frame_srcs.add(fr.src)
-            e = self._enqueue(fr.src, base=base, from_row=row, how="hidden" if fr.hidden else "frame", depth=depth,
-                              found_via="link")
+            e = admit(fr.src, "hidden" if fr.hidden else "frame", depth, fr.zone, fr.title)
             if e.verdict != "out:internal_service":
                 self.frontier.link(src_id, target, "[frame]" if fr.tag in ("iframe", "frame") else "[embed]",
                                    e.verdict)
+            if target in google_done:
+                continue
             role = "frame" if fr.tag == "frame" else "iframe"
             if e.placement is not None and e.placement.kind0 == outcome.SHORTLINK:
                 role = "shortlink"
@@ -2014,15 +2588,15 @@ class Crawler:
             if target in pictures:
                 continue  # an <a> straight to a picture: the images above, by its need
             pager = target in pagers
-            e = self._enqueue(href, base=base, from_row=row, how="link", depth=row["depth"] if pager else depth,
-                              found_via="link", prio=PRIO_LIST if pager else None)
+            e = admit(href, "link", row["depth"] if pager else depth, page.link_zone.get(href), text,
+                      prio=PRIO_LIST if pager else None)
             if e.verdict == "out:internal_service":
                 continue  # not even in the link table
             self.frontier.link(src_id, target, text, e.verdict)
             pl = e.placement
             if pl is not None and pl.reason in ("round2:offsite", "round2:offsite_file"):
                 self.frontier.offsite(urlsplit(target).hostname or "", src_id, target[:300])
-            if pl is None:
+            if pl is None or target in google_done:
                 continue
             if pl.verdict == "resource" or pl.kind0 in _USED_KINDS or (
                     pl.verdict == "unhandled" and pl.reason == round1.GOOGLE_UNHANDLED):
@@ -2038,20 +2612,44 @@ class Crawler:
                 put(target, how="get", role="script", need="no", why="script", res_id=e.id)
         site = row["owner_site"] or ""
         for c in page.clicks:
-            need, why = links.click_need(c, self.decide(site, c.key))
+            # the platform file's clicks rule reads the click's writing exactly (handle), else its decision (§7.8)
+            decision = (profiles.click_decision(site, c, html, url) if self.decide is profiles.decision
+                        else self.decide(site, c.key))
+            plan = (profiles.click_plan(site, c, html, url)
+                    if decision == "handle" and row["tier"] in round1.TIER_OF_IMP.values() else None)
+            if plan is not None and plan.method == "GET":  # oia's tab: one GET per tab, the shown one too (§7.4)
+                e = self._enqueue(plan.url, from_row=row, how="click", depth=depth, found_via="click")
+                self.frontier.link(src_id, plan.url, "[click]", e.verdict)
+                entry = postback.click_entry(plan, res_id=e.id)
+                if e.id is None:  # a rule leaves the tab's address out: what it says is the tab's result
+                    entry["why"] = (e.placement.reason if e.placement is not None else None) or "unhandled:unknown"
+                entries.setdefault(plan.res_key, entry)
+                continue
+            if plan is not None:  # ee's file button: one POST per (k, number) of the site, a press (§7.4)
+                aid = self.chains.click_action(row, plan, warc, warc_offset)
+                entries.setdefault(plan.res_key, postback.click_entry(plan, action_id=aid))
+                continue
+            need, why = links.click_need(c, "round2" if decision == "handle" else decision)
             put(c.key, how="click", role="click", need=need, why=why or None, zone=c.zone, text=c.text)
         for u in page.unhandled:
             need, why = links.unhandled_need(self.decide(site, u.key))
             put(u.key, how="unhandled", role="click", need=need, why=why, zone=u.zone, text=u.text)
         for b in page.buttons:
-            key = "postback:" + _CTL.sub("ctl*", b.target)
-            decision = self.decide(site, key) or "unknown"
+            # with its argument: MasterGrid's Page$N is pressed, its Sort$x is not (profiles._button_key); with its
+            # text: a rule that names one holds for that text only (SSO's bare ctlNN 「查詢」, review 10-26 phase 3)
+            key = postback.button_key(b.target, b.argument)
+            decision = (profiles.decision(site, key, b.text) if self.decide is profiles.decision
+                        else self.decide(site, key)) or "unknown"
             self.frontier.postback(site, b.target, src_id, b.argument, b.text, b.form_id,
                                    decision if decision in ("press", "never", "ignore") else "unknown")
             if decision == "press":
-                continue  # pressed by postback.py (a later step), its press an action row
-            need, why = links.unhandled_need(decision if decision != "press" else None)
-            put(key, how="unhandled", role="click", need=need, why=why, zone=b.zone, text=b.text)
+                continue  # pressed by postback.py (page_stored plans it from the archived page), an action row
+            need, why = links.unhandled_need(decision)
+            old = entries.get(key)
+            if old is None or (old["need"] == "no" and need != "no"):
+                # one key, several buttons (ctlNN as ctl*): the one that still needs something is the one written
+                entries[key] = {"res_key": key, "how": "unhandled", "role": "click", "need": need, "why": why,
+                                "zone": b.zone, "text": b.text}
         for v in page.videos:
             self.frontier.video(row["id"], v)
         return list(entries.values()), n

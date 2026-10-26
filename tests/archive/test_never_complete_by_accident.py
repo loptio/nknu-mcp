@@ -54,6 +54,7 @@ WHYS = (None, "out:social", "out:login", "out:media", "round2:click", "round2:un
         "unhandled:unknown", "unhandled:google", "unhandled:ignore", "click:shown_on_load", "click", "chrome")
 ACTION_STATES = ("pending", "done", "done", "done", "failed", "mismatch", "superseded", "parked")
 ACTION_KINDS = ("pager", "detail", "download", "click", "select")
+ACTION_REASONS = (None, None, None, "empty_detail", "title")
 ENDED_BY = ("last_page", "no_rows_ok", "walking", "mismatch:page", "post_failed", "max_pages", None, "odd")
 _n = itertools.count()
 
@@ -101,8 +102,10 @@ def url_rule(row) -> bool:
 
 
 def action_ok(a) -> bool:
+    """A press that came back as it should: a detail with nothing in it (reason empty_detail, §10.1 nonempty) is not."""
     return (a["state"] == "done" and a["status"] == 200 and a["kind"] in ("pager", "detail", "download", "click")
-            and not (a["kind"] == "download" and a["sniff"] in ("html", None)))
+            and not (a["kind"] == "download" and a["sniff"] in ("html", None))
+            and not (a["kind"] == "detail" and a["reason"] == "empty_detail"))
 
 
 # ---------------------------------------------------------------- random rows
@@ -167,7 +170,7 @@ def _action(f: Frontier, rng: random.Random, list_id: int) -> int:
     row = {"list_id": list_id, "epoch": 1, "step": 1, "kind": rng.choice(ACTION_KINDS), "queue": "ip:140.127.40.173",
            "host": "sso.nknu.edu.tw", "site": SITE, "profile": "p", "form_src_warc": "w", "form_src_offset": 0,
            "target": "t", "row_key": f"r{next(_n)}", "state": rng.choice(ACTION_STATES),
-           "status": rng.choice(STATUSES), "sniff": rng.choice(SNIFFS)}
+           "status": rng.choice(STATUSES), "sniff": rng.choice(SNIFFS), "reason": rng.choice(ACTION_REASONS)}
     with f.lock:
         return f.conn.execute(f"INSERT INTO action({', '.join(row)}) VALUES ({','.join('?' * len(row))})",
                               tuple(row.values())).lastrowid

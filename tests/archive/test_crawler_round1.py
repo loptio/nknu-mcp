@@ -267,7 +267,9 @@ def one(crawler, client, queue):
 
 
 def test_every_link_goes_through_admit_and_lands_where_round_1_says(tmp_path):
-    crawler, net, _ = crawl(tmp_path, {"/aca/default.aspx": page(LINKS)})
+    # google_step=False: B8 holds for a crawler without the Google step (with it, the drive link is its API rows:
+    # test_round1_e2e.py, test_google_api.py)
+    crawler, net, _ = crawl(tmp_path, {"/aca/default.aspx": page(LINKS)}, google_step=False)
     seed(crawler, HOME)
     one(crawler, net, QC)
     r = rows(crawler)
@@ -382,12 +384,14 @@ def test_each_part_of_a_page_has_a_page_res_row_with_its_need_and_why(tmp_path):
     js = "https://c.nknu.edu.tw/aca/js/menu.js"
     assert entry(js) == ("get", "script", "no", "script") and (r[js]["kind0"], r[js]["prio"]) == ("script", 3)
     assert not any("jquery" in k for k in pr) and not any("jquery" in u for u in r)
-    assert entry("js_link:showTab") == ("unhandled", "click", "must", "unhandled:unknown")  # no platform file yet
+    assert entry("js_link:showTab") == ("unhandled", "click", "must", "unhandled:unknown")  # no platform file says
     assert entry("postback:MasterGrid$ctl*$lnkDetail") == ("unhandled", "click", "must", "unhandled:unknown")
-    assert entry("postback:MasterGrid") == ("unhandled", "click", "must", "unhandled:unknown")
+    # the platform file presses MasterGrid's Page$N, but this one stands outside any #MasterGrid the walk reads:
+    # nobody presses it, so the page waits for a person (never dropped unseen)
+    assert entry("postback:MasterGrid|Page$2") == ("unhandled", "click", "must", "unhandled:unpressed")
     pb = {x["target"]: x for x in crawler.frontier.q("SELECT * FROM postback")}
     assert (pb["MasterGrid"]["argument"], pb["MasterGrid"]["text"], pb["MasterGrid"]["decision"]) == \
-        ("Page$2", "2", "unknown")
+        ("Page$2", "2", "press")
     short = "https://forms.gle/AbCdEf123"
     assert entry(short) == ("get", "shortlink", "must", None) and r[short]["kind0"] == "shortlink"
     form = "https://docs.google.com/forms/d/e/1FAIpQLSdXyZ/viewform"

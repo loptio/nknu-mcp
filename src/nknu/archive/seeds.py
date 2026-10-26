@@ -8,11 +8,11 @@ announcements, honour notices included (record 三·3); ② every row of the old
 its link table, judged again by today's rules through round1.admit() (an attachment counts for the page that linked
 it; one step back in the queue for an old link: prio + 1); ④ Common Crawl's answered addresses (prio + 1); ⑨ round
 two's starting points, each batch with the reason and leaf round1.verdict gives (the list's round-2 sites, its
-round2_pages, the 52 「校务系统」 seeds that are no round-1 site's). The old archive is read only (mode=ro, immutable),
-never changed; its hosts' Crawl-delay and robots.txt come along, and which of them answered it from off campus (B3).
-The check: no site of the old archive starts with fewer rows than it had there, less what today's rules leave out
-(record 二·8): exit code 2, with the rows that are missing. ⑩ (the 10-25 page-type test results) is pagetypes.py's,
-a later step (design §17 step 8).
+round2_pages, the 52 「校务系统」 seeds that are no round-1 site's); ⑩ the 10-25 page-type test results, brought into
+the page_type table (pagetypes.import_jstest, design §8.2), never as seeds: no url row comes from them. The old
+archive is read only (mode=ro, immutable), never changed; its hosts' Crawl-delay and robots.txt come along, and which
+of them answered it from off campus (B3). The check: no site of the old archive starts with fewer rows than it had
+there, less what today's rules leave out (record 二·8): exit code 2, with the rows that are missing.
 
 The 10-24 crawler's seeds (below the round-1 part, kept for its tests and the viewer), in the order the owner asked
 for: by publishing institution.
@@ -146,12 +146,13 @@ CC_STATUS = ("2", "3", "5")  # Common Crawl's answers taken (a 404 is counted on
 class Blocked:
     source: str
     url: str
-    reason: str  # out:<rule> (the rules leave it out), or unhandled:<why> (it waits: the Google step, 要人看)
+    reason: str  # out:<rule> (the rules leave it out), or unhandled:<why> (a Google address nobody can read yet, 要人看)
     site: str | None = None
 
     @property
     def waits(self) -> bool:
-        """Not left out by a rule: it waits for a step not plugged in yet (unhandled:google, B8: never 规则不抓)."""
+        """Not left out by a rule: a Google address the Google step cannot read (unhandled:google, B8: never 规则不抓;
+        a person adds its writing to google_api.parse_link)."""
         return self.reason.startswith("unhandled:")
 
 
@@ -176,6 +177,7 @@ class SeedReport:
     cc_404: int = 0
     cc_other: int = 0
     notes: list[str] = field(default_factory=list)
+    page_types: list[str] = field(default_factory=list)  # ⑩: pagetypes.ImportReport.lines(), or why none
 
     @property
     def exit_code(self) -> int:
@@ -193,6 +195,9 @@ class SeedReport:
         w.append("退出码：" + ("2（有网站的起点比旧存档少，见下面「少了的网址」）" if self.missing else "0（每个网站都不少）"))
         for n in self.notes:
             w.append(f"- {n}")
+        if self.page_types:
+            w += ["", "## 网页类型：10-25 测试结果（⑩，只进 page_type 表，不当起点）", ""]
+            w += [line if line.startswith("  ") else f"- {line}" for line in self.page_types]
         w += ["", "## 各来源", "", "| 来源 | 结果 | 数量 |", "|---|---|---|"]
         for (src, kind), n in sorted(self.verdicts.items()):
             w.append(f"| {src} | {kind} | {n} |")
@@ -202,10 +207,10 @@ class SeedReport:
         waiting = [(k, v) for k, v in self.blocked_links.most_common() if k.startswith("unhandled:")]
         if ruled:
             w.append("旧链接表被新规则挡掉的目标（只计数）：" + "、".join(f"{k} {v}" for k, v in ruled))
-        if waiting:  # B8: waiting for the Google step is 要人看, never 规则不抓 (second review 10-26)
-            w.append("旧链接表里等 Google 那一步的目标（要人看，只计数）：" + "、".join(f"{k} {v}" for k, v in waiting))
+        if waiting:  # B8: a Google address nobody can read is 要人看, never 规则不抓 (second review 10-26)
+            w.append("旧链接表里认不出的 Google 网址（要人看，只计数）：" + "、".join(f"{k} {v}" for k, v in waiting))
         w += ["", "## 每个网站：旧存档的行数和这次的起点", "",
-              "| 网站 | 旧存档行数 | 被新规则挡掉 | 等 Google 那一步 | 带过来 |", "|---|---|---|---|---|"]
+              "| 网站 | 旧存档行数 | 被新规则挡掉 | 认不出的 Google 网址 | 带过来 |", "|---|---|---|---|---|"]
         for s, c in sorted(self.sites.items()):
             w.append(f"| {s} | {c['old']} | {c['blocked']} | {c.get('waits', 0)} | {c['seeded']} |")
         w += ["", "## 每个网站的起点（按来源）", ""]
@@ -217,8 +222,8 @@ class SeedReport:
                 continue
             tag = "（后台：新规则挡掉，原本不在 A1 要登录清单）" if scope.ADMIN_PATH.search(scope.urlsplit(b.url).path) else ""
             w.append(f"- [{b.source}] {b.url} — {b.reason}{tag}")
-        w += ["", "## 等 Google 那一步（要人看，逐条）", "",
-              "Drive、Docs、日历的网址：Google 那一步（第 7.6 节）接上前不抓，也不是规则不抓。", ""]
+        w += ["", "## 认不出的 Google 网址（要人看，逐条）", "",
+              "Drive、Docs、日历的网址，google_api.parse_link 认不出写法的：不抓，也不是规则不抓；人看过把写法补进去再 rejudge。", ""]
         w += [f"- [{b.source}] {b.url} — {b.reason}" for b in self.blocked if b.waits]
         if self.missing:
             w += ["", "## 少了的网址（旧存档有、这次却没有起点，也不是被规则挡掉的）", ""]
@@ -261,13 +266,21 @@ def _systems(probe: Path | None) -> list[str]:
 
 
 def seed_round1(crawler: Crawler, *, old: Path | None, facts_db: Path | None, cc_dir: Path | None = CC_DIR,
-                probe: Path | None = PROBE) -> SeedReport:
-    """Seed a round-1 frontier (design §5 ①–⑨): crawler.frontier is written, the old archive only read. Safe to run
-    again: what is there already is noted as a source (seed_src) and nothing is added twice."""
+                probe: Path | None = PROBE, jstest: Path | None = None) -> SeedReport:
+    """Seed a round-1 frontier (design §5 ①–⑩): crawler.frontier is written, the old archive only read. Safe to run
+    again: what is there already is noted as a source (seed_src) and nothing is added twice. jstest: the directory of
+    the 10-25 page-type test (⑩, pagetypes.import_jstest; a missing file is an error); None: not imported (a test's
+    seeding). Once the round has recorded a page, the import is refused and the report says so."""
     from nknu.archive import crawler as crawl_mod
+    from nknu.archive import pagetypes
 
     report = SeedReport()
     plan, f = crawler.plan, crawler.frontier
+    if jstest is not None:  # ⑩ first: it refuses once this round has recorded any page (pagetypes.ImportRefused)
+        try:
+            report.page_types = pagetypes.import_jstest(f, Path(jstest)).lines()
+        except pagetypes.ImportRefused as exc:
+            report.page_types = [f"没有再导入（这一轮已经有网页纪录，导入只做一次）：{exc}"]
     old_conn = _open_old(_old_db(old)) if old is not None else None
     if old_conn is not None:
         wal = Path(f"{_old_db(old)}-wal")
@@ -385,7 +398,7 @@ def _old_rows(crawler, old_conn, report: SeedReport, seed) -> None:
         e = seed(r["url"], "old_url", from_row=parents.get(r["found_from"]), depth=depth, found_via="old_frontier",
                  old_ref=r["id"])
         if e.placement is not None and e.placement.verdict in ("out", "unhandled"):
-            # left out by a rule, or waiting for the Google step (listed apart: 要人看): neither is missing
+            # left out by a rule, or a Google address nobody can read yet (listed apart: 要人看): neither is missing
             c["blocked" if e.placement.verdict == "out" else "waits"] += 1
             report.blocked[-1] = Blocked("old_url", report.blocked[-1].url, report.blocked[-1].reason, site)
             continue

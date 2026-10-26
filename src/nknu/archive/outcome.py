@@ -99,6 +99,18 @@ FETCHED_KINDS = ("file", "image", "drive", "calendar", "embed")
 _EXPECTED_FILE = ("file", "image", "drive", "drive_list", "calendar", "sitemap", "click", "script")
 # Google's APIs (§7.6): read with a key, a file nobody may read and one deleted both answer 404, so neither is `gone`
 API_HOSTS = ("www.googleapis.com",)
+# a Drive item's metadata row (kind0 drive, §7.6) is evidence only: a redirect that ends on one comes to what the item
+# came to (_drive_settled, review 10-26 phase 3: a page, an attachment or a short link sent to a Drive file counted on
+# the metadata's 200). The Google types read without a download of their own (google_api: a folder's listing, a
+# shortcut's target, a form's page, the exports); any other Google type has no content row (unhandled:drive_type, B11)
+GOOGLE_APPS = "application/vnd.google-apps."
+DRIVE_READ_TYPES = ("application/vnd.google-apps.folder", "application/vnd.google-apps.shortcut",
+                    "application/vnd.google-apps.form", "application/vnd.google-apps.document",
+                    "application/vnd.google-apps.spreadsheet", "application/vnd.google-apps.presentation",
+                    "application/vnd.google-apps.drawing")
+# a landing that holds no page of its own: what the page that is sent there uses is written on that page (the Google
+# step's entries: drive:<id>, every file of a folder, a calendar's pages, a form), so that page is judged by them
+GOOGLE_LANDING_KIND0 = ("drive", "drive_list", "calendar", "form")
 # a short link's row (kind0 shortlink, design §7.7, review 10-26 A2): one GET to learn where it leads, never a page and
 # never got by itself. A 3xx, or a 200 page whose target the crawler read (meta refresh, the service's rule) and kept
 # as final_url, is a redirect, counted where it leads; a 404 or 410 is a dead short link (short_dead), not a page the
@@ -284,6 +296,7 @@ URL_RESULTS = ("ok", "gone", "login", "redirect", "rule", "later", "todo", "retr
 
 # click: a button pressed by its platform rule that posts for a file's address (ee's download buttons, §7.4)
 ACTION_KINDS = ("pager", "detail", "download", "click")
+EMPTY_DETAIL = "empty_detail"  # postback.EMPTY_DETAIL: the action.reason of a detail answered empty
 
 
 def action_result_case(a: str = "a") -> str:
@@ -304,6 +317,7 @@ def action_result_case(a: str = "a") -> str:
   WHEN {a}.kind NOT IN {_sql_list(ACTION_KINDS)} THEN 'unknown'
   WHEN {a}.kind = 'download' AND {a}.sniff = 'html' THEN 'not_file'
   WHEN {a}.kind = 'download' AND {a}.sniff IS NULL THEN 'unknown'
+  WHEN {a}.kind = 'detail' AND {a}.reason = '{EMPTY_DETAIL}' THEN 'thin'
   ELSE 'ok' END"""
 
 
@@ -311,8 +325,10 @@ ACTION_RESULT_SQL = f"""
 SELECT a.*, {action_result_case()} AS result
 FROM action a
 """
+# thin: a detail a press brought back with nothing in it (action.reason empty_detail, §10.1 nonempty as for a detail
+# got by GET; review 10-26 phase 3, 【Claude 的执行办法】: §10.3's view has no such line)
 ACTION_RESULTS = ("todo", "redirect", "failed", "mismatch", "refused", "server_error", "http_4xx", "not_file", "ok",
-                  "unknown")
+                  "thin", "unknown")
 # a resource of a page: a URL's or a press's result, or not_discovered when the page names it and nothing says what
 # came of it (a crawler bug, never complete), or unhandled: a writing (or a Google address) nobody has decided about
 # yet (§7.6, §7.8)
@@ -438,6 +454,31 @@ def _off_file(verdict: str) -> str:
     return f"({verdict} LIKE 'out:%' AND {verdict} NOT LIKE 'out:login%' AND {verdict} <> 'out:media')"
 
 
+def _drive_settled(meta: str, level: int = 0) -> str:
+    """SQL: what the Drive item whose metadata row id is `meta` came to, by google_api.settle()'s rules, for a redirect
+    that ends on that row once the row itself is ok (review 10-26 phase 3): its content row's result; a video or a
+    sound listed only is `rule` (record 一·1: 只记档名和大小); a Google type nobody can export, `unhandled`; read and no
+    content row (a crawler bug), `not_discovered`. A shortcut's content is its target's metadata row: that one in turn,
+    once (Drive's shortcuts never point at a shortcut; one that does is not_discovered, for a person)."""
+    d, c = f"dz{level}", f"cz{level}"
+    url_res, jpj = url_result_case, js_page_join
+    if level == 0:
+        target = (f"WHEN coalesce({c}.kind0, {c}.kind) = 'drive' THEN CASE WHEN ({url_res(c, c + 'pt', c + 'jp')}) "
+                  f"<> 'ok' THEN ({url_res(c, c + 'pt', c + 'jp')}) ELSE {_drive_settled(f'{c}.id', 1)} END")
+    else:
+        target = f"WHEN coalesce({c}.kind0, {c}.kind) = 'drive' THEN 'not_discovered'"
+    return f"""coalesce((SELECT CASE
+        WHEN {d}.mime LIKE 'video/%' OR {d}.mime LIKE 'audio/%' THEN 'rule'
+        WHEN {c}.id IS NULL AND {d}.mime LIKE '{GOOGLE_APPS}%' AND {d}.mime NOT IN {_sql_list(DRIVE_READ_TYPES)}
+             THEN 'unhandled'
+        WHEN {c}.id IS NULL THEN 'not_discovered'
+        {target}
+        ELSE ({url_res(c, c + 'pt', c + 'jp')}) END
+      FROM drive_item {d} LEFT JOIN url {c} ON {c}.id = {d}.content_id
+      LEFT JOIN page_type {c}pt ON {c}pt.key = {c}.page_type {jpj(c + 'jp', c)}
+      WHERE {d}.url_id = {meta}), 'not_discovered')"""
+
+
 def _resource_ctes() -> str:
     """The WITH clause both views share: every needed resource of a page and what it came to (page_resource reads it
     as it is, page_completeness counts it). In the order it is built:
@@ -448,6 +489,10 @@ def _resource_ctes() -> str:
     (review note medium: a redirect is never `fetched` by itself, and the §7.1 copy of a page_res row is no longer
     needed for it). hop also notes whether any row along the way was expected to be a file (exp: its kind0 is one of
     _EXPECTED_FILE), however the page reached it (second look, F3: a short link to an attachment, a frame of a PDF).
+    A chain that lands on a Drive item's metadata row (kind0 drive) comes to what the item came to (_drive_settled:
+    its content row's result, never the metadata's own 200), and to_google says it landed on a row that is no page
+    of its own (Google's API, a form): a page sent there is judged by its own entries, which the crawler writes from
+    the Google step (review 10-26 phase 3, 【Claude 的执行办法】).
     press, pressed, rests, r00: each needed resource of a page (§7.1), a replaced press counted by the newest press of
     its row (§7.5 step 9), a press answered with a redirect by the url row of its Location (link verdicts from the
     list page). A resource with no row and no press is what its why says (§7.1): round2:<why> waits for the next round
@@ -481,14 +526,21 @@ hop(id, src, at, n, exp) AS (
   SELECT h.id, t.id, t.final_url, h.n + 1, h.exp OR {expect('t')}
   FROM hop h JOIN url t ON t.url = h.at LEFT JOIN page_type tpt ON tpt.key = t.page_type {jpj('tjp', 't')}
   WHERE h.n < {MAX_HOPS} AND {url_res('t', 'tpt', 'tjp')} = 'redirect'),
-landing AS (
-  SELECT e.id, e.exp, t.id AS to_id, t.kind AS to_kind, t.tier AS to_tier, {url_res('t', 'tpt', 'tjp')} AS to_result,
-         l.verdict
+landing0 AS (
+  SELECT e.id, e.exp, t.id AS to_id, t.kind AS to_kind, t.tier AS to_tier, coalesce(t.kind0, t.kind) AS to_kind0,
+         t.host AS to_host, {url_res('t', 'tpt', 'tjp')} AS to_own, l.verdict
   FROM (SELECT id, src, at, exp, max(n) FROM hop GROUP BY id) e
   LEFT JOIN url t ON t.url = e.at LEFT JOIN page_type tpt ON tpt.key = t.page_type {jpj('tjp', 't')}
   LEFT JOIN link l ON l.src = e.src AND l.dst = e.at),
+landing AS (
+  SELECT id, exp, to_id, to_kind, to_tier, verdict,
+         coalesce(to_id IS NOT NULL AND (to_host IN {_sql_list(API_HOSTS)}
+                                         OR to_kind0 IN {_sql_list(GOOGLE_LANDING_KIND0)}), 0) AS to_google,
+         CASE WHEN to_kind0 = 'drive' AND to_own = 'ok' THEN {_drive_settled('landing0.to_id')}
+              ELSE to_own END AS to_result
+  FROM landing0),
 moved AS (
-  SELECT id, to_id, to_kind, to_tier, exp, verdict, to_id IS NOT NULL AND to_result <> 'redirect' AS landed,
+  SELECT id, to_id, to_kind, to_tier, to_google, exp, verdict, to_id IS NOT NULL AND to_result <> 'redirect' AS landed,
          CASE WHEN to_id IS NULL THEN {_kept_out('verdict')}
               WHEN to_result = 'redirect' THEN 'server_error'
               ELSE to_result END AS result
@@ -568,7 +620,8 @@ def _page_completeness_sql() -> str:
     pg, pj, p: the round-1 pages (tier 0, 1) but those the scope sends to round two or leaves out; a page answered
     with a redirect (a 3xx, or a script or meta refresh that sends the browser on: §8.3) is judged where it lands
     (content_id), unless that is a round-1 page judged in its own right (review note high: a 3xx page or a page held
-    by a cap never drops out of the table). A page of a frame type, or one the browser saw keep its content in
+    by a cap never drops out of the table); one that lands on Google (a Drive item, a calendar, a form: to_google) is
+    judged with its own entries, what the Google step wrote on it (every file of a folder, review 10-26 phase 3). A page of a frame type, or one the browser saw keep its content in
     frames, that names no frame lacks its frames (frame_missing). p is MATERIALIZED: the
     level, the label and the reasons test its columns some thirty times, and SQLite would otherwise work each out
     again for every test.
@@ -632,7 +685,7 @@ pg AS (
 pj AS (
   SELECT pg.id, pg.owner_site AS site, pg.tier,
          CASE WHEN pg.result = 'redirect' THEN mv.result ELSE pg.result END AS own,
-         CASE WHEN mv.landed THEN mv.to_id ELSE pg.id END AS content_id
+         CASE WHEN mv.landed AND NOT mv.to_google THEN mv.to_id ELSE pg.id END AS content_id
   FROM pg LEFT JOIN moved mv ON mv.id = pg.id
   WHERE pg.result NOT IN {not_judged}
     AND NOT coalesce(mv.landed AND mv.to_kind = 'page' AND mv.to_tier IN (0, 1) AND mv.result NOT IN {not_judged}, 0)),

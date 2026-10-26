@@ -570,16 +570,19 @@ def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起�
                                                          "archive-2026-10-24"),
                  dir: str = typer.Option(None, "--dir", help="新存档目录，默认是仓库里的 archive/"),
                  cc: str = typer.Option(None, "--cc", help="Common Crawl 网址索引的目录（*.cdx）；默认 research 里那份"),
-                 probe: str = typer.Option(None, "--probe", help="网站普查 data.json（52 个校务系统起点）；默认 research 里那份")
+                 probe: str = typer.Option(None, "--probe", help="网站普查 data.json（52 个校务系统起点）；默认 research 里那份"),
+                 jstest: str = typer.Option(None, "--jstest", help="10-25 网页类型测试结果的目录（5 个档）；默认 research 里那份，"
+                                                                 "实验室机器上没有 research/ 时要指定")
                  ) -> None:
     """建第一轮的待抓清单（设计第 5 节）：名单的网站、附加起点、登录重查，旧存档的每一行和它链接表的目标（照新规则重判），
-    Common Crawl、SiteMap、v1 已知公告、SSO 公告列表，第二轮的起点（分批记下）。可重复执行，已有的不会重复加。
-    旧存档只读、绝不改。写 reports/seed-<时间>.md；有网站的起点比旧存档少，退出码 2 并列出少了哪些。"""
+    Common Crawl、SiteMap、v1 已知公告、SSO 公告列表，第二轮的起点（分批记下），以及 10-25 网页类型测试结果（只进
+    page_type 表，不当起点）。可重复执行，已有的不会重复加。旧存档只读、绝不改。写 reports/seed-<时间>.md；有网站的起点比
+    旧存档少，退出码 2 并列出少了哪些。"""
     from datetime import datetime
     from pathlib import Path
 
     from nknu.archive import crawler as archive
-    from nknu.archive import round1, seeds
+    from nknu.archive import pagetypes, round1, seeds
 
     if round_ != 1:
         typer.echo("现在只有第一轮的起点（--round 1）")
@@ -593,11 +596,18 @@ def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起�
     if old_db.parent.resolve() == root.resolve():
         typer.echo("--old 和 --dir 是同一个目录：新的一轮要另开目录，旧存档只读")
         raise typer.Exit(1)
+    jstest_dir = Path(jstest).expanduser().resolve() if jstest else pagetypes.JSTEST_DIR
+    missing = [n for n in (pagetypes.RESULTS, pagetypes.RETEST, pagetypes.TYPES, pagetypes.REVIEW,
+                           pagetypes.CLICK_SCAN) if not (jstest_dir / n).is_file()]
+    if missing:  # design §5 ⑩: never seeded without it (every type would be new and unchecked, unseen)
+        typer.echo(f"找不到 10-25 网页类型测试结果：{jstest_dir} 缺 {'、'.join(missing)}（用 --jstest 指定目录）")
+        raise typer.Exit(1)
     lock = _hold_for_writing(root)  # held while seeding: no run may start meanwhile (design §6.9: one writer)
     try:
         crawler = archive.Crawler(root, plan=round1.load(), resolver=archive.resolve)
         report = seeds.seed_round1(crawler, old=old_path, facts_db=_settings().facts_path,
-                                   cc_dir=Path(cc) if cc else seeds.CC_DIR, probe=Path(probe) if probe else seeds.PROBE)
+                                   cc_dir=Path(cc) if cc else seeds.CC_DIR, probe=Path(probe) if probe else seeds.PROBE,
+                                   jstest=jstest_dir)
         reports = root / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         out = reports / f"seed-{datetime.now().astimezone():%Y%m%d-%H%M%S}.md"
@@ -629,9 +639,13 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
                 gap: str = typer.Option("2-5", "--gap", help="每个回应之后等几秒（下限-上限）；默认 2-5，试跑通过、"
                                                            "用户说开始用以后才设 1-2"),
                 sites: str = typer.Option(None, "--sites", help="只抓这些网站（网站键，逗号分隔，例如 "
-                                                              "c.nknu.edu.tw/reality,sso.nknu.edu.tw/web/595）")) -> None:
+                                                              "c.nknu.edu.tw/reality,sso.nknu.edu.tw/web/595）"),
+                end_wait: float = typer.Option(1800.0, "--end-wait", help="剩下的网址最早也要这么多秒以后才到期时，这次 run "
+                                                                       "先结束、留给下一次；默认 1800（30 分钟，比服务器"
+                                                                       "固定休息的 15 分钟长）")) -> None:
     """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等（默认 2–5 秒）；中断后重跑会接着抓。同一个目录只能有一个在跑，
-    同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址时自己结束，留给下一次。"""
+    同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址、而且最早也要 --end-wait 秒以后才到期时，自己结束，
+    留给下一次。"""
     import logging
     import signal
     import threading
@@ -641,6 +655,9 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
 
     root = _round1_root(dir)
     span = _gap_option(gap)
+    if end_wait <= 0:
+        typer.echo("--end-wait 是秒数，要大于 0（默认 1800）")
+        raise typer.Exit(1)
     only = frozenset(x.strip() for x in sites.split(",") if x.strip()) if sites else None
     try:
         lock = archive.hold_run_lock(root)  # held until this process ends; the kernel lets go even after kill -9
@@ -663,7 +680,7 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
         stop_file = root / "STOP"
         stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
         (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
-        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only)
+        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only, end_wait_s=end_wait)
 
         def watch() -> None:
             while not crawler.stop.wait(archive.STOP_POLL_S):
@@ -737,10 +754,14 @@ def archive_stop(dir: str = typer.Option(None, "--dir")) -> None:
 
 @archive_app.command("retry")
 def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头，例如 http_5（所有 5xx）、timeout、connect、dns、"
-                                                        "host_unreachable、robots_unreachable、host_cooldown、crash"),
+                                                        "host_unreachable、robots_unreachable、host_cooldown、crash；"
+                                                        "post_failed：回传失败的列表从第 1 页重走；click：失败的下载按钮"
+                                                        "（电子系）放回再按"),
                   dir: str = typer.Option(None, "--dir")) -> None:
     """把某种原因失败、跳过或在等的网址放回待抓：次数归零，主机的 robots 失败次数、冷却和 DNS 退避也一起清掉。
-    已存好的网页不动，只有存成 4xx 拒绝（http_4xx）的才放回。原因开头至少 3 个字。"""
+    已存好的网页不动，只有存成 4xx 拒绝（http_4xx）的才放回。原因开头至少 3 个字。
+    post_failed：回传两次都失败的列表（listwalk 记 post_failed）从列表第 1 页的 GET 重走；click：照规则按、失败了的
+    POST 下载按钮放回待按（设计第 7.4、7.5 节；都只在人看过以后用，POST 绝不自动重送）。"""
     from nknu.archive.frontier import RETRY_MIN_PREFIX, Frontier
 
     if len(reason.strip()) < RETRY_MIN_PREFIX:
@@ -750,6 +771,20 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     db = _archive_db(root)
     lock = _hold_for_writing(root)
     try:
+        if reason.strip() in ("post_failed", "click"):
+            from nknu.archive.postback import Chains
+
+            f = Frontier(db)
+            chains = Chains(f, root)
+            if reason.strip() == "post_failed":
+                n = chains.retry_post_failed()
+                msg = f"从第 1 页重走：{n} 个回传失败的列表（列表页放回待抓，下一次 archive run 接着按）"
+            else:
+                n = chains.retry_clicks()
+                msg = f"放回待按：{n} 个失败的下载按钮（下一次 archive run 再按一次）"
+            f.close()
+            typer.echo(msg)
+            return
         n, hosts = Frontier(db).retry(reason)
     finally:
         lock.close()
