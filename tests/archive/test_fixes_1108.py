@@ -392,7 +392,7 @@ def test_a_server_given_up_that_answers_again_gets_its_rows_back(tmp_path):
 def test_a_server_that_errs_on_everything_rests_after_spare_run_old_500s_in_a_row(tmp_path):
     """The safety of the old addresses' 500s: a server that gives nothing but 5xx is erring as a whole, so past
     SPARE_RUN in a row an old address's 500 is the server's again: it rests, the row is tried again later."""
-    crawler, net, clock = make(tmp_path, {"robots.txt": snap("x", 404), f"{LIS}/": status_err(500)}, queues={LIS: QL})
+    crawler, net, _clock = make(tmp_path, {"robots.txt": snap("x", 404), f"{LIS}/": status_err(500)}, queues={LIS: QL})
     old = [f"https://{LIS}/_dl/{i:010x}/o{i}.pdf" for i in range(mod.SPARE_RUN + 5)]
     for u in old:
         _old(crawler, u)

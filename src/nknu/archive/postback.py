@@ -658,11 +658,13 @@ def empty_answer(row_title: str, html: str, rs: profiles.Rows | None) -> bool | 
 
 # ---------------------------------------------------------------- the archive (read only)
 
-def read_response(root: Path, warc: str, offset: int) -> tuple[str, int, dict[str, str], bytes]:
+def read_response(root: Path, warc: str, offset: int, *,
+                  payload: bool = True) -> tuple[str, int, dict[str, str], bytes]:
     """The response record at offset in root/warc (url.warc_offset and action.form_src_offset point at the response
     record, design §12): its address, status, headers (lowercase names) and body (Content-Encoding undone). A record
     that cannot be read there (no record, another kind, a broken or misplaced one: warcio's ArchiveLoadFailed and the
-    like, which are no OSError) is a ValueError, so that every reader's except holds (review 10-26 phase 3)."""
+    like, which are no OSError) is a ValueError, so that every reader's except holds (review 10-26 phase 3). payload
+    False: the body is not read (b""), for a reader that wants the headers only (the export's --reuse)."""
     with open(Path(root) / warc, "rb") as fh:
         fh.seek(offset)
         try:
@@ -676,7 +678,7 @@ def read_response(root: Path, warc: str, offset: int) -> tuple[str, int, dict[st
             url = rec.rec_headers.get_header("WARC-Target-URI") or ""
             status = int(rec.http_headers.get_statuscode() or 0) if rec.http_headers else 0
             headers = {k.lower(): v for k, v in rec.http_headers.headers} if rec.http_headers else {}
-            body = rec.content_stream().read()
+            body = rec.content_stream().read() if payload else b""
         except (StopIteration, EOFError, zlib.error, ArchiveLoadFailed, StatusAndHeadersParserException) as exc:
             raise ValueError(f"{warc}@{offset}: no record can be read there ({type(exc).__name__})") from exc
     return url, status, headers, body

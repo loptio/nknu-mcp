@@ -534,6 +534,38 @@ _LEVEL_WHEN = (
 )
 _COUNTS = ("n_must", "n_school", "n_todo", "n_retry", "n_failed", "n_wait", "n_unchecked", "n_round2", "n_click",
            "n_review", "n_bad", "miss_file", "miss_img", "miss_other", "n_frames", "n_round2_img")
+JUDGED = ("level", "label", "reasons")  # what page_completeness works out of its other columns (_judged_sql)
+
+
+def _judged_sql() -> str:
+    """SQL: page_completeness's level, label and reasons out of a row's other columns (design §10.4)."""
+    level = "".join(f"\n       WHEN {when} THEN '{code}'" for code, when in _LEVEL_WHEN)
+    label = "".join(f"\n       WHEN {_LABEL_WHEN[code]} THEN '{code}'" for code, _zh in LABEL_ORDER[:-1])
+    reasons = " || ".join(f"CASE WHEN {_LABEL_WHEN[code]} THEN '{code},' ELSE '' END" for code, _zh in LABEL_ORDER[:-1])
+    return f"""CASE{level}
+       ELSE 'complete' END AS level,
+  CASE{label}
+       ELSE 'complete' END AS label,
+  rtrim({reasons}, ',') AS reasons"""
+
+
+def judge_page(row: dict, **changed: object) -> dict[str, str]:
+    """page_completeness's level, label and reasons of one of its rows with some columns changed (own='ok': a page the
+    export read again whole, export.py, item ⑧ of the 11-08 gaps), by the view's own SQL over that one row in memory:
+    never a second copy of the rules."""
+    cols = [c for c in row if c not in JUDGED]
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(f"CREATE TABLE p ({', '.join(_quoted(c) for c in cols)})")
+        conn.execute(f"INSERT INTO p VALUES ({', '.join('?' for _ in cols)})", [changed.get(c, row[c]) for c in cols])
+        got = conn.execute(f"SELECT {_judged_sql()} FROM p").fetchone()
+    finally:
+        conn.close()
+    return dict(zip(JUDGED, got, strict=True))
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _kept_out(verdict: str, link: bool = True) -> str:
@@ -751,9 +783,6 @@ def _page_completeness_sql() -> str:
     lost_later = f"(need = 'round2' AND result IN {_sql_list(LOST)})"
     # an attachment a short link or a frame led to that is not got: 缺附件, not 缺内嵌页或按钮 (second look F3)
     carried_file = f"(role IN {_sql_list(CARRY_FILE_ROLES)} AND result = 'not_file')"
-    level = "".join(f"\n       WHEN {when} THEN '{code}'" for code, when in _LEVEL_WHEN)
-    label = "".join(f"\n       WHEN {_LABEL_WHEN[code]} THEN '{code}'" for code, _zh in LABEL_ORDER[:-1])
-    reasons = " || ".join(f"CASE WHEN {_LABEL_WHEN[code]} THEN '{code},' ELSE '' END" for code, _zh in LABEL_ORDER[:-1])
     counts = ", ".join(f"coalesce(a.{c}, 0) AS {c}" for c in _COUNTS)
     return f"""{_resource_ctes()},
 fe(page_id, frame_id) AS (
@@ -815,11 +844,7 @@ p AS MATERIALIZED (
   LEFT JOIN a ON a.page_id = pj.content_id
   LEFT JOIN listwalk lw ON lw.list_id = pj.content_id)
 SELECT p.*,
-  CASE{level}
-       ELSE 'complete' END AS level,
-  CASE{label}
-       ELSE 'complete' END AS label,
-  rtrim({reasons}, ',') AS reasons
+  {_judged_sql()}
 FROM p
 """
 

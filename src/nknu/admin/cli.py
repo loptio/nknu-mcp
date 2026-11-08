@@ -966,7 +966,19 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
 def archive_export(dir: str = typer.Option(None, "--dir", help="存档目录，默认是仓库里的 archive/"),
                    site: str = typer.Option(..., "--site", help="网站键，例如 c.nknu.edu.tw/aca（进度看板上的网站网址）"),
                    out: str = typer.Option(..., "--out", help="导出到哪个新资料夹（不存在或空的；不能在 git 会追踪的地方，"
-                                                              "放 archive-export/ 或仓库外）")) -> None:
+                                                              "放 archive-export/ 或仓库外）"),
+                   reuse: str = typer.Option(None, "--reuse", help="同一个网站上一次导出的资料夹：附件和图片内容一样的"
+                                                                  "（sha256、大小都对得上）直接硬链接过来，不再从存档读；"
+                                                                  "对不上或链不过来的照常从存档读"),
+                   old_copies: str = typer.Option(None, "--old-copies", help="10-24 旧存档的副本资料夹（research/"
+                                                  "crawler_lab_2026-11-04/old_copies_1108.py 做的：index.json 和 "
+                                                  "files/）：这一轮没抓到能用内容的行（学校那边没了、连不上、等实验室、不是"
+                                                  "档案、跳到首页或查无资料页、内容很少、看起来像不存在）用里面的正常副本当"
+                                                  "档案，结果、分类照这一轮的；索引读不了、副本的 sha256 对不上就不用，照"
+                                                  "这一轮的导出"),
+                   skip_same: str = typer.Option(None, "--skip-same", help="这个网站现用的那份导出：它的导出依据（资料"
+                                                 "截至、存档内容、程式、旧存档副本）和这一次的都一样，就什么都不写，"
+                                                 "退出码 3（导出服务用来跳过没有变动的网站）")) -> None:
     """把一个网站从存档导出成一个资料夹（给「内容优化」用）：每个网页一个档、附件和正文图片保留原档，加一份清单
     manifest.csv（网址、标题、网页上写的日期、完整度、结果……，没抓到的也列，另有 missing.csv）和中文 README.md。只读、
     不连网；爬虫在跑也能导，README 会写明导出时这个网站的状态。资料里有学生全名和学号：不能进 git、不能放公开的地方。"""
@@ -979,12 +991,51 @@ def archive_export(dir: str = typer.Option(None, "--dir", help="存档目录，�
     key = site.strip()
     key = scope.site_key(key) if key.startswith(("http://", "https://")) else key.strip("/")
     try:
-        got = export.export_site(root, key, Path(out))
+        got = export.export_site(root, key, Path(out), reuse=Path(reuse) if reuse else None,
+                                 old_copies=Path(old_copies) if old_copies else None,
+                                 skip_same=Path(skip_same) if skip_same else None)
     except export.ExportRefused as exc:
         typer.echo(f"没有导出：{exc}")
         raise typer.Exit(1) from None
+    except export.Unchanged as exc:
+        typer.echo(f"没有变动：{exc}")
+        raise typer.Exit(export.UNCHANGED) from None
     for line in got.lines:
         typer.echo(line)
+
+
+@archive_app.command("ready")
+def archive_ready(dir: str = typer.Option(None, "--dir", help="存档目录，默认是仓库里的 archive/"),
+                  sites: str = typer.Option(None, "--sites", help="只看这些网站键，逗号隔开（默认是进度看板上的网站）"),
+                  as_json: bool = typer.Option(False, "--json", help="印成 JSON（给导出服务读）")) -> None:
+    """哪些网站现在可以导出（第 3 步设计第二节：网站没有待抓的网址了就导出它）：每个网站一行，写可以导出还是还没爬完
+    （还有几个网址、几个按钮在排队）、进度看板上的状态、资料截至（这个网站最后一次抓到东西的时间，台北时间）。和进度
+    看板同一套判断；只读、不连网，爬虫在跑也能看。"""
+    import json
+    import sqlite3
+
+    from nknu.archive import export, scope
+
+    root = _archive_root(dir)
+    _archive_db(root)
+    keys = None
+    if sites:
+        keys = [scope.site_key(k) if k.startswith(("http://", "https://")) else k.strip("/")
+                for k in _site_list(sites) or []]
+    try:
+        got, pid = export.ready(root, keys)
+    except (export.ExportRefused, sqlite3.Error) as exc:
+        typer.echo(f"看不了：{exc}")
+        raise typer.Exit(1) from None
+    if as_json:
+        typer.echo(json.dumps({"存档": str(root), "爬虫正在跑": pid is not None, "网站": [r.as_dict() for r in got]},
+                              ensure_ascii=False, indent=1))
+        return
+    for r in got:
+        typer.echo(r.line())
+    can = sum(1 for r in got if r.can)
+    typer.echo(f"共 {len(got)} 个网站：可以导出 {can}，不能导出 {len(got) - can}"
+               + (f"；爬虫正在跑（pid {pid}）" if pid is not None else ""))
 
 
 @archive_app.command("browse")

@@ -7,7 +7,8 @@ A profile holds, for the sites it covers (by site key, scope.site_key / url.owne
   detail page's attachment buttons), how to tell the page number shown, the 「共 N 筆」 it states, the words of an empty
   list, and the title area of a detail a row's press brings (the title check, §7.5 step 5);
 - details: the detail pages (no cap), their body, attachments and title, what makes one empty (nonempty: at least a
-  body text, an attachment, an image or a related link; §10.1) and the id probe (§10.1: an id that cannot exist);
+  body text, an attachment, an image or a related link; §10.1), the id probe (§10.1: an id that cannot exist) and the
+  date field (the export's 网页上写的日期: export.own_date);
 - buttons: each kind of ASP.NET postback button: press (pager, detail, download), never (sign-in, captcha, a form
   sent, a search, a language switch), ignore (each with its reason);
 - writings: the decision on a writing a crawler of plain GETs cannot follow (links.Unhandled, §7.8): ignore, never,
@@ -156,8 +157,12 @@ class Rows:
 class Detail:
     """A detail page (design §7.4 detail_paths, §10.1 nonempty and the id probe). paths: searched in the lowercase
     path and query; text, files, title: CSS selectors; id_param: the parameter that numbers the item; probe: the
-    number no item has; date: the CSS of the platform's own date field, its label in the field's parent (the export
-    reads it before the page's text: export.own_date), '' when the platform has none."""
+    number no item has; date: the CSS of the platform's own date field, the first of its matches that holds a date
+    (the export reads it before the page's text and before the notice's list row: export.own_date; the field may hold
+    the date alone, as most platforms write it, its label, when there is one, in the field's parent or the element
+    above), '' when the platform has none; date_path: a regular expression searched in the lowercase path, with
+    groups y, m and d, for a platform whose date field shows the day and the month only and whose address holds the
+    whole date (WordPress: 「30 6 月」 and /2026/06/30/<name>/), '' for none."""
 
     paths: str
     text: str
@@ -166,6 +171,7 @@ class Detail:
     id_param: str = ""
     probe: str = ""
     date: str = ""
+    date_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -298,8 +304,12 @@ SSO_NEWS = Profile(
                date="span[id$='_StartDate']", category="span[id$='_Category']",
                pagers=(Pager("page_n", r"gvFull"),), claimed=r"共\s*(\d+)\s*筆",
                empty=("查無資料", "沒有資料", "目前沒有"), paths=r"/(?:subjectlist|lastnewslist(?:_dept)?)\.aspx$"),),
-    details=(Detail(r"/lastnews\.aspx", text="#ctl00_phMain_lbContent", files="#ctl00_phMain_lbFileLink a",
-                    title="#ctl00_phMain_lbSubject", id_param="UNID", probe="0" * 40),),
+    # 公告時間：<start> ~ <end> (#ctl00_phMain_lbStartEndDate): the notice's display period, whose start is the day it
+    # was put up, the list row's _StartDate (804 of 804 rows that point to a detail, 11-08); 校園亮點 (lightNews.aspx,
+    # 401 pages, the rows of subjectlist.aspx?cat=Lights) is the same template
+    details=(Detail(r"/l(?:ast|ight)news\.aspx", text="#ctl00_phMain_lbContent", files="#ctl00_phMain_lbFileLink a",
+                    title="#ctl00_phMain_lbSubject", id_param="UNID", probe="0" * 40,
+                    date="#ctl00_phMain_lbStartEndDate"),),
     buttons=(
         Button(r"gvFull", "press", "GridView 翻页：回传 gvFull / Page$N（§7.4）", role="pager", argument=r"Page\$\d+"),
         Button(r"ctl\d+", "never", "SubjectList.aspx、lastNewsList.aspx 上的「查詢」：关键字搜索（§7.4、§7.5 第 10 点，"
@@ -336,8 +346,13 @@ SSO_WEBIDX = Profile(
              get_pager=".items-pagination a[href]"),
         Rows("webidx_files", grid=".detail-attachments", row="li.file-item", walk="none", title=".file-text"),
     ),
+    # the date stands alone after a calendar icon, the views after an eye in the next span (<div class="detail-meta">
+    # <span><i class="fa-regular fa-calendar"></i> 2024-08-15</span><span><i class="fa-regular fa-eye"></i> 2277
+    # </span>): on GET details and on the answers a row's press brings alike (577 of 578, the one left a deleted
+    # notice whose fields are empty; 11-08). A press's answer has its list's address, which no detail path matches:
+    # it is dated by its row on the list (.col-date, the same date on 489 of 489)
     details=(Detail(r"newsidx=", text=".detail-body", files=".detail-attachments a", title=".detail-header h3",
-                    id_param="newsIdx"),),
+                    id_param="newsIdx", date=".news-detail-view .detail-meta span"),),
     buttons=(
         Button(r"ucNews\$rptNews\$ctl\d+\$lnkShowDetail", "press", "单位网站消息的单则内文：同一行有 newsidx= 的普通"
                "链接时用 GET、不按，没有才按（§7.4）", role="detail"),
@@ -403,14 +418,22 @@ _CNKNU_DETAILS = (
     # newsdetail states its date apart from its text: <h5>發佈人員：…｜公告日期：<span id="lbl_AddTime">…</span></h5>
     Detail(r"/newsdetail\.aspx", text="#lbl_Contents", files="#lbl_FileLink a", title="#lbl_Title", id_param="Nid",
            probe="999999999", date="#lbl_AddTime"),
-    Detail(r"/newsview\.aspx", text="#DataFormView_ContentsLabel", files="#DataFormView_FileLinkLabel a",
-           title="#DataFormView_TitleLabel", id_param="Nid", probe="999999999"),
+    # newsview: tecs writes the same labels without the DataFormView_ prefix (#TitleLabel, #ContentsLabel …); the date
+    # field has 「公告日期：」 before it on bm, tecs and giast, and stands alone on affair (<strong><span>2026/09/07
+    # </span></strong>) and reality (its label 「日　　期」 in the cell beside it): 2,325 of 2,409 pages (11-08)
+    Detail(r"/newsview\.aspx", text="#DataFormView_ContentsLabel, #ContentsLabel",
+           files="#DataFormView_FileLinkLabel a, #FileLinkLabel a", title="#DataFormView_TitleLabel, #TitleLabel",
+           id_param="Nid", probe="999999999", date="#DataFormView_AddTimeLabel, #AddTimeLabel"),
 )
 CNKNU = Profile(
     name="cnknu", platform="c.nknu 模板", forms=("form1",),
     sites=r"c\.nknu\.edu\.tw(?:/[^/]+)?|(?:tecs|spe|sea|cprc|hrkm|arts|giast|ksped)\.nknu\.edu\.tw",
+    # tecs's newsview writes its notice's areas without the DataFormView wrapper and prefix (#TitleLabel,
+    # #ContentsLabel, #FileLinkLabel; the newsview Detail above): without them its 155 notices of round one match no
+    # area, and the content stage reads a profiled detail page that matches none as empty (review 11-08)
     content_css=("#lbl_Title, #lbl_Contact, #lbl_PageSub, #lbl_Contents, #lbl_FileLink, #DataFormView, #MasterGrid, "
-                 "#MainContent, .news_content, #lbl_ADJHtml, #lbl_CaseShow, #lbl_YoutubeHtml, .Page_Contact"),
+                 "#MainContent, .news_content, #lbl_ADJHtml, #lbl_CaseShow, #lbl_YoutubeHtml, .Page_Contact, "
+                 "#TitleLabel, #ContentsLabel, #FileLinkLabel"),
     list_paths=r"/(?:newslist|album|download|laws)\.aspx$|/default\.aspx$",
     detail_paths=r"/(?:newsview|newsdetail|album_images)\.aspx$", download_paths=r"/uploadfile/|/files/",
     rows=(Rows("MasterGrid", grid="#MasterGrid", row="tr", walk="postback",
@@ -454,13 +477,24 @@ CNKNU = Profile(
 OIA_TAB = ClickRule("oia_tab", "get_tab", fn="loadSubcategoryContent",
                     call="GET load_content.php?sub_id={subcategoryId}",
                     why="国际处的分页签：每个签一个 GET load_content.php?sub_id=N，载入时显示的那一签也按（§7.4）")
-OIA = Profile(name="oia", platform="国际处（厂商写的 PHP 系统）", sites=r"oia\.nknu\.edu\.tw", clicks=(OIA_TAB,))
+# The notice pages of the self-built sites below (11-08, read on round one's pages): each writes its notice's date
+# alone, with no label, in a field of its own (the export reads it: export.own_date), and its list shows the same date
+# beside a plain link to the notice. Their text, files and title areas are what the export and the crawler's empty
+# check read (export.empty_detail_area, empty_detail; on round one's pages they call empty only notices with no text
+# in them: elec's 3, english's 1). Albums (活動花絮) are no notices: not here
+OIA = Profile(name="oia", platform="国际处（厂商写的 PHP 系统）", sites=r"oia\.nknu\.edu\.tw", clicks=(OIA_TAB,),
+              # 最新消息: <div class="post-date">2026-05-22</div> beside the category badge (156 of 156)
+              details=(Detail(r"^/news-detail\.php\?(?:.*&)?id=\d+", text=".post-content", title=".post-title",
+                              date=".post-date"),))
 
 EE_FILE = ClickRule("ee_file", "post_file", fn=".down", call="POST fileAjax.html",
                     why="电子系的下载按钮：每一对 (k, 档案编号) 一个 POST fileAjax.html，回来的档案网址再抓（§7.4）",
                     id_expr="$(this).find('.download').val()", id_css="input.download", fields=("id", "k"))
 EE = Profile(
     name="ee", platform="电子系（自建）", sites=r"ee\.nknu\.edu\.tw", clicks=(EE_FILE,),
+    # 最新消息-榮譽典範 and 系學會公告: <p id="ne_date">2023-09-01</p> before the title (32 of 32); 高中生專區's pages
+    # (Admission_Info_ii.html) state no date anywhere
+    details=(Detail(r"^/(?:news|student3)_ii\.html\?getid=\d+", text="#ne_c", title="#ne_title", date="#ne_date"),),
     writings=(
         Writing(r"select:\.option", "round2", "学年选单（notes.html、student4.html：location.href = html + "
                 "\".html?getId=\" + 选项的值）：这一轮不自动按下拉选单，各学年的页别处没有普通链接；下一轮照拼法组网址补"
@@ -475,18 +509,49 @@ LIS = Profile(
     pending_r7=("initSort",),
 )
 ELEC = Profile(name="elec", platform="电机系（自建）", sites=r"elec\.nknu\.edu\.tw",
+               # 系所公告: the first <p id="ne_list_d"> holds the date (2026/09/14), a second the views (觀看次數:655);
+               # 612 of 616 (one says 0000/00/00, three the school emptied). The Chinese pages only: the English
+               # mirror (/en/) holds no text of its own on 481 of 587, which the empty check would call empty
+               details=(Detail(r"^/news_ii\.html\?", text="#ne_c", files="#ne_download_c a", title="#ne_title",
+                               date="#ne_list_d"),),
                writings=(Writing(r"js_link:userLogInForm", "never", "侧栏的登录框：登录不碰（§7.8，CLAUDE.md）"),))
 ENGLISH = Profile(
     name="english", platform="英语系（自建）", sites=r"english\.nknu\.edu\.tw",
+    # 最新消息: <div class="news_t01"><p>2026-05-12</p><h3>…</h3></div> (33 of 33); the conference sub-site's notices
+    # (tw/conference/news_ii.html?ID=) are another template, with no date of their own
+    details=(Detail(r"^/(?:tw|en)/news_ii\.html\?", text=".edit01", title=".news_t01 h3", date=".news_t01 p"),),
     writings=(Writing(r"js_link:_checkLogin", "never", "登录框：登录不碰（§7.8，CLAUDE.md）"),
               Writing(r"js_link:_getRandom", "never", "登录框的换验证码：验证码不碰（§7.8，CLAUDE.md）")),
     # 首页最新消息的分类签 <a href="javascript:" data-id="N">（key js_link:）：R7 读了外部 .js 才定（§7.8）
     pending_r7=("js_link:",),
 )
-CLCTS = Profile(name="clcts", platform="华语中心（自建）", sites=r"clcts\.nknu\.edu\.tw", pending_r7=("papago",))
-WORDPRESS = Profile(name="wordpress", platform="WordPress", sites=r"vd\.nknu\.edu\.tw|fine-arts\.nknu\.edu\.tw")
+CLCTS = Profile(name="clcts", platform="华语中心（自建）", sites=r"clcts\.nknu\.edu\.tw", pending_r7=("papago",),
+                # 最新消息: <span class="list-date">2026.10.22</span> between the type badges and the title (60 of 60)
+                details=(Detail(r"^/news_page\.php\?id=", text=".page_contain", title=".page_contain h1",
+                                date="span.list-date"),))
+WORDPRESS = Profile(name="wordpress", platform="WordPress", sites=r"vd\.nknu\.edu\.tw|fine-arts\.nknu\.edu\.tw",
+                    # a post (/YYYY/MM/DD/<name>/): its date field shows the day and the month only (「30 6 月」, the
+                    # Qode Bridge theme), the whole date is in its address (218 of 218 agree). No title area: the h2
+                    # holds the date too, and the page's first h1, h2 stays its title
+                    details=(Detail(r"^/\d{4}/\d{2}/\d{2}/[^/]+/?$", text=".blog_single .post_text_inner",
+                                    date=".blog_single .entry_date",
+                                    date_path=r"^/(?P<y>\d{4})/(?P<m>\d{2})/(?P<d>\d{2})/"),))
+# 地理系: index.php?option=module&task=pageinfo serves its notices (最新消息, 學術活動 …: <dl class="newslist2"><dt>
+# <span class="newsitem">最新消息</span>2026-03-10</dt><dd class="title">…</dd>, 545 of 545) and its static pages alike;
+# .pbox1 is the box both have, so a static page is no notice the school emptied. No detail_paths: that address is a
+# static page's too (the content stage's notices are detail_paths')
+GEO = Profile(name="geo", platform="地理系（自建 PHP）", sites=r"geo\.nknu\.edu\.tw",
+              details=(Detail(r"task=pageinfo", text=".pbox1", files=".ext_list a", title=".newslist2 dd.title",
+                              date=".newslist2 dt"),))
+# 工设系: a post is /link<section>/<name> (公告, 招生, 競賽 …; the lists /link<section>/page/N, category/, tag/), its
+# category and date in .title_block's list (<li>行政</li><li><i class="fa-clock"></i>2026年04月03日</li>, 196 of 196);
+# section.block_area holds the text of the two static pages of the same shape. No detail_paths, as for 地理系
+ID = Profile(name="id", platform="工设系（自建）", sites=r"id\.nknu\.edu\.tw",
+             details=(Detail(r"^/link[0-9a-z]+/(?!page(?:/|$)|category(?:/|$)|tag(?:/|$))[^/]+$",
+                             text="#article .blog_content, section.block_area", title=".title_block h1",
+                             date=".title_block li"),))
 
-PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, CNKNU, OIA, EE, LIS, ELEC, ENGLISH, CLCTS, WORDPRESS)
+PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, CNKNU, OIA, EE, LIS, ELEC, ENGLISH, CLCTS, WORDPRESS, GEO, ID)
 
 
 def profile_for_site(site: str | None) -> Profile | None:
@@ -726,18 +791,30 @@ def decision_why(site: str | None, res_key: str, text: str | None = None) -> tup
 
 def check_profiles() -> list[str]:
     """What is wrong in the profiles themselves (a test keeps this empty): a writing that ignores a click, a key
-    pattern that does not compile, two profiles that claim one site of the round-1 list."""
+    pattern that does not compile, a detail's date_path without its groups y, m and d, two profiles that claim one
+    site of the round-1 list."""
     out = []
     for p in PROFILES:
         for w in p.writings:
             if w.key.startswith("click:") and w.decision == "ignore":
                 out.append(f"{p.name}: {w.key} ignores a click")
-        for pattern in (p.sites, *(b.target for b in p.buttons), *(w.key for w in p.writings)):
+        for pattern in (p.sites, *(b.target for b in p.buttons), *(w.key for w in p.writings),
+                        *(d.paths for d in p.details), *(d.date_path for d in p.details if d.date_path)):
             try:
                 re.compile(pattern)
             except re.error as exc:
                 out.append(f"{p.name}: {pattern}: {exc}")
+        for d in p.details:
+            if d.date_path and not {"y", "m", "d"} <= set(_group_names(d.date_path)):
+                out.append(f"{p.name}: {d.date_path}: a date_path names its groups y, m and d")
     return out
+
+
+def _group_names(pattern: str) -> tuple[str, ...]:
+    try:
+        return tuple(re.compile(pattern).groupindex)
+    except re.error:
+        return ()
 
 
 # ---------------------------------------------------------------- clicks (design §7.4)

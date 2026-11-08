@@ -28,29 +28,55 @@ Read only: frontier.db is opened with mode=ro (SQLite's own -wal and -shm files 
 next to it), the WARC files are only read, and every database read is one transaction, so the export sees one moment of
 a run that may be going on (and says so). The folder must be new or empty and outside anything git would track: what
 the school publishes holds full names and student numbers, which never go into git (CLAUDE.md).
+
+Step 3's additions (spec 2026-11-08 §四 row 3 and 附 导出; the owner 11-08 【用户】: 「先做导出，别让内容管线等」; how
+each is done is 【Claude 的执行办法】):
+- four columns at the end of the manifest: 按钮编号 (a press's action.row_key, which the content stage's ids take
+  instead of the button's words), 最后修改时间 (the archived answer's Last-Modified, a Drive file's modified), 日期来源
+  (which rule found 网页上写的日期) and 来源 ('' for this round's archive, ORIGIN_OLD for a row filled from the 10-24
+  one);
+- a notice's date per platform (P75 of docs/crawler-plan.md): its platform's own date field (profiles.Detail.date,
+  read alone or after its label: own_date; the platform by the page's own address), else the date its row states on
+  its list (Writer.list_dates: the rows of the site's list pages and of the pages their pager brought, read as the
+  crawler read them), else the first labelled date in its words;
+- a page strict decoding refused (结果 编码有问题, item ⑧) read again with an encoding the page or its server names
+  (redecode);
+- --old-copies: the rows this round got nothing good of take the 10-24 archive's good copy as their file (OldCopies,
+  item ⑦ of docs/round1-gaps-2026-11-08.md), their 结果 and 分类 kept;
+- whether the site can be exported now and its data time (Ready: `nknu archive ready`, manifest.json's 可以导出 and
+  资料截至), for the export service (research/crawler_lab_2026-11-04/export_sites.sh);
+- what an export is made of (manifest.json's 导出依据: export_basis), and --skip-same, which writes nothing when the
+  site's current export is made of the same things (the service's 没有变动);
+- --reuse: the attachments and pictures a previous export of the site holds, hard-linked instead of read again (Reuse).
 """
 
 from __future__ import annotations
 
 import codecs
 import csv
+import dataclasses
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import google_api, monitor, outcome, postback, profiles, progress, sniff
+from nknu.archive import google_api, links, monitor, outcome, postback, profiles, progress, scope, sniff
 from nknu.archive.frontier import _missing
 from nknu.crawl.fetch import DecodeError, decode_body
 
@@ -58,9 +84,39 @@ TZ = ZoneInfo("Asia/Taipei")
 PAGE, FILE, IMAGE, DATA, BUTTON = "网页", "附件", "图片", "资料", "按钮"
 TYPES = (PAGE, FILE, IMAGE, DATA, BUTTON)
 FOLDERS = {PAGE: "pages", FILE: "files", IMAGE: "images", DATA: "data"}
+# the content stage reads the rows by these names (manifest.json's 项目, missing.csv by csv.DictReader), never by
+# position: a column is only ever added at the end
 COLUMNS = ("序号", "类型", "网址", "最后落地网址", "本地档案", "标题", "网页上写的日期", "日期原文", "完整度", "缺什么", "结果",
            "原因", "分类", "原因代码", "抓取时间", "大小", "sha256", "格式", "链到它的网页", "链接文字", "怎么来的", "备注",
-           "存档编号")
+           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源")
+# 日期来源: which rule found a page's 网页上写的日期 (Writer._dates, in this order): the platform's date field (own_date),
+# the date the notice's row states on its list (Writer.list_dates; P75: the notices a WebIdx row's press brought have
+# their list's address, which no detail path names), the first labelled date in the page's words
+OWN_FIELD, LIST_ROW, PAGE_WORDS = "详细页的日期栏", "列表上的日期", "网页上的日期字眼"
+# 来源 of a row whose file is the 10-24 archive's copy (--old-copies, item ⑦: a gap row with a good copy there; a
+# redirect sharing that file too); '' is this round's archive
+ORIGIN_OLD = "10-24 旧存档"
+# item ⑧ of the 11-08 gaps: a page strict decoding refused is read again with an encoding the page itself or its
+# server names (_LABELS), never with one neither names: gb18030 reads almost any Big5 bytes whole into other
+# characters, and Big5-HKSCS gives the character a Taiwanese site made for a rare character in a name (造字, in Big5's
+# user-defined area) a Hong Kong one, both with nothing to show for it (review 11-08). None reading it whole, it is read
+# with whichever of those, or of the crawler's own two (DEFAULTS: decode_body's UTF-8 and Big5), loses the fewest
+# characters, each lost one as � (redecode)
+DEFAULTS = ("utf-8", "cp950")
+# the label a page or its server gives as a browser reads it (WHATWG Encoding Standard: Shift_JIS is Windows-31J,
+# GB2312 and GBK lie within GB18030), the multi-byte ones only: a single-byte label (latin-1 reads any byte) proves
+# nothing. 性别所's 10 old pages say Shift_JIS and read whole as cp932, and as gb18030 too, into other characters
+# (11-08, the 10-24 archive's copies)
+_LABELS = {"shift_jis": "cp932", "shift-jis": "cp932", "sjis": "cp932", "x-sjis": "cp932", "windows-31j": "cp932",
+           "ms_kanji": "cp932", "csshiftjis": "cp932", "euc-jp": "euc_jp", "big5": "cp950", "big-5": "cp950",
+           "x-big5": "cp950", "cn-big5": "cp950", "csbig5": "cp950", "x-x-big5": "cp950", "big5-hkscs": "big5hkscs",
+           "gb2312": "gb18030", "gbk": "gb18030", "x-gbk": "gb18030", "gb18030": "gb18030", "euc-kr": "cp949",
+           "utf-8": "utf-8", "utf8": "utf-8"}
+_META_CHARSET = re.compile(rb"<meta\b[^>]*?charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+_HEADER_CHARSET = re.compile(r"charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+# the encodings in plain words, for 备注 and the README (「按日文 Shift_JIS（cp932）重读」)
+ENCODING_ZH = {"utf-8": "UTF-8", "cp950": "繁体中文 Big5", "big5hkscs": "繁体中文 Big5 加香港增补字",
+               "gb18030": "简体中文 GB", "cp932": "日文 Shift_JIS", "euc_jp": "日文 EUC-JP", "cp949": "韩文 EUC-KR"}
 # the columns an older round-1 frontier.db may lack that neither the result views nor this export read (the 10-26
 # pilot's archive lacks exactly these): read as it is. Any other gap is an archive this version cannot judge: refused
 NOT_READ = frozenset({("url", "referrer"), ("action", "next_at"), ("action", "attempts")})
@@ -114,13 +170,21 @@ SNIFF_EXT = {"pdf": "pdf", "ooxml:docx": "docx", "ooxml:xlsx": "xlsx", "ooxml:pp
 _OLE_EXT = {"application/msword": "doc", "application/vnd.ms-excel": "xls", "application/vnd.ms-powerpoint": "ppt"}
 # a server program's name at the end of an address: never the file's own extension
 _PROGRAM_EXT = frozenset({"aspx", "asp", "ashx", "php", "jsp", "cgi", "do", "htm", "html", "action"})
-_BAD_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]+')
+_BAD_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f/\\:*?"<>|]+')  # C0, DEL and C1 controls, separators, reserved
 _SLUG_BAD = re.compile(r"[^0-9A-Za-z㐀-鿿豈-﫿._-]+")
 NAME_BYTES = 150  # a file name's own part, in UTF-8 bytes (macOS and Linux allow 255 in all)
 
 
 class ExportRefused(Exception):
     """The export is not made (the message says why, in Chinese, for the command to print)."""
+
+
+class Unchanged(Exception):
+    """--skip-same: the site's current export is made of the same things this one would be (导出依据), so nothing is
+    written (the message says so, in Chinese); the command exits with UNCHANGED."""
+
+
+UNCHANGED = 3  # `nknu archive export --skip-same`'s exit code when nothing would change (export_sites.sh reads it)
 
 
 # ---------------------------------------------------------------- the dates a page states
@@ -132,9 +196,13 @@ _STRONG = (r"(?:發\s*[佈布]|发\s*布|(?<!最新)公\s*告|更\s*新|張\s*�
            r"(?<![A-Za-z])(?:posted|published|updated?)(?:\s+(?:on|at))?(?![A-Za-z])")
 # a bare 日期 or Date: only when no label above holds a date (an event page's 活動日期 may come before its 公告日期)
 _WEAK = r"日\s*期|(?<![A-Za-z])date(?![A-Za-z])"
-_AFTER = (r"[\s:︰\-–—|｜\]】)）]{0,8}(?P<roc>(?:中\s*[華华]\s*)?民\s*[國国]\s*)?"
-          r"(?P<y>\d{2,4})\s*(?P<s1>[/.\-年])\s*(?P<m>\d{1,2})\s*(?P<s2>[/.\-月])\s*(?P<d>\d{1,2})(?!\d)\s*(?:日)?")
+# a date as it is written: 2025/10/01, 2025-10-01, 2025.10.01, 2025年10月1日, a 民国 year of two or three digits
+_DAY = (r"(?P<roc>(?:中\s*[華华]\s*)?民\s*[國国]\s*)?"
+        r"(?P<y>\d{2,4})\s*(?P<s1>[/.\-年])\s*(?P<m>\d{1,2})\s*(?P<s2>[/.\-月])\s*(?P<d>\d{1,2})(?!\d)\s*(?:日)?")
+_AFTER = r"[\s:︰\-–—|｜\]】)）]{0,8}" + _DAY
 _DATES = tuple(re.compile(rf"(?P<label>{label}){_AFTER}", re.IGNORECASE) for label in (_STRONG, _WEAK))
+# a date with no label before it (a platform's own date field, a list row's date cell), never inside a longer number
+_BARE = (re.compile(r"(?<!\d)" + _DAY),)
 # full-width digits and the marks between them as their ASCII twins, one character for one: the words kept beside the
 # date are cut from the page's own text at the same places
 _HALF = str.maketrans("０１２３４５６７８９／．－：", "0123456789/.-:")
@@ -148,9 +216,24 @@ def find_date(text: str) -> tuple[str, str] | None:
     2025年10月1日, full-width digits too; a year of two or three digits is a 民国 year (114/10/01, 114.10.01,
     民國114年10月1日, 中華民國114年10月1日: + 1911). A date that does not exist, or falls outside YEARS, is passed over.
     Found by the program: it may be wrong, which is why the words are kept beside it."""
+    return next(_written_dates(text, _DATES), None)
+
+
+def bare_date(text: str) -> tuple[str, str] | None:
+    """The first date the text writes with no label before it, as find_date() reads a date after one (the same
+    writings and checks: 年 goes with 月, one mark between the numbers, a 民国 year of two or three digits, a date that
+    does not exist or falls outside YEARS passed over), with the words of the date alone: what a platform's own date
+    field holds (「2024-08-15」, 「最新消息2026-03-10」, 「2026-10-22 ~ 2026-11-06」: its first) and a list row's date
+    cell. None when it writes none."""
+    return next(_written_dates(text, _BARE), None)
+
+
+def _written_dates(text: str, patterns) -> Iterator[tuple[str, str]]:
+    """Each date the text writes after one of these patterns, in their order (a pattern's matches in the text's order),
+    as (YYYY-MM-DD, the words as the page writes them, white space as one space)."""
     raw = text or ""
     half = raw.translate(_HALF)
-    for pattern in _DATES:
+    for pattern in patterns:
         for m in pattern.finditer(half):
             s1, s2 = m["s1"], m["s2"]
             if (s1 == "年") != (s2 == "月") or (s1 != "年" and s1 != s2):
@@ -167,8 +250,102 @@ def find_date(text: str) -> tuple[str, str] | None:
                 continue
             if not YEARS[0] <= got.year <= YEARS[1]:
                 continue
-            return got.isoformat(), re.sub(r"\s+", " ", raw[m.start():m.end()]).strip()
-    return None
+            yield got.isoformat(), re.sub(r"\s+", " ", raw[m.start():m.end()]).strip()
+
+
+def changed_at(value: str | None) -> str:
+    """最后修改时间: an HTTP date (RFC 7231: Last-Modified's IMF-fixdate, or the obsolete RFC 850 and asctime forms;
+    one with no zone is UTC, as every HTTP date is) or a Drive item's modified (RFC 3339), as an ISO time in Taipei
+    with seconds; '' when there is none, it cannot be read, or its year falls outside YEARS (a server that does not
+    know says 1970-01-01, as find_date takes such a year for none)."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text) if re.match(r"\d{4}-\d\d-\d\dT", text) else parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    try:
+        local = dt.astimezone(TZ)
+    except (ValueError, OverflowError):
+        return ""
+    return local.isoformat(timespec="seconds") if YEARS[0] <= local.year <= YEARS[1] else ""
+
+
+def encoding_words(cs: str, said: str = "") -> str:
+    """An encoding in plain words, its codec name and who names it after it: 「日文 Shift_JIS（cp932；网页自己写的编码是
+    shift_jis）」, 「繁体中文 Big5（cp950）」, 「UTF-8」."""
+    plain = ENCODING_ZH.get(cs, cs)
+    inside = "；".join(x for x in ("" if plain.lower() == cs.lower() else cs, said) if x)
+    return f"{plain}（{inside}）" if inside else plain
+
+
+def _labelled_charsets(body: bytes, ctype: str | None) -> list[tuple[str, str]]:
+    """The encodings a page names (its own <meta> label first, then its HTTP header's charset), as browsers read the
+    label (_LABELS: a label not there names none), each with who names it, in words."""
+    out = []
+    m = _META_CHARSET.search(body[:4096])
+    meta = m.group(1).decode("ascii", "replace").lower() if m else ""
+    if meta in _LABELS:
+        out.append((_LABELS[meta], f"网页自己写的编码是 {meta}"))
+    h = _HEADER_CHARSET.search(ctype or "")
+    header = h.group(1).lower() if h else ""
+    if header in _LABELS:
+        out.append((_LABELS[header], f"服务器说的编码是 {header}"))
+    return out
+
+
+def _pair(exc: UnicodeError) -> tuple[str, int]:
+    """A double-byte encoding's pair it cannot read as one �, as a browser reads it (WHATWG Encoding Standard: the
+    lead byte takes the byte after it along unless that byte is ASCII, which is read again as itself). Python's own
+    replace takes the lead byte alone, and the byte after it then pairs with the next character: a 造字 for 王 in
+    「王O明」 would take the O with it. UTF-8 is read as Python reads it (each broken sequence one �)."""
+    if not isinstance(exc, UnicodeDecodeError):
+        raise exc
+    data, i = exc.object, exc.start
+    double = exc.encoding.replace("_", "-").lower() not in ("utf-8", "utf8")
+    if double and data[i] >= 0x81 and i + 1 < len(data) and data[i + 1] >= 0x80:
+        return "\ufffd", max(exc.end, i + 2)
+    return "\ufffd", exc.end
+
+
+codecs.register_error("nknu.pair", _pair)
+
+
+def redecode(body: bytes, ctype: str | None = None) -> tuple[str, str, str, int]:
+    """A page strict decoding refused (nknu.crawl.fetch.decode_body: the header's charset, UTF-8, Big5; 结果 编码有问题)
+    read again, as (text, encoding, who names it in words or '', how many characters it lost): strictly with an
+    encoding the page names (_labelled_charsets: its own <meta> label, then its server's charset), the first that
+    reads the whole body (lost 0); else with whichever of those and of DEFAULTS loses the fewest characters (each lost
+    one a �: _pair; of two that lose as many, the first). Never with an encoding nothing names (review 11-08: gb18030
+    and Big5-HKSCS read a Big5 page with one 造字 whole, into mojibake or a wrong character in a name; a � is better
+    than a guess).
+    A body that begins with UTF-8's byte order mark is UTF-8 whatever else it says (a browser reads it so): 英语系's
+    106 English pages are such, a Big5 comment in each breaking it (11-08, the 10-24 archive's copies), read as UTF-8
+    with a � for each broken sequence, as before."""
+    bom = body.startswith(codecs.BOM_UTF8)
+    named = [("utf-8", "")] if bom else _labelled_charsets(body, ctype)
+    for cs, said in named:
+        try:
+            text = body.decode(cs).removeprefix("\ufeff")
+        except UnicodeError:
+            continue
+        if "\ufffd" not in text:
+            return text, cs, said, 0
+    best: tuple[str, str, str, int] | None = None
+    tried: set[str] = set()
+    for cs, said in (named if bom else [*named, *((cs, "") for cs in DEFAULTS)]):
+        if cs in tried:
+            continue
+        tried.add(cs)
+        text = body.decode(cs, "nknu.pair").removeprefix("\ufeff")
+        lost = text.count("\ufffd")
+        if best is None or lost < best[3]:
+            best = (text, cs, said, lost)
+    assert best is not None  # DEFAULTS holds two
+    return best
 
 
 # ---------------------------------------------------------------- one item of the manifest
@@ -211,6 +388,18 @@ class Item:
     empty_area: str = ""  # a notice page whose platform's title and text areas are missing or empty: in words
     owner: str = ""  # the site the row counts for (url.owner_site; a press: the site of its list)
     order: tuple = ()
+    row_key: str = ""  # 按钮编号: the action row's row_key of an item a press brought (pager: p<step>)
+    modified: str = ""  # 最后修改时间: changed_at() of the archived answer's Last-Modified, or of a Drive file's modified
+    date_from: str = ""  # 日期来源: OWN_FIELD, LIST_ROW or PAGE_WORDS, '' with no date
+    origin: str = ""  # 来源: '' for this round's archive, ORIGIN_OLD for the 10-24 one's copy (a redirect sharing it too)
+    filled: bool = False  # it took the 10-24 archive's copy itself (--old-copies, item ⑦)
+    decoded: str = ""  # a page strict decoding refused: the encoding redecode() read it with
+    lost: int = 0  # of such a page, the characters that encoding could not read (each a � in its file)
+    seen_lost: int = 0  # of those, the ones in what a reader sees (its words and title, not comments or link addresses)
+    judged: dict | None = None  # page_completeness's row of a page the views judged by an answer the crawler could
+    # not decode (own decode): judged again as the page it is once the export reads it whole (Writer._read_whole)
+    own: str = ""  # a page's result the views judge it by: its own, or a redirect's landing page's
+    linked: bool = False  # its file is a hard link to the previous export's (--reuse)
 
     def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
         """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
@@ -224,7 +413,8 @@ class Item:
                 "抓取时间": self.fetched_at, "大小": "" if self.size is None else str(self.size), "sha256": self.sha256,
                 "格式": self.sniff, "链到它的网页": _joined((page_url(p) for p in self.pages), cap, "页"),
                 "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
-                "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref}
+                "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref, "按钮编号": self.row_key,
+                "最后修改时间": self.modified, "日期来源": self.date_from, "来源": self.origin}
 
     def result_words(self) -> str:
         """结果: the result in words; a gone with a reason of its own (a file sent to the school's home page, 11-03)
@@ -265,6 +455,9 @@ class Result:
     missing_by: Counter
     lines: list[str]
     left_other: int = 0  # of what is still queued (left_urls, left_presses), the rows another site owns
+    ready: Ready | None = None  # whether the site could be exported (可以导出) and its data time (资料截至)
+    linked: int = 0  # the attachments and pictures hard-linked from the previous export (--reuse)
+    old_copies: int = 0  # the rows whose file is the 10-24 archive's copy (--old-copies, item ⑦)
 
 
 # ---------------------------------------------------------------- the checks before anything is written
@@ -277,10 +470,15 @@ def _git_top(path: Path) -> Path | None:
     return None
 
 
-def check_out(root: Path, out: Path) -> None:
-    """Refuse an out folder that is not empty, that lies in the archive, or that git would track (ExportRefused)."""
+def check_out(root: Path, out: Path, read: Iterable[tuple[str, Path]] = ()) -> None:
+    """Refuse an out folder that is not empty, that lies in the archive or in another folder the export only reads
+    (read: (what it is, in words; the folder resolved): the 10-24 copies, the previous export; review 11-08), or that
+    git would track (ExportRefused)."""
     if out == root or root in out.parents:
         raise ExportRefused(f"{out} 在存档目录里：存档只读，导出要放在存档目录外面（例如 archive-export/）")
+    for what, folder in read:
+        if out == folder or folder in out.parents:
+            raise ExportRefused(f"{out} 在{what} {folder} 里：它只读，导出要放在它外面")
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise ExportRefused(f"{out} 已经存在而且不是空的：换一个新的资料夹名（导出不覆盖、不混进旧的东西）")
     top = _git_top(out)
@@ -327,6 +525,117 @@ def connect(db: Path) -> sqlite3.Connection:
     return conn
 
 
+# ---------------------------------------------------------------- whether a site can be exported now (step 3)
+
+
+@dataclass
+class Ready:
+    """Whether a site can be exported now (spec 2026-11-08 §二: a site is 爬完 for the content stage when nothing of it
+    is left to fetch; `nknu archive ready`, manifest.json's 可以导出): it can when nothing of it waits to be fetched or
+    pressed, the url rows it owns that are pending or active (a retry, a row waiting for the lab too) and its presses
+    that are, which is progress.site_numbers' left, the ✓ on the site's row of the dashboard (never a rule of its own
+    here). Its state is monitor.site_status's, as the dashboard and the export's README say it; as_of (资料截至) is the
+    latest fetch among its own rows (url.fetched_at, action.done), Taipei's ISO time, '' with none."""
+
+    site: str
+    name: str
+    known: bool  # the archive has the site: a site_plan row, or a url row it owns
+    urls: int
+    presses: int
+    as_of: str
+    state: str = "unchecked"
+
+    @property
+    def can(self) -> bool:
+        return self.known and not self.urls and not self.presses
+
+    @property
+    def state_words(self) -> str:
+        if not self.known:
+            return "存档里没有这个网站"
+        sign, words, _color = progress.STATE_SHOW.get(self.state, ("⚠", "没检查", "yellow"))
+        return f"{sign} {words}".strip()
+
+    def line(self) -> str:
+        """The site's line in `nknu archive ready`."""
+        site = f"{self.site}（{self.name}）" if self.name else self.site
+        if not self.known:
+            return f"✗ {site}：存档里没有这个网站（网站键打错了？）"
+        verdict = "可以导出" if self.can else f"还没爬完，还有 {self.urls} 个网址、{self.presses} 个按钮在排队"
+        return (f"{'✓' if self.can else '…'} {site}：{verdict}；状态 {self.state_words}；"
+                f"资料截至 {self.as_of or '（还没抓到东西）'}")
+
+    def as_dict(self) -> dict:
+        return {"网站": self.site, "名称": self.name, "可以导出": self.can, "状态": self.state_words,
+                "还在排队的网址": self.urls, "还在排队的按钮": self.presses, "资料截至": self.as_of}
+
+
+def readiness(conn: sqlite3.Connection, now: float, sites: Iterable[str] | None = None) -> dict[str, Ready]:
+    """Ready of these sites, by default the dashboard's (progress.run_scope: the sites of the last run_start, every
+    round-1 site of the list when no run named any), in that order, read in the caller's transaction; their state is
+    left to the caller (monitor.site_status reads every page). A site neither the list nor any row knows (a mistyped
+    key) is known False, never one that can be exported."""
+    run = progress.run_scope(conn, progress._hosts(conn))
+    want = list(dict.fromkeys(sites)) if sites is not None else list(run.sites)
+    presses = progress._presses(conn, now)
+    nums = progress.site_numbers(conn, now, replace(run, sites=tuple(want)), presses)
+    pressing: Counter = Counter()
+    for r in presses:
+        if r["state"] not in progress.PRESS_FINISHED:
+            pressing[r["site"]] += r["n"]
+    names = {r[0]: r[1] or "" for r in conn.execute("SELECT site, name FROM site_plan")}
+    owned: Counter = Counter()
+    last: dict[str, float] = {}
+    for i in range(0, len(want), 500):
+        part = want[i:i + 500]
+        marks = ",".join("?" * len(part))
+        # fetched_at is frontier.utc_now()'s ISO time: strftime reads it whatever its offset
+        for s, n, at in conn.execute(f"""SELECT owner_site, count(*), max(CAST(strftime('%s', fetched_at) AS INTEGER))
+                                         FROM url WHERE owner_site IN ({marks}) GROUP BY owner_site""", part):
+            owned[s] = n
+            if at is not None:
+                last[s] = float(at)
+        # a press counts for its list page's site, as the dashboard counts it (progress._presses)
+        for s, at in conn.execute(f"""SELECT coalesce(u.owner_site, a.site), max(a.done) FROM action a
+                                      LEFT JOIN url u ON u.id = a.list_id
+                                      WHERE a.done IS NOT NULL AND coalesce(u.owner_site, a.site) IN ({marks})
+                                      GROUP BY 1""", part):
+            if at is not None:
+                last[s] = max(last.get(s, float(at)), float(at))
+    return {s: Ready(s, names.get(s, ""), s in names or bool(owned[s]), nums[s]["left"] - pressing[s], pressing[s],
+                     _taipei(last[s]) if s in last else "") for s in want}
+
+
+def ready(root: Path, sites: Iterable[str] | None = None, *,
+          now: float | None = None) -> tuple[list[Ready], int | None]:
+    """`nknu archive ready`: Ready of every site the dashboard lists, or of these, each with its state (monitor.
+    site_status's; 没检查 when it cannot be had, never a state made up here); read only, as the export is (one
+    transaction of a read-only connection: a run may be going on). Also the pid of a run that holds the archive."""
+    from nknu.archive.crawler import lock_holder
+
+    root = Path(root).expanduser().resolve()
+    now = time.time() if now is None else now
+    pid = lock_holder(root)
+    conn = connect(root / "frontier.db")
+    try:
+        conn.execute("BEGIN")
+        try:
+            got = readiness(conn, now, sites)
+            try:
+                status = monitor.site_status(monitor._frontier(conn), now)
+            except Exception:  # noqa: BLE001 - the state is said as 没检查; whether it can be exported does not need it
+                status = {}
+        finally:
+            conn.execute("COMMIT")
+    finally:
+        conn.close()
+    for r in got.values():
+        st = status.get(r.site)
+        if st is not None:
+            r.state = st.state
+    return list(got.values()), pid
+
+
 # ---------------------------------------------------------------- reading the archive (one transaction)
 
 
@@ -351,6 +660,8 @@ class Snap:
     videos: int
     other_site_items: int
     press_to: dict[int, int]  # a press: the url row its answer named (action.location)
+    ready: Ready | None = None  # whether the site could be exported, and its data time (资料截至)
+    ready_error: str | None = None  # why ready is None
 
 
 def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
@@ -445,10 +756,19 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
             f"""SELECT count(DISTINCT pr.res_id) FROM page_res pr JOIN url x ON x.id = pr.res_id
                 WHERE pr.page_id IN ({own}) AND pr.role = 'item' AND coalesce(x.owner_site, '') <> ?""",
             (site, site)).fetchone()[0]
+        # manifest.json's 可以导出 and 资料截至, as `nknu archive ready` says them; an archive older than the dashboard
+        # (NOT_READ: the 10-26 pilot's presses have no next_at, which progress._presses reads) has neither
+        site_ready, ready_error = None, None
+        try:
+            site_ready = readiness(conn, now, [site])[site]
+            site_ready.state = status.state if status is not None else site_ready.state
+        except sqlite3.OperationalError as exc:
+            ready_error = f"{type(exc).__name__}: {exc}"
     finally:
         conn.execute("COMMIT")
     return Snap(dict(plan) if plan is not None else None, rows, page_ids, pc, pres, raw_res, actions, walks, drive,
-                drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to)
+                drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to,
+                site_ready, ready_error)
 
 
 # ---------------------------------------------------------------- the items
@@ -503,9 +823,23 @@ def _type_of_row(r: dict, role: str | None = None) -> str | None:
     return KIND_TYPE.get(r.get("kind0") or r.get("kind") or "", FILE)
 
 
+def unquoted(part: str) -> str:
+    """A part of an address decoded (%XX as UTF-8, as unquote reads it), and once more when that gives UTF-8's own
+    bytes one character each (a name percent-encoded twice: 146 of 圖資處's addresses in the 10-24 archive, e.g.
+    %C3%A5%C2%85%C2%AC… for 公告…, whose names would otherwise hold C1 control characters): every character is then
+    below U+0100 and their bytes read whole as UTF-8. A real Latin-1 name (café) does not read so, and stays."""
+    name = unquote(part)
+    if any("\x80" <= c <= "\xff" for c in name) and all(c <= "\xff" for c in name):
+        try:
+            return name.encode("latin-1").decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    return name
+
+
 def _last_part(url: str) -> str:
-    """An address's last path part, decoded: what a file not got is called in the manifest."""
-    return unquote(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1])
+    """An address's last path part, decoded (unquoted): what a file not got is called in the manifest."""
+    return unquoted(urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1])
 
 
 def _worst(results) -> str:
@@ -630,7 +964,7 @@ class Builder:
             it = Item(f"a{a['id']}", BUTTON, f"{lst['url'] or a['target'] or ''}#按钮={words}", result=a["result"],
                       codes=_codes(a), ref=f"a{a['id']}", fetched_at=_taipei(a["done"]), size=a["bytes"], sha256=a["sha256"] or "", sniff=a["sniff"] or "", pages=[a["list_id"]],
                       texts=[a["row_text"] or ""], title=a["row_text"] or "", owner=self.site, bucket="review",
-                      why=self.GAP, how=f"列表 {lst['url']} 上的按钮（{a['kind']}）")
+                      why=self.GAP, how=f"列表 {lst['url']} 上的按钮（{a['kind']}）", row_key=a["row_key"] or "")
             it.notes.append(f"{self.GAP}这个按钮（导出程式的漏洞，不是漏抓），没有导出档案，要人看")
             self.add(it)
             listed.add(a["id"])
@@ -672,7 +1006,9 @@ class Builder:
                 own = p["own"]
                 it.level = p["level"]
                 it.lacks = self._lacks(p)
-            it.bucket = monitor.bucket(own, page=True)
+                if own == "decode":
+                    it.judged = p
+            it.own, it.bucket = own, monitor.bucket(own, page=True)
             it.why = _why(own, r["reason"], r["status"])
             if "in_image" in (r["flags"] or "").split(","):
                 it.notes.append(outcome.IN_IMAGE_WORDS)
@@ -687,7 +1023,8 @@ class Builder:
             it.how = self._page_how(r)
             self.add(it)
 
-    def _lacks(self, p: dict) -> str:
+    @staticmethod
+    def _lacks(p: dict) -> str:
         """缺什么: the page's reasons (page_completeness.reasons) in the dashboard's words, with how many where it
         counts them. 完整（学校那边缺） says what the school lacks: the page's resources it no longer has, keeps behind a
         sign-in, or a person marked as its problem (n_school); a page that is itself the school's (a sign-in page) has
@@ -738,7 +1075,7 @@ class Builder:
                       codes=_codes(a), ref=f"a{a['id']}", fetched_at=_taipei(a["done"]), size=a["bytes"],
                       sha256=a["sha256"] or "", sniff=a["sniff"] or "", pages=[a["list_id"]],
                       texts=[a["row_text"] or ""], list_id=a["list_id"], step=a["step"], kind=kind,
-                      name=a["filename"] or "", owner=self.site)
+                      name=a["filename"] or "", owner=self.site, row_key=a["row_key"] or "")
             it.bucket = monitor.bucket(a["result"])
             it.why = _why(a["result"], a["reason"], a["status"])
             if a["reason"] == outcome.EMPTY_DETAIL:
@@ -806,7 +1143,7 @@ class Builder:
                     url += f"#按钮={(a['row_text'] or a['row_key'])[:40]}"
                 it = Item(key, ROLE_TYPE.get(role, BUTTON), url, result=result, ref=res, pages=g["pages"], texts=texts,
                           title=(a or {}).get("row_text") or "", codes=_codes(a) if a is not None else "",
-                          owner=self.site)
+                          owner=self.site, row_key=(a or {}).get("row_key") or "")
                 it.why = _why(result, (a or {}).get("reason"), (a or {}).get("status"))
             elif key.startswith("u"):
                 via = s.rows[g["via"]]
@@ -829,6 +1166,7 @@ class Builder:
                 it.title = (it.name or _last_part(via["url"])) if typ in (FILE, IMAGE) else (to["title"] or "")
                 if d is not None and d.get("modified"):
                     it.notes.append(f"云端硬盘的修改时间 {d['modified']}")
+                    it.modified = changed_at(d["modified"])  # before the answer's Last-Modified (Writer._write)
                 ok_type = (to.get("sniff") != "html") if typ in (FILE, IMAGE, DATA) else not _expected_file(to)
                 if result in BODY_RESULTS and _has_body(to) and ok_type:
                     it.source = (to["warc"], to["warc_offset"], to["sha256"], to["ctype"])
@@ -880,6 +1218,7 @@ class Builder:
                       owner=r["owner_site"] or "")
             if r["final_url"] not in (None, r["url"]):
                 it.final_url = r["final_url"]
+            it.modified = changed_at((s.drive_of_content.get(uid) or d or {}).get("modified"))
             it.why = _why(result, r["reason"], r["status"])
             if d is not None and (d.get("mime") or "").startswith(("video/", "audio/")):
                 it.result, it.why = "rule", RULE_WHY["media:drive_" + ("video" if d["mime"].startswith("video/")
@@ -925,10 +1264,18 @@ def _first_text(tree: LexborHTMLParser, css: str) -> str:
     return ""
 
 
+def _profile(url: str, site: str) -> profiles.Profile | None:
+    """The platform of a page: by its own address first (profiles.profile_for), then by the site it is exported for.
+    A page's address says which template it is: 图资处's pages are SSO WebIdx pages (lis's own profile is its old
+    Joomla site's), the /site/ keys' pages answer as WebIdx pages too (gap ② of 11-08), and a redirect may land on
+    another platform (c.nknu/uk's newsdetail on the SSO 公告中心)."""
+    return profiles.profile_for(url) or profiles.profile_for_site(site)
+
+
 def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") -> str:
     """The page's own title: its platform's detail title (profiles.Detail.title), else its first h1, else its first
     h2, else <title>. c.nknu's <title> is the unit's name on every page, so the headings come first."""
-    prof = profiles.profile_for_site(site)
+    prof = _profile(url, site)
     parts = urlsplit(url)
     where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
     if prof is not None:
@@ -959,7 +1306,7 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
     host's id probe found its number empty (看起来像不存在, so 要人看, 不完整: the 教务处 archive's 27, 10-27). The export keeps the views' judgement, whatever it is, says this in 缺什么, and the
     README names each page and says the 分类 and 完整度 their rows have (_judged) (review 10-27, 10-31,
     【Claude 的执行办法】; whether the crawler should call every such page gone is the main session's call)."""
-    prof = profiles.profile_for_site(site)
+    prof = _profile(url, site)
     if prof is None:
         return ""
     parts = urlsplit(url)
@@ -979,14 +1326,22 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
 
 
 def own_date(tree: LexborHTMLParser, url: str, site: str) -> tuple[str, str] | None:
-    """The date a platform's detail page states in its own date field (profiles.Detail.date), as find_date() reads
-    the words of the field's parent, where its label is (c.nknu's newsdetail: <h5>發佈人員：…｜公告日期：<span
-    id="lbl_AddTime">2026/10/22 上午 10:49:00</span></h5> → 公告日期：2026/10/22); None for a site no profile
-    describes, a page that is not such a detail, and a field that is empty (a notice the school deleted) or holds no
-    date. Writer._page reads it before the page's text, where a notice states other dates after labels too: an exam's
+    """The date a platform's detail page states in its own date field (profiles.Detail.date; the platform by the
+    page's address first: _profile): the date the first of the field's matches holds, as find_date() reads it after a
+    label there or, with none (most platforms write the date alone: SSO WebIdx's <span><i class="fa-calendar"></i>
+    2024-08-15</span>, 总务处's newsview, 国际处, the departments' sites), as bare_date() reads it. Its words are those
+    of a label that states the same day in the field's parent, or in the element above when the parent only wraps
+    the field (_labelled: c.nknu's newsdetail, <h5>發佈人員：…｜公告日期：<span id="lbl_AddTime">2026/10/22 上午 10:49:00
+    </span></h5> → 公告日期：2026/10/22; the SSO 公告中心's 公告時間： two levels up), else the field's own. A label there
+    that states another day is no label of the field's (tecs's parent holds the notice's title: 「…榜單公告115年12月30
+    日」).
+    A field that shows the day and the month only is dated by the platform's address when the two agree
+    (Detail.date_path: WordPress's 「30 6 月」 and /2026/06/30/). None for a site no profile describes, a page that is
+    not such a detail, and a field that is empty (a notice the school deleted) or holds no date. Writer._page reads it
+    before the notice's list row and the page's text, where a notice states other dates after labels too: an exam's
     考試日期, 「榜單公告115年12月30日」 (79 of the 501 教务处 notices whose field holds a date got such a date; 技术总览
-    §7, plan 11-02 T1)."""
-    prof = profiles.profile_for_site(site)
+    §7, plan 11-02 T1; 11-08: 36 SSO WebIdx, 150 公告中心 and 52 c.nknu notices of round one)."""
+    prof = _profile(url, site)
     if prof is None:
         return None
     parts = urlsplit(url)
@@ -995,21 +1350,66 @@ def own_date(tree: LexborHTMLParser, url: str, site: str) -> tuple[str, str] | N
         if not d.date or not re.search(d.paths, where):
             continue
         for node in tree.css(d.date):
-            if not (node.text() or "").strip():
+            own = " ".join((node.text() or "").split())
+            if not own:
                 continue
-            found = find_date((node.parent if node.parent is not None else node).text())
-            if found:
-                return found
+            mine = find_date(own) or bare_date(own)
+            if mine is not None:
+                return _labelled(node, own, mine[0]) or mine
+            if d.date_path and (got := _path_date(d.date_path, own, parts.path.lower())) is not None:
+                return got
     return None
 
 
-def page_texts(tree: LexborHTMLParser, site: str) -> list[str]:
-    """The page's words to look for a date in: its content area first (its platform's content_css), then all of it.
-    Scripts and styles are taken out (the tree is changed)."""
+LABEL_UP = 2  # how far above its date field a label of the field is looked for: its parent, then the element above
+
+
+def _labelled(node, own: str, day: str) -> tuple[str, str] | None:
+    """The words of a label that states this day (find_date's labels: 公告日期, 公告時間, 發佈日期 …) in the date
+    field's parent, or, when the parent holds the field's words alone (a wrapper: the SSO 公告中心's <span><span
+    id="…lbStartEndDate">), in the element above it, up to LABEL_UP; None when the first of them that states labelled
+    dates states none of this day, or holds more than the field and no labelled date (SSO WebIdx's meta: the title
+    above it may end in 「公告」, no label of the date's). White space is taken as one space (the 公告中心 writes about
+    25 between its label and its date). own: the field's words, white space as one space."""
+    up = node.parent
+    for _level in range(LABEL_UP):
+        if up is None:
+            return None
+        text = " ".join((up.text() or "").split())
+        said = list(_written_dates(text, _DATES))
+        if said:
+            return next((got for got in said if got[0] == day), None)
+        if text != own:
+            return None
+        up = up.parent
+    return None
+
+
+def _path_date(pattern: str, own: str, path: str) -> tuple[str, str] | None:
+    """A date field that shows a day and a month (WordPress's 「30 6 月」) dated by the page's address (Detail.
+    date_path's groups y, m, d): that date when the field's first two numbers are its day and its month, in either
+    order; the words are the field's and the part of the address. None otherwise."""
+    m = re.search(pattern, path)
+    nums = [int(n) for n in re.findall(r"\d+", own.translate(_HALF))][:2]
+    if m is None or len(nums) != 2:
+        return None
+    try:
+        day = date(int(m["y"]), int(m["m"]), int(m["d"]))
+    except (IndexError, ValueError):
+        return None
+    if not YEARS[0] <= day.year <= YEARS[1] or sorted(nums) != sorted((day.day, day.month)):
+        return None
+    return day.isoformat(), f"{own}（网址 {m.group(0)}）"
+
+
+def page_texts(tree: LexborHTMLParser, site: str, url: str = "") -> list[str]:
+    """The page's words to look for a date in: its content area first (its platform's content_css; the platform by
+    the page's address first when it is given: _profile), then all of it. Scripts and styles are taken out (the tree
+    is changed)."""
     for node in tree.css("script, style, noscript, template"):
         node.decompose()
     out = []
-    prof = profiles.profile_for_site(site)
+    prof = _profile(url, site) if url else profiles.profile_for_site(site)
     if prof is not None and prof.content_css:
         nodes = tree.css(prof.content_css)
         if nodes:
@@ -1023,9 +1423,10 @@ def page_texts(tree: LexborHTMLParser, site: str) -> list[str]:
 
 
 def safe_name(name: str, max_bytes: int = NAME_BYTES) -> str:
-    """A file name any of the three systems takes: no path separators, control or reserved characters, no invisible
-    format characters (Unicode Cf: a right-to-left override shows gpj.exe as exe.jpg, a zero-width space hides), no dots
-    or spaces at the ends, at most max_bytes of UTF-8 with the extension kept. Chinese stays as it is."""
+    """A file name any of the three systems takes: no path separators, control (C0, DEL, C1) or reserved characters,
+    no invisible format characters (Unicode Cf: a right-to-left override shows gpj.exe as exe.jpg, a zero-width space
+    hides), no dots or spaces at the ends, at most max_bytes of UTF-8 with the extension kept. Chinese stays as it
+    is."""
     name = unicodedata.normalize("NFC", name or "")
     name = "".join(c for c in name if unicodedata.category(c) != "Cf")
     name = re.sub(r"\s+", " ", _BAD_CHARS.sub("_", name)).strip(" .")
@@ -1043,7 +1444,7 @@ def url_slug(url: str) -> str:
     """A short name from an address: its last path part without the program's extension, and its query's values
     (newsview.aspx?nid=882 -> newsview-nid-882)."""
     parts = urlsplit(url.split("#", 1)[0])
-    seg = unquote(parts.path.rstrip("/").rsplit("/", 1)[-1]) or "index"
+    seg = unquoted(parts.path.rstrip("/").rsplit("/", 1)[-1]) or "index"
     stem = seg.rsplit(".", 1)[0] if "." in seg else seg
     q = "-".join(f"{k}-{v}" for k, v in parse_qsl(parts.query, keep_blank_values=True))
     slug = _SLUG_BAD.sub("-", f"{stem}-{q}" if q else stem).strip("-._")
@@ -1056,8 +1457,7 @@ def file_name(it: Item, url: str, headers: dict[str, str], ctype: str | None) ->
     it has none (a Google document exported as .docx) or only a server program's (download.aspx holding a PDF)."""
     name = it.name or sniff.filename((), headers) or ""
     if not name:
-        last = unquote(urlsplit(url.split("#", 1)[0]).path.rstrip("/").rsplit("/", 1)[-1])
-        name = last or "file"
+        name = _last_part(url.split("#", 1)[0]) or "file"
     ext = sniff.name_ext(name)
     want = SNIFF_EXT.get(it.sniff) if it.sniff != "ole" else _OLE_EXT.get((ctype or "").split(";")[0].strip(), "")
     if want and (not ext or (ext in _PROGRAM_EXT and ext != want)):
@@ -1068,21 +1468,194 @@ def file_name(it: Item, url: str, headers: dict[str, str], ctype: str | None) ->
 # ---------------------------------------------------------------- writing
 
 
+class Reuse:
+    """A previous export of the same site (--reuse): one export of every site is about 60 GB and the lab PC has room
+    for one (11-08), so an attachment or a picture whose sha256 a row of that export's manifest.json has, its file
+    there at the size the row says and with that sha256 (read from the file itself, review 11-08: a file changed in
+    place at the same size would be carried on under the archive's sha256), is hard-linked to its new place (os.link:
+    the two folders hold one file) instead of read out of the WARC and written again. Its record's headers are still
+    read (its name, Last-Modified), its body is not. A folder of another site (its manifest's 网站), or one whose
+    manifest cannot be read, is not used at all (why says why); a missing or changed file, or a link the file system
+    refuses (another one, no hard links), is read from the archive as usual. Pages are always written again.
+    【Claude 的执行办法】"""
+
+    def __init__(self, folder: Path, site: str):
+        self.folder = Path(folder).expanduser().resolve()
+        self.files: dict[str, list[tuple[str, int]]] = defaultdict(list)  # sha256 -> (本地档案, 大小) of its rows
+        self.why = ""
+        try:
+            prev = json.loads((self.folder / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            self.why = f"读不到它的 manifest.json（{type(exc).__name__}）"
+            return
+        if not isinstance(prev, dict) or prev.get("网站") != site:
+            self.why = f"它是别的网站（{(prev.get('网站') if isinstance(prev, dict) else '') or '没写'}）的导出"
+            return
+        for r in prev.get("项目") or []:
+            if (isinstance(r, dict) and r.get("类型") in (FILE, IMAGE) and r.get("本地档案") and r.get("sha256")
+                    and str(r.get("大小") or "").isdigit()):
+                self.files[r["sha256"]].append((r["本地档案"], int(r["大小"])))
+
+    def find(self, sha: str, size: int | None) -> Path | None:
+        """The previous export's file with this sha256, when it is there, inside its folder, at the size its row says
+        (and the archive records, when it does) and its bytes hash to that sha256; None otherwise."""
+        for rel, want in self.files.get(sha, ()):
+            if size is not None and size != want:
+                continue
+            try:
+                path = (self.folder / rel).resolve(strict=True)
+                if not (self.folder in path.parents and path.is_file() and path.stat().st_size == want):
+                    continue
+                with open(path, "rb") as fh:
+                    if hashlib.file_digest(fh, "sha256").hexdigest() == sha:
+                        return path
+            except (OSError, RuntimeError):
+                continue
+        return None
+
+
+# item ⑦ of the 11-08 gaps (--old-copies): the results (url_result) of this round's rows that came to nothing good of
+# their own. A row with no file in the export whose result is one of OLD_NO_FILE takes its copy from the 10-24
+# archive (a row waiting for the lab, lab, too), and so does a row whose result is one of OLD_ALWAYS: a redirect the
+# old-copies folder holds (old_copies_1108.py keeps only those that tell the item is gone: back to the school's home
+# page, to a 查无资料 page), a page that came back thin, one the id probe calls gone (looks_gone: its body is the
+# template of a number that does not exist), and one a person marked as the school's problem (school_side: what this
+# round got of it is the school's broken answer; every result a person may mark is one of these, or one with no file,
+# outcome.SCHOOL_SIDE_RESULTS). A row whose own answer this round is good never does. The folder's builder takes
+# exactly these (old_copies_1108.TAKE, a redirect as said): an index row the export would not take is never made, and
+# one whose row came to something else since is counted (review 11-08: a row of the index neither taken nor counted
+# is a silent gap)
+OLD_NO_FILE = frozenset({"gone", "not_file", "failed", "server_error", "login", "refused", "short_dead", "api_error",
+                         "lab"})
+OLD_ALWAYS = frozenset({"redirect", "thin", "looks_gone", outcome.SCHOOL_SIDE})
+_SHA = re.compile(r"[0-9a-f]{64}")
+_IMAGE_SNIFFS = frozenset({"png", "jpeg", "gif", "webp", "tiff"})
+
+
+class OldCopies:
+    """The 10-24 archive's good copies of round one's gaps (item ⑦ of docs/round1-gaps-2026-11-08.md; the owner 11-08
+    【用户】: 「⑦（10-24 旧存档里的 870 个正常副本，含图资处 337 个真档）……在导出或整理时一并补上」; CLAUDE.md: 抓取失败或
+    网站改版时，保留旧值): the folder research/crawler_lab_2026-11-04/old_copies_1108.py makes, its index.json (rows:
+    this round's url id -> the old answer's url, sha256, ctype, fetched_at, last_modified, content_disposition …) and
+    files/<sha256>. A folder whose index cannot be read is not used at all (why says why); a copy whose file is not
+    there or has another sha256 is not used for its row (read). 【Claude 的执行办法】"""
+
+    def __init__(self, folder: Path):
+        self.folder = Path(folder).expanduser().resolve()
+        self.rows: dict[int, dict] = {}
+        self.why = ""
+        self.digest = ""
+        try:
+            raw = (self.folder / "index.json").read_bytes()
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            self.why = f"读不了它的 index.json（{type(exc).__name__}）"
+            return
+        rows = data.get("rows") if isinstance(data, dict) else None
+        if not isinstance(rows, dict) or not rows:
+            self.why = "它的 index.json 里没有 rows（不是 old_copies_1108.py 做的索引）"
+            return
+        self.rows = {int(k): v for k, v in rows.items() if str(k).isdigit() and isinstance(v, dict)}
+        # what the folder holds, for 导出依据's 旧存档副本: its index and the names of its files
+        h = hashlib.sha256(raw)
+        try:
+            h.update("\n".join(sorted(os.listdir(self.folder / "files"))).encode())
+        except OSError:
+            h.update(b"no files/")
+        self.digest = h.hexdigest()[:16]
+
+    def read(self, row: dict) -> tuple[bytes | None, str]:
+        """A copy's bytes when its file is in files/ with the sha256 its index row says; else None and why, in words."""
+        sha = str(row.get("sha256") or "")
+        if not _SHA.fullmatch(sha):
+            return None, "索引里没有它的 sha256"
+        try:
+            body = (self.folder / "files" / sha).read_bytes()
+        except OSError:
+            return None, "副本资料夹里没有它的档"
+        if hashlib.sha256(body).hexdigest() != sha:
+            return None, "档案的 sha256 和索引对不上"
+        return body, ""
+
+
+def _plain(url: str | None) -> str:
+    """An address without its scheme, its host in lower case (http and https are one page: old_copies_1108.plain)."""
+    try:
+        parts = urlsplit(url or "")
+        parts.hostname  # noqa: B018 - a host written wrong ([…]) raises here
+    except ValueError:
+        return url or ""
+    return f"{(parts.hostname or '').lower()}{parts.path or '/'}" + (f"?{parts.query}" if parts.query else "")
+
+
+_PRESS_N = re.compile(r"/\d+$")  # a row's second button of one kind: <row key>/<n> (postback._rows)
+
+
+def list_date(rows: Iterable[tuple[int, postback.Row]]) -> tuple[str, str, str] | None:
+    """The date the list rows that point to one notice state (Row.date: find_date's labelled date, else bare_date's),
+    each row once ((its list, its key): a row a list shows on each of its pages is one), as (YYYY-MM-DD, that row's
+    date words, a note for 备注): their date when they agree (note ''); when they do not, the date most rows give, of
+    those the earliest when as many give another, the note saying so. None when no row states a date."""
+    seen: set[tuple[int, str]] = set()
+    votes: list[tuple[str, str]] = []
+    for lid, row in rows:
+        if (lid, row.key) in seen:
+            continue
+        seen.add((lid, row.key))
+        got = (find_date(row.date) or bare_date(row.date)) if row.date else None
+        if got is not None:
+            votes.append((got[0], row.date))
+    if not votes:
+        return None
+    counts = Counter(day for day, _raw in votes)
+    top = max(counts.values())
+    tied = sorted(d for d, n in counts.items() if n == top)
+    day = tied[0]
+    raw = next(r for d, r in votes if d == day)
+    if len(counts) == 1:
+        return day, raw, ""
+    said = "、".join(f"{d}（{n} 行）" for d, n in sorted(counts.items()))
+    return day, raw, (f"列表上有 {len(votes)} 行指到它，写的日期不一样：{said}，"
+                      + ("取多数的" if len(tied) == 1 else "几个日期一样多，取最早的"))
+
+
 class Writer:
-    def __init__(self, root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap):
+    def __init__(self, root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap,
+                 reuse: Reuse | None = None, old: OldCopies | None = None):
         self.root, self.out, self.site, self.items, self.s = root, out, site, items, snap
         self.numbers = Counter()
         self.width = {t: max(4, len(str(sum(1 for i in items.values() if i.type == t)))) for t in FOLDERS}
-        self.by_source: dict[tuple, str] = {}
+        self.by_source: dict[tuple, Item] = {}
         self.titles: dict[int, str] = {}
+        self.reuse = reuse if reuse is not None and not reuse.why else None
+        # the date each notice's row states on its list, by item key (日期来源 LIST_ROW: after the page's own date
+        # field, before its words; P75 of docs/crawler-plan.md): the rows of the site's list pages and of the pages
+        # their pager brought, read as each is written (_rows_of), matched once every page is (_list_dates)
+        self.list_dates: dict[str, tuple[str, str]] = {}
+        self.list_notes: dict[str, str] = {}  # rows that disagree on a notice's date: what 备注 says
+        self.list_rows: list[tuple[int, str, tuple[postback.Row, ...]]] = []  # (list id, the page's address, rows)
+        # what each page written states of its date: its date field's (own_date), else the first labelled date in
+        # its words (None when its field has one: never needed then)
+        self.found: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]] = {}
+        self.old = old if old is not None and not old.why else None
+        self.by_old: dict[str, Item] = {}  # a copy's sha256 -> the row it was first written for
+        self.old_skipped: Counter = Counter()  # the copies a row could have taken and did not, by why
+        self.old_taken: set[int] = set()  # the url rows whose copy a row took
+        self.old_unneeded: dict[int, str] = {}  # an index row looked at whose row this round needs no copy: its result
+        self.old_not_needed: Counter = Counter()  # of those, the ones no row took, by this round's 结果 (in words)
 
     def run(self) -> None:
         for d in FOLDERS.values():
             (self.out / d).mkdir(parents=True, exist_ok=True)
         rank = {t: i for i, t in enumerate(TYPES)}
         for it in sorted(self.items.values(), key=lambda i: (rank[i.type], i.source is None, i.order)):
+            if self._old_copy(it):
+                continue
             if it.source is not None:
                 self._write(it)
+        if self.old is not None:
+            self._old_unneeded_counted()
+        self._dates()
         for it in self.items.values():  # a redirect shares the file of the page it lands on
             if not it.path and it.landing is not None:
                 to = self.items.get(f"u{it.landing}")
@@ -1091,11 +1664,20 @@ class Writer:
                     # fetch, and its completeness when the views judge the redirect by no row of its own
                     it.path, it.shared = to.path, True
                     it.title = it.title or to.title
-                    it.date, it.date_raw = (it.date, it.date_raw) if it.date else (to.date, to.date_raw)
+                    if not it.date:
+                        # the landing page's own date field, else the date the redirect's own row states on its
+                        # list (the notice as its unit lists it: c.nknu's link items), else the landing page's other
+                        if to.date_from != OWN_FIELD and it.key in self.list_dates:
+                            self._take_list_date(it)
+                        else:
+                            it.date, it.date_raw, it.date_from = to.date, to.date_raw, to.date_from
                     it.size, it.sha256, it.sniff, it.fetched_at = to.size, to.sha256, to.sniff, to.fetched_at
+                    it.modified = it.modified or to.modified
+                    it.origin = to.origin
                     if not it.level:
                         it.level, it.lacks = to.level, to.lacks
-                    it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间都是落地那一页的）")
+                    it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间、最后修改时间都是落地那一页的）")
+        self._read_whole()
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
                 it.bucket = "review"
@@ -1105,11 +1687,49 @@ class Writer:
                 if base:
                     it.title = f"{base}（第 {it.step} 页）"
 
+    def _read_whole(self) -> None:
+        """Item ⑧ (11-08, asked by the content session): a page the crawler could not decode (结果 编码有问题, 要人看)
+        that the export read again with an encoding the page or its server names, all a reader sees read (seen_lost
+        0), is the page the school sent: its 结果 抓到了, its 分类 and 完整度 and 缺什么 as the views judge such a page
+        (outcome.judge_page with own ok: what it lacks still counts), and 备注 says so. So is a row whose file is
+        that page (a redirect landing on it, judged by it). The dashboard still says 编码有问题: the
+        crawler's own decoding is unchanged. Not a row that took the 10-24 archive's copy (its 结果 and 分类 stay
+        this round's, item ⑦), nor a page a reader would see a � in."""
+        whole = {i.path for i in self.items.values() if i.decoded and i.path and not i.seen_lost and not i.filled}
+        note = "看板上的结果是「编码有问题」：导出时读通了，结果、分类、完整度照读通的网页算"
+        for it in self.items.values():
+            if it.judged is None or it.filled or it.path not in whole:
+                continue
+            judged = outcome.judge_page(it.judged, own="ok")
+            it.result, it.bucket = "ok", monitor.bucket("ok", page=True)
+            it.level, it.lacks = judged["level"], Builder._lacks({**it.judged, **judged})
+            it.notes.append(note)
+        # a redirect the views judge by no row of its own (its landing page is judged in its own right): its category
+        # and level are its landing page's (Builder; run: 跳转), judged again with it. Its 结果 stays its own: 跳转
+        for it in self.items.values():
+            to = self.items.get(f"u{it.landing}") if it.landing is not None else None
+            if (it.judged is None and it.own == "decode" and not it.filled and to is not None and to.judged is not None
+                    and to.result == "ok" and it.path == to.path):
+                it.bucket, it.level, it.lacks = to.bucket, to.level, to.lacks
+                it.notes.append(note.replace("看板上的结果", "看板上落地那一页的结果"))
+
+    def _put(self, it: Item, name: str, data: bytes) -> None:
+        """A row's file, numbered in turn in its type's folder."""
+        folder = FOLDERS[it.type]
+        self.numbers[folder] += 1
+        fname = f"{self.numbers[folder]:0{self.width[it.type]}d}-{safe_name(name)}"
+        (self.out / folder / fname).write_bytes(data)
+        it.path = f"{folder}/{fname}"
+
     def _write(self, it: Item) -> None:
         warc, offset, sha, ctype = it.source
-        if (warc, offset) in self.by_source:
-            it.path, it.shared = self.by_source[(warc, offset)], True
+        first = self.by_source.get((warc, offset))
+        if first is not None:
+            it.path, it.shared = first.path, True
+            it.modified = it.modified or first.modified
             it.notes.append("和清单里另一行是同一个档")
+            return
+        if self._link(it):
             return
         try:
             url, _status, headers, body = postback.read_response(self.root, warc, offset)
@@ -1123,6 +1743,7 @@ class Writer:
             it.bucket = "review"
             return
         it.sha256, it.size = got, len(body)
+        it.modified = it.modified or changed_at(headers.get("last-modified"))  # a Drive file's own modified first
         ctype = headers.get("content-type") or ctype
         if it.type == PAGE:
             data, name = self._page(it, url, body, ctype)
@@ -1132,20 +1753,250 @@ class Writer:
             name, data = file_name(it, url, headers, ctype), body
             if it.type in (FILE, IMAGE):
                 it.title = name
-        folder = FOLDERS[it.type]
+        self._put(it, name, data)
+        self.by_source[(warc, offset)] = it
+
+    def _link(self, it: Item) -> bool:
+        """An attachment or a picture the previous export holds (--reuse: Reuse.find by the sha256 the archive
+        recorded): its record's headers read for its name and Last-Modified, its body not, and that file hard-linked
+        to its place here under the name it would be written with. False, and nothing here changed, when there is no
+        such file or anything fails: the caller reads it from the archive as usual."""
+        warc, offset, sha, ctype = it.source
+        if self.reuse is None or it.type not in (FILE, IMAGE) or not sha:
+            return False
+        src = self.reuse.find(sha, it.size)
+        if src is None:
+            return False
+        try:
+            url, _status, headers, _none = postback.read_response(self.root, warc, offset, payload=False)
+            name = file_name(it, url, headers, headers.get("content-type") or ctype)
+            folder = FOLDERS[it.type]
+            fname = f"{self.numbers[folder] + 1:0{self.width[it.type]}d}-{safe_name(name)}"
+            size = src.stat().st_size
+            os.link(src, self.out / folder / fname)
+        except (OSError, ValueError):
+            return False
         self.numbers[folder] += 1
-        fname = f"{self.numbers[folder]:0{self.width[it.type]}d}-{safe_name(name)}"
-        (self.out / folder / fname).write_bytes(data)
-        it.path = f"{folder}/{fname}"
-        self.by_source[(warc, offset)] = it.path
+        it.path, it.title, it.linked = f"{folder}/{fname}", name, True
+        it.sha256, it.size = sha, size
+        it.modified = it.modified or changed_at(headers.get("last-modified"))
+        self.by_source[(warc, offset)] = it
+        return True
+
+    # -- item ⑦: the 10-24 archive's copy of a row this round got nothing good of (--old-copies)
+    def _old_row(self, it: Item) -> tuple[dict, dict] | None:
+        """The copy a row takes (OldCopies' index row) and the url row it is the copy of: its own url row's, else the
+        row it lands on's (a redirect, a link through one), when the index holds that row and its result this round
+        says it came to nothing good (OLD_NO_FILE with no file of this round for it, OLD_ALWAYS); None otherwise."""
+        rids = [int(it.key[1:])] if it.key[:1] == "u" and it.key[1:].isdigit() else []
+        if it.landing is not None:
+            rids.append(it.landing)
+        for rid in rids:
+            old, row = self.old.rows.get(rid), self.s.rows.get(rid)
+            if old is None or row is None:
+                continue
+            if row["result"] in OLD_ALWAYS or (row["result"] in OLD_NO_FILE and it.source is None):
+                return old, row
+            self.old_unneeded[rid] = row["result"]  # counted once every row is written (_old_unneeded_counted)
+        return None
+
+    def _old_unneeded_counted(self) -> None:
+        """The index rows looked at whose row's result this round is none the export takes a copy for (it came to
+        something else since the folder was made: old_copies_1108.TAKE is what the export takes), and that no other
+        row took, counted by this round's 结果 (old_not_needed, said in the README and by the command): never left out
+        (review 11-08). A row of them with no file says so in 备注; one with a file (got since) says nothing."""
+        for rid, result in self.old_unneeded.items():
+            if rid in self.old_taken:
+                continue
+            words = outcome.RESULT_LABEL.get(result, result)
+            self.old_not_needed[words] += 1
+            it = self.items.get(f"u{rid}")
+            if it is not None and not it.path:
+                it.notes.append(f"10-24 旧存档有它的副本，没用上：这一轮的结果是「{words}」，不在要补的范围")
+
+    def _old_copy(self, it: Item) -> bool:
+        """Item ⑦ (--old-copies): a row that came to nothing good this round, with a good copy in the 10-24 archive
+        (OldCopies, _old_row), takes that copy as its file, written as this round's are: a page decoded as the export
+        decodes pages (_page: redecode when the crawler's charset does not read it) and saved as UTF-8 with a BOM, a
+        file or a picture byte for byte named as file_name() names it (the old answer's Content-Disposition, else the
+        old address's last part). Its 来源 says ORIGIN_OLD, its 抓取时间, 最后修改时间, 大小, sha256 and 格式 are the
+        copy's, and its 结果, 分类 and 原因 stay this round's, so that the gap stays in sight; 备注 says what this
+        round got. A copy whose index row names another address than its url row's (an index made of another
+        archive), whose file is not there or has another sha256, or a web page where a file is expected, is not taken:
+        counted (old_skipped, said in the README) and said in the row's 备注, and the row is written as this round's
+        (False). A copy two rows take (http and https of one address) is written once."""
+        if self.old is None or it.type not in (PAGE, FILE, IMAGE):
+            return False
+        hit = self._old_row(it)
+        if hit is None:
+            return False
+        old, row = hit
+        if _plain(old.get("url")) != _plain(row["url"]):  # an index of another archive: its ids name other rows
+            self.old_skipped["索引里的网址和存档里这一行的不一样"] += 1
+            it.notes.append("10-24 旧存档有它的副本，没用上：索引里的网址和存档里这一行的不一样")
+            return False
+        words = it.result_words()
+        sha = str(old.get("sha256") or "")
+        first = self.by_old.get(sha)
+        if first is not None and it.type in (FILE, IMAGE) and first.sniff == "html":
+            self.old_skipped["该是档案，副本却是网页"] += 1
+            it.notes.append("10-24 旧存档有它的副本，没用上：该是档案，副本却是网页")
+            return False
+        # the copy is of the address the row names (its own url row's), or of the page this round's redirect lands
+        # on: 最后落地网址 says where the file is the answer of, which the content stage reads it as (its platform,
+        # its links), so a redirect that took its own address's copy lands nowhere (review 11-08)
+        copy_url = str(old.get("url") or "") or row["url"]
+        landed, own_copy = it.final_url, it.key == f"u{row['id']}"
+        if first is not None:
+            it.type, it.path, it.shared, it.sniff, it.title = first.type, first.path, True, first.sniff, first.title
+            if first.key in self.found:
+                self.found[it.key] = self.found[first.key]
+            size = first.size
+        else:
+            body, why = self.old.read(old)
+            fmt = sniff.sniff(body, str(old.get("ctype") or "")) if body is not None else ""
+            if body is not None and it.type in (FILE, IMAGE) and fmt == "html":
+                body, why = None, "该是档案，副本却是网页"
+            if body is None:
+                self.old_skipped[why] += 1
+                it.notes.append(f"10-24 旧存档有它的副本，没用上：{why}")
+                return False
+            url, ctype = copy_url, str(old.get("ctype") or "")
+            if it.type == PAGE and fmt != "html":
+                it.type = IMAGE if fmt in _IMAGE_SNIFFS else FILE
+                it.notes.append(f"10-24 的副本不是网页（{fmt}），存成{it.type}")
+            it.sniff = fmt
+            if own_copy:
+                it.landing = None  # its file is its own address's answer (a list's rows are read from it: _rows_of)
+            if it.type == PAGE:
+                data, name = self._page(it, url, body, ctype)
+            else:
+                cd = old.get("content_disposition")
+                name = file_name(replace(it, name=""), url, {"content-disposition": cd} if isinstance(cd, str) and cd
+                                 else {}, ctype)
+                data, it.title = body, name
+            self._put(it, name, data)
+            self.by_old[sha] = it
+            size = len(body)
+        it.origin, it.filled = ORIGIN_OLD, True
+        it.fetched_at, it.modified = _taipei(old.get("fetched_at")), changed_at(old.get("last_modified"))
+        it.sha256, it.size = sha, size
+        it.final_url = "" if copy_url == it.url else copy_url
+        if own_copy:
+            it.landing = None
+        self.old_taken.add(row["id"])
+        it.notes.append(f"这一轮：{words}；用 10-24 旧存档的副本补上")
+        if landed and landed != it.final_url:
+            it.notes.append(f"这一轮跳到 {landed}；副本是{'这个网址自己' if own_copy else '跳到的那一页'}的旧内容")
+        if first is not None:
+            it.notes.append("和清单里另一行是同一个档")
+        return True
+
+    # -- the pages' dates: the platform's field, the notice's list row, the page's words
+    def _rows_of(self, it: Item, url: str, text: str) -> None:
+        """The rows of a list page or of a page its pager brought (list_rows), read as the crawler read them for their
+        presses (postback.read_page with the list's site and the list's address, which every row key is of) with the
+        platform of the list's site, else of the page's own address (图资处's WebIdx lists: lis's own profile has no
+        rows). A list a redirect stands for is not read: its file is the page it lands on."""
+        lst = self.s.rows.get(it.list_id) if it.list_id is not None else None
+        if lst is None or it.landing is not None:
+            return
+        page_url = url if it.kind == "pager" else lst["url"]
+        owner = lst.get("owner_site") or scope.site_key(lst["url"])
+        tried: set[str] = set()
+        for prof in (profiles.profile_for_site(owner), profiles.profile_for(page_url)):
+            if prof is None or prof.name in tried:
+                continue
+            tried.add(prof.name)
+            try:
+                pr = postback.read_page(prof, page_url, text, site=owner, list_url=lst["url"],
+                                        page=links.PageLinks(page_url), step=it.step)
+            except Exception as exc:  # noqa: BLE001 - its rows go unread, said in 备注; never an export stopped by it
+                it.notes.append(f"读这一页列表上的行出错（{type(exc).__name__}），列表上写的日期没用上")
+                return
+            if pr.rowset is not None:
+                self.list_rows.append((it.list_id, page_url, pr.rows))
+                return
+
+    def _list_dates(self) -> None:
+        """list_dates: the date the site's list rows state for each notice written (list_date), the rows that point to
+        it being: for a notice a row's press brought, its row (its list, Row.key = the press's row_key, as the crawler
+        keyed it); for a notice got by GET (a page its platform calls a detail: profiles.detail_of), the row its
+        page_res item entry names (its list and key) and every row whose plain link, joined to the address of the page
+        it is on as the crawler joins it (scope.canonical), is the notice's 网址. A page that is no row of a list has
+        none."""
+        by_key: dict[tuple[int, str], list[tuple[int, postback.Row]]] = defaultdict(list)
+        by_href: dict[str, list[tuple[int, postback.Row]]] = defaultdict(list)
+        for lid, base, rows in self.list_rows:
+            for row in rows:
+                by_key[(lid, row.key)].append((lid, row))
+                if row.href and (canon := scope.canonical(row.href, base)) is not None:
+                    by_href[canon].append((lid, row))
+        if not by_key:
+            return
+        entries: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        for r in self.s.raw_res:
+            if r["role"] == "item" and r["res_id"] is not None and (r["res_key"] or "").startswith("item:"):
+                entries[r["res_id"]].append((r["page_id"], r["res_key"][len("item:"):]))
+        for it in self.items.values():
+            if it.type != PAGE or it.page_role == "list" or it.kind == "pager":
+                continue
+            if it.kind == "detail":
+                rows = (by_key.get((it.list_id, it.row_key))
+                        or by_key.get((it.list_id, _PRESS_N.sub("", it.row_key)), []))
+            elif it.key[:1] == "u" and it.key[1:].isdigit() and profiles.detail_of(it.url) is not None:
+                rows = [x for lid, k in entries.get(int(it.key[1:]), ()) for x in by_key.get((lid, k), ())]
+                rows += by_href.get(it.url, [])
+            else:
+                continue
+            got = list_date(rows)
+            if got is not None:
+                day, raw, note = got
+                self.list_dates[it.key] = (day, raw)
+                if note:
+                    self.list_notes[it.key] = note
+
+    def _take_list_date(self, it: Item) -> None:
+        (it.date, it.date_raw), it.date_from = self.list_dates[it.key], LIST_ROW
+        if it.key in self.list_notes:
+            it.notes.append(self.list_notes[it.key])
+
+    def _dates(self) -> None:
+        """网页上写的日期 of each page written (日期来源 says which): its platform's date field, else the date its row
+        states on its list (P75: SSO WebIdx's notices a row's press brought have their list's address, which no
+        detail path names), else the first labelled date in its words (its content area, then all of it)."""
+        self._list_dates()
+        for key, (own, words) in self.found.items():
+            it = self.items[key]
+            if own is not None:
+                (it.date, it.date_raw), it.date_from = own, OWN_FIELD
+            elif key in self.list_dates:
+                self._take_list_date(it)
+            elif words is not None:
+                (it.date, it.date_raw), it.date_from = words, PAGE_WORDS
 
     def _page(self, it: Item, url: str, body: bytes, ctype: str | None) -> tuple[bytes, str]:
         try:
             text = decode_body(body, ctype)
         except DecodeError:
-            text = postback.as_text(body, ctype)
-            it.notes.append("编码有问题：有些字元读不出来，用 � 代替（原样在存档里）")
+            # the charset the crawler read it with does not read it (结果 编码有问题; item ⑧ of the 11-08 gaps: 英语系
+            # 106 pages, 性别所 10): read again with an encoding the page or its server names (redecode)
+            text, it.decoded, said, it.lost = redecode(body, ctype)
         tree = LexborHTMLParser(text)
+        if it.decoded:
+            # what a reader sees (its words and title; not its comments, nor its links' addresses) says whether it
+            # reads whole: 英语系's 106 pages lose 3 characters, all in a Big5 comment in <head> (11-08)
+            it.seen_lost = (tree.text() or "").count("\ufffd") if it.lost else 0
+            how = encoding_words(it.decoded, said)
+            if not it.lost:
+                it.notes.append(f"原本的编码读不通，按{how}重读")
+            elif not it.seen_lost:
+                it.notes.append(f"原本的编码读不通，按{how}重读：看得到的文字都读通了，只有网页的注释、链接网址这类看不到的"
+                                f"地方有 {it.lost} 个字读不出来，用 � 代替（原样在存档里）")
+            else:
+                seen = f"（{it.seen_lost} 个在看得到的文字里）" if it.seen_lost != it.lost else ""
+                it.notes.append(f"原本的编码读不通，没有一种编码整页读得通：按{how}读，有 {it.lost} 个字读不出来{seen}，"
+                                "用 � 代替（原样在存档里）")
         if it.kind == "detail":
             it.title = it.title or page_title(tree, url, self.site)
         elif it.kind != "pager":
@@ -1157,14 +2008,16 @@ class Writer:
                 it.empty_area = area
                 it.lacks = "、".join(x for x in (it.lacks, area) if x)
                 it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
-        if it.page_role != "list" and it.kind != "pager":
-            # the platform's own date field first (c.nknu's newsdetail: 公告日期), else the first labelled date in the
-            # content area, then in the whole page
-            found = own_date(tree, url, self.site)
-            if found is None:
-                found = next((got for got in map(find_date, page_texts(tree, self.site)) if got), None)
-            if found:
-                it.date, it.date_raw = found
+        if it.page_role == "list" or it.kind == "pager":
+            self._rows_of(it, url, text)  # a list's rows each state their notice's date
+        else:
+            # what the page states of its date: its platform's own date field (c.nknu's newsdetail: 公告日期), else
+            # the first labelled date in its content area, then in all of it; which one is taken, the notice's list
+            # row between them, once every list page is read (_dates)
+            own = own_date(tree, url, self.site)
+            words = None if own is not None else next(
+                (got for got in map(find_date, page_texts(tree, self.site, url)) if got), None)
+            self.found[it.key] = (own, words)
         if it.kind == "pager":
             short = f"{url_slug(url)}-p{it.step}"
         else:
@@ -1181,15 +2034,100 @@ def _csv(path: Path, rows: list[dict[str, str]]) -> None:
         w.writerows(rows)
 
 
+# ---------------------------------------------------------------- what an export is made of (导出依据)
+
+
+@lru_cache(maxsize=1)
+def program_digest() -> str:
+    """程式 of 导出依据: the sha256 (its first 16 hex digits) of the export's program, every module of the archive
+    package (the views that judge the rows, the platform profiles, the export itself …) and the crawler's decoder
+    (nknu.crawl.fetch); '' when one cannot be read."""
+    try:
+        files = [*sorted(Path(__file__).parent.glob("*.py")), Path(sys.modules[decode_body.__module__].__file__)]
+        h = hashlib.sha256()
+        for f in files:
+            h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
+    except (OSError, KeyError, TypeError):
+        return ""
+    return h.hexdigest()[:16]
+
+
+def _canon(x):
+    """A value as plain JSON data, the same each time it is read: dataclasses as dicts, keys as text, sets sorted."""
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        x = dataclasses.asdict(x)
+    if isinstance(x, dict):
+        return {str(k): _canon(v) for k, v in x.items()}
+    if isinstance(x, list | tuple):
+        return [_canon(v) for v in x]
+    if isinstance(x, set | frozenset):
+        return sorted(str(v) for v in x)
+    if isinstance(x, bytes):
+        return x.hex()
+    return x if x is None or isinstance(x, str | int | float | bool) else repr(x)
+
+
+def snapshot_digest(snap: Snap) -> str:
+    """存档内容 of 导出依据: the sha256 (its first 16 hex digits) of everything the export read of the site (Snap): its
+    rows as the views judge them, its pages' resources and lists, its presses and walks, its Drive items, where its
+    redirects land, its state as the dashboard says it and whether it can be exported. What changes an export with no
+    fetch changes it too: a person's mark (nknu archive review), a rejudge, a hand edit of the archive (11-08's
+    album pictures), another judgement by a newer program (review 11-08)."""
+    st = snap.status
+    parts = {"plan": snap.plan, "rows": snap.rows, "pc": snap.pc, "actions": snap.actions, "walks": snap.walks,
+             "drive": snap.drive, "drive_of_content": snap.drive_of_content, "landing": snap.landing,
+             "orphans": snap.orphans, "press_to": snap.press_to, "videos": snap.videos,
+             "other_site_items": snap.other_site_items, "page_ids": snap.page_ids,
+             "status": [st.state, st.why, st.warnings] if st is not None else snap.status_error,
+             "ready": snap.ready.as_dict() if snap.ready is not None else snap.ready_error}
+    h = hashlib.sha256()
+    for name in sorted(parts):
+        h.update(f"{name}\0{json.dumps(_canon(parts[name]), sort_keys=True, ensure_ascii=False)}\0".encode())
+    for name, rows in (("pres", snap.pres), ("raw_res", snap.raw_res)):  # in no order of their own
+        h.update(f"{name}\0".encode())
+        for line in sorted(json.dumps(_canon(r), sort_keys=True, ensure_ascii=False) for r in rows):
+            h.update(line.encode() + b"\n")
+    return h.hexdigest()[:16]
+
+
+def export_basis(snap: Snap, copies: OldCopies | None) -> dict[str, str]:
+    """导出依据 (manifest.json): what an export of the site is made of, for the export service to tell whether exporting
+    it again would change anything (--skip-same; review 11-08: comparing 资料截至 alone missed a person's mark, a
+    rejudge, --old-copies added later and a newer program): 资料截至 (as `nknu archive ready` says it), 存档内容
+    (snapshot_digest), 程式 (program_digest) and 旧存档副本 (OldCopies.digest of the folder used, '' with none).
+    【Claude 的执行办法】"""
+    return {"资料截至": snap.ready.as_of if snap.ready is not None else "", "存档内容": snapshot_digest(snap),
+            "程式": program_digest(), "旧存档副本": copies.digest if copies is not None and not copies.why else ""}
+
+
+def same_basis(folder: Path, site: str, basis: dict[str, str]) -> bool:
+    """Whether the export in folder is one of this site made of the same things (导出依据), so that exporting it again
+    would change nothing. One whose manifest.json cannot be read or has no 导出依据 (made before 11-08's review), and a
+    basis whose 存档内容 or 程式 is unknown, never are."""
+    try:
+        prev = json.loads((Path(folder).expanduser() / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (isinstance(prev, dict) and prev.get("网站") == site and bool(basis.get("存档内容"))
+            and bool(basis.get("程式")) and prev.get("导出依据") == basis)
+
+
 # ---------------------------------------------------------------- the export
 
 
-def export_site(root: Path, site: str, out: Path, *, now: float | None = None) -> Result:
-    """Export one site of the archive at root into the new folder out (see the module's docstring)."""
+def export_site(root: Path, site: str, out: Path, *, now: float | None = None, reuse: Path | None = None,
+                old_copies: Path | None = None, skip_same: Path | None = None) -> Result:
+    """Export one site of the archive at root into the new folder out (see the module's docstring). reuse: a previous
+    export of the same site, whose attachments and pictures are hard-linked when they are the same (Reuse).
+    old_copies: the folder of the 10-24 archive's good copies of round one's gaps (OldCopies, item ⑦), which the rows
+    this round got nothing good of take as their files. skip_same: the site's current export; when it is made of the
+    same things (same_basis), nothing is written and Unchanged is raised (the export service: export_sites.sh)."""
     root = Path(root).expanduser().resolve()
     out = Path(out).expanduser().resolve()
     now = time.time() if now is None else now
-    check_out(root, out)
+    check_out(root, out, [(what, Path(folder).expanduser().resolve()) for what, folder in
+                          (("10-24 旧存档的副本资料夹", old_copies), ("上一次的导出", reuse), ("现用的那份导出", skip_same))
+                          if folder is not None])
     from nknu.archive.crawler import lock_holder
 
     pid = lock_holder(root)
@@ -1198,13 +2136,20 @@ def export_site(root: Path, site: str, out: Path, *, now: float | None = None) -
         snap = read_snapshot(conn, site, now)
     finally:
         conn.close()
+    copies = OldCopies(old_copies) if old_copies is not None else None
+    basis = export_basis(snap, copies)
+    if skip_same is not None and same_basis(skip_same, site, basis):
+        raise Unchanged(f"{Path(skip_same).expanduser().resolve()} 是同样的东西导出的（资料截至 "
+                        f"{basis['资料截至'] or '（还没抓到东西）'}；存档内容、程式、旧存档副本也都一样），再导一次不会变，没有导出")
     builder = Builder(snap, site)
     items = builder.build()
+    old = Reuse(reuse, site) if reuse is not None else None
     out.mkdir(parents=True, exist_ok=True)
     try:
-        writer = Writer(root, out, site, items, snap)
+        writer = Writer(root, out, site, items, snap, old, copies)
         writer.run()
-        result = _finish(root, out, site, items, snap, builder, pid, now)
+        result = _finish(root, out, site, items, snap, builder, pid, now, old, copies, writer.old_skipped, basis,
+                         writer.old_not_needed)
     except BaseException as exc:
         (out / "导出没有完成.txt").write_text(f"导出到一半出错了，这个资料夹不完整，请删掉重导：{type(exc).__name__}: {exc}\n",
                                            encoding="utf-8")
@@ -1213,7 +2158,9 @@ def export_site(root: Path, site: str, out: Path, *, now: float | None = None) -
 
 
 def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap, builder: Builder, pid,
-            now: float) -> Result:
+            now: float, old: Reuse | None = None, copies: OldCopies | None = None,
+            skipped: Counter | None = None, basis: dict[str, str] | None = None,
+            not_needed: Counter | None = None) -> Result:
     rank = {t: i for i, t in enumerate(TYPES)}
     ordered = sorted(items.values(), key=lambda i: (rank[i.type], not i.path, i.path or "~", i.order))
     urls = {uid: r["url"] for uid, r in snap.rows.items()}
@@ -1244,13 +2191,19 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
                   "missing": sum(1 for i in ordered if i.type == t and not i.path)} for t in TYPES}
     missing_by = Counter(progress.BUCKET_ZH.get(it.bucket, it.bucket) for it in missing_items)
     left = Left.of(ordered, site)
+    ready = snap.ready
+    linked = sum(1 for it in ordered if it.linked)
     meta = {"网站": site, "名称": name, "导出时间": _taipei(now), "存档": str(root),
             "导出时的状态": state_words, "爬虫正在跑": pid is not None, "还在排队的网址": left.urls,
-            "还在排队的按钮": left.presses, "其中归属别的网站": left.other, "栏位": list(COLUMNS),
-            "项目": [it.row(n, page_url) for n, it in enumerate(ordered, start=1)]}
+            "还在排队的按钮": left.presses, "其中归属别的网站": left.other,
+            # `nknu archive ready`'s, at the same moment: the export service compares 资料截至 with the next one's
+            "可以导出": ready.can if ready is not None else False, "资料截至": ready.as_of if ready is not None else "",
+            # what it is made of (export_basis): the export service exports the site again only when it changes
+            "导出依据": basis if basis is not None else export_basis(snap, copies),
+            "栏位": list(COLUMNS), "项目": [it.row(n, page_url) for n, it in enumerate(ordered, start=1)]}
     (out / "manifest.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     readme = _readme(root, site, name, now, snap, state_words, pid, ordered, counts, missing_items, builder, items,
-                     left)
+                     left, old, copies, skipped, not_needed)
     (out / "README.md").write_text(readme, encoding="utf-8")
     running = f"；爬虫正在跑（pid {pid}），清单里还有 {left.words()}" if pid is not None else ""
     by_bucket = Counter(it.bucket for it in missing_items)
@@ -1259,10 +2212,44 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
              "；".join(f"{t}：抓到 {c['got']}" + (f"（其中 {c['to_do']} 个有档但还要处理）" if c["to_do"] else "")
                       + f"、没抓到 {c['missing']}" for t, c in counts.items() if c["got"] or c["missing"]),
              "没抓到的按原因：" + "、".join(f"{progress.BUCKET_ZH.get(b, b)} {n}" for b, n in sorted(
-                 by_bucket.items(), key=lambda kv: _BUCKET_RANK.get(kv[0], -1))) if by_bucket else "没有没抓到的",
-             f"先看 {out / 'README.md'}；清单 manifest.csv，没抓到的 missing.csv"]
+                 by_bucket.items(), key=lambda kv: _BUCKET_RANK.get(kv[0], -1))) if by_bucket else "没有没抓到的"]
+    if ready is not None:
+        lines.append(f"资料截至 {ready.as_of or '（还没抓到东西）'}；"
+                     + ("可以导出（这个网站没有还在排队的网址和按钮）" if ready.can else
+                        f"还没爬完：还有 {ready.urls} 个网址、{ready.presses} 个按钮在排队，导出的是这一刻已经抓到的"))
+    if old is not None:
+        lines.append(f"从上一次导出 {old.folder} 硬链接了 {linked} 个附件和图片" if not old.why else
+                     f"上一次导出 {old.folder} 没有用上：{old.why}，附件和图片都从存档读")
+    filled = [it for it in ordered if it.filled]
+    lines += _old_lines(copies, filled, skipped or Counter(), not_needed or Counter())
+    lines.append(f"先看 {out / 'README.md'}；清单 manifest.csv，没抓到的 missing.csv")
     return Result(out, site, name, state, state_words, pid is not None, left.urls, left.presses, counts,
-                  missing_by, lines, left.other)
+                  missing_by, lines, left.other, ready, linked, len(filled))
+
+
+def _old_lines(copies: OldCopies | None, filled: list[Item], skipped: Counter, not_needed: Counter) -> list[str]:
+    """What the command says of --old-copies (item ⑦): the rows filled from the 10-24 archive by category, the copies
+    not used and why, the ones this round needs no more, or why the folder was not used at all."""
+    if copies is None:
+        return []
+    if copies.why:
+        return [f"10-24 旧存档的副本资料夹 {copies.folder} 没有用上：{copies.why}；缺口照这一轮的"]
+    out = [f"用 10-24 旧存档的副本补上 {len(filled)} 行" + (f"（{_by_category(filled)}）" if filled else "")
+           + f"，副本资料夹 {copies.folder}"]
+    if skipped:
+        out.append(f"10-24 旧存档有副本却没用上的 {sum(skipped.values())} 行（照这一轮的导出）："
+                   + "、".join(f"{why} {n}" for why, n in skipped.most_common()))
+    if not_needed:
+        out.append(f"10-24 旧存档也有副本、这一轮的结果却不在要补的范围的 {sum(not_needed.values())} 行，照这一轮的（这一轮的结果："
+                   + "、".join(f"{words} {n}" for words, n in not_needed.most_common()) + "）")
+    return out
+
+
+def _by_category(items: list[Item]) -> str:
+    """How many of these rows are in each category (分类), worst first: 「连接失败 3、学校那边已经不存在 2」."""
+    by = Counter(it.bucket for it in items)
+    return "、".join(f"{progress.BUCKET_ZH.get(b, b)} {n}" for b, n in
+                    sorted(by.items(), key=lambda kv: (_BUCKET_RANK.get(kv[0], -1), kv[0])))
 
 
 # an item with a file whose category is one of these needs nothing more; any other (要人看, 待判定, 下一轮 …) is counted
@@ -1338,7 +2325,9 @@ def _judged(items: list[Item], verb: str) -> str:
 
 
 def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_words: str, pid, ordered: list[Item],
-            counts: dict, missing_items: list[Item], builder: Builder, items: dict[str, Item], left: Left) -> str:
+            counts: dict, missing_items: list[Item], builder: Builder, items: dict[str, Item], left: Left,
+            old: Reuse | None = None, copies: OldCopies | None = None, skipped: Counter | None = None,
+            not_needed: Counter | None = None) -> str:
     st = snap.status
     why = list(getattr(st, "why", []) or []) if st is not None else [f"网站状态算不出来：{snap.status_error}"]
     warnings = list(getattr(st, "warnings", []) or []) if st is not None else []
@@ -1357,7 +2346,16 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
            f"- 存档：`{root}`（只读，没有改动）",
            f"- **导出时这个网站的状态：{state_words}**（和进度看板同一套判断）"]
     out += [f"  - {w}" for w in why[:8]] + [f"  - 另外：{w}" for w in warnings[:4]]
-    out += [f"- 导出时：{run}", "", "## 一共有什么", "",
+    out += [f"- 导出时：{run}"]
+    ready = snap.ready
+    if ready is not None:
+        out += [f"- **资料截至：{ready.as_of or '（还没抓到东西）'}**（这个网站自己的网址最后一次抓、按钮最后一次按的时间，台北时间）",
+                "- 可以导出：" + ("是（这个网站没有还在排队的网址和按钮，进度看板上它那一行打了勾）" if ready.can else
+                               f"否（还有 {ready.urls} 个网址、{ready.presses} 个按钮在排队）")
+                + "；和 nknu archive ready 同一套判断"]
+    else:
+        out.append(f"- 资料截至、可以导出：没算出来（{snap.ready_error}；存档比进度看板旧）")
+    out += ["", "## 一共有什么", "",
             "| 类型 | 抓到（已导出） | 其中有档但还要处理 | 没抓到 |", "|---|---|---|---|"]
     out += [f"| {t} | {c['got']} | {c['to_do']} | {c['missing']} |" for t, c in counts.items()
             if t != BUTTON or c["got"] or c["missing"]]
@@ -1382,6 +2380,49 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         said.append(f"有 {shared} 行和另一行是同一个档（跳转的网址、同一个档被几个网址用到），本地档案指向同一个档")
     if counts[BUTTON]["missing"]:
         said.append("「按钮」是网页上要点了才载入的写法，这一轮没办法抓，或还没决定怎么处理")
+    whole = [i for i in ordered if i.decoded and i.path and not i.seen_lost and not i.filled]
+    if whole:
+        by = Counter(i.decoded for i in whole)
+        quiet = sum(1 for i in whole if i.lost)
+        said.append(f"有 {len(whole)} 页原本的编码读不通（看板上的结果是「编码有问题」），按网页或服务器说的编码重读，看得到的文字"
+                    "都读通了：" + "、".join(f"{encoding_words(cs)} {n} 页" for cs, n in sorted(by.items()))
+                    + (f"（其中 {quiet} 页只在网页的注释、链接网址这类看不到的地方有读不出来的字，用 � 代替）" if quiet else "")
+                    + "。这些页的结果、分类、完整度照读通的网页算（「备注」栏写着按哪一种）")
+    lossy = [i for i in ordered if i.decoded and i.path and i.seen_lost and not i.filled]
+    if lossy:
+        by = Counter(i.decoded for i in lossy)
+        said.append(f"有 {len(lossy)} 页原本的编码读不通，没有一种编码读得通看得到的文字：照读不出来的字最少的那一种读（"
+                    + "、".join(f"{encoding_words(cs)} {n} 页" for cs, n in sorted(by.items()))
+                    + f"），一共 {sum(i.lost for i in lossy)} 个字读不出来，用 � 代替；结果照旧是「编码有问题」、分类「要人看」"
+                    "（「备注」栏写着每页按哪一种、有几个）")
+    old_read = sum(1 for i in ordered if i.decoded and i.path and i.filled)
+    if old_read:
+        said.append(f"10-24 旧存档的副本里也有 {old_read} 页按别的编码重读（「备注」栏写着），它们的结果、分类照这一轮的")
+    linked = sum(1 for i in ordered if i.linked)
+    if old is not None and not old.why:
+        said.append(f"附件和图片有 {linked} 个是从上一次导出（`{old.folder}`）硬链接过来的：内容一样（sha256、大小都对得上），"
+                    "没有再从存档读。两个资料夹里是同一个档，不要在资料夹里改档")
+    elif old is not None:
+        said.append(f"上一次导出（`{old.folder}`）没有用上：{old.why}，附件和图片都从存档读")
+    filled = [i for i in ordered if i.filled]
+    if copies is not None and copies.why:
+        said.append(f"10-24 旧存档的副本资料夹（`{copies.folder}`）没有用上：{copies.why}；缺口照这一轮的")
+    elif copies is not None:
+        unsettled = sum(1 for i in filled if i.bucket not in SETTLED)
+        said.append((f"有 {len(filled)} 行这一轮没抓到能用的内容（学校那边没了、连不上、等实验室、不是档案、跳到网站首页或查无资料页、"
+                     "内容很少、看起来像不存在），"
+                     f"用 10-24 旧存档里的正常副本补上了档（缺口概况第 ⑦ 项）：{_by_category(filled)}。它们的「来源」写"
+                     f"「{ORIGIN_OLD}」，「抓取时间」「最后修改时间」「大小」「sha256」「格式」是旧副本的；「结果」「分类」「原因」"
+                     "照这一轮的，缺口还看得到（「备注」写这一轮抓到什么）；有档了，所以不在 missing.csv"
+                     + (f"，其中 {unsettled} 行分类不是「抓到了」，算在上表「其中有档但还要处理」里" if unsettled else ""))
+                    if filled else f"用了 10-24 旧存档的副本资料夹（`{copies.folder}`），这个网站没有可以用它补的行")
+        if skipped:
+            said.append(f"10-24 旧存档有副本、却没用上的 {sum(skipped.values())} 行，照这一轮的导出（「备注」栏写着）："
+                        + "、".join(f"{why} {n}" for why, n in skipped.most_common()))
+        if not_needed:
+            said.append(f"10-24 旧存档也有副本、这一轮的结果却不在要补的范围的 {sum(not_needed.values())} 行（多半是副本资料夹做好以后"
+                        "又抓过、结果变了），照这一轮的，没有档的「备注」栏写着："
+                        + "、".join(f"{words} {n}" for words, n in not_needed.most_common()))
     if said:
         out += [""] + [f"- {x}" for x in said]
     out += ["", f"**没抓到的 {len(missing_items)} 个**，按原因（每一个都在 missing.csv，原因写在「结果」「原因」栏）：", ""]
@@ -1404,7 +2445,7 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         other.append(f"网站的程式档（.js）{builder.counts['script']} 个：不是内容，没导出")
     if builder.counts["drive_meta"]:
         other.append(f"Google 云端硬盘的档案资讯 {builder.counts['drive_meta']} 笔：程序读档案用的（档名、大小、修改时间），"
-                     "没另外导出：档名写在附件那一行，修改时间写在备注")
+                     "没另外导出：档名写在附件那一行，修改时间写在「最后修改时间」栏（备注里有原样）")
     if snap.videos:
         other.append(f"网页里的 YouTube 影片 {snap.videos} 部：照规则不抓（影音），只在存档里记了网址和标题")
     if snap.other_site_items:
@@ -1459,21 +2500,49 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
             "## 清单栏位", ""]
     out += [f"- **{k}**：{v}" for k, v in COLUMN_HELP.items()]
     out += ["", "## 日期怎么来的", "",
-            ("「网页上写的日期」是**程序找的**：c.nknu 的公告页（newsdetail）先读页上的「公告日期」栏（#lbl_AddTime），"
-            "读到就用它，读不到才照下面的规则找。在网页文字里找标签后面紧接的日期。先找「发布、發佈、公告、更新、張貼、刊登」"
+            ("「网页上写的日期」是**程序找的**，依序取第一个找到的："), "",
+            ("1. **公告页上平台自己的日期栏**：c.nknu 公告页上「公告日期」那一栏、SSO 公告中心的「公告時間」（写的是开始到"
+             "结束，取开始那天，就是公告上架的日子）、"
+             "SSO 单位网站消息页上日历图示旁的日期、国际处、电子系、电机系、英语系、华语中心、地理系、工设系公告页的日期栏；"
+             "WordPress（视设系、美术系）的日期栏只写日和月，年份从文章网址里的 /年/月/日/ 来，两个对得上才用。日期栏多半"
+             "只写日期、没有标签：它上一层（或再上一层）有写同一天的标签（例如「公告日期：」「公告時間：」），「日期原文」就"
+             "连标签一起记，否则只有日期栏里的字。"),
+            ("2. **公告在列表上那一行写的日期**：读不到日期栏（学校删掉的公告只剩模板），或公告是按列表上的按钮才出来的"
+             "（SSO 单位网站的消息，网址是列表网址加 #按钮=），就用列表上指到它的那一行的日期（列表的日期栏；c.nknu 的列表"
+             "没有日期栏，取那一行文字里第一个四位数年份的日期）。好几行指到同一则、写的日期又不一样，取多数的，一样多取"
+             "最早的，「备注」栏写明。"),
+            ("3. **网页文字里标签后面紧接的日期**。先找「发布、發佈、公告、更新、張貼、刊登」"
             "（后面可以接「日期」或「時間」，例如「更新時間」「公告日期」；英文 Posted、Published、Updated）这类标签，"
             "找不到才找单独的「日期」「Date」（活动页上「活動日期」写在「公告日期」前面时，取的是公告日期）；「最新公告」"
             "是侧栏标题，不算标签。认得 2025/10/01、2025-10-01、2025.10.01、2025年10月1日、全形数字 ２０２５／１０／０１，"
             "以及民国年 114/10/01、114.10.01、民國114年10月1日、中華民國114年10月1日（民国年加 1911 换成西元）。先找正文区，"
             "找不到再找整页，取第一个。**可能不准**（例如抓到的是页尾的「网站更新日期」），所以「日期原文」栏附上它在网页上"
-            "的原样，可以核对；找不到就空白。列表页上有很多条、各有各的日期，所以列表页不填。附件、图片看「链到它的网页」"
-            "那一页的日期。"), "",
+            "的原样，可以核对；找不到就空白。"), "",
+            "列表页上有很多条、各有各的日期，所以列表页不填。附件、图片看「链到它的网页」那一页的日期。", "",
+            (f"「日期来源」栏写日期是哪一条找到的：「{OWN_FIELD}」（第 1 条）、「{LIST_ROW}」（第 2 条）、「{PAGE_WORDS}」"
+             "（第 3 条）；找不到日期就空白。跳转的网址用落地那一页的档：落地那一页的日期栏读得到就用它，否则用这个网址自己"
+             "在列表上那一行的日期，再不然用落地那一页其他的日期。学术活动、校园活动、高教深耕活动的页面只写活动的日期，"
+             "不写上架的日子，这一版没有当成日期栏读。"), "",
+            ("「最后修改时间」是学校服务器回答时说的档案最后修改时间（HTTP 的 Last-Modified），云端硬盘的档案是云端硬盘记的"
+             "修改时间，都换成台北时间；服务器没说、写得读不懂、或年份不像真的（例如 1970 年）就空白。网页大多没有，"
+             "附件常有，附件没有所属公告时可以拿来当日期参考。**但要先看同一个网站的附件**：有的服务器说的是它自己把档案"
+             "复制过去的时间，每个档都差不多（例如图资处在 10-24 旧存档的副本，610 个全在 2026-10-22 的十几分钟里），"
+             "很多档的时间挤在一起就是这样，那不是档案自己的日期，不能拿来用。"), "",
             "「抓取时间」是爬虫抓到它的时间（台北时间）。", "",
             "## 编码", "",
             ("网页档是爬虫解码后的结果，存成 UTF-8（档头有 BOM 记号，浏览器会照 UTF-8 显示），内容没有改。学校有些网页的 "
             "`<meta charset>` 写 big5，实际却是 UTF-8（c.nknu 就是这样），所以爬虫不照 meta 解码；网页档里那行 meta "
             "照原样留着，不用理它，档案本身已经是 UTF-8。清单的「大小」「sha256」是存档里原始内容的（网页档改存成 UTF-8，"
-            "档案本身的大小可能不同；附件和图片的完全一样）。"), ""]
+            "档案本身的大小可能不同；附件和图片的完全一样）。"), "",
+            ("爬虫解不开的网页（「结果」是「编码有问题」），导出时再试一次，只试网页自己在 meta 写的、服务器说的编码（日文 "
+             "Shift_JIS、繁体中文 Big5、简体中文 GB 这类多位元组编码），取第一个整页都读得通的；档头有 UTF-8 的 BOM 记号的，"
+             "只照 UTF-8。读通了，「备注」写「原本的编码读不通，按 … 重读」。都读不通，就在这些编码和爬虫平常用的 UTF-8、繁体"
+             "中文 Big5 里，取读不出来的字最少的那一种读，读不出来的字用 � 代替，「备注」写按哪一种、有几个。看得到的文字"
+             "（正文、标题；不算网页的注释、链接网址）都读通的，就是学校原本那一页：「结果」写抓到了，「分类」「完整度」"
+             "「缺什么」照读通的网页算（它缺的附件、内嵌页照样算），「备注」写看板上是「编码有问题」；看得到的文字里还有 � "
+             "的，结果照旧是「编码有问题」、分类「要人看」。不会改用网页和"
+             "服务器都没说的编码去猜：学校自己造的罕用字（造字，常在人名里）换别的编码读，整页会变乱码，或变成另一个字，"
+             "看不出来读错了；� 至少看得出那里少了一个字。原样都在存档里。"), ""]
     return "\n".join(out)
 
 
@@ -1482,7 +2551,8 @@ COLUMN_HELP = {
     "类型": "网页 / 附件 / 图片 / 资料 / 按钮（网页上要点了才载入、这一轮没办法抓的写法）",
     "网址": ("网页上链的网址；按钮按出来的页是列表网址加 #第N页 或 #按钮=…（两个按钮的文字一样时，后面再加括号里的存档编号，"
            "分得开）"),
-    "最后落地网址": "跳转以后真正拿到内容的网址（没有跳转就空白）",
+    "最后落地网址": ("跳转以后真正拿到内容的网址（没有跳转就空白）；用 10-24 旧存档的副本补上的行，是副本的网址（和「网址」一样"
+               "就空白），这一轮跳到哪里写在「备注」"),
     "本地档案": "导出资料夹里的档案；空白就是没抓到",
     "标题": "网页：平台的标题栏，否则第一个 h1、h2，再不然 <title>；附件和图片：档名；按钮按出来的公告：列表上的标题",
     "网页上写的日期": "程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」",
@@ -1505,4 +2575,12 @@ COLUMN_HELP = {
     "怎么来的": "从哪里找到的：列表的哪一则、哪个按钮、哪个网页的附件……",
     "备注": "其他要知道的（跳转、同一个档、云端硬盘的修改时间、编码问题……）",
     "存档编号": "存档里的编号（u 网址、a 按钮），nknu archive browse 看得到",
+    "按钮编号": ("按按钮才出来的页和档：爬虫给这个按钮的编号（翻页是 p 加页数；列表上一行的按钮是用网站、列表、标题、日期、"
+             "分类算出来的指纹，列表多了新的一行也不会变）；其他行空白"),
+    "最后修改时间": ("学校服务器说的最后修改时间（Last-Modified），云端硬盘的档案是它的修改时间；台北时间，没有就空白。"
+               "同一个网站很多档挤在同一段时间的，是服务器复制档案的时间，不是档案的日期（见下面「日期怎么来的」）"),
+    "日期来源": (f"「网页上写的日期」是怎么找到的：{OWN_FIELD}（公告页上平台的日期栏）、{LIST_ROW}（公告在列表上那一行"
+             f"写的日期）、{PAGE_WORDS}（网页文字里标签后面的日期）；没有日期就空白"),
+    "来源": (f"这一行的档从哪里来：空白是这一轮爬虫的存档；「{ORIGIN_OLD}」是这一轮没抓到能用的内容、导出时用 10-24 旧存档"
+           "的正常副本补上的（结果、分类、原因还是这一轮的，备注写这一轮抓到什么）"),
 }

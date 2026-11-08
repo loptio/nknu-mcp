@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import export, outcome
 from nknu.archive.frontier import Frontier
@@ -339,9 +340,15 @@ def test_dates_the_pages_state_are_found_in_every_writing_and_left_blank_when_no
     _arch, _before, out, _got = done
     rows = by_url(rows_of(out / "manifest.csv"))
     d1, d2, d3 = (rows[BASE + f"newsview.aspx?nid={n}"] for n in (1, 2, 3))
-    assert d1["网页上写的日期"] == "2025-10-01" and "114/10/01" in d1["日期原文"]  # 民国 114 年
-    assert d2["网页上写的日期"] == "2025-09-30" and "2025年9月30日" in d2["日期原文"]
-    assert d3["网页上写的日期"] == "2026-10-02" and "2026/10/2" in d3["日期原文"]  # 「日　　期」
+    # the three notices are rows of the list, which states their dates: taken before their words (11-08, P75)
+    for row, day, listed, words in ((d1, "2025-10-01", "2025/10/01", "114/10/01"),  # 民国 114 年
+                                    (d2, "2025-09-30", "2025/09/30", "2025年9月30日"),
+                                    (d3, "2026-10-02", "2026/10/02", "2026/10/2")):  # 「日　　期」, on the list's page 2
+        assert (row["网页上写的日期"], row["日期原文"], row["日期来源"]) == (day, listed, export.LIST_ROW)
+        # their pages state the same days in their own writings, what a page no list dates is dated by
+        tree = LexborHTMLParser((out / row["本地档案"]).read_text(encoding="utf-8-sig"))
+        said = next(got for got in map(export.find_date, export.page_texts(tree, SITE)) if got)
+        assert said[0] == day and words in said[1]
     assert rows[BASE + "about.aspx"]["网页上写的日期"] == "" and rows[BASE + "about.aspx"]["日期原文"] == ""
     # a list holds many notices, each with its own date: none is the page's
     assert rows[BASE + "newslist.aspx"]["网页上写的日期"] == ""

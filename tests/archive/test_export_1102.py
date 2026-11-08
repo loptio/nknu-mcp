@@ -38,7 +38,8 @@ def test_a_cnknu_notice_takes_its_date_field_before_dates_in_its_text(tmp_path):
     assert row["网页上写的日期"] == "2026-10-22" and row["日期原文"].startswith("公告日期")
     assert row["日期原文"] == "公告日期：2026/10/22"  # the words as the page writes them, label included
     assert row["标题"] == "115學年度碩士班考試放榜"
-    assert "#lbl_AddTime" in readme  # the README says where a notice's date comes from
+    # the README says where a notice's date comes from, in plain words (review 11-08: no CSS ids for the owner)
+    assert "c.nknu 公告页上「公告日期」那一栏" in readme and "#lbl_AddTime" not in readme
 
 
 def test_a_notice_without_its_date_field_falls_back_to_its_text(tmp_path):
@@ -69,7 +70,8 @@ def test_own_date_only_for_the_platforms_detail_pages():
 
 def test_the_platforms_date_field_is_declared_on_its_detail_page():
     news, view = profiles.CNKNU.details
-    assert news.date == "#lbl_AddTime" and view.date == ""
+    # newsview's field too since 11-08 (总务处、体育室 …; tecs writes it with no DataFormView_ prefix)
+    assert news.date == "#lbl_AddTime" and view.date == "#DataFormView_AddTimeLabel, #AddTimeLabel"
     assert profiles.Detail(r"/x\.aspx", text="#body").date == ""  # no date field unless a profile names one
 
 
