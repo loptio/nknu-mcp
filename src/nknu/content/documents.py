@@ -12,6 +12,14 @@ Dates: a c.nknu notice takes its date field (corpus.read_metas: 公告頁日期�
 date the export read on its page (网页上写的日期, source 網頁上寫的日期: _stated) when it read it after a label of
 putting the page up or changing it (公告、發佈、更新 …, never a bare 日期: _OWN_LABEL), a page only as its own date.
 
+Sub-step 4 (spec 2026-11-08 §四), the step-3 export's columns ('' in an export made before 3c33a79, which then dates
+and classes everything as above): a date the export read in the platform's own date field (日期来源 详细页的日期栏,
+source 公告頁日期欄) or on the notice's row of its list (列表上的日期, source 列表上的日期) needs no label, the
+crawler's platform rule having chosen the field (spec §二 2); and a page it read such a field on is a notice (_class:
+a detail page whose address no detail path names, GEO, ID, WordPress profiles: 2,253 pages on 11-09) 【Claude】. Every
+document carries the server's time of its file (最后修改时间, Document.server_date, spec §二 3), which the build dates
+only an attachment by.
+
 An attachment hangs on the latest-dated page linking to it (a notice's date; undated notices, then pages, after;
 corpus order on ties) and takes that page's date (addendum 2026-11-02 B; 11-01: with several pages, the latest). The
 assembled corpus (T7a) keeps apart the pages that link it only from a menu (nav_linked): they are references, never
@@ -47,7 +55,7 @@ from urllib.parse import parse_qs, urlsplit
 from nknu.archive import profiles, scope
 from nknu.content import ids, sites
 from nknu.content.corpus import NOTICE_KINDS, Event, PageMeta, Record, plausible, taipei_day
-from nknu.content.dates import FIELD_SOURCE, PAGE_SOURCE
+from nknu.content.dates import FIELD_SOURCE, LIST_ROW, LIST_SOURCE, OWN_FIELD, PAGE_SOURCE, kept_range
 from nknu.core.timeutil import TAIPEI
 
 EVENT_KIND = "行事历"  # kind_raw of calendar events (the export's data file name)
@@ -88,6 +96,14 @@ LINK_SEP = " | "  # how the export joins the texts of all the links to one file 
 # date of the page: the label is the tail of a word that names another day, 校慶日期, 申請日期 (a deadline), 修正日期
 # (a rule's); 教务处's three such dates were all of that kind (plan 2026-11-08 T3 review) 【Claude】
 _OWN_LABEL = re.compile(r"(?i)^\s*(?:發\s*[佈布]|发\s*布|公\s*告|更\s*新|張\s*貼|张\s*贴|刊\s*登|posted|published|updated?)")
+# the export's 日期来源 that need no label (spec 2026-11-08 §二 2: the crawler's platform rule chose the field), with the
+# source each date gets
+_TRUSTED = {OWN_FIELD: FIELD_SOURCE, LIST_ROW: LIST_SOURCE}
+# A 最后修改时间 this close to the row's 抓取时间 is the server's clock answering a page it made on the fly, not the
+# time of a file: 825 pages of geo.nknu.edu.tw, 2 附件 and 2 图片 elsewhere in the 111 exports of 11-09 (sub-step 4,
+# spec 2026-11-08 §四) 【Claude】; so is one after it (a server clock running fast: a file is never changed after the
+# answer that carried it, and HTTP forbids a Last-Modified later than the answer's Date; none in the local crawls)
+CLOCK_SECONDS = 120
 
 
 @dataclass
@@ -107,12 +123,19 @@ class Document:
     linked_from: tuple[str, ...] = ()  # doc_ids of linking docs, corpus order
     added: date | None = None  # notices only: the date the notice states, read where added_source says
     added_raw: str = ""
-    added_source: str = ""  # dates.FIELD_SOURCE (a c.nknu notice's date field), dates.PAGE_SOURCE (plan 2026-11-08 T3)
+    # dates.FIELD_SOURCE (a notice's date field), dates.LIST_SOURCE (its list row's: sub-step 4), dates.PAGE_SOURCE
+    # (plan 2026-11-08 T3)
+    added_source: str = ""
     # pages only (plan 2026-11-08 T3): the date the export read on the page (dates.PAGE_SOURCE), the page's own date;
     # never a parent's date for the files it links, nor what orders the pages naming a file (only a notice's date does,
     # as before: 教务处's files keep their parents, titles and dates 【Claude】)
     page_date: date | None = None
     page_date_raw: str = ""
+    page_date_source: str = ""  # the source of page_date (_stated): dates.PAGE_SOURCE, or LIST_SOURCE (sub-step 4)
+    # every document (sub-step 4, spec 2026-11-08 §二 3): the server's time of its file (_server_day: the export's
+    # 最后修改时间), which dates an attachment only (owner 11-01: a file inherits its page's date, else the server's
+    # time; a page is never dated by it); None without one
+    server_date: date | None = None
     source: str = ""  # where the text came from (assembled corpus): totext | fallback-1029 | none
     refs: tuple[tuple[str, str, str], ...] = ()  # attachments: (doc_id, zone, context) of each page document linking it
     title_from_context: bool = False  # the title is what a page calls it (addendum B), not its file name
@@ -159,17 +182,25 @@ def kind_class(kind: str) -> str | None:
     return "page"
 
 
-def _stated(r: Record) -> tuple[date, str] | None:
-    """(the date the export read on the record's page, 网页上写的日期, with the words it read it from, 日期原文) when
-    that is the page's own date (plan 2026-11-08 T3), else None, rather none than a wrong one: read after a label of
-    putting the page up or changing it (_OWN_LABEL: 「更新時間： 2025.9.17」, never 「日期113.4.24」 cut from
-    「校慶日期113.4.24」) 【Claude】; a plausible date (corpus.plausible) no later than the day the page was fetched (a
-    later one is a day the page names ahead, a deadline: 「榜單公告115年12月30日」 【Claude】); and not on a c.nknu list
-    page (default.aspx, download.aspx, laws.aspx: the profile's list paths), whose date is one of its rows' (教务处's
-    home pages show their first notice's, 「公告 2026.10.21」) 【Claude】."""
+def _stated(r: Record) -> tuple[date, str, str] | None:
+    """(the date the export read on the record's page, 网页上写的日期, with the words it read it from, 日期原文, and the
+    source it is shown with) when that is the page's own date (plan 2026-11-08 T3), else None, rather none than a
+    wrong one:
+    - read in the platform's own date field (日期来源 OWN_FIELD: source FIELD_SOURCE) or on the notice's row of its
+      list (LIST_ROW: LIST_SOURCE), whatever its words (the bare 「2024-05-31」 of a date field): the crawler's platform
+      rule chose it (sub-step 4, spec 2026-11-08 §二 2); any other date (PAGE_WORDS, or '' from an export made before
+      3c33a79) only after a label of putting the page up or changing it (_OWN_LABEL: 「更新時間： 2025.9.17」, never
+      「日期113.4.24」 cut from 「校慶日期113.4.24」) 【Claude】, source PAGE_SOURCE;
+    and, for all of them: a plausible date (corpus.plausible) no later than the day the page was fetched (a later one
+    is a day the page names ahead, a deadline: 「榜單公告115年12月30日」 【Claude】); and not on a c.nknu list page
+    (default.aspx, download.aspx, laws.aspx: the profile's list paths), whose date is one of its rows' (教务处's home
+    pages show their first notice's, 「公告 2026.10.21」) 【Claude】."""
     raw = " ".join(r.page_date_raw.split())
-    if not _OWN_LABEL.match(raw):
-        return None
+    source = _TRUSTED.get(r.date_source)
+    if source is None:
+        if not _OWN_LABEL.match(raw):
+            return None
+        source = PAGE_SOURCE
     try:
         day = date.fromisoformat(r.page_date) if r.page_date else None
     except ValueError:
@@ -180,7 +211,33 @@ def _stated(r: Record) -> tuple[date, str] | None:
         return None
     if profiles.CNKNU.covers(scope.site_key(r.url)) and profiles.page_kind(r.url) == "list":
         return None
-    return day, raw
+    return day, raw, source
+
+
+def _class(r: Record) -> str | None:
+    """A record's document class: kind_class of its kind, except that a page the export read the platform's own date
+    field on (日期来源 OWN_FIELD) is a notice: a detail page whose address no detail path names (GEO, ID, WordPress
+    profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec 2026-11-08 §四) 【Claude】. Its kind_raw stays.
+    One helper for both places that ask (the notices kept at one address, and the documents), so they never disagree."""
+    cls = kind_class(r.kind)
+    return "notice" if cls == "page" and r.date_source == OWN_FIELD else cls
+
+
+def _server_day(r: Record) -> date | None:
+    """The Asia/Taipei day of the record's 最后修改时间 (Record.modified; spec 2026-11-08 §二 3); None when it is blank or
+    unreadable, outside dates.kept_range(), or at most CLOCK_SECONDS before its 抓取时间 or after it (the server's
+    clock answering a page made on the fly, or running fast; not a file's time) 【Claude】. Without an 抓取时间 (a
+    corpus assembled before plan 2026-11-08 T3) there is nothing to compare it with."""
+    day = taipei_day(r.modified) if r.modified else None
+    if day is None:
+        return None
+    earliest, latest = kept_range()
+    if not earliest <= day <= latest:
+        return None
+    fetched = fetched_at(r.fetched)
+    if fetched != float("-inf") and fetched_at(r.modified) >= fetched - CLOCK_SECONDS:
+        return None
+    return day
 
 
 def _param(url: str, name: str) -> str | None:
@@ -321,7 +378,7 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
     (a corpus assembled before plan 2026-11-08 T3, an event made by hand); with neither, the unit is the school's."""
     excluded: Counter[str] = Counter()
     keep: dict[str, str] = {}  # link key -> the notice kept: the first one whose URL is written without &amp;
-    for r in sorted((r for r in records if kind_class(r.kind) == "notice"), key=lambda r: "&amp;" in r.url):
+    for r in sorted((r for r in records if _class(r) == "notice"), key=lambda r: "&amp;" in r.url):
         keep.setdefault(_link_key(r.url), r.id)
 
     docs: list[Document] = []
@@ -332,7 +389,7 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
     for r in records:
         key = _link_key(r.url)
         linkable.setdefault(key, []).append(r)
-        cls = kind_class(r.kind)
+        cls = _class(r)
         if cls is None:
             excluded[r.kind] += 1
             continue
@@ -351,14 +408,15 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         if m and m.added:  # c.nknu's date field first: the export's dates misdated 16% of 教务处's notices (11-02)
             added, added_source = m.added, FIELD_SOURCE
         elif cls == "notice" and stated:
-            (added, added_raw), added_source = stated, PAGE_SOURCE
-        page_date, page_raw = stated if cls == "page" and stated else (None, "")
+            added, added_raw, added_source = stated
+        page_date, page_raw, page_source = stated if cls == "page" and stated else (None, "", "")
         d = Document(doc_id="d" + r.id, kind_class=cls, kind_raw=r.kind, title=title, url=r.url,
                      unit=sites.unit_for(r.url, r.site or site), grp=m.group if m else "", parent_id=None,
                      parent_title="", linktext=_link_text(r.linktext),
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
-                     source=r.source, formats=r.formats, site=r.site or site)
+                     page_date_source=page_source, server_date=_server_day(r), source=r.source, formats=r.formats,
+                     site=r.site or site)
         docs.append(d)
         doc_of[r.id] = d
         for f in r.formats:

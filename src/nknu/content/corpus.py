@@ -66,11 +66,18 @@ class Record:
     key: str = ""  # its identity, whose hash id is (nknu.content.ids, plan 2026-11-08 T1); '' in the 10-29 corpus
     # plan 2026-11-08 T3, from its manifest row ('' in a corpus assembled before): the export's site key (网站), its
     # 抓取时间 as written, the date the export read on its page (网页上写的日期, an ISO date; pages only) and the words
-    # it read it from (日期原文)
+    # it read it from (日期原文); sub-step 4 (spec 2026-11-08 §四), from the step-3 export's columns ('' in an export
+    # made before 3c33a79, and in a corpus assembled before): which export rule found that date (日期来源:
+    # dates.OWN_FIELD, LIST_ROW, PAGE_WORDS; documents._stated), the archived answer's Last-Modified as written
+    # (最后修改时间: a file's server time, spec §二 3; documents.Document.server_date) and where the file came from
+    # (来源: '' this round's archive, 「10-24 旧存档」 the 10-24 archive's copy)
     site: str = ""
     fetched: str = ""
     page_date: str = ""
     page_date_raw: str = ""
+    date_source: str = ""
+    modified: str = ""
+    origin: str = ""
     # plan 2026-11-08 T4: the export folder the build read it with (its file, and a notice's header fields, are read
     # there); set by the build for each input, never written to corpus.json ('' when read alone)
     export: str = ""
@@ -91,7 +98,8 @@ def load_corpus(path: Path) -> list[Record]:
             zones=dict(r.get("zones") or {}), contexts=dict(r.get("contexts") or {}), rows=dict(r.get("rows") or {}),
             formats=tuple(dict(f) for f in r.get("formats") or () if isinstance(f, dict)), key=r.get("key") or "",
             site=r.get("site") or "", fetched=r.get("fetched") or "", page_date=r.get("page_date") or "",
-            page_date_raw=r.get("page_date_raw") or "",
+            page_date_raw=r.get("page_date_raw") or "", date_source=r.get("date_source") or "",
+            modified=r.get("modified") or "", origin=r.get("origin") or "",
         )
         for r in rows
     ]

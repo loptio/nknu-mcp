@@ -7,7 +7,10 @@ A key is the identity of what a row holds; the id is one letter and 12 lowercase
 - location_key: anything addressed by a URL, the manifest's 网址 as the export spelt it (the export canonicalised it:
   no scope.canonical here, which would tie ids to a second copy of the crawler's rules), scheme dropped, html.unescape
   applied, fragment kept; c.nknu notices, SSO news and Drive files by the number their platform gives them.
-- press_key: a row a button press brought (网址 <list url>#按钮=<words>), which has no address of its own.
+- press_key: a row a button press brought (网址 <list url>#按钮=<words>), which has no address of its own: since the
+  step-3 export (3c33a79; sub-step 4, spec 2026-11-08 §四) by the crawler's own id of the button (按钮编号, its row_key:
+  a fingerprint of site, list, title, date and category, which no two rows of one list share), else, in an export made
+  before, by its words.
 - member_key: a file inside an archive.
 The site is no part of a key (spec §一: sites have been re-assigned before; it is a column of its own). Calendar
 events keep 'e' + the Google event id (documents.py), which is stable already.
@@ -75,9 +78,10 @@ def _squashed(words: str) -> str:
 
 def press_key(list_url: str, words: str, row_key: str = "", dup: str = "") -> str:
     """A row a button press brought: press:<location_key of its list without the fragment>#<row_key, else words in
-    NFKC with whitespace squashed>[#<dup>]. Until the export writes the crawler's row_key (spec §二 step 3), the words
-    stand in, and dup (the row's 存档编号, internal to one frontier.db) tells apart two rows of one list with the same
-    words: such ids may change between exports (AssembleReport.unstable_ids)."""
+    NFKC with whitespace squashed>[#<dup>]. The export writes the crawler's row_key (按钮编号) since the step-3 export
+    (3c33a79; sub-step 4, spec 2026-11-08 §四); in an export made before, the words stand in, and dup (the row's
+    存档编号, internal to one frontier.db) tells apart two rows of one list with the same words: such ids may change
+    between exports (AssembleReport.unstable_ids)."""
     key = f"{PRESS}{location_key(list_url.split('#', 1)[0])}#{row_key or _squashed(words)}"
     return f"{key}#{dup}" if dup else key
 
@@ -96,31 +100,36 @@ def record_id(key: str, member: bool = False) -> str:
     return ("m" if member else "u") + digest[:ID_CHARS]
 
 
-def _presses(rows: list[dict]) -> dict[str, list[tuple[int, str, str, str]]]:
+def _presses(rows: list[dict]) -> dict[str, list[tuple[int, str, str, str, str]]]:
     """The rows a button brought (their 网址 holds PRESS_MARK), by their key without dup: (序号, list url, words,
-    存档编号) of each; words are the row's whole 链接文字, else its 标题."""
-    out: dict[str, list[tuple[int, str, str, str]]] = {}
+    存档编号, 按钮编号) of each; words are the row's whole 链接文字, else its 标题; 按钮编号 stripped, '' in an export made
+    before the step-3 export (sub-step 4, spec 2026-11-08 §四)."""
+    out: dict[str, list[tuple[int, str, str, str, str]]] = {}
     for row in rows:
         url = row.get("网址") or ""
         if PRESS_MARK in url:
             list_url, words = url.split(PRESS_MARK, 1)[0], row.get("链接文字") or row.get("标题") or ""
-            out.setdefault(press_key(list_url, words), []).append(
-                (int(row["序号"]), list_url, words, row.get("存档编号") or ""))
+            row_key = (row.get("按钮编号") or "").strip()
+            out.setdefault(press_key(list_url, words, row_key=row_key), []).append(
+                (int(row["序号"]), list_url, words, row.get("存档编号") or "", row_key))
     return out
 
 
 def dup_rows(rows: list[dict]) -> set[int]:
-    """序号 of the rows a button brought whose list and words another such row shares: their keys carry a dup."""
-    return {n for same in _presses(rows).values() if len(same) > 1 for n, *_ in same}
+    """序号 of the rows a button brought, keyed by their words (no 按钮编号), whose list and words another such row
+    shares: their keys carry a dup, which may change between exports. Rows sharing one 按钮编号 (never seen on 11-09:
+    the crawler's row_key names one row of one list) carry a dup too but are not counted here: they are keyed by what
+    the crawler keeps across exports, not by their words (sub-step 4, spec 2026-11-08 §四)."""
+    return {n for same in _presses(rows).values() if len(same) > 1 for n, _, _, _, row_key in same if not row_key}
 
 
 def manifest_keys(rows: list[dict]) -> dict[int, str]:
-    """序号 -> key for every row of one export's manifest: press_key for a row a button brought (its 存档编号 as dup when
-    another row of its list has the same words; its 序号 when it has no 存档编号, 【Claude】), location_key of 网址
-    for any other row."""
+    """序号 -> key for every row of one export's manifest: press_key for a row a button brought (by its 按钮编号, else
+    its words; its 存档编号 as dup when another row of its list has the same key; its 序号 when it has no 存档编号,
+    【Claude】), location_key of 网址 for any other row (a pager row, #第N页, has an address of its own)."""
     out = {int(row["序号"]): location_key(row.get("网址") or "") for row in rows
            if PRESS_MARK not in (row.get("网址") or "")}
     for key, same in _presses(rows).items():
-        for n, list_url, words, archived in same:
-            out[n] = key if len(same) == 1 else press_key(list_url, words, dup=archived or f"序号{n}")
+        for n, list_url, words, archived, row_key in same:
+            out[n] = key if len(same) == 1 else press_key(list_url, words, row_key, dup=archived or f"序号{n}")
     return out

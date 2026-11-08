@@ -15,7 +15,11 @@ text, nor since 11-03 from its file name. An event has its calendar days (行事
 field dates (another platform's detail page) and a page have the date the export read on the page (網頁上寫的日期, the
 manifest's 网页上写的日期, read after a label of putting the page up or changing it: documents._stated), the page's
 as its own date only, and an attachment inherits such a notice's date with that source (_facts); the export's site
-gives the unit of a record or event that names no site of its own (a corpus assembled before T3).
+gives the unit of a record or event that names no site of its own (a corpus assembled before T3). Sub-step 4 (spec
+2026-11-08 §四), from the step-3 export's columns: a date the platform's own field gave (公告頁日期欄, whatever page
+it is on: documents._class) or a notice's list row (列表上的日期) needs no label (§二 2), and an attachment's server
+time is its export row's 最后修改时间 (documents.Document.server_date, §二 3), else server_dates.json's as before (an
+export made before 3c33a79 has no such column).
 
 Terms (period_ay, period_sem): the first one a title names. A calendar event, whose title seldom names one, always has
 one: its title's, else its first day's (terms.event_term; fix round 2, 11-01).
@@ -119,7 +123,7 @@ from nknu.content.dates import (
     identity_date,
     load_server_dates,
 )
-from nknu.content.documents import LINK_SEP, Document, build_documents, one_event_per_id, one_per_id
+from nknu.content.documents import LINK_SEP, Document, build_documents, kind_class, one_event_per_id, one_per_id
 from nknu.content.embed import PAGE_SIZE, PASSAGE_VERSION, EmbedStats, VecCache, embed_chunks
 from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, MINUTES, PRIMARY, create_schema
 from nknu.content.terms import Term, canonical_tokens, event_term, find_cohorts, find_terms, term_tokens
@@ -311,31 +315,36 @@ def _sha256(path: Path) -> str:
 
 def _server_dates(path: Path | None, today: date, warnings: list[str]) -> dict[str, date]:
     if path is None or not Path(path).is_file():
-        warnings.append(f"没有伺服器檔案時間（{path or '没给 server_dates.json'}）：挂在没日期网页上的附件都没有日期")
+        warnings.append(f"没有 server_dates.json（{path or '没给'}）：只有导出写了「最后修改时间」的附件有伺服器檔案時間"
+                        "（3c33a79 以后的导出才有这一栏），别的附件挂在没日期的网页上时没有日期")
         return {}
     return {u: d for u, d in load_server_dates(Path(path)).items() if EARLIEST <= d <= today + AHEAD}
 
 
 def _facts(d: Document, parent: Document | None, event: Event | None, server: dict[str, date]) -> list[DateFact]:
-    """A document's dates. A notice: the date it states (its date field, 公告頁日期欄; else the date the export read on
-    its page, 網頁上寫的日期: plan 2026-11-08 T3) and the periods its body writes. An attachment: its notice's date, the
-    server's time. An event: its days. A page: the date the export read on it, as its identity date (plan 2026-11-08
-    T3); its files never take it.
+    """A document's dates. A notice: the date it states (its date field, 公告頁日期欄; its list row's, 列表上的日期:
+    sub-step 4; else the date the export read in its page's words, 網頁上寫的日期: plan 2026-11-08 T3) and the periods
+    its body writes. An attachment: its notice's date, the server's time. An event: its days. A page: the date the
+    export read on it, with the source documents._stated gave it, as its identity date (plan 2026-11-08 T3); its files
+    never take it, nor is a page or a notice dated by the server's time (owner 11-01).
 
-    An attachment's inherited date has the source 所屬公告 when its notice's date is the notice's date field, and
-    keeps 網頁上寫的日期 when the export read it on the notice's page (another platform's detail page), so one step
-    down a date read from a page's words is never shown as a notice's own field (plan 2026-11-08 T3 review)."""
+    An attachment's inherited date has the source 所屬公告 when its notice's date is a field's (the notice's date
+    field, or its list row's), and keeps 網頁上寫的日期 when the export read it in the words of the notice's page, so
+    one step down a date read from a page's words is never shown as a notice's own field (plan 2026-11-08 T3 review).
+    Its server time is its export row's 最后修改时间 (Document.server_date: sub-step 4, spec 2026-11-08 §二 3), else
+    server_dates.json's day of its address (an export made before 3c33a79, which has no such column)."""
     if d.kind_class == "notice":
         own = [DateFact("published", d.added, d.added_raw, d.added_source or FIELD_SOURCE)] if d.added else []
         return own + extract_periods(d.text)
     if d.kind_class == "page" and d.page_date:
-        return [DateFact("published", d.page_date, d.page_date_raw, PAGE_SOURCE)]
+        return [DateFact("published", d.page_date, d.page_date_raw, d.page_date_source or PAGE_SOURCE)]
     if d.kind_class == "attachment":
         out = []
         if parent is not None and parent.kind_class == "notice" and parent.added:
             source = PAGE_SOURCE if parent.added_source == PAGE_SOURCE else INHERITED_SOURCE
             out.append(DateFact("inherited", parent.added, parent.added_raw, source))
-        if (day := server.get(d.url.split("#", 1)[0])) is not None:  # an archive member: its archive's time
+        # an archive member: its archive's time (its record carries its archive's row's 最后修改时间)
+        if (day := d.server_date or server.get(d.url.split("#", 1)[0])) is not None:
             out.append(DateFact("server", day, day.isoformat(), "伺服器檔案時間"))
         return out
     if d.kind_class == "event" and event is not None:
@@ -436,12 +445,15 @@ def _file_digest(export_dir: Path, records: list[Record]) -> Callable[[str], str
 def _copy_groups(rows: list[_Row], digest: Callable[[str], str | None]) -> list[list[_Row]]:
     """Pages or attachments that are one document at several addresses: same kind and title (an attachment's file
     name), and the same text; when there is no text, the same file bytes (looked at only for documents that share a
-    kind and a title). Titles that differ never merge, so every title stays findable."""
+    kind and a title). Titles that differ never merge, so every title stays findable. A page documents._class made a
+    notice (sub-step 4, spec 2026-11-08 §四: GEO shows one notice at every index= of its id, 145 of them at two
+    addresses or more on 11-08) is still such a page here; it merges only with pages made notices too, its class
+    being in the key, and a notice of a detail path (one address per notice) never merges (review 11-09)."""
     by_text: dict[tuple, list[_Row]] = {}
     blank: dict[tuple, list[_Row]] = {}
     for r in rows:
         d = r.doc
-        if d.kind_class not in COPY_KINDS:
+        if d.kind_class not in COPY_KINDS and not (d.kind_class == "notice" and kind_class(d.kind_raw) == "page"):
             continue
         name = d.file_title or d.title
         if d.text.strip():

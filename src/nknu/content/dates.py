@@ -2,7 +2,9 @@
 source, so an agent sees where a date came from.
 
 Owner decision 11-01 (changed later that day): an attachment only inherits the date of the page it hangs on, else the
-server's Last-Modified (load_server_dates, written by nknu.content.serverdates); nothing is read from its own text
+server's Last-Modified: its export row's 最后修改时间 (documents.Document.server_date; the step-3 export's, sub-step 4,
+spec 2026-11-08 §二 3), else for an export made before 3c33a79 load_server_dates' (written by
+nknu.content.serverdates); nothing is read from its own text
 (發文日期, 沿革 and 改版 notes are left to the agent, who reads the original). The identity date ("which day is this
 document") is the first kind in IDENTITY_ORDER. Periods (受理期間 …) in a notice body never name the document; they give
 its status at query time. No date is read from a file name (owner 11-03, with the series those dates ordered; plan
@@ -29,18 +31,28 @@ class DateFact:
     kind: str     # published|inherited|server|period_start|period_end|event_start|event_end
     date: date    # Asia/Taipei calendar date
     raw: str      # the text it was read from, whitespace collapsed
-    source: str   # 公告頁日期欄|網頁上寫的日期|所屬公告|伺服器檔案時間|正文期間|行事曆
+    source: str   # 公告頁日期欄|網頁上寫的日期|列表上的日期|所屬公告|伺服器檔案時間|正文期間|行事曆
 
 
 IDENTITY_ORDER = ("published", "inherited", "server")
-# the sources of a published date: a c.nknu notice's own date field (#lbl_AddTime, newsview's
-# #DataFormView_AddTimeLabel), or the date the export read on the page (manifest 网页上写的日期: the platform's date
-# field, else a date found in its text after a label; kept only after a label of putting the page up or changing it,
-# documents._stated) for a notice no field dates and for a page (plan 2026-11-08 T3)
+# The export's 日期来源 (since the step-3 export, 3c33a79): which of its rules found a page's 网页上写的日期, spelt as
+# archive.export spells them (OWN_FIELD, LIST_ROW, PAGE_WORDS); content keeps its own copy, as ids.PRESS_MARK does.
+# '' on a row with no date, and on every row of an export made before 3c33a79 (sub-step 4, spec 2026-11-08 §四)
+OWN_FIELD = "详细页的日期栏"  # the platform's own date field on a notice or detail page
+LIST_ROW = "列表上的日期"  # the date the notice's row states on its list (P75, SSO WebIdx)
+PAGE_WORDS = "网页上的日期字眼"  # a labelled date in the page's words
+# the sources of a published date: a notice's own date field, c.nknu's header field (#lbl_AddTime, newsview's
+# #DataFormView_AddTimeLabel) or, since sub-step 4, any platform's date field the export read on a detail page (日期来源
+# OWN_FIELD: the crawler's platform rule chose the field, spec 2026-11-08 §二 2); the date a notice's row states on its
+# list (LIST_SOURCE, 日期来源 LIST_ROW); else the date the export read in the page's words (manifest 网页上写的日期,
+# kept only after a label of putting the page up or changing it, documents._stated) for a notice no field dates and for
+# a page (plan 2026-11-08 T3)
 FIELD_SOURCE = "公告頁日期欄"
+LIST_SOURCE = "列表上的日期"  # shown to agents: the same characters in Traditional Chinese
 PAGE_SOURCE = "網頁上寫的日期"
-# the source of an attachment's inherited date when its notice's date is the notice's date field; one inherited from a
-# notice the export dated by its page keeps PAGE_SOURCE (plan 2026-11-08 T3 review: build._facts)
+# the source of an attachment's inherited date when its notice's date is a field's (the notice's date field, or its list
+# row's, LIST_SOURCE: sub-step 4); one inherited from a notice the export dated by its page's words keeps PAGE_SOURCE
+# (plan 2026-11-08 T3 review: build._facts)
 INHERITED_SOURCE = "所屬公告"
 
 _EARLIEST = date(1990, 1, 1)
