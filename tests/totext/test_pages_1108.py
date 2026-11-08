@@ -298,9 +298,12 @@ def test_roots_follow_the_rule_of_each_page():
     ("https://sso.nknu.edu.tw/News/AttachedFile.aspx?cEncrptedFilePath=x", "page:sso_news"),
     # a platform with a profile and no paths
     ("https://lis.nknu.edu.tw/index.php/zh/", "page:lis"),
+    # SSO systems with profiles of their own since the crawler's b1f8a99: 学务处系统, 法规汇编, 校园授权软件
+    ("https://sso.nknu.edu.tw/osa/index.aspx", "page:sso_osa"),
+    ("https://sso.nknu.edu.tw/regulations/index.aspx", "page:sso_regulations"),
+    ("https://sso.nknu.edu.tw/software/campussoftware.aspx?csoftid=3", "detail:sso_software"),
     # unprofiled school sites: a round-1 Google Site, an nknu.edu.tw host, a school address, a school Google Site
-    (GSITE_PAGE, "page"), ("https://www.nknu.edu.tw/~abc/x.htm", "page"),
-    ("https://sso.nknu.edu.tw/osa/index.aspx", "page"), ("http://140.127.40.31/x.htm", "page"),
+    (GSITE_PAGE, "page"), ("https://www.nknu.edu.tw/~abc/x.htm", "page"), ("http://140.127.40.31/x.htm", "page"),
     ("https://sites.google.com/mail.nknu.edu.tw/111/a", "page"),
     # everything else
     ("https://forms.gle/x", "外站:forms.gle"), ("https://docs.google.com/forms/d/e/1/viewform", "外站:docs.google.com"),

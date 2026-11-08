@@ -41,8 +41,9 @@ which search reads.
 Calendar (owner 11-01): an event that starts before documents.CALENDAR_SINCE (2023-01-01, a fixed date that does not
 roll) is left out and counted as 行事历(2023年以前); the export keeps it. Fix round 3's staff-schedule filter is gone.
 
-Doc types (spec 「排序 v2」, 11-01): doc_type says journal (學報) or exam (past exam papers), only where the title, the
-parent's title or the address says so plainly (doc_type); everything else is ''. Lists and brochures are never typed.
+Doc types (spec 「排序 v2」, 11-01): doc_type says journal (學報; since 11-09 教务处's old 校刊 and 校訊 too) or exam
+(past exam papers), only where the title, the parent's title or the address says so plainly (doc_type); everything
+else is ''. Lists and brochures are never typed.
 tier_of makes both background in docs.tier, which search ranks after the primary documents (addendum M2; plan
 2026-11-08 T1); search reads doc_type only in a database built before docs.tier (search.background_ids).
 
@@ -69,9 +70,10 @@ it reads the export's info, calendar, notice header fields and files (each recor
 map, keyed by address, serves them all. Records of one id from several inputs are one document
 (documents.one_per_id: the newest 抓取时间, with what every record says) and events of one id are one
 (documents.one_event_per_id); a corpus with ids of its own builds alone (BuildError). Each export is a row of the
-sites table (its name, unit, 资料截至, missing pages and files, documents, folder; two exports of one site are one row,
-the newer one's, with a warning), and docs.site says which export a document came from, so each result shows its own
-site's 资料截至 (respond). meta keeps the first input in the keys of one input (corpus, export_dir, site, data_as_of
+sites table (its name, unit, 资料截至, missing pages and files, documents, folder and, since owner 11-09's blueprint
+item 15, the school's deleted notices left out; two exports of one site are one row, the newer one's, with a
+warning), and docs.site says which export a document came from, so each result shows its own site's 资料截至
+(respond). meta keeps the first input in the keys of one input (corpus, export_dir, site, data_as_of
 ...; readers before T4 read them: gold's default corpus, check_realdata) and lists every input in inputs_json.
 
 The unit patch (owner 11-08 04:08, plan 2026-11-08 T4): 「请把文件的单位名、组别（以及单位简称）加进索引和 passage，免得
@@ -123,7 +125,15 @@ from nknu.content.dates import (
     identity_date,
     load_server_dates,
 )
-from nknu.content.documents import LINK_SEP, Document, build_documents, kind_class, one_event_per_id, one_per_id
+from nknu.content.documents import (
+    LINK_SEP,
+    Document,
+    build_documents,
+    deleted_notice,
+    kind_class,
+    one_event_per_id,
+    one_per_id,
+)
 from nknu.content.embed import PAGE_SIZE, PASSAGE_VERSION, EmbedStats, VecCache, embed_chunks
 from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, MINUTES, PRIMARY, create_schema
 from nknu.content.terms import Term, canonical_tokens, event_term, find_cohorts, find_terms, term_tokens
@@ -163,7 +173,11 @@ RELATIONS = ("applies_to", "publisher", "mentions")  # doc_scope.relation, in th
 SCOPE_KEY = "scope_json"  # meta: BuildReport.scope as JSON
 SCOPE_SKIPPED = {"skipped": "没给单位名单（--site-list）：没有单位树，也没有每份文件的单位范围；搜索不按单位加减分"}
 # doc_type patterns, on norm_text (simplified, lowercase); the address is its percent-decoded path
-_PAPER_DIRS = ("/nknupaper/",)  # the site's 學報 folder: issue contents, abstracts, papers
+# the site's 學報 folder (issue contents, abstracts, papers) and, since owner 11-09 (blueprint item 17, 「照建议定」),
+# 教务处's old 校刊 (/aca/uploadfile/spaper/, /~publish2/spaper/) and 校訊 (…/sinfo/) folders: text read from images, no
+# date, page numbers for titles, and the first 7 results for 「校長是誰」 (a former president, with no date shown); 「建议
+# 和学报一样算背景（在现有的学报规则里加两个资料夹）」. Only c.nknu.edu.tw/aca has such folders among the 111 exports.
+_PAPER_DIRS = ("/nknupaper/", "/spaper/", "/sinfo/")
 _ISSUE = re.compile(r"\d+\s*期\s*学报")  # 55期學報總檔, 上網-52期學報-目錄
 _JOURNAL_PAGE = re.compile(r"学报(?![到考名])")  # 高雄師大學報; not 入學報到 / 入學報考 / 入學報名
 _WHOLE_ISSUE = re.compile(r"总档|全上传")  # 1111228-53期-總檔, 51全上傳: a whole issue, on the 學報 page only
@@ -216,8 +230,8 @@ class BuildReport:
     # SCOPE_SKIPPED without a site list
     scope: dict = field(default_factory=dict)
     # plan 2026-11-08 T4: the sites table's rows (site, name, unit, data_as_of, missing_pages, missing_files, docs,
-    # export), the inputs in order (corpus, export, site, records, events) and what this passage version changed
-    # (version, unit_words: whether the build added them, note)
+    # export; deleted_notices since owner 11-09, blueprint item 15), the inputs in order (corpus, export, site,
+    # records, events) and what this passage version changed (version, unit_words: whether the build added them, note)
     sites: list = field(default_factory=list)
     inputs: list = field(default_factory=list)
     passage: dict = field(default_factory=dict)
@@ -377,7 +391,8 @@ def _term(d: Document, event: Event | None) -> Term | None:
 def doc_type(title: str, parent_title: str, url: str, kind_class: str = "") -> str:
     """JOURNAL, EXAM, MINUTES or '' (spec 「排序 v2」: only what the title, the parent's title or the address says
     plainly; rather too few than one wrong). exam: 考古題 / 歷屆考題 / 歷屆試題 in any of the three. journal: the site's
-    學報 folder; a title naming an issue (55期學報); or a 總檔 / 全上傳 file whose parent is the 學報 page. A title about
+    學報 folder and, since 11-09 (owner, blueprint item 17), its old 校刊 and 校訊 folders (_PAPER_DIRS); a title
+    naming an issue (55期學報); or a 總檔 / 全上傳 file whose parent is the 學報 page. A title about
     the journal's forms and lists (徵稿, 撰稿須知, 審查, 委員名單 ...) is never a paper.
 
     minutes (owner 11-08 10:16, 「其他网站很多会议纪录是单独上传的 PDF/Word，不在压缩包里」: 會議紀錄 / 會議記錄 /
@@ -822,7 +837,8 @@ def _scope_warnings(report: dict, total: int) -> list[str]:
     return out
 
 
-SITE_COLUMNS = ("site", "name", "unit", "data_as_of", "missing_pages", "missing_files", "docs", "export")
+SITE_COLUMNS = ("site", "name", "unit", "data_as_of", "missing_pages", "missing_files", "docs", "export",
+                "deleted_notices")
 
 
 def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, scope: _UnitScope | None = None,
@@ -908,9 +924,12 @@ def _read_input(n: int, corpus: Path, export: Path) -> _Input:
     return _Input(corpus, export, info, records, events)
 
 
-def _site_rows(inputs: list[_Input], docs: list[Document], warnings: list[str]) -> list[dict]:
+def _site_rows(inputs: list[_Input], docs: list[Document], warnings: list[str],
+               deleted: Mapping[str, int] | None = None) -> list[dict]:
     """The sites table (plan 2026-11-08 T4), one row per site in the inputs' order: the export's name, the site
-    table's unit, its 资料截至, missing pages and files, the documents whose site it is and its folder. Two exports of
+    table's unit, its 资料截至, missing pages and files, the documents whose site it is, its folder and the school's
+    deleted notices the build left out (deleted: site -> count, documents.deleted_notice; owner 11-09, blueprint item
+    15: 「在每站报告里记个数」; 0 when none). Two exports of
     one site (an old and a new one) are one row: the one with the newer 资料截至 (the first on a tie) gives the date,
     the counts and the folder 【Claude】, and a warning names them all."""
     by_site: dict[str, list[tuple[int, _Input]]] = {}
@@ -926,7 +945,8 @@ def _site_rows(inputs: list[_Input], docs: list[Document], warnings: list[str]) 
                             f"资料截至和缺漏数用资料截至较新的 {best.export}")
         out.append({"site": site, "name": best.info["name"], "unit": sites.unit_of_site(site),
                     "data_as_of": best.info["data_as_of"], "missing_pages": best.info["missing_pages"],
-                    "missing_files": best.info["missing_files"], "docs": per_site[site], "export": str(best.export)})
+                    "missing_files": best.info["missing_files"], "docs": per_site[site], "export": str(best.export),
+                    "deleted_notices": (deleted or {}).get(site, 0)})
     return out
 
 
@@ -968,6 +988,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     warnings: list[str] = []
     units = load_units(Path(site_list), Path(units_config)) if site_list is not None else None
     read = [_read_input(n, c, e) for n, (c, e) in enumerate(pairs, start=1)]
+    for n, inp in enumerate(read, start=1):  # a corpus assembled before 11-09 has no area_mark (blueprint item 15)
+        if inp.info.get("area_marked") and not any(r.area_mark for r in inp.records):
+            warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有 area_mark，是 11-09 以前拼的：导出里 "
+                            f"{inp.info['area_marked']} 行标了「内文区」，学校删掉的公告这次没拿掉，每站数也是 0；"
+                            "先用 python -m nknu.content.assemble 重拼")
     if len(read) > 1 and (serial := [n for n, inp in enumerate(read, start=1) if not all(r.key for r in inp.records)]):
         raise BuildError(f"第 {'、'.join(map(str, serial))} 份输入的 corpus 是流水号编号（没有 key：10-29 的，或 11-08 "
                          "以前拼的），它的 p1 和别的导出的 p1 是两回事，只能单独建库；先用 python -m nknu.content.assemble 重拼")
@@ -981,6 +1006,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     records, merged = one_per_id(records)
     events, repeated = one_event_per_id([ev for inp in read for ev in inp.events])
     first = read[0]
+    # the school's deleted notices build_documents leaves out, per site (owner 11-09, blueprint item 15)
+    deleted = Counter(r.site or first.info["site"] for r in records if deleted_notice(r))
     docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"])
     for kind, n in [*merged.items(), *repeated.items()]:
         excluded[kind] = excluded.get(kind, 0) + n
@@ -1000,7 +1027,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                         # owner 11-08 10:16 (b): documents whose unit line names units they apply to, by how many
                         "unit_line_applies": {"docs": sum(named.values()), "by_count": dict(sorted(named.items()))}}
         warnings += _scope_warnings(scope.report, len(docs))
-    site_rows = _site_rows(read, docs, warnings)
+    site_rows = _site_rows(read, docs, warnings, deleted)
 
     attachments = [d for d in docs if d.kind_class == "attachment"]
     tiers = Counter(tier_of(r.doc.doc_id, r.dtype) for r in rows)
@@ -1169,9 +1196,11 @@ def main(argv: list[str] | None = None) -> int:
     applied = report.scope.get("unit_line_applies", {}).get("docs")
     scoped += f"；单位行写了适用单位的 {applied} 份" if applied else ""
     words = "" if report.passage["unit_words"] else "；没加单位词（--no-unit-words）"
+    gone = sum(s.get("deleted_notices", 0) for s in report.sites)  # owner 11-09, blueprint item 15
+    words += f"；学校删掉的公告 {gone}（不收，每站数见 sites）" if gone else ""
     print(f"{args.out}：{docs['total']} 份文件、{report.counts['chunks']} 小段；"
           f"网站 {len(report.sites)} 个（各站资料截至和缺漏见报告 sites）；"
-          f"无日期 {report.no_date}、无文字 {report.no_text}；学报 {types[JOURNAL]}、考题 {types[EXAM]}、"
+          f"无日期 {report.no_date}、无文字 {report.no_text}；学报（含旧校刊、校讯） {types[JOURNAL]}、考题 {types[EXAM]}、"
           f"会议纪录 {types[MINUTES]}、"
           f"背景资料共 {report.counts['tiers'].get(BACKGROUND, 0)}；"
           f"编号转址 {sum(report.counts['doc_alias'].values())} 笔（副本、其他格式、重复）；"

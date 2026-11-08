@@ -23,16 +23,24 @@ pipeline-4 (plan 2026-11-08 T4): one database from many exports. sites holds eac
 that site's 资料截至 with each result) and docs.unit_line the document's unit line (單位：<unit>（<short names>）
 <組別>), the second line of every passage (nknu.content.embed). A database without them (pipeline-3 and before) keeps
 the texts and passages of then.
+
+pipeline-5 (owner 11-08 10:16, N11): chunk_fts.unit_tokens, the unit words in a column of their own.
+
+pipeline-6 (owner 11-09, blueprint item 15, 「照建议定」): sites.deleted_notices, how many of the site's notices the
+school deleted (only the template left) the build left out (documents.deleted_notice); a database before it has no
+such column, and the per-site report shows nothing for it.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = "pipeline-5"
+# pipeline-6 (owner 11-09, blueprint item 15): sites.deleted_notices
+SCHEMA_VERSION = "pipeline-6"
 # docs.doc_type: journal | exam | minutes | '' (build.doc_type, spec 2026-11-01 「排序 v2」); build.tier_of makes all
 # three background in docs.tier, which search ranks after the primary documents (addendum M2; plan 2026-11-08 T1)
-JOURNAL = "journal"  # 學報: issues, tables of contents, abstracts, papers
+JOURNAL = "journal"  # 學報: issues, tables of contents, abstracts, papers; since 11-09 (owner, blueprint item 17)
+#                       教务处's old 校刊 and 校訊 folders too (build._PAPER_DIRS)
 EXAM = "exam"  # past exam papers (歷屆考題, 考古題)
 MINUTES = "minutes"  # a file of meeting minutes and their material (owner 11-08 10:16, addendum M9)
 # docs.tier (plan 2026-11-08 T1; addendum M2): background material is ranked after the first primary documents
@@ -81,7 +89,9 @@ CREATE TABLE sites (                 -- one row per export's site (plan 2026-11-
     missing_pages  INTEGER,          -- pages and files the export lists in missing.csv
     missing_files  INTEGER,
     docs           INTEGER,          -- documents whose docs.site it is (events included)
-    export         TEXT              -- the export folder the build read
+    export         TEXT,             -- the export folder the build read
+    deleted_notices INTEGER          -- the school's deleted notices the build left out: documents.deleted_notice,
+                                     -- owner 11-09 (blueprint item 15)
 );
 
 CREATE TABLE doc_alias (             -- an id the build left out under another document (plan 2026-11-08 T1)

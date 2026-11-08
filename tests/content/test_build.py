@@ -255,8 +255,8 @@ def test_meta_pipeline(built):
     # changed 11-03 on purpose: the series tables went (addendum L), so the schema is pipeline-2 (was pipeline-1); and
     # on 11-08 (plan 2026-11-08 T1): doc_alias and docs.tier came, so it is pipeline-3; and (plan 2026-11-08 T4) the
     # sites table, docs.site and docs.unit_line, so it is pipeline-4; and (owner 11-08 10:16, N11) chunk_fts.unit_tokens,
-    # so it is pipeline-5
-    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-5"
+    # so it is pipeline-5; and (owner 11-09, blueprint item 15) sites.deleted_notices, so it is pipeline-6
+    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-6"
     assert meta["id_scheme"] == "serial"  # this corpus's ids are its own (no keys): not the stable ids of assemble
     assert meta["text_pipeline"] == ""  # the 10-29 corpus: no record says where its text came from
     tables = tables_of(conn)
@@ -489,8 +489,10 @@ DOC_TYPES = [  # title, parent title, address, type: the real site's writing, no
     ("上網-52期學報-目錄_merged (2)(1).pdf", "高雄師大學報", upload("5/files/上網-52期學報-目錄_merged (2)(1).pdf"), "journal"),
     ("1111228-53期-總檔.pdf", "高雄師大學報", upload("5/files/1111228-53期-總檔.pdf"), "journal"),
     ("51全上傳.pdf", "高雄師大學報", upload("5/files/51全上傳.pdf"), "journal"),
+    # ... and, changed 11-09 on purpose (owner, blueprint item 17, 「照建议定」), the old 校刊 (spaper) and 校訊 (sinfo)
+    ("傳統公有市場華麗轉身", "", f"{UPLOAD}files/spaper/100/04.html", "journal"),
     # not journal: the journal's page and notices, its forms and board lists (lists are never demoted), 入學報考 /
-    # 入學報到 (學報 inside other words), 總檔 off the 學報 page, the school magazine, other schools' calls for papers
+    # 入學報到 (學報 inside other words), 總檔 off the 學報 page, other schools' calls for papers
     ("高雄師大學報", "", f"{ACA}page.aspx?pn=71&pclass=A5005&gi=5", ""),
     ("即日起，高雄師大學報投稿專用信箱更改為新信箱", "", notice_url(203, 5), ""),
     ("人文與藝術類-徵稿啟事(1).pdf", "高雄師大學報", upload("5/files/人文與藝術類-徵稿啟事(1).pdf"), ""),
@@ -503,7 +505,6 @@ DOC_TYPES = [  # title, parent title, address, type: the real site's writing, no
     ("115學年度大學部新生入學報到須知", "", notice_url(641, 2), ""),
     ("報到資料總檔.pdf", "115學年度大學部新生入學報到須知", f"{ACA}uploadfile/news/20260706/報到資料總檔.pdf", ""),
     ("會議紀錄總檔.pdf", "會議紀錄", f"{ACA}uploadfile/files/file1_113153424.pdf", ""),
-    ("傳統公有市場華麗轉身", "", f"{UPLOAD}files/spaper/100/04.html", ""),
     ("各校期刊徵稿資訊(115年10月08日更新)", "", notice_url(85, 5), ""),
     # exam: past papers (the 歷屆考題 folder), 考古題 / 歷屆試題 in the title or the parent's title
     ("104b.pdf", "特殊教育學系", upload("4/files/招生目錄/09歷屆考題/01轉學考/05特教/02教育心理學/104b.pdf"), "exam"),

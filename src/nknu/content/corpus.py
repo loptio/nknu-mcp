@@ -37,6 +37,13 @@ _s2t = OpenCC("s2t")
 _ADD_TIME = re.compile(r"(\d{4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,2})")
 PAGES_SEP = " | "  # how a corpus record joins page URLs (linked, nav_linked), as the export joins them
 CALENDAR_FILES = ("data/*行事历*.json", "data/*行事曆*.json")  # an export's calendar files (load_calendar)
+# The leading words of archive.export's EMPTY_AREA (「内文区是空的（…多半是学校删掉的公告）」) and NO_AREA
+# (「找不到内文区（…多半是学校删掉的公告只剩网站模板）」), content's own copy as dates.OWN_FIELD copies the export's
+# 日期来源: a 缺什么 holding either (alone, or joined to other reasons by 、) says a notice page's own title and text
+# areas are on the page and empty, or not on it (owner 11-09, blueprint item 15; Record.area_mark,
+# documents.deleted_notice)
+AREA_EMPTY, AREA_MISSING = "内文区是空的", "找不到内文区"
+AREA_MARKS = (AREA_EMPTY, AREA_MISSING)
 # c.nknu's notice templates, by their page kind (pagetext.page_kind): newsdetail (教务处), and newsview (总务处, 体育室
 # and 师培处, per the site probe; plan 2026-11-08 T3)
 NOTICE_KINDS = ("newsdetail", "newsview")
@@ -78,6 +85,10 @@ class Record:
     date_source: str = ""
     modified: str = ""
     origin: str = ""
+    # owner 11-09 (blueprint item 15, 「照建议定」): which of AREA_MARKS the row's 缺什么 holds, the notice's own areas
+    # empty (AREA_EMPTY) or missing (AREA_MISSING), documents.deleted_notice reads it; '' without, and in an export or a
+    # corpus made before
+    area_mark: str = ""
     # plan 2026-11-08 T4: the export folder the build read it with (its file, and a notice's header fields, are read
     # there); set by the build for each input, never written to corpus.json ('' when read alone)
     export: str = ""
@@ -99,7 +110,7 @@ def load_corpus(path: Path) -> list[Record]:
             formats=tuple(dict(f) for f in r.get("formats") or () if isinstance(f, dict)), key=r.get("key") or "",
             site=r.get("site") or "", fetched=r.get("fetched") or "", page_date=r.get("page_date") or "",
             page_date_raw=r.get("page_date_raw") or "", date_source=r.get("date_source") or "",
-            modified=r.get("modified") or "", origin=r.get("origin") or "",
+            modified=r.get("modified") or "", origin=r.get("origin") or "", area_mark=r.get("area_mark") or "",
         )
         for r in rows
     ]
@@ -248,12 +259,13 @@ def taipei_day(stamp: str) -> date | None:
 
 
 def export_info(export_dir: Path) -> dict:
-    """{'site', 'name' (Traditional Chinese), 'data_as_of', 'missing_pages', 'missing_files'}: data_as_of is the
-    site's crawl day, the latest 抓取时间 (Asia/Taipei day) among the 网页 rows with a 本地档案; without one, among
-    all rows with a 本地档案; else the export day. An export re-reads an older crawl (T7a), and a crawl learns what
+    """{'site', 'name' (Traditional Chinese), 'data_as_of', 'missing_pages', 'missing_files', 'area_marked'}:
+    data_as_of is the site's crawl day, the latest 抓取时间 (Asia/Taipei day) among the 网页 rows with a 本地档案;
+    without one, among all rows with a 本地档案; else the export day. An export re-reads an older crawl (T7a), and a crawl learns what
     the site holds through its pages: files fetched one by one later (the 4 off-site attachments of 11-02, nknu
     archive run --only) do not re-read the site, so they do not move the date (phase-2 review). The counts are the
-    pages and attachments listed in missing.csv."""
+    pages and attachments listed in missing.csv; area_marked the rows whose 缺什么 holds one of AREA_MARKS (owner 11-09,
+    blueprint item 15: a corpus assembled before 11-09 carries no area_mark, which the build then warns of)."""
     m = _manifest(str(Path(export_dir).resolve()))
     fetched = [(it.get("类型") == "网页", d) for it in m.get("项目", [])
                if it.get("本地档案") and (d := taipei_day(it.get("抓取时间") or ""))]
@@ -268,4 +280,5 @@ def export_info(export_dir: Path) -> dict:
                 pages += row.get("类型") == "网页"
                 files += row.get("类型") == "附件"
     return {"site": m.get("网站") or "", "name": _s2t.convert(m.get("名称") or ""), "data_as_of": data_as_of,
-            "missing_pages": pages, "missing_files": files}
+            "missing_pages": pages, "missing_files": files,
+            "area_marked": sum(any(a in (it.get("缺什么") or "") for a in AREA_MARKS) for it in m.get("项目", []))}

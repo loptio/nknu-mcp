@@ -98,8 +98,9 @@ NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程�
                        "問題沒有指定學期時，日期較近的文件稍微排前面。只含教務處公開資料。"
                        "若下列原文都不能回答問題，請換幾個說法再查；"
                        "仍然沒有，請告訴使用者：目前收錄的資料裡查無相關內容，不要推測。")
-# addendum M2 (owner 11-08): background material comes after the primary documents (search.py step 3)
-NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、歷屆考題），"
+# addendum M2 (owner 11-08): background material comes after the primary documents (search.py step 3); 教务处's
+# old 校刊 and 校訊 named since owner 11-09 (blueprint item 17, 「照建议定」: build._PAPER_DIRS)
+NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題），"
                    "排在主要文件後面；需要時再看。")
 # plan 2026-11-08 T1: each copy carries its own id, which read answers with the kept document (NOTE_ALIAS)
 NOTE_COPIES = ("【系統】copies 是同一份文件（標題和內容都相同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"

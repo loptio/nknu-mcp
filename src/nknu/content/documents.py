@@ -4,6 +4,14 @@
 records with neither title nor text and calendar events that start before CALENDAR_SINCE, so nothing goes missing
 silently. Records of one identity have one id (plan 2026-11-08 T1): one_per_id keeps one of them before this.
 
+The school's deleted notices (owner 11-09, blueprint item 15, 「照建议定」): a notice the school deleted leaves only the
+site's template, which went in as a notice with neither text nor date (教务处 27, 体育室 27); 「建议不收、在每站报告里记
+个数（学校删掉的公告不该被搜到），照导出标的『内文区是空的』做」. A record the export marked so (Record.area_mark,
+corpus.AREA_MARKS) is no document (deleted_notice): counted as <kind>(学校删掉), never kept for its address nor counted
+as (重复), and the build writes each site's count to sites.deleted_notices. AREA_EMPTY (the platform's own title and
+text areas on the page, and empty) always; AREA_MISSING (neither area on the page) only with no text read either,
+since a template the export's profile does not know yet looks the same (review 11-09) 【Claude】.
+
 Every platform (plan 2026-11-08 T3; kind_class): a notice is a page of c.nknu's notice templates (newsdetail, newsview)
 or a detail page of any profiled platform (detail:<profile>, a press-made one too); a list read from its page
 (list:<profile>, pagetext.list_grid) and a list's pager row (…#翻页) are left out like c.nknu's lists. A document's unit
@@ -54,7 +62,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from nknu.archive import profiles, scope
 from nknu.content import ids, sites
-from nknu.content.corpus import NOTICE_KINDS, Event, PageMeta, Record, plausible, taipei_day
+from nknu.content.corpus import AREA_EMPTY, AREA_MARKS, NOTICE_KINDS, Event, PageMeta, Record, plausible, taipei_day
 from nknu.content.dates import FIELD_SOURCE, LIST_ROW, LIST_SOURCE, OWN_FIELD, PAGE_SOURCE, kept_range
 from nknu.core.timeutil import TAIPEI
 
@@ -81,6 +89,7 @@ DUPLICATE = "(重复)"
 CALENDAR_SINCE = date(2023, 1, 1)
 BEFORE = f"({CALENDAR_SINCE.year}年以前)"  # excluded-count suffix: an event before CALENDAR_SINCE (a 1 January)
 FORMAT = "(其他格式)"  # excluded-count suffix: a format sibling assemble folded into another record (addendum B)
+DELETED = "(学校删掉)"  # excluded-count suffix: a notice the school deleted, only the template left (deleted_notice)
 UNKNOWN_ZONE = "unknown"  # a linking page whose link to the file was not found (a button), or the 10-29 corpus
 ZONE_ORDER = {"attachments": 0, "content": 1, UNKNOWN_ZONE: 2, "nav": 3}  # the zone a page's reference is shown with
 
@@ -221,6 +230,21 @@ def _class(r: Record) -> str | None:
     One helper for both places that ask (the notices kept at one address, and the documents), so they never disagree."""
     cls = kind_class(r.kind)
     return "notice" if cls == "page" and r.date_source == OWN_FIELD else cls
+
+
+def deleted_notice(r: Record) -> bool:
+    """A notice the school deleted (owner 11-09, blueprint item 15, 「照建议定」), by the export's mark on its page
+    (Record.area_mark), whatever its class (a record the build leaves out by its kind aside):
+    - AREA_EMPTY: the platform's own title and text areas are on the page and hold nothing (no words, picture, link,
+      frame or file): one, whatever the content side read there (a platform read as a whole body gives its menus:
+      电机系's 3 of 11-09, page:elec, whose bodies hold 887 to 891 characters of menu);
+    - AREA_MISSING: neither area is on the page: one only when the to-text step read no text either, since a template
+      the export's profile does not know yet looks the same (the 11-08 export marked 156 real tecs notices so, before
+      3c33a79 gave CNKNU tecs's newsview areas; on 11-09 it marks tecs's &amp;-spelled address, which shows a list).
+    review 11-09 【Claude】."""
+    if _class(r) is None or r.area_mark not in AREA_MARKS:
+        return False
+    return r.area_mark == AREA_EMPTY or not clean_text(r.text)
 
 
 def _server_day(r: Record) -> date | None:
@@ -372,13 +396,16 @@ def _context_title(named: list[tuple[date | None, str]]) -> str:
 def build_documents(records: list[Record], metas: dict[str, PageMeta], events: list[Event],
                     site: str = "") -> tuple[list[Document], dict[str, int]]:
     """Documents in corpus order, then events; and the count of left-out records by kind. records: one per id
-    (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). Of the notices at one
-    address (_link_key: one site and nid), the first written without &amp; is kept; the others are (重复) and their
-    doc_ids go into its duplicates. site: the export's site key, for a record or an event that names none of its own
+    (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A notice the school
+    deleted (deleted_notice) is left out and counted as <kind>(学校删掉). Of the other notices at one address
+    (_link_key: one site and nid), the first written without &amp; is kept; the others are (重复) and their doc_ids go
+    into its duplicates. site: the export's site key, for a record or an event that names none of its own
     (a corpus assembled before plan 2026-11-08 T3, an event made by hand); with neither, the unit is the school's."""
     excluded: Counter[str] = Counter()
     keep: dict[str, str] = {}  # link key -> the notice kept: the first one whose URL is written without &amp;
-    for r in sorted((r for r in records if _class(r) == "notice"), key=lambda r: "&amp;" in r.url):
+    # a notice the school deleted is never the one kept for its address (owner 11-09, blueprint item 15)
+    notices = (r for r in records if _class(r) == "notice" and not deleted_notice(r))
+    for r in sorted(notices, key=lambda r: "&amp;" in r.url):
         keep.setdefault(_link_key(r.url), r.id)
 
     docs: list[Document] = []
@@ -392,6 +419,9 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         cls = _class(r)
         if cls is None:
             excluded[r.kind] += 1
+            continue
+        if deleted_notice(r):  # before the duplicate check: a shell is counted as deleted, never as (重复)
+            excluded[r.kind + DELETED] += 1
             continue
         if cls == "notice" and keep.get(key, r.id) != r.id:
             excluded[r.kind + DUPLICATE] += 1

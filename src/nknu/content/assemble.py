@@ -15,13 +15,15 @@ the date the export read on its page (page_date, page_date_raw: 网页上写的�
 pages and notices by. Sub-step 4 (spec 2026-11-08 §四): also the step-3 export's 日期来源 (date_source: which export
 rule found that date, documents._stated), 最后修改时间 (modified: the server's time of a file, §二 3) and 来源 (origin),
 each '' when the export (one made before 3c33a79) has no such column; an archive member carries its archive's row's.
+Owner 11-09 (blueprint item 15, 「照建议定」): area_mark, which of corpus.AREA_MARKS the row's 缺什么 holds (the export
+found the notice page's own areas empty, or not on it), which documents.deleted_notice reads; '' without one.
 A page's kind is pagetext.page_kind of its 网址 and the list grid the exported page shows where it was read
 (pagetext.list_grid of 最后落地网址, else 网址; plan 2026-11-08 progress notes): an SSO or cLv2 list is
 list:<profile> and left out, its content pages stay page:<profile>. The 10-29 fallback is 教务处's corpus: it is read
 only for 教务处's export (FALLBACK_SITE), never for another site's, whose old serial ids name other files.
 
 Records ({id, key, kind, url, file, title, text, linktext, linked, source, totext_status, site, fetched, page_date,
-page_date_raw, date_source, modified, origin}, in manifest order):
+page_date_raw, date_source, modified, origin, area_mark}, in manifest order):
 - a page: kind as above; title its album name, #lbl_Title or 标题; its to-text text with
   each [[img:src]] line replaced by the OCR text of the exported image the src names, or removed. The src is joined
   to the page's address (最后落地网址 or 网址, or its <base href>) and spelt as the crawler spells addresses
@@ -79,7 +81,7 @@ from selectolax.lexbor import LexborHTMLParser
 from nknu.archive import scope
 from nknu.archive.links import _base as link_base  # the crawler's <base href> rule, as links.page_links uses it
 from nknu.content import build, ids
-from nknu.content.corpus import CALENDAR_FILES, PAGES_SEP
+from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, PAGES_SEP
 from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class
 from nknu.content.links import PageLink, match_key, page_links
 from nknu.totext.accounting import Account, account
@@ -398,10 +400,12 @@ class _Assembly:
         """What every record carries from its manifest row (plan 2026-11-08 T3): the export's site, 抓取时间 and the
         date the export read on the page, with its words; since sub-step 4 (spec 2026-11-08 §四) the rule that found
         that date (日期来源), the archived answer's Last-Modified (最后修改时间) and 来源, '' in an export without
-        them (an archive member: its archive's row's)."""
+        them (an archive member: its archive's row's); since 11-09 (owner, blueprint item 15) area_mark, the one of
+        AREA_MARKS its 缺什么 holds (alone or joined to other reasons by 、), else ''."""
         return {"site": self.site, "fetched": row.get("抓取时间") or "", "page_date": row.get("网页上写的日期") or "",
                 "page_date_raw": row.get("日期原文") or "", "date_source": row.get("日期来源") or "",
-                "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or ""}
+                "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or "",
+                "area_mark": next((m for m in AREA_MARKS if m in (row.get("缺什么") or "")), "")}
 
     # ------------------------------------------------------------ texts
 

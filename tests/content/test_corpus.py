@@ -190,7 +190,7 @@ def test_export_info(tmp_path):
     (tmp_path / "missing.csv").write_text("\ufeff" + header + rows, encoding="utf-8")
     assert export_info(tmp_path) == {
         "site": "c.nknu.edu.tw/aca", "name": "教務處", "data_as_of": "2026-10-27",
-        "missing_pages": 1, "missing_files": 2,
+        "missing_pages": 1, "missing_files": 2, "area_marked": 0,  # owner 11-09, blueprint item 15
     }
 
 

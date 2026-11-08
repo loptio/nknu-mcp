@@ -330,7 +330,7 @@ def test_the_sites_table_holds_each_exports_date_and_missing_counts(two):
     assert [s["site"] for s in report.sites] == ["c.nknu.edu.tw/aca", "sso.nknu.edu.tw/web/595"]
     assert report.sites[1] == {"site": "sso.nknu.edu.tw/web/595", "name": "學務處生活輔導組", "unit": "生活輔導組",
                                "data_as_of": "2026-11-07", "missing_pages": 0, "missing_files": 1, "docs": 3,
-                               "export": str(w_export)}
+                               "export": str(w_export), "deleted_notices": 0}  # owner 11-09, blueprint item 15
 
 
 def test_each_result_shows_its_own_sites_date_and_the_texts_name_no_unit(two):
