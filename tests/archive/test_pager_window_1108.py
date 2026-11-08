@@ -19,7 +19,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nknu.admin.cli import app
-from nknu.archive import profiles
+from nknu.archive import profiles, scope
 from nknu.archive.crawler import hold_run_lock
 from nknu.archive.frontier import Frontier
 from nknu.archive.postback import UNNUMBERED, Press, answer_elsewhere, list_end, read_page, unnumbered_next
@@ -105,6 +105,22 @@ def test_unnumbered_next_rules():
     assert unnumbered_next(page_n, 2, set(), CNKNU_LIST) == (None, "")
 
 
+def test_a_walked_title_that_links_another_detail_page_is_a_new_row():
+    """成教所's 所友名錄 (11-09): each row is a name linking the alumnus's own page, and one name can be two alumni.
+    The fill-in's page 36 brought 20 new alumni, 12 of them with a name walked before, and the walk ended there
+    mismatch:page. A row whose key was walked is new when it links another detail page than the walked row of that key
+    did (links: the walk's item entries' pages); with no link known, its key says it, as before."""
+    pr = read(window())
+    keys = [r.key for r in pr.rows]
+    own = {r.key: scope.canonical(r.href, POSTED) for r in pr.rows}
+    namesakes = {k: "https://spe.nknu.edu.tw/newsdetail.aspx?nid=1" for k in keys}
+    assert unnumbered_next(pr, 6, set(keys), POSTED, namesakes)[0] is not None
+    walked_already = (None, "shows no page number and 2 of 2 rows walked already")
+    assert unnumbered_next(pr, 6, set(keys), POSTED, own) == walked_already
+    assert unnumbered_next(pr, 6, set(keys), POSTED, {}) == walked_already
+    assert unnumbered_next(pr, 6, set(keys), POSTED, {keys[0]: namesakes[keys[0]]})[0] is not None  # half new
+
+
 def test_answer_elsewhere_compares_with_the_address_pressed():
     pr = read(window())
     assert answer_elsewhere(pr, POSTED) is None
@@ -162,6 +178,36 @@ def test_unnumbered_answer_repeating_walked_rows_is_mismatch_page(world):
     assert lw["note"] == "asked for page 2, the answer shows no page number and 2 of 2 rows walked already"
     assert world.chains.next_action(QUEUE) is None
     assert world.f.q("SELECT reason FROM action WHERE id=?", (a["id"],))[0][0] is None
+
+
+def _detail_rows(world, html: str) -> None:
+    """The url rows of a page's row links, as the crawler queues them before it plans the page: its item entries then
+    name the detail page each row links (page_res.res_id)."""
+    for r in read(html).rows:
+        world.f.add(scope.canonical(r.href, SPE_LIST), host=SPE, site=SPE, unit=None, tier=0, kind="page", depth=1,
+                    found_via="link", found_from=None, owner_site=SPE, prio=1, kind0="page")
+
+
+def test_unnumbered_answer_of_namesakes_linking_new_pages_goes_on(world):
+    _detail_rows(world, P1)
+    row, _got = world.stored(SPE_LIST, SPE, P1)
+    a, target = world.press(QUEUE)
+    namesakes = P1_ROWS.replace("Nid=1969", "Nid=1701").replace("Nid=1955", "Nid=1702")  # same rows, other pages
+    world.answer(a, target.url, window(rows=namesakes))
+    lw = world.walk(row["id"])
+    assert (lw["ended_by"], lw["pages"]) == ("walking", 2)
+    assert lw["note"] == "page 2 shows no page number: taken as asked (下一頁)"
+    assert world.f.q("SELECT reason FROM action WHERE id=?", (a["id"],))[0][0] == UNNUMBERED
+
+
+def test_unnumbered_answer_repeating_walked_rows_and_their_pages_is_still_mismatch_page(world):
+    _detail_rows(world, P1)
+    row, _got = world.stored(SPE_LIST, SPE, P1)
+    a, target = world.press(QUEUE)
+    world.answer(a, target.url, window(rows=P1_ROWS))  # page 1's rows and links again: not page 2
+    lw = world.walk(row["id"])
+    assert (lw["ended_by"], lw["note"]) == (
+        "mismatch:page", "asked for page 2, the answer shows no page number and 2 of 2 rows walked already")
 
 
 def test_answer_from_another_page_says_so(world):

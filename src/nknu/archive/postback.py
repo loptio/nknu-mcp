@@ -65,7 +65,7 @@ import sqlite3
 import unicodedata
 import zlib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
@@ -679,7 +679,22 @@ def answer_elsewhere(pr: PageRead, asked: str) -> str | None:
     return None if there == here else f"is another page ({there})"
 
 
-def unnumbered_next(pr: PageRead, want: int, walked: Collection[str], asked: str) -> tuple[PageRead | None, str]:
+def _walked_row(r: Row, walked: Collection[str], links: Mapping[str, str], base: str) -> bool:
+    """A row on a page walked before: its key walked, and, when both it and the walked row of that key link a detail
+    page, the same page. 成教所's 所友名錄 (11-09): its rows are a name linking the alumnus's own page, and one name
+    can be two alumni, so a key alone took 12 new alumni of the fill-in's page 36 for rows walked already
+    【Claude 的执行办法】."""
+    if r.key not in walked:
+        return False
+    was = links.get(r.key)
+    if was is None or not r.href:
+        return True
+    got = scope.canonical(r.href, base)
+    return got is None or got == was
+
+
+def unnumbered_next(pr: PageRead, want: int, walked: Collection[str], asked: str,
+                    links: Mapping[str, str] | None = None) -> tuple[PageRead | None, str]:
     """A 「下一頁」 answer that names no page shown, read as the page asked for (gap ⑤ of 11-08, 【Claude 的执行办法】).
     c.nknu's pager (MasterGrid$ctlNN$lbnNext) writes ten page links and the page shown as a <span>; on page n ≥ 6 of an
     N-page list its links run from max(n − 5, N − 9) to N, so on a list of more than 15 pages, pages 6 … N − 10 name
@@ -688,7 +703,8 @@ def unnumbered_next(pr: PageRead, want: int, walked: Collection[str], asked: str
     hold. It is a page of the list asked (answer_elsewhere: it holds the list, and its form posts back to the address
     asked); it still has the 「下一頁」 the profile presses; its pager names page `want` or a later one (or no page
     number at all); it has rows, at least half of them on no page walked before (walked: the row keys of this walk's
-    earlier pages; a few rows pinned on every page pass, the same page again does not). Returns the page read so
+    earlier pages; links: the detail page each of them links, where known: _walked_row; a few rows pinned on every
+    page pass, the same page again does not). Returns the page read so
     (shown: want; the next press built from that control) and "", or None and why not, in words for the walk's
     note. An answer that names its page, or a page_n pager's (ASP.NET's numeric pager always marks the page shown),
     is not judged here: (None, "")."""
@@ -703,7 +719,7 @@ def unnumbered_next(pr: PageRead, want: int, walked: Collection[str], asked: str
         return None, f"shows no page number and its pager names pages up to {pr.max_seen} only"
     if not pr.rows:
         return None, "shows no page number and no rows"
-    old = sum(1 for r in pr.rows if r.key in walked)
+    old = sum(1 for r in pr.rows if _walked_row(r, walked, links or {}, asked))
     if old * 2 > len(pr.rows):
         return None, f"shows no page number and {old} of {len(pr.rows)} rows walked already"
     target, argument, text, form_id = pr.next_control
@@ -1252,6 +1268,13 @@ class Chains:
         return frozenset(r[0][len("item:"):] for r in self.f.q(
             "SELECT res_key FROM page_res WHERE page_id=? AND res_key LIKE 'item:%'", (list_id,)))
 
+    def _walked_links(self, list_id: int) -> dict[str, str]:
+        """The detail page each walked row links, by its row key: the item entry's res_id, the url row _plan found
+        for the row's link (none when the link had no row then)."""
+        return {r[0][len("item:"):]: r[1] for r in self.f.q(
+            "SELECT p.res_key, u.url FROM page_res p JOIN url u ON u.id = p.res_id WHERE p.page_id=? AND "
+            "p.res_key LIKE 'item:%'", (list_id,))}
+
     def _walk(self, list_id: int, site: str, profile: str, epoch: int, *, pages: int, rows: int | None,
               claimed: int | None, ended: str | None, note: str) -> None:
         ended = ended or "walking"
@@ -1536,7 +1559,8 @@ class Chains:
         note = ""
         why = answer_elsewhere(pr, a.url)  # a.url: the address the press was sent to
         if why is None and pr.current is None and pr.pager_how == "next":
-            taken, why = unnumbered_next(pr, want, self._walked(action["list_id"]), a.url)
+            taken, why = unnumbered_next(pr, want, self._walked(action["list_id"]), a.url,
+                                         self._walked_links(action["list_id"]))
             if taken is not None:
                 pr, why = taken, None
                 self._set(action, reason=UNNUMBERED)
