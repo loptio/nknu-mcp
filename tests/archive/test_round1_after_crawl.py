@@ -211,14 +211,16 @@ class World:
                               write=False)
 
     def dashboard(self) -> tuple[dict, str]:
+        """The site's page of the dashboard (its state and what it lacks: the cards say only progress and 错 N since
+        the 11-04 dashboard)."""
         d = progress.Dashboard(self.root, background=False, cache_s=0)
         try:
             d.refresh_slow()
-            snap = d.main()
+            site = d.site(SITE)
         finally:
             d.close()
-        assert "problem" not in snap, snap.get("problem")
-        return next(s for s in snap["sites"] if s["site"] == SITE), viewer.progress_main_html(snap)
+        assert site is not None and "problem" not in site, (site or {}).get("problem")
+        return site, viewer.progress_site_html(site)
 
     def state(self) -> tuple[str, str, monitor.Verified]:
         """The site's state as the dashboard shows it and as verify gives it, with verify's whole answer."""

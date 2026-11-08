@@ -156,7 +156,8 @@ class Rows:
 class Detail:
     """A detail page (design §7.4 detail_paths, §10.1 nonempty and the id probe). paths: searched in the lowercase
     path and query; text, files, title: CSS selectors; id_param: the parameter that numbers the item; probe: the
-    number no item has."""
+    number no item has; date: the CSS of the platform's own date field, its label in the field's parent (the export
+    reads it before the page's text: export.own_date), '' when the platform has none."""
 
     paths: str
     text: str
@@ -164,6 +165,7 @@ class Detail:
     title: str = ""
     id_param: str = ""
     probe: str = ""
+    date: str = ""
 
 
 @dataclass(frozen=True)
@@ -349,7 +351,12 @@ SSO_WEBIDX = Profile(
               Writing(r"js_link:scrollToTop", "ignore", "「回到頂端」：R7 读了学校的 script.js 本体（试跑 10-26），不发请求、"
                       "不载入内容"),
               Writing(r"js_link:toggleMenu", "ignore", "主选单的开关：R7 读了学校的 script.js 本体（试跑 10-26），不发请求、"
-                      "不载入内容")),
+                      "不载入内容"),
+              # the pilot 10-26/27 (生活辅导组 webidx=595): R7 read __doPostBack('<%= btnPageNav.UniqueID %>') and
+              # '<%= btnClearFileSearch.UniqueID %>' in the school's .js, 66 pages each, must (P53 11-03)
+              Writing(r"js_postback:<%=[^%]*%>", "ignore",
+                      "学校 .js 里没展开的 ASP.NET 模板字串（<%= … %>）：服务器只展开 .aspx 里的，放在 .js 里原样送到浏览器，"
+                      "不是控件名也不是网址，按不出任何东西")),
     pending_r7=("toggleMobileSub", "currentSlide", "moveSlide", "toggleClearBtn", "setSearch", "clearSearchInput"),
 )
 
@@ -393,8 +400,9 @@ SSO_CLV2 = Profile(
 )
 
 _CNKNU_DETAILS = (
+    # newsdetail states its date apart from its text: <h5>發佈人員：…｜公告日期：<span id="lbl_AddTime">…</span></h5>
     Detail(r"/newsdetail\.aspx", text="#lbl_Contents", files="#lbl_FileLink a", title="#lbl_Title", id_param="Nid",
-           probe="999999999"),
+           probe="999999999", date="#lbl_AddTime"),
     Detail(r"/newsview\.aspx", text="#DataFormView_ContentsLabel", files="#DataFormView_FileLinkLabel a",
            title="#DataFormView_TitleLabel", id_param="Nid", probe="999999999"),
 )
@@ -408,6 +416,10 @@ CNKNU = Profile(
     rows=(Rows("MasterGrid", grid="#MasterGrid", row="tr", walk="postback",
                pagers=(Pager("page_n", r"MasterGrid"),
                        Pager("next", r"MasterGrid\$ctl\d+\$lbnNext", family=r"MasterGrid\$ctl\d+\$\w+")),
+               # member.aspx (編制與業務, P51 11-03), forumsview.aspx, activeorder.aspx, honor.aspx lay out text in a
+               # MasterGrid too, with no link and no press in a row: tables of content, not lists, by one judgement
+               # (postback._content_table, FIX 3 11-06, 【用户同意 Claude 的建议】) in place of a path left out page by
+               # page
                empty=("查無資料", "目前沒有相關消息", "沒有資料")),),
     details=_CNKNU_DETAILS,
     buttons=(

@@ -135,6 +135,9 @@ LIBRARY_JS = re.compile(
     r"magnific|isotope|masonry|imagesloaded|superfish|hoverintent|easing|colorbox|flexslider|prettyphoto|jcarousel|"
     r"cycle|nivo|fullcalendar|sweetalert|toastr|ckeditor|tinymce|gtag|analytics|fontawesome|font-awesome|"
     r"my97datepicker|wdatepicker|core-js|polyfill)(?:[._-][\w.-]*)?\.js$")
+# R6 (11-03, P52): a library's own helper page, which its script opens in a frame of the page the browser shows (My97
+# DatePicker's My97DatePicker.htm, 教务处 10-27): the library's, never a menu item the round missed 【Claude 的执行办法】
+LIBRARY_PAGE = re.compile(r"(?i)(?:^|/)my97datepicker\.html?$")
 MAX_JS_BYTES = 512 * 1024  # a school script larger than this is listed, not read (a bundle, not a page's code)
 _TEXT_DROP = ("script", "style", "noscript", "template")
 _CODE_DEPTH = 2  # embed-code blocks inside embed-code blocks (links._DATA_CODE_DEPTH)
@@ -1326,7 +1329,8 @@ def _r6(fr: Frontier, arc: Archive, plan: round1.Plan, site: str, batch: str, sp
                        and gs_shown.get(i.src) not in gs_known]
         for href, zone, how in candidates:
             target = scope.canonical(href, shown.base)
-            if target is None or target in known or target.split("#", 1)[0] == row["url"]:
+            if (target is None or target in known or target.split("#", 1)[0] == row["url"]
+                    or LIBRARY_PAGE.search(urlsplit(target).path)):
                 continue
             what = ("image" if how == "image" else "attachment" if scope.kind_of(target) == "file"
                     else "menu" if zone == "chrome" else None)
@@ -1748,8 +1752,10 @@ class _RejudgeChains(postback.Chains):
             self._unpressed(list_id, got.unplanned_at)
         ended = None
         if pr.walk in ("postback", "one_get"):
-            lw = self.f.q("SELECT ended_by FROM listwalk WHERE list_id=?", (list_id,))
-            ended = lw[0][0] if lw else None
+            lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (list_id,))
+            ended = lw[0]["ended_by"] if lw else None
+            if ended == "mismatch:empty":  # the one end today's list_end may judge otherwise (FIX 3, 11-06)
+                ended = self._ended_again(row, prof, site, pr, lw[0])
         elif pr.walk == "get" or has_pagers:
             ended = self.get_walk(list_id)
             if ended is None and pr.walk == "get" and not has_pagers:
@@ -1760,7 +1766,34 @@ class _RejudgeChains(postback.Chains):
                 self._walk(list_id, site, prof.name, 1, pages=1, rows=len(pr.rows), claimed=pr.claimed,
                            ended=ended, note="one page")
         return postback.Stored("list" if pr.walk != "none" or has_pagers else None, 0, ended,
-                               tuple(dict.fromkeys(unplanned)))
+                               tuple(dict.fromkeys(unplanned)),
+                               content=pr.content and pr.walk == "none" and not has_pagers)
+
+    def _ended_again(self, row, prof: profiles.Profile, site: str, pr: postback.PageRead, lw) -> str:
+        """A walk that ended mismatch:empty, judged again with today's list_end on the page it ended on (FIX 3, 11-06:
+        a table of content, PageRead.content, ends where its pager does): the answer of its epoch's last press of the
+        pager (a 「下一頁」 that stayed on its page included), or the list page itself when its epoch pressed none. Only
+        the end changes, with its ok and a note; a last page that cannot be read back, or that today's rules see a next
+        page on (only a walk can say more), keeps its end. Nothing is pressed. 【Claude 的执行办法】"""
+        last, stayed = pr, False
+        got = self.f.q("SELECT * FROM action WHERE list_id=? AND epoch=? AND kind='pager' AND state='done' AND "
+                       "sniff='html' AND warc IS NOT NULL AND warc_offset IS NOT NULL ORDER BY step DESC, id DESC "
+                       "LIMIT 1", (row["id"], lw["epoch"]))
+        if got:
+            try:
+                url, _status, headers, body = self.read(got[0]["warc"], got[0]["warc_offset"])
+            except (OSError, ValueError, StopIteration):
+                return lw["ended_by"]
+            last = postback.read_page(prof, url, postback.as_text(body, headers.get("content-type")), site=site,
+                                      list_url=row["url"], step=got[0]["step"])
+            stayed = last.pager_how == "next" and last.current == got[0]["step"] - 1
+        if last.next is not None and not stayed:
+            return lw["ended_by"]
+        end = postback.list_end(replace(last, next=None), self._rows_unique(row["id"]))
+        if end != lw["ended_by"]:
+            self.f.x("UPDATE listwalk SET ended_by=?, ok=?, note=? WHERE list_id=?",
+                     (end, int(end in postback.END_OK), f"rejudge: was {lw['ended_by']}", row["id"]))
+        return end
 
     def _items(self, pr: postback.PageRead, base: str) -> list[dict[str, Any]]:
         out = []

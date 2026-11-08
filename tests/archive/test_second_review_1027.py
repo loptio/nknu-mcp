@@ -352,15 +352,29 @@ def test_a_google_5xx_is_googles_server_never_the_schools(reason):
     assert "学校" not in progress.plain_error(reason) and "Google" in progress.plain_error(reason)
 
 
-def test_a_google_5xx_request_in_the_recent_errors_is_googles(tmp_path):
+def test_a_failed_google_row_with_a_5xx_reason_reads_as_googles_in_the_problem_log(tmp_path):
+    from tests.archive.test_progress import add_url, plan, res
+
     f = Frontier(tmp_path / "frontier.db")
     now = time.time()
-    f.x("INSERT INTO request(queue, host, url, method, purpose, started, ended, status) VALUES (?,?,?,?,?,?,?,?)",
-        ("google", google_api.API_HOST, "https://www.googleapis.com/drive/v3/files/x?alt=media", "GET", "page",
-         now - 60, now - 59, 503))
-    got = progress._errors(f.conn, now)
-    assert [g["code"] for g in got if g["level"] == "request"] == ["google_5xx"]
-    assert all("学校" not in g["plain"] for g in got)
+    plan(f, "c.nknu.edu.tw/aca", "测试", "全校重要")
+    f.set_host("c.nknu.edu.tw", queue="ip:140.127.62.110")
+    f.set_host(google_api.API_HOST, queue=google_api.QUEUE)
+    f.x("INSERT INTO page_type(key, site, verdict, n_pages) VALUES ('t:ok', 'c.nknu.edu.tw/aca', 'ok', 1)")
+    home = add_url(f, url="https://c.nknu.edu.tw/aca/default.aspx", found_via="seed")
+    drive = add_url(f, url="https://www.googleapis.com/drive/v3/files/x?alt=media", host=google_api.API_HOST,
+                    kind="file", kind0="drive", page_type=None, sniff=None, state="failed", reason="api:backendError",
+                    status=None, attempts=3)
+    res(f, home, "drive:x", "drive", drive)
+    conn = progress.connect(f.path)
+    try:
+        snap = progress.snapshot(conn, now)
+        slow = progress.slow_snapshot(conn, now, site_status=monitor.site_status, facts=monitor.facts)
+    finally:
+        conn.close()
+    line = next(x for x in progress.log_view(snap, slow)["rows"] if x["ref"] == f"u{drive}")
+    assert line["kind"] == "failed" and "Google 服务器出错" in line["detail"] and "在 googleapis 抓" in line["detail"]
+    assert "学校" not in line["label"] + line["detail"]
     f.close()
 
 

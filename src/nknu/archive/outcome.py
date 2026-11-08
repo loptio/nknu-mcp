@@ -30,6 +30,12 @@ ERROR_LINK = "error_page"  # the link verdict of an error page: it is never queu
 # answer; review of the 10-26 rehearsal): left out, no url row. As a part of a page (page_res.why) or where a short link
 # leads (the link verdict) it is the school's broken link (bad_link, 要人看), never 规则不抓 (_kept_out)
 ERROR_OUT = "out:error_page"
+# a link to this machine (scope.judge loopback, 11-06: never fetched, 【用户同意 Claude 的建议】): what it stands for
+# is the school's broken link wherever it rests, as an error page's address is: a page's part, where a redirect or a
+# short link leads, a url row skipped for it (bad_link, 要人看, a person may mark it the school's), never 规则不抓,
+# which would count the page complete with its attachment missing 【Claude 的执行办法】
+LOOPBACK_OUT = "out:loopback"
+BROKEN_OUT = (ERROR_OUT, LOOPBACK_OUT)  # the link verdicts that are the school's broken link (bad_link)
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,36 @@ GOOGLE_LANDING_KIND0 = ("drive", "drive_list", "calendar", "form")
 # as final_url, is a redirect, counted where it leads; a 404 or 410 is a dead short link (short_dead), not a page the
 # school removed; a 200 page nobody could read a target from is unhandled (unhandled:shortlink, for a person)
 SHORTLINK = "shortlink"
+# a file or a picture whose address the school now sends to a school host's home page (*.nknu.edu.tw, path / or none,
+# no query): the school retired the address, the school's dead link like a news file sent to the news site's not-found
+# page (gone_redirect). The 11-02 教务处 export's 133 old www.nknu.edu.tw/~ attachments and pictures, every one sent to
+# https://w3.nknu.edu.tw/ (11-03, 【Claude 的执行办法】). Worked out from the landing address already stored (view
+# page_resource: result gone, gone_why gone_home), so nothing is fetched again; a page's link sent there is a page judged
+# where it lands, as before
+GONE_HOME = "gone_home"
+GONE_WHY_LABEL = {GONE_HOME: "链接已失效：跳回学校首页"}  # what the export's 结果 says instead of gone's own words
+SCHOOL_DOMAIN = "nknu.edu.tw"
+
+
+def school_home(url: str | None) -> bool:
+    """Whether this address is the root page of a school host (_school_home_sql, the same rule)."""
+    try:
+        parts = urlsplit((url or "").strip())
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        return False
+    return (parts.scheme in ("http", "https") and (host == SCHOOL_DOMAIN or host.endswith("." + SCHOOL_DOMAIN))
+            and port is None and "@" not in parts.netloc and parts.path.strip("/") == ""
+            and not any(c in url for c in "?#"))
+
+
+def _school_home_sql(x: str) -> str:
+    """SQL: address `x` is the root page of a school host (school_home(), the same rule)."""
+    rest = f"rtrim(substr({x}, instr({x}, '://') + 3), '/')"
+    plain = " AND ".join(f"instr({rest}, '{c}') = 0" for c in "/?#@:")
+    return (f"(({x} LIKE 'http://%' OR {x} LIKE 'https://%') AND {plain}"
+            f" AND (lower({rest}) = '{SCHOOL_DOMAIN}' OR lower({rest}) LIKE '%.{SCHOOL_DOMAIN}'))")
 # 「人看过，确认是学校那边的问题」 (review 10-26 B7): the results a person may mark as the school's (review_mark, mark
 # school_side): what the school removed or broke, what only it can open again (a Drive file it does not share, a host
 # gone for good, a server that always fails, a page it leaves empty). Never what is ours to fix (not_discovered,
@@ -149,7 +185,9 @@ SHORTLINK = "shortlink"
 SCHOOL_SIDE = "school_side"
 SCHOOL_SIDE_RESULTS = ("gone", "looks_gone", "api_error", "bad_link", "short_dead", "not_file", "server_error", "failed",
                        "thin")
-FAILED_SCHOOL_REASONS = ("connect",)  # a failed row may be marked for these reasons, or one that starts with http_5
+# a failed row may be marked for these reasons (server_down: a server that never answered, given up, crawler 11-08),
+# or one that starts with http_5
+FAILED_SCHOOL_REASONS = ("connect", "server_down")
 FAILED_SCHOOL_PREFIX = "http_5"
 MARK_RESULTS = (SCHOOL_SIDE,)  # the codes only a person's mark gives
 
@@ -271,6 +309,7 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
        CASE WHEN {u}.reason = 'too_large' THEN 'too_large'
             WHEN {u}.reason IN ('moved_scheme', '{GSIMG_STALE}') THEN 'redirect'
             WHEN {u}.reason LIKE 'cap:%' OR {u}.reason IN {_sql_list(_CAP_REASONS)} THEN 'held'
+            WHEN {u}.reason = '{LOOPBACK_OUT}' THEN 'bad_link'
             WHEN {_by_rule(u)} THEN 'rule'
             ELSE 'unknown' END
   WHEN {u}.state = 'failed' THEN
@@ -499,12 +538,12 @@ _COUNTS = ("n_must", "n_school", "n_todo", "n_retry", "n_failed", "n_wait", "n_u
 
 def _kept_out(verdict: str, link: bool = True) -> str:
     """SQL: what a resource or a redirect target with no url row came to, by the verdict that kept it out of the queue
-    (the link table's, or page_res.why): a school error page's address (ERROR_OUT: the school's broken link), behind a
-    sign-in, left out by a rule, or else lost (never complete). A link
+    (the link table's, or page_res.why): a school error page's address or this machine's (BROKEN_OUT: the school's
+    broken link), behind a sign-in, left out by a rule, or else lost (never complete). A link
     verdict unhandled:<why> (a Google address with no Google step to read it, round1.admit) is unhandled, for a person;
     a page_res.why of that kind is placed before this (need must), and with any other need is lost as before."""
     unhandled = f"WHEN {verdict} LIKE 'unhandled:%' THEN 'unhandled' " if link else ""
-    return (f"CASE WHEN {verdict} = '{ERROR_OUT}' THEN 'bad_link' "
+    return (f"CASE WHEN {verdict} IN {_sql_list(BROKEN_OUT)} THEN 'bad_link' "
             f"WHEN {verdict} LIKE 'out:login%' THEN 'login' WHEN {verdict} LIKE 'out:%' THEN 'rule' "
             f"{unhandled}ELSE 'not_discovered' END")
 
@@ -565,7 +604,8 @@ def _resource_ctes() -> str:
     came. A resource expected to be a file (its role is a file's or an image's, or a row along its redirects was
     expected to be one) that rests on a web page that came back, or where a rule fetches nothing (_off_file), is
     not_file (review 10-26 B5; second look, F3). via is the url row the page's entry rests on first (the one that
-    redirects, for a redirected resource).
+    redirects, for a redirected resource). One of those whose redirects end on a school host's home page is gone
+    instead, gone_why gone_home (GONE_HOME, 11-03): the school retired the address.
     r01, mk, r0: a person's school_side mark on the row a resource rests on first (review_mark on a redirecting
     address: the school's link sends its attachment home, review 10-26 B7 and second look F5) makes it school_side
     while that row is as it was when marked and the resource comes to what was marked; the mark covers the other
@@ -575,6 +615,8 @@ def _resource_ctes() -> str:
     and a copied row are one resource)."""
     url_res, act_res, jpj = url_result_case, action_result_case, js_page_join
     file_like, can_mark = _sql_list(FILE_LIKE_ROLES), _sql_list(SCHOOL_SIDE_RESULTS)
+    # a resource expected to be a file or a picture whose address redirects to a school host's home page (GONE_HOME)
+    home_file = f"coalesce(mv.home, 0) AND (rests.role IN {file_like} OR coalesce(mv.exp, 0))"
 
     def expect(x: str) -> str:
         return f"coalesce({x}.kind0, {x}.kind) IN {_sql_list(_EXPECTED_FILE)}"
@@ -591,19 +633,20 @@ hop(id, src, at, n, exp) AS (
   WHERE h.n < {MAX_HOPS} AND {url_res('t', 'tpt', 'tjp')} = 'redirect'),
 landing0 AS (
   SELECT e.id, e.exp, t.id AS to_id, t.kind AS to_kind, t.tier AS to_tier, coalesce(t.kind0, t.kind) AS to_kind0,
-         t.host AS to_host, {url_res('t', 'tpt', 'tjp')} AS to_own, l.verdict
+         t.host AS to_host, {url_res('t', 'tpt', 'tjp')} AS to_own, l.verdict, {_school_home_sql('e.at')} AS home
   FROM (SELECT id, src, at, exp, max(n) FROM hop GROUP BY id) e
   LEFT JOIN url t ON t.url = e.at LEFT JOIN page_type tpt ON tpt.key = t.page_type {jpj('tjp', 't')}
   LEFT JOIN link l ON l.src = e.src AND l.dst = e.at),
 landing AS (
-  SELECT id, exp, to_id, to_kind, to_tier, verdict,
+  SELECT id, exp, to_id, to_kind, to_tier, verdict, home,
          coalesce(to_id IS NOT NULL AND (to_host IN {_sql_list(API_HOSTS)}
                                          OR to_kind0 IN {_sql_list(GOOGLE_LANDING_KIND0)}), 0) AS to_google,
          CASE WHEN to_kind0 = 'drive' AND to_own = 'ok' THEN {_drive_settled('landing0.to_id')}
               ELSE to_own END AS to_result
   FROM landing0),
 moved AS (
-  SELECT id, to_id, to_kind, to_tier, to_google, exp, verdict, to_id IS NOT NULL AND to_result <> 'redirect' AS landed,
+  SELECT id, to_id, to_kind, to_tier, to_google, exp, verdict, home,
+         to_id IS NOT NULL AND to_result <> 'redirect' AS landed,
          CASE WHEN to_id IS NULL THEN {_kept_out('verdict')}
               WHEN to_result = 'redirect' THEN 'server_error'
               ELSE to_result END AS result
@@ -637,6 +680,11 @@ r00 AS (
               WHEN rests.action_id IS NOT NULL AND rests.act_result <> 'redirect' THEN rests.act_result
               WHEN x.id IS NOT NULL AND rests.action_id IS NULL AND rests.role = 'drive' AND x.kind0 = 'drive'
                    AND coalesce(mv.result, {url_res('x', 'xpt', 'xjp')}) = 'ok' THEN 'not_discovered'
+              WHEN x.id IS NOT NULL AND {home_file}
+                   AND (mv.result = 'not_file' OR (mv.landed AND mv.to_kind = 'page'
+                                                    AND mv.result IN {_sql_list(PAGE_CAME_BACK)})
+                        OR (mv.to_id IS NULL AND {_off_file('mv.verdict')}))
+                   THEN 'gone'
               WHEN x.id IS NOT NULL AND (rests.role IN {file_like} OR coalesce(mv.exp, 0))
                    AND (((CASE WHEN mv.landed THEN mv.to_kind ELSE x.kind END) = 'page'
                          AND coalesce(mv.result, {url_res('x', 'xpt', 'xjp')}) IN {_sql_list(PAGE_CAME_BACK)})
@@ -651,13 +699,13 @@ r00 AS (
          CASE WHEN x.id IS NOT NULL THEN 'u' || coalesce(mv.to_id, x.id)
               WHEN rests.act_id IS NOT NULL THEN 'a' || rests.act_id
               ELSE 'k' || rests.res_key END AS res,
-         x.id AS via
+         x.id AS via, x.id IS NOT NULL AND {home_file} AS home_file
   FROM rests
   LEFT JOIN url x ON x.id = rests.url_id LEFT JOIN page_type xpt ON xpt.key = x.page_type {jpj('xjp', 'x')}
   LEFT JOIN moved mv ON mv.id = x.id
   LEFT JOIN link lk ON lk.src = rests.act_list AND lk.dst = rests.act_to),
 r01 AS (
-  SELECT r00.*,
+  SELECT r00.*, CASE WHEN r00.result = 'gone' AND r00.home_file THEN '{GONE_HOME}' END AS gone_why,
          CASE WHEN r00.via IS NOT NULL AND r00.result IN {can_mark} THEN EXISTS (
            SELECT 1 FROM review_mark m JOIN url v ON v.id = m.url_id
            WHERE m.url_id = r00.via AND {_markable_sql('m')} AND m.result = r00.result
@@ -779,10 +827,11 @@ FROM p
 PAGE_COMPLETENESS_SQL = _page_completeness_sql()
 # each needed resource of a page as page_completeness counts it, before the copies of one resource are made one: the
 # page_res entry (res_key), the row it rests on first (via) and where it ends (res), its result before a person's mark,
-# and whether a mark on via makes it school_side (marked). Frontier.mark_school_side reads what a redirecting address
+# whether a mark on via makes it school_side (marked), and why it is gone when the reason is its own (gone_why:
+# GONE_HOME, else NULL). Frontier.mark_school_side reads what a redirecting address
 # comes to here; a report of what a page lacks may too. As costly as page_completeness: never in a request handler
 PAGE_RESOURCE_SQL = f"""{_resource_ctes()}
-SELECT page_id, res_key, role, need, result, res, via, marked FROM r01
+SELECT page_id, res_key, role, need, result, res, via, marked, gone_why FROM r01
 """
 # built in this order (each reads the ones before it), dropped in the reverse
 VIEWS = (("url_result", URL_RESULT_SQL), ("action_result", ACTION_RESULT_SQL),

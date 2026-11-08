@@ -19,7 +19,10 @@ What goes out (README.md in the folder says it again, in words):
   export lists or counts is listed as 要人看 at the end (Builder._account), never left out.
 - README.md: the state, what was got (and of that, what still needs a look), what was not with why, what is still
   queued counted from the manifest's rows (other sites' rows the site's pages use too), and the notice pages whose
-  text area is missing or empty (the school's deleted notices: 抓到了 by the views, said in 缺什么; review 10-27).
+  text area is missing or empty (the school's deleted notices, said in 缺什么; review 10-27) with the 分类 and 完整度
+  their rows have, counted per pair (抓到了, 完整 when the text area is missing, which the crawler does not flag;
+  要人看 when it is there and empty, flagged empty_detail; 要人看, 不完整 when the id probe called it gone as well,
+  gone_id, as the 教务处 archive's 27: 10-31).
 
 Read only: frontier.db is opened with mode=ro (SQLite's own -wal and -shm files of a reader aside, nothing is written
 next to it), the WARC files are only read, and every database read is one transaction, so the export sees one moment of
@@ -179,6 +182,7 @@ class Item:
     final_url: str = ""
     title: str = ""
     result: str = ""
+    gone_why: str = ""  # gone for a reason of its own (outcome.GONE_HOME): its 结果 says so instead of gone's words
     why: str = ""  # 原因, in words
     codes: str = ""  # 原因代码, as the crawler wrote them
     bucket: str = ""
@@ -215,12 +219,19 @@ class Item:
         return {"序号": str(n), "类型": self.type, "网址": self.url, "最后落地网址": self.final_url, "本地档案": self.path,
                 "标题": self.title, "网页上写的日期": self.date, "日期原文": self.date_raw,
                 "完整度": self.completeness(), "缺什么": self.lacks,
-                "结果": outcome.RESULT_LABEL.get(self.result, self.result), "原因": self.why,
+                "结果": self.result_words(), "原因": self.why,
                 "分类": progress.BUCKET_ZH.get(self.bucket, self.bucket), "原因代码": self.codes,
                 "抓取时间": self.fetched_at, "大小": "" if self.size is None else str(self.size), "sha256": self.sha256,
                 "格式": self.sniff, "链到它的网页": _joined((page_url(p) for p in self.pages), cap, "页"),
                 "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
                 "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref}
+
+    def result_words(self) -> str:
+        """结果: the result in words; a gone with a reason of its own (a file sent to the school's home page, 11-03)
+        says that reason. Its category stays gone's (学校那边已经不存在), which the content stage reads."""
+        if self.result == "gone" and self.gone_why in outcome.GONE_WHY_LABEL:
+            return outcome.GONE_WHY_LABEL[self.gone_why]
+        return outcome.RESULT_LABEL.get(self.result, self.result)
 
     def completeness(self) -> str:
         """A page's level (page_completeness) when it has its file; anything else, and a page with no file (a sign-in
@@ -759,12 +770,14 @@ class Builder:
         for r in s.pres:
             key = f"u{r['via']}" if r["via"] is not None else r["res"]
             g = groups.setdefault(key, {"res": r["res"], "via": r["via"], "roles": Counter(), "results": set(),
-                                        "pages": [], "keys": [], "needs": set()})
+                                        "pages": [], "keys": [], "needs": set(), "gone_whys": set()})
             g["roles"][r["role"]] += 1
             g["results"].add(outcome.SCHOOL_SIDE if r["marked"] else r["result"])
             g["pages"].append(r["page_id"])
             g["keys"].append((r["page_id"], r["res_key"]))
             g["needs"].add(r["need"])
+            if r["result"] == "gone" and not r["marked"]:
+                g["gone_whys"].add(r.get("gone_why") or "")
         covered: set[int] = set()
         for key, g in groups.items():
             role = g["roles"].most_common(1)[0][0]
@@ -820,6 +833,9 @@ class Builder:
                 if result in BODY_RESULTS and _has_body(to) and ok_type:
                     it.source = (to["warc"], to["warc_offset"], to["sha256"], to["ctype"])
                 it.why = _why(result, to["reason"], to["status"])
+                if result == "gone" and len(g["gone_whys"]) == 1:  # every entry gone for the same reason ("": gone's own)
+                    it.gone_why = next(iter(g["gone_whys"]))
+                    it.codes = " ".join(c for c in (it.gone_why, it.codes) if c)
                 if typ == DATA:
                     it.title = self._data_title(to, it.title)
             else:  # no row: a press that is not there, or an entry no row was made for (its why says)
@@ -938,9 +954,11 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
     (no words, no picture, link or frame, no attachment link). c.nknu shows a notice the school deleted as the site's
     template, its DataFormView with neither label in it (10-26 pilot, 体育室: 27 pages from the old archive and Common
     Crawl, every one 15269 bytes, as the page of a notice number that cannot exist). The crawler's own check
-    (profiles.empty_detail) claims nothing when the text area is not there, so the views call such a page 完整: the
-    export keeps that and says this in 缺什么, and the README names each page (review 10-27, 【Claude 的执行办法】;
-    whether the crawler should call it gone is the main session's call)."""
+    (profiles.empty_detail) claims nothing when the text area is not there, so the views call such a page 抓到了,
+    完整; a text area there and empty is flagged empty_detail (页面几乎是空的, so 要人看), and gone_id as well when the
+    host's id probe found its number empty (看起来像不存在, so 要人看, 不完整: the 教务处 archive's 27, 10-27). The export keeps the views' judgement, whatever it is, says this in 缺什么, and the
+    README names each page and says the 分类 and 完整度 their rows have (_judged) (review 10-27, 10-31,
+    【Claude 的执行办法】; whether the crawler should call every such page gone is the main session's call)."""
     prof = profiles.profile_for_site(site)
     if prof is None:
         return ""
@@ -958,6 +976,31 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
     if d.files and any((n.attributes.get("href") or "").strip() not in ("", "#") for n in tree.css(d.files)):
         return ""
     return EMPTY_AREA
+
+
+def own_date(tree: LexborHTMLParser, url: str, site: str) -> tuple[str, str] | None:
+    """The date a platform's detail page states in its own date field (profiles.Detail.date), as find_date() reads
+    the words of the field's parent, where its label is (c.nknu's newsdetail: <h5>發佈人員：…｜公告日期：<span
+    id="lbl_AddTime">2026/10/22 上午 10:49:00</span></h5> → 公告日期：2026/10/22); None for a site no profile
+    describes, a page that is not such a detail, and a field that is empty (a notice the school deleted) or holds no
+    date. Writer._page reads it before the page's text, where a notice states other dates after labels too: an exam's
+    考試日期, 「榜單公告115年12月30日」 (79 of the 501 教务处 notices whose field holds a date got such a date; 技术总览
+    §7, plan 11-02 T1)."""
+    prof = profiles.profile_for_site(site)
+    if prof is None:
+        return None
+    parts = urlsplit(url)
+    where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
+    for d in prof.details:
+        if not d.date or not re.search(d.paths, where):
+            continue
+        for node in tree.css(d.date):
+            if not (node.text() or "").strip():
+                continue
+            found = find_date((node.parent if node.parent is not None else node).text())
+            if found:
+                return found
+    return None
 
 
 def page_texts(tree: LexborHTMLParser, site: str) -> list[str]:
@@ -1115,11 +1158,13 @@ class Writer:
                 it.lacks = "、".join(x for x in (it.lacks, area) if x)
                 it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
         if it.page_role != "list" and it.kind != "pager":
-            for words in page_texts(tree, self.site):
-                found = find_date(words)
-                if found:
-                    it.date, it.date_raw = found
-                    break
+            # the platform's own date field first (c.nknu's newsdetail: 公告日期), else the first labelled date in the
+            # content area, then in the whole page
+            found = own_date(tree, url, self.site)
+            if found is None:
+                found = next((got for got in map(find_date, page_texts(tree, self.site)) if got), None)
+            if found:
+                it.date, it.date_raw = found
         if it.kind == "pager":
             short = f"{url_slug(url)}-p{it.step}"
         else:
@@ -1176,13 +1221,20 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
     def page_url(pid_: int) -> str:
         return urls.get(pid_, f"u{pid_}")
 
+    name = (snap.plan or {}).get("name") or site
+    # a row another site owns that the archive does not hold yet waits for that site's turn (frontier: a run given
+    # sites takes only the rows they own): said in 备注, never fetched here. The 教务处 export of 10-27 had 55 such
+    # bare 还在排队 rows: the 43 files and pictures on news.nknu.edu.tw, SSO and Drive (技术总览 §7), 12 short links
+    # (plan 11-02 T1)
+    for it in ordered:
+        if it.bucket == "queued" and it.owner and it.owner != site and not it.path:
+            it.notes.append(f"归属别的网站（{it.owner}），存档里还没有它：只爬{name}时不抓，跟着那个网站的进度抓")
     rows = [it.row(n, page_url, cap=CAP) for n, it in enumerate(ordered, start=1)]
     missing = sorted(((it, r) for it, r in zip(ordered, rows, strict=True) if not it.path),
                      key=lambda p: (_BUCKET_RANK.get(p[0].bucket, -1), rank[p[0].type], p[0].url))
     missing_items = [it for it, _r in missing]
     _csv(out / "manifest.csv", rows)
     _csv(out / "missing.csv", [r for _it, r in missing])
-    name = (snap.plan or {}).get("name") or site
     st = snap.status
     state = st.state if st is not None else "unchecked"
     sign, words, _color = progress.STATE_SHOW.get(state, ("⚠", "没检查", "yellow"))
@@ -1245,7 +1297,7 @@ def _named(it: Item) -> str:
     label = it.title or next((t for t in it.texts if t), "") or unquote(it.url) or it.ref
     where = f" {unquote(it.url)}" if it.url and unquote(it.url) != label else ""
     because = f"（{it.why}）" if it.why else ""
-    return f"  - {it.type}「{label[:60]}」{where}：{outcome.RESULT_LABEL.get(it.result, it.result)}{because}"
+    return f"  - {it.type}「{label[:60]}」{where}：{it.result_words()}{because}"
 
 
 def _by_bucket(items: list[Item], then: bool = True) -> list[str]:
@@ -1270,6 +1322,19 @@ def _by_bucket(items: list[Item], then: bool = True) -> list[str]:
 
 
 EMPTY_SHOWN = 200  # the empty notice pages the README names one by one
+
+
+def _judged(items: list[Item], verb: str) -> str:
+    """How the views judged these pages, in their manifest rows' own words (分类, 完整度), worst category first, with
+    how many of each pair: 「这 27 页都是分类「要人看」、完整度「不完整」」, or one clause per pair. Never a judgement
+    written in by hand: the 教务处 export (10-27) called its 27 empty notice pages 「抓到了」「完整」 while their rows
+    said 要人看, 不完整 (技术总览 §7, 10-31)."""
+    pairs = Counter((i.bucket, i.completeness()) for i in items)
+    said = [(f"分类「{progress.BUCKET_ZH.get(b, b)}」、完整度「{level}」", n) for (b, level), n in
+            sorted(pairs.items(), key=lambda kv: (_BUCKET_RANK.get(kv[0][0], -1), kv[0][1]))]
+    if len(said) == 1:
+        return f"这 {len(items)} 页都{verb}{said[0][0]}"
+    return "，".join(f"{n} 页{verb}{words}" for words, n in said)
 
 
 def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_words: str, pid, ordered: list[Item],
@@ -1305,9 +1370,12 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         said.append("「其中有档但还要处理」：档案导出了，分类却不是「抓到了」（要人看、待判定、下一轮补……），"
                     "看过或判定以后才算数，见下面「有档但还要处理的」")
     if empty:
-        said.append(f"网页「抓到」的里面有 {len(empty)} 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的"
-                    "公告只剩网站模板）：分类、完整度照存档算「抓到了」「完整」，「缺什么」栏写着，下面「空的公告页」"
-                    "一节逐页列出")
+        unsettled = sum(1 for i in empty if i.bucket not in SETTLED)  # in the table's 其中有档但还要处理 too
+        where = ("" if not unsettled else "，都算在上表「其中有档但还要处理」里" if unsettled == len(empty)
+                 else f"，其中 {unsettled} 页算在上表「其中有档但还要处理」里")
+        said.append(f"导出了档的网页里有 {len(empty)} 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的"
+                    f"公告只剩网站模板）：照存档的判断，{_judged(empty, '是')}{where}；「缺什么」栏写着，下面"
+                    "「空的公告页」一节逐页列出")
     if pressed:
         said.append(f"网页里有 {pressed} 页是按按钮才出来的（列表的第 2 页以后、按了才出来的公告内文）")
     if shared:
@@ -1321,11 +1389,14 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
     if to_do:
         out += ["", f"**有档但还要处理的 {len(to_do)} 个**（本地档案有，分类在「分类」栏）：", ""]
         out += _by_bucket(to_do, then=False)
-    bad_pages = Counter(it.level for it in ordered if it.type == PAGE and it.path and it.level
-                        and it.level not in ("complete", "complete_school"))
-    if bad_pages:
-        out += ["", "抓到了但**不完整**的网页（「完整度」「缺什么」栏）：" + "、".join(
-            f"{outcome.LEVEL_LABEL.get(k, k)} {n} 页" for k, n in bad_pages.items())]
+    bad = [it for it in ordered if it.type == PAGE and it.path and it.level
+           and it.level not in ("complete", "complete_school")]
+    if bad:
+        # not 抓到了但不完整: a page with a file may be 要人看 too (the 教务处 export's 27 empty notices, review 10-31)
+        unsettled = sum(1 for it in bad if it.bucket not in SETTLED)
+        out += ["", "导出了档但**不完整**的网页（「完整度」「缺什么」栏）：" + "、".join(
+            f"{outcome.LEVEL_LABEL.get(k, k)} {n} 页" for k, n in Counter(it.level for it in bad).items())
+            + (f"（其中 {unsettled} 页分类不是「抓到了」，算在上表「其中有档但还要处理」里）" if unsettled else "")]
     other = []
     if builder.counts["data_img"]:
         other.append(f"网页里直接内嵌的小图（data: 网址）{builder.counts['data_img']} 张：本来就在网页档里")
@@ -1367,8 +1438,8 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
     if empty:
         out += ["", "## 空的公告页", "",
                 (f"这 {len(empty)} 页是平台的公告页，网页上公告的标题栏和内文栏却找不到或是空的：多半是学校删掉的公告，"
-                 "只剩网站的模板（旧存档、Common Crawl 记得网址，学校那边已经删了）。是程序看出来的；爬虫现在的规则把它们算成"
-                 "「抓到了」「完整」，导出照存档的判断，没有改，只在「缺什么」栏写明。做内容的时候可以跳过。"), "",
+                 "只剩网站的模板（旧存档、Common Crawl 记得网址，学校那边已经删了）。是程序看出来的；按爬虫现在的规则，"
+                 f"{_judged(empty, '算成')}，导出照存档的判断，没有改，只在「缺什么」栏写明。做内容的时候可以跳过。"), "",
                 "| 网址 | 标题 | 缺什么 | 怎么来的 |", "|---|---|---|---|"]
         out += [f"| {i.url} | {i.title} | {i.empty_area.split('（', 1)[0]} | {i.how} |" for i in empty[:EMPTY_SHOWN]]
         if len(empty) > EMPTY_SHOWN:
@@ -1388,7 +1459,8 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
             "## 清单栏位", ""]
     out += [f"- **{k}**：{v}" for k, v in COLUMN_HELP.items()]
     out += ["", "## 日期怎么来的", "",
-            ("「网页上写的日期」是**程序找的**：在网页文字里找标签后面紧接的日期。先找「发布、發佈、公告、更新、張貼、刊登」"
+            ("「网页上写的日期」是**程序找的**：c.nknu 的公告页（newsdetail）先读页上的「公告日期」栏（#lbl_AddTime），"
+            "读到就用它，读不到才照下面的规则找。在网页文字里找标签后面紧接的日期。先找「发布、發佈、公告、更新、張貼、刊登」"
             "（后面可以接「日期」或「時間」，例如「更新時間」「公告日期」；英文 Posted、Published、Updated）这类标签，"
             "找不到才找单独的「日期」「Date」（活动页上「活動日期」写在「公告日期」前面时，取的是公告日期）；「最新公告」"
             "是侧栏标题，不算标签。认得 2025/10/01、2025-10-01、2025.10.01、2025年10月1日、全形数字 ２０２５／１０／０１，"

@@ -462,7 +462,8 @@ def test_an_items_list_paged_by_get_is_walked_to_its_last_page(tmp_path):
                                                 grid="items") for n in (1, 2)}
     pages["menuid=214"] = pages["menuid=214&pagenum=1"]
     f = _web_crawl(tmp_path, pages, entry)
-    assert {_walk_of(f, u) for u in (entry, entry + "&pagenum=1", entry + "&pagenum=2")} == {"last_page"}
+    assert {_walk_of(f, u) for u in (entry, entry + "&pagenum=2")} == {"last_page"}
+    assert _walk_of(f, entry + "&pagenum=1") is None  # page 1 is the entry's own row now (11-03, P05)
 
 
 def test_the_news_on_a_unit_sites_home_page_is_read_as_the_list_it_is(tmp_path):

@@ -582,11 +582,11 @@ class Mark:
 
 
 class Rounds:
-    """What the event table says of the crawls (run_end), the rejudges, the browser checks (jscheck_end) and the
-    reconciliations (reconcile): their message is JSON with "sites" (null: all) and, for run_end and jscheck_end,
+    """What the event table says of the crawls (run_start, run_end), the rejudges, the browser checks (jscheck_end) and
+    the reconciliations (reconcile): their message is JSON with "sites" (null: all) and, for run_end and jscheck_end,
     "reason" (design §8.4, §11, §18.2a, §18.2b)."""
 
-    CODES = ("run_end", "rejudge", "jscheck_end", "reconcile", "verdict_set")
+    CODES = ("run_start", "run_end", "rejudge", "jscheck_end", "reconcile", "verdict_set")
 
     def __init__(self, f: Frontier):
         self.marks: list[Mark] = []
@@ -609,8 +609,10 @@ class Rounds:
 
     def jscheck_done(self, site: str) -> bool:
         """This round's browser check ended for the site (§8.4, §10.5): a jscheck_end that finished, covers it and was
-        written after the last run_end that covers it. Until then 待判定 is yellow; after, red."""
-        run = self.last(site, "run_end")
+        written after the last run_start or run_end that covers it, so a run going now (no run_end yet) counts from its
+        start (11-04: the 10-27 check had made a site of the running batch count 待判定). Until then 待判定 is yellow;
+        after, red."""
+        run = self.last(site, "run_start", "run_end")
         return any(m.code == "jscheck_end" and m.reason == "finished" and m.covers(site)
                    and (run is None or m.rowid > run.rowid) for m in self.marks)
 
@@ -1018,7 +1020,7 @@ def _nowhere(f: Frontier, end, nowhere: str | None) -> str | None:
     to = end["final_url"] if end is not None else None
     got = f.q("SELECT verdict FROM link WHERE src=? AND dst=?", (end["id"], to)) if end is not None and to else []
     verdict = (got[0][0] or "") if got else ""
-    if verdict == outcome.ERROR_OUT:  # a school error page's address (outcome._kept_out)
+    if verdict in outcome.BROKEN_OUT:  # a school error page's address, or this machine's (outcome._kept_out)
         return "bad_link"
     if verdict.startswith("out:login"):
         return "login"

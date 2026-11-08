@@ -1,9 +1,10 @@
-"""The progress dashboard (round-1 design §14, record 二·7): the finishing time is the slowest server's and names it,
-with the Crawl-delay, retry and pause corrections; the politeness check gives the same answer fed in pieces or at
-once, and the monitor's; the dashboard never writes (the file's sha256 stays, a write fails), never makes the crawler
-wait for a lock, and refreshes a big archive in under 300 ms; a site with no resource rows is 没检查, never green;
+"""The progress dashboard (round-1 design §14, record 二·7; the 11-04 dashboard, design 2026-11-04): the politeness check
+gives the same answer fed in pieces or at once, and the monitor's; the request log is read incrementally and adds up
+the same; the dashboard never writes (the file's sha256 stays, a write fails), never makes the crawler wait for a
+lock, and refreshes a big archive in under 300 ms; a site with no resource rows is 没检查 on its page, never green;
 times are Taipei's; a site's page never lists an incomplete page as 抓到了 or 规则不抓; 纪录齐了、还没对账 and 爬完 are
-told apart; the routes answer on this machine only. All on synthetic archives, no network."""
+told apart; the routes answer on this machine only. The cards' numbers: test_dashboard_1104. All on synthetic
+archives, no network."""
 
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ import pytest
 
 from nknu.archive import monitor, progress
 from nknu.archive.frontier import Frontier
-from nknu.archive.viewer import Viewer, make_handler, progress_main_html, progress_site_html
+from nknu.archive.viewer import Viewer, home_html, make_handler, progress_site_html
 
 ACA, AFFAIR, DEPT = "c.nknu.edu.tw/aca", "c.nknu.edu.tw/affair", "dept.nknu.edu.tw"
 OTHER = "other.nknu.edu.tw"  # a round-two site
@@ -144,17 +145,7 @@ def visible(markup: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"(?s)<(script|style)[^>]*>.*?</\1>", " ", markup)))
 
 
-# ---------------------------------------------------------------- §14.3: how long it still takes
-
-def eta_of(f: Frontier, now: float = NOW) -> dict:
-    conn = progress.connect(f.path)
-    try:
-        t = progress.Tracker()
-        t.update(conn)
-        return progress.eta(conn, now, t.speeds(now))
-    finally:
-        conn.close()
-
+# ---------------------------------------------------------------- two servers (test_small_fixes_1027)
 
 def two_servers(tmp_path, left_a: int, left_b: int) -> Frontier:
     f = Frontier(tmp_path / "frontier.db")
@@ -166,63 +157,6 @@ def two_servers(tmp_path, left_a: int, left_b: int) -> Frontier:
                     status=None)
         requests(f, f"ip:{'140.127.9.1' if host.startswith('a') else '140.127.9.2'}", host, 30, NOW - 600)
     return f
-
-
-def test_the_round_ends_when_its_slowest_server_does_and_that_server_is_named(tmp_path):
-    f = two_servers(tmp_path, 10, 100)
-    est = eta_of(f)
-    assert est["slowest"] == "ip:140.127.9.2"
-    b = est["servers"]["ip:140.127.9.2"]
-    assert b["basis"] == "hour" and b["c"] == pytest.approx(3.0) and b["k"] == pytest.approx(1.0)
-    assert est["seconds"] == pytest.approx(100 * 3.0) and est["seconds"] == b["t"]
-    assert est["servers"]["ip:140.127.9.1"]["t"] == pytest.approx(10 * 3.0)
-    assert est["finish_at"] == pytest.approx(NOW + 300)
-
-
-def test_a_crawl_delay_longer_than_the_pace_holds_its_server_back(tmp_path):
-    f = two_servers(tmp_path, 10, 50)
-    f.set_host("a.nknu.edu.tw", crawl_delay=20.0)  # fine-arts asks for 20 s
-    est = eta_of(f)
-    a = est["servers"]["ip:140.127.9.1"]
-    assert a["t"] == pytest.approx(10 * 20.0) and est["slowest"] == "ip:140.127.9.1"
-    assert any("20" in w for w in a["why"])
-
-
-def test_a_pause_adds_what_is_left_of_it_and_a_retry_waits_for_its_time(tmp_path):
-    f = two_servers(tmp_path, 10, 20)
-    f.pause("ip:140.127.9.1", NOW + 900, "a.nknu.edu.tw: http_503")
-    f.x("UPDATE url SET attempts = 1, next_at = ? WHERE host = 'b.nknu.edu.tw' AND id = (SELECT max(id) FROM url "
-        "WHERE host = 'b.nknu.edu.tw')", (NOW + 5000,))
-    est = eta_of(f)
-    assert est["servers"]["ip:140.127.9.1"]["t"] == pytest.approx(10 * 3.0 + 900)
-    assert est["servers"]["ip:140.127.9.2"]["t"] == pytest.approx(5000 + 3.0)
-    assert est["slowest"] == "ip:140.127.9.2"
-
-
-def test_a_server_with_too_few_requests_this_hour_takes_the_whole_rounds_pace_and_none_is_a_guess(tmp_path):
-    f = Frontier(tmp_path / "frontier.db")
-    f.set_host("a.nknu.edu.tw", queue="ip:140.127.9.1")
-    f.set_host("b.nknu.edu.tw", queue="ip:140.127.9.2")
-    for host in ("a.nknu.edu.tw", "b.nknu.edu.tw"):
-        add_url(f, url=f"https://{host}/p", host=host, site=host, owner_site=host, state="pending", status=None)
-    requests(f, "ip:140.127.9.1", "a.nknu.edu.tw", 10, NOW - 9000, every=6.0)  # hours ago, 6 s apart
-    est = eta_of(f)
-    assert est["servers"]["ip:140.127.9.1"]["basis"] == "round"
-    assert est["servers"]["ip:140.127.9.1"]["c"] == pytest.approx(6.0)
-    assert est["servers"]["ip:140.127.9.2"]["basis"] == "guess"
-    assert est["servers"]["ip:140.127.9.2"]["c"] == progress.GUESS_S
-    assert est["slowest"] == "ip:140.127.9.1"  # one row each: 6 s against the 4 s guess
-
-
-def test_lab_rows_and_unresolved_hosts_are_not_left_for_this_run(tmp_path):
-    f = two_servers(tmp_path, 3, 0)
-    add_url(f, url="https://a.nknu.edu.tw/lab", host="a.nknu.edu.tw", site="a", owner_site="a", state="pending",
-            reason="host_unreachable", status=None)
-    f.set_host("gone.nknu.edu.tw", queue="dns-fail")
-    add_url(f, url="https://gone.nknu.edu.tw/", host="gone.nknu.edu.tw", site="g", owner_site="g", state="pending",
-            status=None)
-    est = eta_of(f)
-    assert est["servers"]["ip:140.127.9.1"]["left"] == 3 and "dns-fail" not in est["servers"]
 
 
 # ---------------------------------------------------------------- the politeness check (§6.3, §14.2)
@@ -279,7 +213,8 @@ def test_the_tracker_reads_only_the_new_requests_and_adds_up_the_same(tmp_path):
     t2.update(conn)
     conn.close()
     assert t1.polite.result() == t2.polite.result() and t1.polite.result()["gap"] == 9
-    assert t1.speeds(NOW) == t2.speeds(NOW)
+    assert t1.busy.seconds(NOW) == t2.busy.seconds(NOW) and t1.last_started == t2.last_started
+    assert t1.last_started[Q_C] == pytest.approx(NOW - 900 + 9)
 
 
 # ---------------------------------------------------------------- §14.4: never slowing the crawler
@@ -404,10 +339,11 @@ def big_archive(root: Path) -> None:
                      NOW - (60_000 - i)))
     c.executemany("INSERT INTO url(url, path, host, site, owner_site, tier, kind, kind0, depth, found_via, state, "
                   "reason, status, page_type, sniff, added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    c.executemany("INSERT INTO request(queue, host, url, purpose, started, ended, status, ip, new_conn) "
-                  "VALUES (?,?,?,?,?,?,?,?,?)",
+    c.executemany("INSERT INTO request(queue, host, url, purpose, started, ended, status, ip, new_conn, scope) "
+                  "VALUES (?,?,?,?,?,?,?,?,?,?)",
                   [(f"ip:140.127.0.{i % 20}", sites[i % 100], f"https://{sites[i % 100]}/p{i}", "page",
-                    NOW - 60_000 + i, NOW - 60_000 + i + 0.2, 200, f"140.127.0.{i % 20}", 0) for i in range(60_000)])
+                    NOW - 60_000 + i, NOW - 60_000 + i + 0.2, 200, f"140.127.0.{i % 20}", 0,
+                    f"admit:r1:{sites[i % 100]}:page") for i in range(60_000)])
     c.executemany("INSERT INTO link(src, dst, text, verdict) VALUES (?,?,?,?)",
                   ((1 + i // 10, f"https://x.nknu.edu.tw/l{i}", "t", "queued") for i in range(500_000)))
     c.execute("COMMIT")
@@ -415,12 +351,15 @@ def big_archive(root: Path) -> None:
 
 
 def test_a_refresh_of_a_big_archive_takes_under_300_ms(tmp_path):
+    """Design 2026-11-04 §2.8: a refresh reads no result view (错 N is the background's), so a busy machine no longer
+    pushes it past the limit: the whole round's 100 sites on 20 servers, their progress, busy time and states."""
     big_archive(tmp_path)
     d = dash(tmp_path)
     t0 = time.perf_counter()
     first = d.main()
     first_s = time.perf_counter() - t0
-    assert first["total"]["all"] > 50_000 and first["polite"]["checked"] == 60_000
+    assert first["total"]["known"] == 54_000 and first["polite"]["checked"] == 60_000
+    assert first["total"]["sites_total"] == 100 and sum(c["busy"] for c in first["cards"]) > 0
     took = []
     for _ in range(3):
         t0 = time.perf_counter()
@@ -439,55 +378,54 @@ def snap_of(root: Path, slow: bool = True, **kw) -> dict:
     return d.main()
 
 
+def site_states(root: Path, slow: bool = True, **kw) -> dict[str, dict]:
+    """Each site's page (its state, why, warnings) as /progress/site gives it (the 11-04 cards say only progress)."""
+    d = dash(root, **kw)
+    if slow:
+        d.refresh_slow()
+    return {k: d.site(k) for k in (ACA, AFFAIR, DEPT)}
+
+
 def test_a_site_with_pages_and_no_resource_rows_is_not_checked_never_green(arch):
     _f, _ids, root = arch
-    s = {x["site"]: x for x in snap_of(root)["sites"]}
+    s = site_states(root)
     assert s[DEPT]["state"] == "unchecked"  # site_status said done; its pages have no resource row at all
     assert s[AFFAIR]["state"] == "done"
-    text = visible(progress_main_html(snap_of(root)))
-    assert "没检查" in text
+    assert "没检查" in visible(progress_site_html(s[DEPT]))
     # before the background snapshot, no site has a colour of its own
-    early = snap_of(root, slow=False)
-    assert {x["state"] for x in early["sites"]} == {"unchecked"}
-    assert "✓ 爬完" not in visible(progress_main_html(early))
+    early = site_states(root, slow=False)
+    assert {x["state"] for x in early.values()} == {"unchecked"}
+    assert all("✓ 爬完" not in visible(progress_site_html(x)) for x in early.values())
 
 
 def test_a_site_still_crawling_with_no_resource_rows_keeps_its_state_with_a_note(arch):
     _f, _ids, root = arch
-    s = {x["site"]: x for x in snap_of(root, site_status=statuses(**{ACA: "error", AFFAIR: "done",
-                                                                      DEPT: "crawling"}))["sites"]}
+    s = site_states(root, site_status=statuses(**{ACA: "error", AFFAIR: "done", DEPT: "crawling"}))
     assert s[DEPT]["state"] == "crawling" and any("资源层没资料" in w for w in s[DEPT]["why"])
-
-
-def test_what_is_missing_counts_retries_failures_and_incomplete_pages(arch):
-    f, _ids, root = arch
-    add_url(f, kind="file", kind0="file", page_type=None, state="pending", attempts=1, next_at=NOW + 600,
-            status=None, sniff=None)
-    t = snap_of(root)["total"]
-    # one retry, the failed attachment, the page that lacks it
-    assert t["retry"] == 1 and t["lacking"] == 3
-    assert "有缺 3 个（1 个会自动重试）" in visible(progress_main_html(snap_of(root)))
+    # no run holds run.lock (the last one ended waiting): drawn 没抓完, why first (review 11-04), never 没检查
+    assert s[DEPT]["shown"] == progress.UNFINISHED_SHOW and s[DEPT]["why"][0] == "没在跑：等重试 明天 02:40 再开"
 
 
 def test_without_site_status_wired_the_sites_say_so_and_are_not_green(arch):
     _f, _ids, root = arch
-    snap = snap_of(root, site_status=lambda conn, now, pages=None: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert {x["state"] for x in snap["sites"]} == {"unchecked"}
-    assert all("boom" in " ".join(x["why"]) for x in snap["sites"])
+    def boom(conn, now, pages=None):
+        raise RuntimeError("boom")
+
+    s = site_states(root, site_status=boom)
+    assert {x["state"] for x in s.values()} == {"unchecked"}
+    assert all("boom" in " ".join(x["why"]) for x in s.values())
+    snap = snap_of(root, site_status=boom)  # 错 N cannot be had either: a dim 「错 …」 that says why
+    assert snap["errors"]["n"] is None and "boom" in snap["errors"]["why"]
+    assert "错 …" in visible(home_html(snap))
 
 
 def test_records_complete_not_reconciled_is_yellow_and_done_is_green(arch):
     f, ids, root = arch
     res(f, ids["dept_home"], "img:1", "img", ids["aff_img"])  # now it has a resource row
-    snap = snap_of(root, site_status=statuses(**{ACA: "error", AFFAIR: "unreconciled", DEPT: "done"}))
-    s = {x["site"]: x for x in snap["sites"]}
+    s = site_states(root, site_status=statuses(**{ACA: "error", AFFAIR: "unreconciled", DEPT: "done"}))
     assert s[AFFAIR]["state"] == "unreconciled" and s[DEPT]["state"] == "done"
-    assert snap["site_counts"]["unreconciled"] == 1 and snap["site_counts"]["done"] == 1
-    page = progress_main_html(snap)
-    assert "<span class='c-yellow' title='因为 unreconciled'>⚠ 纪录齐了，还没对账</span>" in page
-    assert "<span class='c-green' title='因为 done'>✓ 爬完</span>" in page
-    tiers = {t["tier"]: t for t in snap["tiers"]}
-    assert tiers[0]["records_done"] == 1 and tiers[0]["done"] == 0 and tiers[1]["done"] == 1
+    assert "<span class='c-yellow'>⚠ 纪录齐了，还没对账</span>" in progress_site_html(s[AFFAIR])
+    assert "<span class='c-green'>✓ 爬完</span>" in progress_site_html(s[DEPT])
 
 
 def test_times_are_taipeis():
@@ -501,65 +439,30 @@ def test_times_are_taipeis():
 
 def test_a_waiting_run_says_from_when_it_may_run_again_in_taipei_time(arch):
     _f, _ids, root = arch
-    text = visible(progress_main_html(snap_of(root)))
-    assert "先停下等重试" in text and "最早 明天 02:40 起" in text
+    run = snap_of(root)["run"]
+    assert run["words"] == "等重试 明天 02:40 再开" and "先停下等重试" in run["tip"]
+    assert "等重试 明天 02:40 再开" in visible(home_html(snap_of(root)))
 
 
 def test_a_run_that_never_ended_is_said_so(arch):
     f, _ids, root = arch
     event(f, NOW - 60, "info", "run_start", json.dumps({"gap": [2.0, 5.0]}))
-    assert snap_of(root)["run"]["state"] == "crashed"
-    assert "上次没正常结束" in visible(progress_main_html(snap_of(root)))
-
-
-def test_on_the_schools_network_the_dashboard_warns(arch):
-    f, _ids, root = arch
-    requests(f, Q_C, "c.nknu.edu.tw", 2, NOW - 30, campus="on")
-    snap = snap_of(root)
-    assert snap["campus"] == {"last": "on", "on": 2}
-    assert "这台机器现在在校内网络" in visible(progress_main_html(snap))
+    run = snap_of(root)["run"]
+    assert run["state"] == "crashed" and run["words"] == "意外停了" and "被关掉或当掉" in run["tip"]
+    assert "意外停了" in visible(home_html(snap_of(root)))
 
 
 def test_the_main_page_has_no_engineering_words(arch):
     f, _ids, root = arch
     f.pause(Q_D, NOW + 600, "dept.nknu.edu.tw: no connection")
-    event(f, NOW - 60, "warn", "conn_pause", "dept.nknu.edu.tw does not connect: server queue ip:140.127.2.2 rests")
-    text = visible(progress_main_html(snap_of(root)))
+    event(f, NOW - 60, "warn", "conn_pause", "dept.nknu.edu.tw does not connect: server queue ip:140.127.2.2 rests",
+          host="dept.nknu.edu.tw")
+    d = dash(root)
+    d.refresh_slow()
+    text = visible(home_html(d.main()))
     for word in ("队列", "WARC", "frontier", "Crawl-delay", "postback", "pending", "soft-404", "ip:140"):
         assert word not in text, word
-    assert "连不上这台服务器" in text  # the event, in plain words
-
-
-def test_sites_go_by_importance_then_connection_failures_then_what_they_lack(arch):
-    _f, _ids, root = arch
-    snap = snap_of(root)
-    order = [s["site"] for s in snap["sites"]]
-    assert order == [ACA, AFFAIR, DEPT]  # 全校重要 first; 教务处 has a connection failure
-    assert snap["sites"][0]["failed"] >= 1 and snap["sites"][0]["missing"] > snap["sites"][1]["missing"]
-
-
-def test_the_total_leaves_out_rules_round_two_and_redirects(arch):
-    _f, _ids, root = arch
-    t = snap_of(root)["total"]
-    # round 1: aca home, img, news, pdf, todo (moved is a redirect, other is round two) + affair 2 + dept 1
-    assert t["all"] == 8 and t["done"] == 7
-    assert t["all_hour_ago"] == 8
-
-
-def test_servers_slowest_first_with_their_pace(arch):
-    _f, _ids, root = arch
-    snap = snap_of(root)
-    s = snap["servers"][0]
-    assert s["queue"] == Q_C and s["main_host"] == "c.nknu.edu.tw" and s["left"] == 1
-    assert s["speed"]["c"] == pytest.approx(3.0) and s["status"]["words"] == "正常"
-    assert "c.nknu.edu.tw 那台" in visible(progress_main_html(snap))
-
-
-def test_keep_alive_not_working_on_cnknus_server_turns_red(arch):
-    f, _ids, root = arch
-    requests(f, Q_C, "c.nknu.edu.tw", 30, NOW - 300, new_conn=True)
-    s = next(x for x in snap_of(root)["servers"] if x["queue"] == Q_C)
-    assert s["status"]["color"] == "red" and "新连线" in s["status"]["words"]
+    assert [e["label"] for e in d.log()["events"]] == [progress.PLAIN["conn_pause"]]  # the event, in plain words
 
 
 def test_politeness_and_errors_blocks(arch):
@@ -568,12 +471,14 @@ def test_politeness_and_errors_blocks(arch):
               "ConnectTimeout: timed out", ip="140.127.1.1")
     f.request(Q_C, "c.nknu.edu.tw", "https://c.nknu.edu.tw/aca/z2", "page", NOW - 99.5, NOW - 99, 503, None,
               ip="140.127.1.1")  # overlaps the one before, and the server said it was busy
-    snap = snap_of(root)
+    d = dash(root)
+    d.refresh_slow()
+    snap = d.main()
     assert snap["polite"]["overlap"] == 1
-    plain = {e["plain"] for e in snap["errors"]}
-    assert progress.PLAIN["connect"] in plain and progress.PLAIN["busy"] in plain
-    text = visible(progress_main_html(snap))
-    assert "礼貌违反 1 次" in text
+    assert "礼貌 ✗ 1" in visible(home_html(snap))
+    polite = d.log()["polite"]
+    assert [(p["kind"], p["url"]) for p in polite] == [("overlap", "https://c.nknu.edu.tw/aca/z2")]
+    assert "礼貌·同时连两条" in d.log_file()
 
 
 def test_plain_words_for_failures():
@@ -691,7 +596,7 @@ def get(port: int, path: str, host: str | None = None):
 
 def test_the_routes_answer_and_the_dashboard_comes_first(served):
     status, page = get(served, "/progress")
-    assert status == 200 and "<main id='pmain'>" in page and "setInterval(tick, 30000)" in page
+    assert status == 200 and "<main id='pmain'>" in page and "setInterval(tick, 10000)" in page
     nav = page.split("<nav>", 1)[1].split("</nav>", 1)[0]
     assert nav.startswith("<a href='/progress'>进度</a>") and "选择放行" not in nav
     status, part = get(served, "/progress?part=main")
@@ -709,10 +614,20 @@ def test_the_dashboard_keeps_its_numbers_for_a_while(arch):
     d = progress.Dashboard(root, clock=lambda: clock[0], background=False, site_status=statuses(),
                            checks=lambda conn, now, cheap: [])
     a = d.main()
-    clock[0] += 10
+    clock[0] += progress.CACHE_S / 2
     assert d.main() is a
     clock[0] += progress.CACHE_S
     assert d.main() is not a
+
+
+def test_the_acceptance_checks_are_worked_out_when_their_page_is_opened(arch):
+    _f, _ids, root = arch
+    d = dash(root)
+    d.refresh_slow()
+    got = d.checks_page()
+    assert got["checks"] == [{"no": 1, "title": "首页", "result": "pass", "detail": ""}]
+    assert got["round2"]["total"] == 1 and got["missing_found"] == []
+    assert "checks" not in d.slow  # never in the background any more (design 2026-11-04 §2.8)
 
 
 def test_a_missing_or_old_archive_is_said_not_raised(tmp_path):
@@ -723,4 +638,4 @@ def test_a_missing_or_old_archive_is_said_not_raised(tmp_path):
     old.execute("CREATE TABLE url(id INTEGER PRIMARY KEY, url TEXT)")
     old.close()
     assert "旧版" in d.main()["problem"]
-    assert "✗" in progress_main_html(d.main())
+    assert "✗" in home_html(d.main())

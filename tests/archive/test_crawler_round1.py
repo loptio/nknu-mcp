@@ -699,15 +699,16 @@ def test_a_school_server_that_never_answered_waits_for_the_lab_machine(tmp_path)
 
 
 def test_a_server_that_answered_before_is_down_for_now_never_lab(tmp_path):
-    """B3: a host the old archive got answers from off campus: its connection failures are temporary. B2 (second
-    review 10-26): however long it is down, its rows keep every attempt; one warning says it is down."""
+    """B3: a host the old archive got answers from off campus: its connection failures are temporary, never the lab's.
+    B2 (second review 10-26): its rows keep every attempt; one warning says it is down. Down CONN_GIVE_UP times in a
+    row, they fail as server_down instead of waiting for ever (the owner 11-08)."""
     crawler, net, clock, q = _two_names_one_server(tmp_path, {"robots.txt": conn_err()})
     seed(crawler, "https://a.nknu.edu.tw/p1")
     crawler.frontier.set_host("a.nknu.edu.tw", answered_off=1)
     _down_for_good(crawler, net, clock, q)
     row = rows(crawler)["https://a.nknu.edu.tw/p1"]
-    assert (row["state"], row["attempts"], row["reason"]) == ("pending", 0, "conn_pause")
-    assert result(crawler, row["url"]) == "todo" and len(events(crawler, "server_down")) == 1
+    assert (row["state"], row["attempts"], row["reason"]) == ("failed", 0, "server_down")
+    assert result(crawler, row["url"]) == "failed" and len(events(crawler, "server_down")) == 1
 
 
 def test_three_school_servers_down_while_the_internet_works_pause_the_schools_queues(tmp_path):
@@ -715,9 +716,11 @@ def test_three_school_servers_down_while_the_internet_works_pause_the_schools_qu
     hosts["o.example.org"] = "ip:203.0.113.9"
     crawler, net, clock = make(tmp_path, {"nknu.edu.tw/robots.txt": conn_err(), "o.example.org/": page("<p>o</p>")},
                                queues=hosts, netcheck=lambda: True)
-    for h in hosts:
+    for h, q in hosts.items():
         if h.endswith("nknu.edu.tw"):
             seed(crawler, f"https://{h}/a")
+            # they worked (an earlier run's answer): a school server that never answered says nothing of its network
+            crawler.frontier.request(q, h, f"https://{h}/", "page", clock() - 600, clock() - 599, 200, None)
     seed(crawler, "https://s0.nknu.edu.tw/b")
     for q in sorted(set(hosts.values()) - {"ip:203.0.113.9"}):
         drive(crawler, net, q)

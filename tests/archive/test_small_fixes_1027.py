@@ -5,8 +5,8 @@ fix:
   back, never 「试了 3 次还是失败」 nor a mark of the school's;
 - F2 select:ddl_Class is ignored only because the list without a class parameter shows 「全部」: a site that ignores it
   needs such a list walked to its last page (reconcile R2 and verify item 4 say so when it has none);
-- F3 the dashboard's servers during a --sites run: the rows left and the time left over the same sites, and only when
-  the run that wrote run_start is the one holding run.lock;
+- F3 the dashboard during a --sites run: only those sites, a site's row on another server counted for it (since the
+  11-04 dashboard: the last run_start's sites, whether its run is alive or not);
 - F4 the browser check: play.google.com/log is never sent, reCAPTCHA stays a login (inconclusive:not_sent, for a
   person), and only Google Sites' exact logging path is held back, never all of /_/;
 - F5 a certificate that fails its check: robots.txt and the URL both say tls_cert, the host never waits an hour for its
@@ -148,27 +148,26 @@ def by_no(cs):
     return {c.no: c for c in cs}
 
 
-# ---------------------------------------------------------------- F3: one scope for the servers' left and their time
+# ---------------------------------------------------------------- F3: one scope for the cards (dashboard 11-04)
 
 
-def test_a_sites_run_counts_its_servers_rows_and_time_over_the_same_sites(tmp_path):
+def test_a_sites_run_counts_only_its_own_sites_and_a_sites_row_on_another_server_counts_for_it(tmp_path):
+    """F3 on the 11-04 dashboard: a --sites run shows its own sites only (the last run_start's, alive or not), and a
+    row of the site on another server counts for that site (and for the small card of that server), never for the
+    sites that live there."""
     f = two_servers(tmp_path, 10, 1000)  # a: 10 rows left, b: 1,000; the run covers a only
     event(f, NOW - 60, "info", "run_start", json.dumps({"pid": 1, "gap": [2, 5], "sites": ["a.nknu.edu.tw"]}))
-    # a row of site a on b's server: the run covers it, so b's server counts it and only it
     add_url(f, url="https://b.nknu.edu.tw/of-a", host="b.nknu.edu.tw", site="a.nknu.edu.tw",
             owner_site="a.nknu.edu.tw", state="pending", status=None)
     conn = progress.connect(f.path)
     try:
-        snap_ = progress.snapshot(conn, NOW, running="1")
-        servers = {s["queue"]: s for s in snap_["servers"]}
-        assert servers["ip:140.127.9.1"]["left"] == 10 and servers["ip:140.127.9.2"]["left"] == 1
-        for q, s in servers.items():
-            assert s["eta"]["left"] == s["left"], q  # 还剩 and 要多久 over the same rows
-        # a run whose run_start is not logged yet (run.lock holds pid 2): the last run_start is another run's
-        other = progress.snapshot(conn, NOW, running="2")
-        assert other["eta"]["sites"] is None
-        servers = {s["queue"]: s for s in other["servers"]}
-        assert servers["ip:140.127.9.2"]["left"] == 1001 and servers["ip:140.127.9.2"]["eta"]["left"] == 1001
+        for running in ("1", "2"):  # pid 2: a run whose run_start is not logged yet shows the last one's sites
+            snap_ = progress.snapshot(conn, NOW, running=running)
+            assert snap_["scope"].sites == ("a.nknu.edu.tw",)
+            rows = [r for c in snap_["cards"] for r in c["rows"]]
+            assert [(r["site"], r["known"], r["left"]) for r in rows] == [("a.nknu.edu.tw", 11, 11)]
+            assert [(c["name"], c["known"]) for c in snap_["small"]] == [("学校首页等", 1)]  # b's server, a's row
+            assert snap_["total"]["known"] == 11
     finally:
         conn.close()
         f.close()

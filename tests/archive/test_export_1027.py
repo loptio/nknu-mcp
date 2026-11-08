@@ -524,9 +524,10 @@ NOTICE_BLANK = """<html><head><title>國立高雄師範大學教務處</title></
 
 
 def test_an_empty_notice_page_says_so_in_what_it_lacks_and_the_readme_names_it(tmp_path):
-    """Review 10-27 #2: such a page is 抓到了, 完整 by the views (the crawler's empty check claims nothing when the text
-    area is not on the page; whether it should is the main session's call): the export says it in 缺什么, where a
-    reader filtering on 完整度 still sees it, and names each such page in the README."""
+    """Review 10-27 #2: with no flag of the crawler's on it such a page is 抓到了, 完整 by the views (the crawler's empty
+    check claims nothing when the text area is not on the page; whether it should is the main session's call): the
+    export says it in 缺什么, where a reader filtering on 完整度 still sees it, and names each such page in the README,
+    which says how they were judged as their rows do."""
     arch = make_archive(tmp_path / "archive").open()
     arch.page("gone4", BASE + "newsview.aspx?nid=4", NOTICE_GONE, found_via="common_crawl")
     arch.page("gone5", BASE + "newsview.aspx?nid=5", NOTICE_BLANK, found_via="common_crawl")
@@ -538,8 +539,77 @@ def test_an_empty_notice_page_says_so_in_what_it_lacks_and_the_readme_names_it(t
         assert r["完整度"] == outcome.LEVEL_LABEL["complete"] and r["分类"] == "抓到了"  # the views' judgement, kept
         assert f"| {r['网址']} |" in readme  # each one named in the README's own table
     assert "空的公告页" in readme and "2 页" in readme
+    assert "这 2 页都是分类「抓到了」、完整度「完整」；" in readme  # settled: no 「其中有档但还要处理」 to point to
+    assert "按爬虫现在的规则，这 2 页都算成分类「抓到了」、完整度「完整」，" in readme
     for n in (1, 2, 3):  # notices with their words are not
         assert "内文区" not in rows[BASE + f"newsview.aspx?nid={n}"]["缺什么"]
+
+
+def _empty_notices(tmp_path: Path, flagged: tuple[str, ...], plain: tuple[str, ...] = ()):
+    """An export whose archive holds empty notice pages: `flagged` ones whose text area is there and empty and that the
+    crawler's id probe called gone (the 教务处 archive's 27, flags empty_detail,gone_id,js_hint: 看起来像不存在, so
+    要人看 and 不完整 by the views), `plain` ones with no text area at all, which the crawler does not flag (抓到了,
+    完整)."""
+    arch = make_archive(tmp_path / "archive").open()
+    for nid in flagged:
+        arch.page(f"g{nid}", BASE + f"newsview.aspx?nid={nid}", NOTICE_BLANK, found_via="common_crawl",
+                  flags="empty_detail,gone_id,js_hint")
+    for nid in plain:
+        arch.page(f"p{nid}", BASE + f"newsview.aspx?nid={nid}", NOTICE_GONE, found_via="common_crawl")
+    arch.close()
+    return _export(arch, tmp_path)
+
+
+def _passages(readme: str) -> tuple[str, str]:
+    """The README's two passages on empty notice pages: the bullet under the table, the section's first paragraph."""
+    bullet = next(line for line in readme.splitlines() if "**空的公告页**" in line)
+    section = readme.split("## 空的公告页\n\n", 1)[1].split("\n", 1)[0]
+    return bullet, section
+
+
+def test_the_readme_says_empty_notice_pages_are_what_the_manifest_says_not_got_and_complete(tmp_path):
+    """The 教务处 export (10-27) said its 27 empty notice pages were among the 「抓到」 pages and counted 「抓到了」
+    「完整」, while every one of them was 要人看, 不完整 in its own manifest.csv (技术总览 §7, 10-31): the README says
+    the manifest's 分类 and 完整度, and where the table counts them."""
+    _got, _out, rows, readme = _empty_notices(tmp_path, flagged=("4", "5"))
+    for nid in ("4", "5"):
+        r = rows[BASE + f"newsview.aspx?nid={nid}"]
+        assert "内文区" in r["缺什么"]
+        assert (r["分类"], r["完整度"], r["结果"]) == ("要人看", outcome.LEVEL_LABEL["incomplete"],
+                                                    outcome.RESULT_LABEL["looks_gone"])
+    bullet, section = _passages(readme)
+    assert "「抓到了」「完整」" not in readme and "「抓到」的里面" not in readme
+    assert bullet == ("- 导出了档的网页里有 2 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的公告只剩网站"
+                      "模板）：照存档的判断，这 2 页都是分类「要人看」、完整度「不完整」，都算在上表「其中有档但还要处理」里；"
+                      "「缺什么」栏写着，下面「空的公告页」一节逐页列出")
+    assert section == ("这 2 页是平台的公告页，网页上公告的标题栏和内文栏却找不到或是空的：多半是学校删掉的公告，只剩网站的"
+                       "模板（旧存档、Common Crawl 记得网址，学校那边已经删了）。是程序看出来的；按爬虫现在的规则，这 2 页"
+                       "都算成分类「要人看」、完整度「不完整」，导出照存档的判断，没有改，只在「缺什么」栏写明。做内容的时候"
+                       "可以跳过。")
+
+
+def test_the_readme_counts_empty_notice_pages_per_category_and_completeness(tmp_path):
+    """Pages judged differently are counted per pair, worst category first, and only those not settled are said to be
+    in 「其中有档但还要处理」."""
+    _got, _out, rows, readme = _empty_notices(tmp_path, flagged=("4", "5"), plain=("6",))
+    assert rows[BASE + "newsview.aspx?nid=6"]["分类"] == "抓到了"
+    bullet, section = _passages(readme)
+    assert "有 3 页是**空的公告页**" in bullet
+    assert ("照存档的判断，2 页是分类「要人看」、完整度「不完整」，1 页是分类「抓到了」、完整度「完整」，"
+            "其中 2 页算在上表「其中有档但还要处理」里；") in bullet
+    assert ("按爬虫现在的规则，2 页算成分类「要人看」、完整度「不完整」，1 页算成分类「抓到了」、完整度「完整」，"
+            "导出照存档的判断") in section
+
+
+def test_the_readme_does_not_call_incomplete_pages_got_when_their_category_is_another(tmp_path):
+    """The 教务处 README said 「抓到了但**不完整**的网页：…不完整 35 页」 while 27 of those 35 were 要人看, not 抓到了
+    (review 10-31): the line counts the pages that have a file, and says how many of them are in 「其中有档但还要处理」."""
+    _got, _out, _rows, readme = _empty_notices(tmp_path, flagged=("4", "5"), plain=("6",))
+    assert "抓到了但**不完整**" not in readme
+    line = next(x for x in readme.splitlines() if "**不完整**的网页" in x)
+    assert line.startswith("导出了档但**不完整**的网页（「完整度」「缺什么」栏）：")
+    assert "不完整 2 页" in line
+    assert line.endswith("（其中 2 页分类不是「抓到了」，算在上表「其中有档但还要处理」里）")
 
 
 def test_the_readme_counts_what_is_still_queued_from_the_manifest_other_sites_rows_too(tmp_path):

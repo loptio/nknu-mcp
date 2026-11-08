@@ -319,7 +319,9 @@ def test_P6_a_name_that_did_not_resolve_is_tried_again_and_its_urls_wait(tmp_pat
     assert {x["state"] for x in rows(crawler).values()} == {"done"}
 
 
-def test_P6_dns_backs_off_to_six_hours_then_gives_up_so_the_run_can_end(tmp_path):
+def test_P6_dns_backs_off_then_gives_up_so_the_run_can_end(tmp_path):
+    """10, 20, 40 minutes, then given up at the fourth lookup (about an hour: the owner 11-08 「不用再傻等了」; it was
+    eight, up to six hours apart, about a day)."""
     from nknu.archive.crawler import DNS_GIVE_UP
 
     crawler, _, clock = make(tmp_path, {}, resolver=lambda h: ("dns-fail", None, None))
@@ -332,7 +334,7 @@ def test_P6_dns_backs_off_to_six_hours_then_gives_up_so_the_run_can_end(tmp_path
         waits.append(row["next_at"] - clock())
         clock.t = row["next_at"]
         crawler._reresolve()
-    assert waits[:3] == [600, 1200, 2400] and max(waits) == 6 * 3600
+    assert waits == [600, 1200, 2400] and DNS_GIVE_UP == 4
     row = rows(crawler)["https://gone.nknu.edu.tw/a"]
     assert (row["state"], row["reason"]) == ("failed", "dns") and crawler.frontier.pending_left()[0] == 0
 

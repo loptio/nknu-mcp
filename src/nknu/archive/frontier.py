@@ -18,9 +18,12 @@ outcome.py (a read-only open, in its own temp schema), so every reader applies t
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -208,10 +211,38 @@ ALL_QUEUES = "*"  # the pause row that holds every queue (our network is down)
 NETWORKS = ("school", "other")  # the school's addresses (140.127.*) and everything else, told apart when one is down
 _NET = "net:"  # the pause row of one network: net:school, net:other
 RETRY_MIN_PREFIX = 3
+OLD_VIAS = ("old_frontier", "commoncrawl")  # the seeds an old source names (seeds.py), until a page links them
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+@contextmanager
+def write_first(conn: sqlite3.Connection, name: str) -> Iterator[None]:
+    """A transaction that reads, then writes, on a connection another one writes beside (the crawl's and its
+    reconciliation's, Frontier.sibling): the write lock is taken at its start (BEGIN IMMEDIATE, which waits out the busy
+    timeout as any write does), so no commit of the other comes between its read and its write. Begun as a read (a
+    SAVEPOINT or a BEGIN), that write is refused at once and no wait helps (SQLITE_BUSY_SNAPSHOT: the lab run of 11-07
+    05:45 stopped on it, pagetypes.observe). Inside a transaction already: a savepoint of it, the caller's to end."""
+    if conn.in_transaction:
+        conn.execute(f"SAVEPOINT {name}")
+        try:
+            yield
+        except BaseException:
+            conn.execute(f"ROLLBACK TO {name}")
+            conn.execute(f"RELEASE {name}")
+            raise
+        conn.execute(f"RELEASE {name}")
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def network_of(queue: str) -> str:
@@ -221,6 +252,16 @@ def network_of(queue: str) -> str:
 def net_key(network: str) -> str:
     """The pause row of one network's queues."""
     return _NET + network
+
+
+def ids_clause(column: str, ids: Iterable[int] | None) -> tuple[str, list[str]]:
+    """The condition (its AND first) that keeps a statement to these url rows: a run given --only (`nknu archive run
+    --only`, the owner 11-02) touches no other row. column: the url id it reads (u.id, id, a.list_id: a press goes
+    with its list page's row). Its one argument is the ids as a JSON array, so that no list is too long for SQLite's
+    host parameters. ('', []) when ids is None: every row; an empty ids is no row at all."""
+    if ids is None:
+        return "", []
+    return f" AND {column} IN (SELECT value FROM json_each(?))", [json.dumps(sorted(int(i) for i in ids))]
 
 
 ROUND_KEY = "round"  # meta: the round a frontier.db was made for, written when this version creates the file
@@ -406,15 +447,15 @@ class Frontier:
         return self.q(COUNT_PATH, (site, path))[0][0]
 
     def next_for(self, hosts: list[str], now: float, prefer_host: str | None = None,
-                 sites: frozenset[str] | None = None) -> sqlite3.Row | None:
+                 sites: frozenset[str] | None = None, ids: Iterable[int] | None = None) -> sqlite3.Row | None:
         """The next URL of one queue (its hosts), skipping hosts in cool-down or still within their Crawl-delay
         (design §6.7): important sites first (tier), then lists, seeds and sitemaps before pages before files before
         images (prio), the host the queue's connection is on now before another name of that server (prefer_host:
         its connection is warm), shallower first, then in discovery order. A row whose prio is below 0 goes before
         all of them, the lowest first (design §23 B1: a Google Sites page's runtime pictures right after the page,
         the hop a picture's 302 leads to before the next picture, the page read again for new addresses). sites: only
-        rows that count for these sites (a run given --sites). The row is marked active. (Queue pauses are the
-        caller's check.)"""
+        rows that count for these sites (a run given --sites); ids: only these rows (a run given --only). The row is
+        marked active. (Queue pauses are the caller's check.)"""
         if not hosts:
             return None
         marks = ",".join("?" * len(hosts))
@@ -422,13 +463,14 @@ class Frontier:
         if sites is not None:
             only = f" AND u.owner_site IN ({','.join('?' * len(sites))})"
             args += sorted(sites)
+        by_id, id_args = ids_clause("u.id", ids)
         with self.lock:
             row = self.conn.execute(
                 f"""SELECT u.* FROM url u JOIN host h ON h.host = u.host
                      WHERE u.host IN ({marks}) AND u.state = 'pending' AND u.next_at <= ? AND h.cooldown_until <= ?
-                       AND h.not_before <= ?{only}
+                       AND h.not_before <= ?{only}{by_id}
                      ORDER BY min(u.prio, 0), u.tier, u.prio, u.host = ? DESC, u.depth, u.id LIMIT 1""",
-                (*args, prefer_host or "")).fetchone()
+                (*args, *id_args, prefer_host or "")).fetchone()
             if row is not None:
                 self.conn.execute("UPDATE url SET state='active' WHERE id=?", (row["id"],))
             return row
@@ -438,9 +480,21 @@ class Frontier:
         sets = ", ".join(f"{k}=?" for k in cols)
         self.x(f"UPDATE url SET {sets} WHERE id=?", (*cols.values(), uid))
 
-    def requeue_active(self) -> int:
-        """Rows left active by a stopped run go back to pending (only the run that holds run.lock calls this)."""
-        return self.x("UPDATE url SET state='pending' WHERE state='active'")
+    def old_only(self, uid: int) -> bool:
+        """Only an old source names this row (found_via OLD_VIAS: the old archive's, Common Crawl's) and no page of this
+        round links to it: one of the addresses monitor's R3b and R4b list (§18.2b)."""
+        # a page links it in either scheme (a host that answers on one only: its rows are written in that one,
+        # crawler._scheme_rewrite, while link.dst keeps the page's spelling; review 11-08)
+        return bool(self.q(f"SELECT 1 FROM url u WHERE u.id = ? AND u.found_via IN {OLD_VIAS!r} AND NOT EXISTS "
+                           "(SELECT 1 FROM link l WHERE l.dst IN (u.url, CASE WHEN u.url LIKE 'https://%' THEN "
+                           "'http://' || substr(u.url, 9) ELSE 'https://' || substr(u.url, 8) END) AND l.src <> u.id)",
+                           (uid,)))
+
+    def requeue_active(self, ids: Iterable[int] | None = None) -> int:
+        """Rows left active by a stopped run go back to pending (only the run that holds run.lock calls this). ids:
+        only these rows (a run given --only leaves every other row as it is, for the next full run to take back)."""
+        by_id, id_args = ids_clause("id", ids)
+        return self.x(f"UPDATE url SET state='pending' WHERE state='active'{by_id}", id_args)
 
     def retry(self, prefix: str) -> tuple[int, int]:
         """`nknu archive retry`: the URLs whose reason starts with prefix (any case, at least three characters) get
@@ -483,11 +537,12 @@ class Frontier:
             sets = ", ".join(f"{k}=?" for k in cols)
             self.conn.execute(f"UPDATE host SET {sets} WHERE host=?", (*cols.values(), host))
 
-    def queues(self, now: float, sites: frozenset[str] | None = None) -> dict[str, list[str]]:
+    def queues(self, now: float, sites: frozenset[str] | None = None,
+               ids: Iterable[int] | None = None) -> dict[str, list[str]]:
         """queue -> its hosts, for the queues that have work due and are not paused (nor their network). sites: only
-        work that counts for these sites. A host whose queue is not known yet ('?', what the old archive's hosts are
-        seeded with) is in none: it is looked up first (Crawler._place_hosts), so that no server is ever asked on two
-        queues at once (second review, 10-26)."""
+        work that counts for these sites; ids: only these rows (a run given --only). A host whose queue is not known
+        yet ('?', what the old archive's hosts are seeded with) is in none: it is looked up first
+        (Crawler._place_hosts), so that no server is ever asked on two queues at once (second review, 10-26)."""
         if self.paused_until(ALL_QUEUES) > now:
             return {}
         paused = {r[0] for r in self.q("SELECT queue FROM pause WHERE until > ?", (now,))}
@@ -495,9 +550,10 @@ class Frontier:
         if sites is not None:
             only = f" AND u.owner_site IN ({','.join('?' * len(sites))})"
             args += sorted(sites)
+        by_id, id_args = ids_clause("u.id", ids)
         rows = self.q(f"""SELECT DISTINCT h.queue, h.host FROM host h JOIN url u ON u.host = h.host
                           WHERE u.state = 'pending' AND u.next_at <= ? AND h.cooldown_until <= ?
-                            AND h.not_before <= ? AND h.queue NOT IN ('?', ''){only}""", args)
+                            AND h.not_before <= ? AND h.queue NOT IN ('?', ''){only}{by_id}""", [*args, *id_args])
         out: dict[str, list[str]] = {}
         for r in rows:
             if r["queue"] not in paused and net_key(network_of(r["queue"])) not in paused:
@@ -507,36 +563,45 @@ class Frontier:
     def hosts_of(self, queue: str) -> list[str]:
         return [r["host"] for r in self.q("SELECT host FROM host WHERE queue=?", (queue,))]
 
-    def next_due(self, hosts: list[str]) -> float | None:
-        """When the next pending row of these hosts is due (its retry, its host's cool-down or Crawl-delay)."""
+    def next_due(self, hosts: list[str], ids: Iterable[int] | None = None) -> float | None:
+        """When the next pending row of these hosts is due (its retry, its host's cool-down or Crawl-delay). ids:
+        only these rows (a run given --only)."""
         if not hosts:
             return None
         marks = ",".join("?" * len(hosts))
+        by_id, id_args = ids_clause("u.id", ids)
         return self.q(f"SELECT min(max(u.next_at, h.cooldown_until, h.not_before)) FROM url u JOIN host h "
-                      f"ON h.host = u.host WHERE u.host IN ({marks}) AND u.state = 'pending'", hosts)[0][0]
+                      f"ON h.host = u.host WHERE u.host IN ({marks}) AND u.state = 'pending'{by_id}",
+                      [*hosts, *id_args])[0][0]
 
-    def pending_left(self) -> tuple[int, float | None]:
-        """How many URLs still wait (pending or active), and the earliest time one of the pending is due."""
-        n = self.q("SELECT count(*) FROM url WHERE state IN ('pending','active')")[0][0]
+    def pending_left(self, ids: Iterable[int] | None = None) -> tuple[int, float | None]:
+        """How many URLs still wait (pending or active), and the earliest time one of the pending is due. ids: only
+        these rows (a run given --only)."""
+        by_id, id_args = ids_clause("id", ids)
+        n = self.q(f"SELECT count(*) FROM url WHERE state IN ('pending','active'){by_id}", id_args)[0][0]
+        by_id, id_args = ids_clause("u.id", ids)
         nxt = self.q("SELECT min(max(u.next_at, h.cooldown_until, h.not_before)) FROM url u JOIN host h ON h.host=u.host "
-                     "WHERE u.state='pending'")[0][0]
+                     f"WHERE u.state='pending'{by_id}", id_args)[0][0]
         return n, nxt
 
-    def waiting(self, sites: frozenset[str] | None = None) -> tuple[int, float | None]:
-        """For the run's end (review 10-26 B1): how many URLs (of these sites) are pending or active, and when the
-        soonest pending one is due, its host's cool-down, Crawl-delay and DNS back-off and its queue's pauses (its
-        own, its network's, every queue's) counted in."""
+    def waiting(self, sites: frozenset[str] | None = None,
+                ids: Iterable[int] | None = None) -> tuple[int, float | None]:
+        """For the run's end (review 10-26 B1): how many URLs (of these sites; of these rows, for a run given --only)
+        are pending or active, and when the soonest pending one is due, its host's cool-down, Crawl-delay and DNS
+        back-off and its queue's pauses (its own, its network's, every queue's) counted in."""
         only, args = "", []
         if sites is not None:
             only = f" AND u.owner_site IN ({','.join('?' * len(sites))})"
             args = sorted(sites)
-        n = self.q(f"SELECT count(*) FROM url u WHERE u.state IN ('pending','active'){only}", args)[0][0]
+        by_id, id_args = ids_clause("u.id", ids)
+        n = self.q(f"SELECT count(*) FROM url u WHERE u.state IN ('pending','active'){only}{by_id}",
+                   [*args, *id_args])[0][0]
         due = self.q(f"""SELECT min(max(u.next_at, coalesce(h.cooldown_until, 0), coalesce(h.not_before, 0),
                            coalesce((SELECT max(p.until) FROM pause p WHERE p.queue IN
                              (h.queue, '{ALL_QUEUES}', '{_NET}' || CASE WHEN h.queue LIKE 'ip:140.127.%'
                                                                   THEN 'school' ELSE 'other' END)), 0)))
                          FROM url u LEFT JOIN host h ON h.host = u.host
-                         WHERE u.state = 'pending'{only}""", args)[0][0]
+                         WHERE u.state = 'pending'{only}{by_id}""", [*args, *id_args])[0][0]
         return n, due
 
     # ---- servers that do not connect (review 10-26 B2)

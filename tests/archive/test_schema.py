@@ -55,7 +55,8 @@ READ = {
 VIEW_ADDS = {
     "url_result": {"result", "type_verdict"},
     "action_result": {"result"},
-    "page_resource": {"page_id", "res_key", "role", "need", "result", "res", "via", "marked"},
+    "page_resource": {"page_id", "res_key", "role", "need", "result", "res", "via", "marked",
+                      "gone_why"},  # gone_why: 11-03, a file link landing on a school homepage (gone_home)
     "page_completeness": {"id", "site", "tier", "content_id", "page_type", "page_role", "own", "n_must", "n_school",
                           "n_wait", "n_unchecked", "n_round2", "n_bad", "n_failed", "n_click", "n_review", "miss_file",
                           "miss_img", "miss_other", "ended_by", "list_ok", "level", "label", "reasons",

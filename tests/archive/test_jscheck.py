@@ -14,6 +14,7 @@ import itertools
 import json
 import random
 import re
+import socket
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -916,15 +917,27 @@ class _Local(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST = _answer
 
 
+# the test pages' host: a name of its own that resolves to the loopback server, since the crawl's rules leave this
+# machine's own addresses out (scope.judge loopback, 11-06: no row for where a page stopped there)
+PAGES_HOST = "jstest.example"
+
+
+def _pages_host_on_loopback(monkeypatch) -> None:
+    real = socket.getaddrinfo
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *a, **k: real("127.0.0.1" if host == PAGES_HOST else host, *a, **k))
+
+
 @pytest.mark.browser
-def test_this_machine_s_chrome_asks_everything_through_our_queue(tmp_path):
+def test_this_machine_s_chrome_asks_everything_through_our_queue(tmp_path, monkeypatch):
     pytest.importorskip("playwright.async_api", reason="没装 Playwright（pyproject 的 extra browser：uv sync --extra "
                                                        "browser），这个测试要用它开本机的 Chrome")
     _Local.hits = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Local)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_address[1]}"
+    _pages_host_on_loopback(monkeypatch)
+    base = f"http://{PAGES_HOST}:{server.server_address[1]}"
     try:
         root = make_root(tmp_path)
         names = ("plain", "js", "later", "click", "moved")

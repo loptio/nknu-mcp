@@ -72,6 +72,12 @@ password box on a page of few links, or a login title or path); note tokens keep
 
 SpotChecker is reconcile's R6 (§18.2b): the same browser, dead proxy, bridge and queues, one page at a time with a
 picture of it (request rows purpose spotcheck), under the locks its caller holds.
+
+Where the requests are made from (11-03, P33; the crawl's B4, review 10-26): given campus_url (crawler.CAMPUS_URL),
+SSO's campus check page is asked on SSO's own queue (request purpose campus, the gap and rests as any request's)
+before the first request, hourly, and again when this machine's address changes, and every request row says what it
+found, on, off or unknown, as the crawl's do; without it (None, the tests') nothing more is sent and the rows say
+unknown.
 """
 
 from __future__ import annotations
@@ -100,10 +106,12 @@ from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import google_api, links, outcome, pagetypes, profiles, round1, scope
 from nknu.archive.crawler import (
+    _CAMPUS_OFF,
     _KIND_OF0,
     _LOGIN_TITLE,
     _PRIO_OF0,
     BREAKER_THRESHOLD,
+    CAMPUS_EVERY_S,
     CONN_KINDS,
     CONN_PAUSE_S,
     COOLDOWN,
@@ -111,6 +119,7 @@ from nknu.archive.crawler import (
     LOGIN_MAX_LINKS,
     MAX_BYTES,
     NO_RATE,
+    REDIRECTS,
     REST_NOW,
     SERVER_REST_S,
     SLOW_CAP_S,
@@ -120,6 +129,7 @@ from nknu.archive.crawler import (
     check_gap,
     error_kind,
     hold_run_lock,
+    local_address,
     netcheck,
     resolve,
 )
@@ -766,6 +776,9 @@ class Sender:
         self._lanes: dict[str, _Lane] = {}
         self._queues: dict[str, str] = {}
         self._lock = threading.Lock()
+        self.campus = "unknown"  # on, off or unknown: written on every request row (crawler B4, 11-03 P33)
+        self._campus_at, self._campus_addr = float("-inf"), None
+        self._campus_lock = threading.Lock()
 
     def queue_of(self, host: str) -> str:
         """The host's server queue: the crawl's (host table), Google's named ones, or a lookup (never written)."""
@@ -793,6 +806,8 @@ class Sender:
 
     async def send(self, a: Ask) -> Answer:
         loop = asyncio.get_running_loop()
+        if self._campus_due():
+            await self._campus_check(loop)
         host = (urlsplit(a.url).hostname or "").lower()
         queue = await loop.run_in_executor(None, self.queue_of, host)
         if queue == "dns-fail":
@@ -803,7 +818,7 @@ class Sender:
         except RuntimeError:  # the lane was closed: the check is ending
             return Answer(unsent="stop")
 
-    def _send(self, lane: _Lane, host: str, a: Ask) -> Answer:
+    def _send(self, lane: _Lane, host: str, a: Ask, purpose: str | None = None) -> Answer:
         c = self.check
         if c.stop.is_set():
             return Answer(unsent="stop")
@@ -839,7 +854,7 @@ class Sender:
             got = exc
         finally:
             if sent:
-                self._log(lane, host, a.url, started, got)
+                self._log(lane, host, a.url, started, got, purpose)
                 self._gap(lane, host, c.clock() - started)
         if isinstance(got, Snapshot):
             self.fr.server_err_clear(lane.name)
@@ -860,9 +875,11 @@ class Sender:
         if crawl_delay > delay:
             self.fr.set_host(host, not_before=ended + crawl_delay)
 
-    def _log(self, lane: _Lane, host: str, url: str, started: float, got) -> None:
-        """One request row per request on the wire (fetch.Sent; crawler._log), purpose jscheck (or the caller's)."""
+    def _log(self, lane: _Lane, host: str, url: str, started: float, got, purpose: str | None = None) -> None:
+        """One request row per request on the wire (fetch.Sent; crawler._log), purpose jscheck (or the caller's, or
+        campus), campus what the last campus check found."""
         c = self.check
+        purpose = purpose or c.purpose
         wire = getattr(got, "sent", ()) or ()
         warc = None
         if lane.sink is not None:
@@ -871,12 +888,69 @@ class Sender:
         if not wire:
             status = got.status if isinstance(got, Snapshot) else getattr(got, "status", None)
             error = None if isinstance(got, Snapshot) else f"{type(got).__name__}: {got}"[:300]
-            self.fr.request(lane.name, host, url, c.purpose, started, c.clock(), status, error, campus="unknown")
+            self.fr.request(lane.name, host, url, purpose, started, c.clock(), status, error, campus=self.campus)
         for s in wire:
-            self.fr.request(lane.name, host, url, c.purpose, s.started, s.ended, s.status, s.error, attempt=s.attempt,
+            self.fr.request(lane.name, host, url, purpose, s.started, s.ended, s.status, s.error, attempt=s.attempt,
                             method=s.method, bytes=s.bytes, new_conn=s.new_conn, connect_ms=s.connect_ms,
                             tls_ms=s.tls_ms, ip=s.ip, warc=warc if s.warc_offset is not None else None,
-                            warc_offset=s.warc_offset, campus="unknown")
+                            warc_offset=s.warc_offset, campus=self.campus)
+
+    # ---- where the requests are made from (crawler B4: Crawler._campus_due, _campus_step)
+    def _campus_due(self) -> bool:
+        """Whether the campus check is due, and if so taken by this caller: hourly, and at once when this machine's
+        address changed, from which moment the rows say unknown until the check has been made."""
+        c = self.check
+        if not c.campus_url:
+            return False
+        with self._campus_lock:
+            addr = c.local_address()
+            if addr != self._campus_addr:
+                if self._campus_addr is not None and self.campus != "unknown":
+                    self.campus = "unknown"
+                    self.fr.event("info", "campus", f"{c.purpose}: 这台机器的地址变了：校内还是校外，等 SSO 的判断页再查一次之前"
+                                  "记 unknown", None, c.campus_url)
+            elif c.clock() - self._campus_at < CAMPUS_EVERY_S:
+                return False
+            self._campus_addr, self._campus_at = addr, c.clock()
+            return True
+
+    async def _campus_check(self, loop: asyncio.AbstractEventLoop) -> None:
+        """One GET of SSO's check page on SSO's queue: off campus it says so (「您的IP 不在校內網路」); on campus it sends
+        the visitor on to the system cURL names (never followed). Not sent (a rest, a stop): asked again before the
+        next request."""
+        c, url = self.check, self.check.campus_url
+        host = (urlsplit(url).hostname or "").lower()
+        queue = await loop.run_in_executor(None, self.queue_of, host)
+        got = Answer(unsent="dns") if queue == "dns-fail" else None
+        if got is None:
+            lane = self.lane(queue)
+            try:
+                got = await loop.run_in_executor(lane.pool, self._send, lane, host, Ask(url), "campus")
+            except RuntimeError:  # the lane was closed: the check is ending
+                got = Answer(unsent="stop")
+        if got.unsent:
+            with self._campus_lock:
+                self._campus_at = float("-inf")
+            return
+        if got.status in REDIRECTS:
+            # any redirect but to the system cURL names (its error page, https) says nothing of where we are
+            loc = next((v for k, v in got.headers if k.lower() == "location"), "")
+            to = scope.canonical(loc, url)
+            state = "on" if to is not None and urlsplit(to).hostname == _campus_system(url) else "unknown"
+            if state == "unknown":
+                self.fr.event("warn", "campus", f"{c.purpose}: SSO 的校内判断页转去 {to or '（没有 Location）'}，不是 cURL "
+                              f"指的 {_campus_system(url)}：判断不出在校内还是校外", None, url)
+        elif got.status == 200:
+            state = "off" if _CAMPUS_OFF.search(_decode(got.body)) else "unknown"
+            if state == "unknown":
+                self.fr.event("warn", "campus", f"{c.purpose}: SSO 的校内判断页样子变了，判断不出在校内还是校外", None, url)
+        else:
+            state = "unknown"
+        if state != self.campus:
+            where = {"on": "在校内网络", "off": "在校外网络"}.get(state, "在哪里判断不出")
+            self.fr.event("warn" if state == "on" else "info", "campus", f"{c.purpose}: campus: {state} (这台机器{where})",
+                          None, url)
+        self.campus = state
 
     def _failed(self, lane: _Lane, host: str, url: str, exc, kind: str) -> None:
         """A server that asks for a wait, says 503, errs three times in a row or does not connect rests as a whole
@@ -919,6 +993,14 @@ class Sender:
             with contextlib.suppress(Exception):
                 if lane.sink is not None:
                     lane.sink.close()
+
+
+def _campus_system(url: str) -> str:
+    """The host of the system the campus check page's cURL names (edocap.nknu.edu.tw; crawler._campus_system)."""
+    for k, v in parse_qsl(urlsplit(url).query):
+        if k.lower() == "curl":
+            return (urlsplit(v if "://" in v else f"https://{v}").hostname or "").lower()
+    return ""
 
 
 def _target(a: Ask) -> Target | str:
@@ -1041,11 +1123,14 @@ class JsCheck:
                  plan: round1.Plan | None = None, clock: Callable[[], float] = wall,
                  sleep: Callable[[float], None] = time.sleep,
                  asleep: Callable[[float], Awaitable[None]] = asyncio.sleep, rng: random.Random | None = None,
-                 pages_at_once: int = PAGES_AT_ONCE, school_lock: Path | None = None, purpose: str = PURPOSE):
+                 pages_at_once: int = PAGES_AT_ONCE, school_lock: Path | None = None, purpose: str = PURPOSE,
+                 campus_url: str | None = None, local_address: Callable[[], str | None] = local_address):
         """old: the 10-24 archive (its directory or frontier.db), read only, for the types with no page this round.
         browser: PlaywrightBrowser() when not given. client_factory: crawler.archive_client's (a test's transport).
         plan: the site list (round1.load() when needed). school_lock: the machine-wide lock's path (schoollock's).
-        purpose: request.purpose and the WARC files' name (reconcile's R6 shares the browser and queues: spotcheck)."""
+        purpose: request.purpose and the WARC files' name (reconcile's R6 shares the browser and queues: spotcheck).
+        campus_url: the campus check (crawler.CAMPUS_URL; None: no check, campus stays unknown), local_address: this
+        machine's address (crawler.local_address), as the crawl's (B4)."""
         self.root = Path(root)
         self.old = old
         self.gap = check_gap(gap)
@@ -1059,6 +1144,7 @@ class JsCheck:
         self.pages_at_once = pages_at_once
         self.school_lock = school_lock
         self.purpose = purpose
+        self.campus_url, self.local_address = campus_url, local_address
         self.stop = threading.Event()
         self.end_reason: str | None = None
         self.end_detail: str | None = None
@@ -1524,9 +1610,11 @@ class SpotChecker:
     def __init__(self, root: Path, fr: Frontier, *, browser: Browser | None = None, gap: tuple[float, float] = GAP,
                  client_factory: Callable[[WarcSink | None], Client] | None = None,
                  resolver: Callable[[str], tuple] = resolve, clock: Callable[[], float] = wall,
-                 sleep: Callable[[float], None] = time.sleep, rng: random.Random | None = None, shots: bool = True):
+                 sleep: Callable[[float], None] = time.sleep, rng: random.Random | None = None, shots: bool = True,
+                 campus_url: str | None = None, local_address: Callable[[], str | None] = local_address):
         self.check = JsCheck(root, gap=gap, browser=browser, client_factory=client_factory, resolver=resolver,
-                             clock=clock, sleep=sleep, rng=rng, purpose="spotcheck")
+                             clock=clock, sleep=sleep, rng=rng, purpose="spotcheck", campus_url=campus_url,
+                             local_address=local_address)
         self.check.fr = fr
         self.check.sender = Sender(self.check)
         self.browser = browser or PlaywrightBrowser()

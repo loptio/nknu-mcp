@@ -185,8 +185,9 @@ def _down(crawler, net, clock, q, hours):
 
 
 def test_a_server_down_for_12_hours_costs_no_url_an_attempt(tmp_path):
-    """B2: a server that answered before (off campus) and does not connect for hours: its rows wait, every one with
-    all its attempts; one warning says so."""
+    """B2: a server that answered before (off campus) and does not connect for hours: no row loses an attempt; one
+    warning says so. Once it is down (CONN_GIVE_UP in a row) its rows fail as server_down instead of waiting (the owner
+    11-08: 「不用再傻等了」)."""
     q = "ip:140.127.62.110"
     crawler, net, clock = make(tmp_path, {"robots.txt": conn_err()}, queues={"a.nknu.edu.tw": q, "b.nknu.edu.tw": q})
     for h in ("a", "b"):
@@ -194,19 +195,21 @@ def test_a_server_down_for_12_hours_costs_no_url_an_attempt(tmp_path):
             seed(crawler, f"https://{h}.nknu.edu.tw/p{i}", tier=0)
         crawler.frontier.set_host(f"{h}.nknu.edu.tw", answered_off=1)
     _down(crawler, net, clock, q, 12)
-    got = Counter((r["state"], r["attempts"]) for r in crawler.frontier.q("SELECT state, attempts FROM url"))
-    assert got == Counter({("pending", 0): 10})
+    got = Counter((r["state"], r["attempts"], r["reason"]) for r in crawler.frontier.q("SELECT * FROM url"))
+    assert got == Counter({("failed", 0, "server_down"): 10})
     assert len(events(crawler, "server_down")) == 1 and not events(crawler, "host_unreachable")
 
 
 def test_the_school_network_down_for_6_hours_while_the_internet_works_costs_the_school_nothing(tmp_path):
-    """B2: 4 school servers refuse every connection for 6 hours while an off-campus queue keeps answering. Nothing is
-    held against the school's URLs or servers: no attempt, no lab, no failure streak."""
+    """B2: 4 school servers that worked refuse every connection for 6 hours while an off-campus queue keeps
+    answering. Nothing is held against the school's URLs or servers: no attempt, no lab, no failure streak. (A school
+    server that never answered says nothing of its network, 11-06: test_school_net_1106.)"""
     school = {f"s{i}.nknu.edu.tw": f"ip:140.127.1.{i}" for i in range(1, 5)}
     other = {"files.example.org": "ip:93.184.216.34"}
     routes = {"files.example.org": lambda u: snap(u, html="<p>x</p>"), **{h: conn_err() for h in school}}
     crawler, net, clock = make(tmp_path, routes, queues={**school, **other})
-    for h in school:
+    for h, q in school.items():
+        crawler.frontier.request(q, h, f"https://{h}/", "page", clock() - 600, clock() - 599, 200, None)
         for j in range(3):
             seed(crawler, f"https://{h}/p{j}")
     queues = [*school.values(), *other.values()]

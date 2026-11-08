@@ -345,18 +345,36 @@ def test_the_acceptance_and_the_dashboard_say_which_gates_compared_nothing(tmp_p
 # ---------------------------------------------------------------- 7. the top bar and a stale reconciliation (S1)
 
 
-def test_the_top_bar_is_green_only_when_every_site_is_done(tmp_path):
+def _top_line(w) -> tuple[dict, str]:
+    d = progress.Dashboard(w.root, background=False, cache_s=0)
+    try:
+        d.refresh_slow()
+        snap = d.main()
+    finally:
+        d.close()
+    return snap["run"], viewer.home_html(snap).split("<p class='big'>", 1)[1].split("</p>", 1)[0]
+
+
+def test_a_finished_run_is_never_green_on_the_top_line_and_done_is_the_site_pages(tmp_path):
+    """Review 10-26 (nothing left to fetch is no 爬完), on the 11-04 dashboard: the top line says 抓完了 in no colour of
+    its own, with 不等于每个网站都爬完; whether a site is 爬完 is its own page's."""
     w = make_world(tmp_path)
     cc_also(tmp_path, OLD_PDF)
     w.school = Refusing(w.school.html, refused=(OLD_PDF,))
     _all_steps(w)
-    _dash, html = w.dashboard()
-    assert "c-green'>✓ 上次" not in html and "不等于爬完" in html
+    run, top = _top_line(w)
+    assert run["color"] != "green" and "c-green" not in top
+    assert run["words"] != "抓完了" or "不等于每个网站都爬完" in run["tip"]
+    dash, page = w.dashboard()
+    assert dash["state"] != "done" and "✓ 爬完" not in page
     (tmp_path / "b").mkdir()
     w2 = make_world(tmp_path / "b")
     _all_steps(w2)
-    _dash, html = w2.dashboard()
-    assert "c-green'>✓ 上次" in html
+    run, top = _top_line(w2)
+    assert run["words"] == "抓完了" and run["color"] == "none" and "不等于每个网站都爬完" in run["tip"]
+    assert "c-green" not in top
+    dash, page = w2.dashboard()
+    assert dash["state"] == "done" and "✓ 爬完" in page
 
 
 def test_the_site_page_says_a_reconciliation_is_stale(tmp_path):

@@ -47,7 +47,7 @@ from urllib.parse import parse_qsl, urlsplit
 from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import links, scope
-from nknu.archive.frontier import Frontier
+from nknu.archive.frontier import Frontier, write_first
 
 # ---------------------------------------------------------------- §8.1 the page-type key
 # a last segment of these is a web page file: its path is a template with {n} for each run of digits; any other path is
@@ -233,48 +233,41 @@ def observe(fr: Frontier, *, url_id: int, url: str, m: Measure, click: bool | No
     parts = type_parts(url, site)
     key = parts.key
     strong, weak = m.strong, m.weak
-    with fr.lock:
+    with fr.lock, write_first(fr.conn, "pagetypes_observe"):  # it reads, then writes (11-07 05:45)
         conn = fr.conn
-        conn.execute("SAVEPOINT pagetypes_observe")
-        try:
-            prev = conn.execute(f"SELECT page_type, {_HAS_HINT} FROM url WHERE id=?", (url_id,)).fetchone()
-            if prev is None:
-                raise KeyError(f"url row {url_id} does not exist")
-            again = prev[0] == key
-            if prev[0] is not None and not again:  # counted under a key the rules no longer give: not there now
-                conn.execute("UPDATE page_type SET n_pages=max(n_pages - 1, 0), n_strong=max(n_strong - ?, 0) "
-                             "WHERE key=?", (int(bool(prev[1])), prev[0]))
-            if click is None:
-                click = click_hint(conn, url_id)
-            row = conn.execute("SELECT * FROM page_type WHERE key=?", (key,)).fetchone()
-            new = row is None
-            retyped, kept = None, ()
-            if new:
-                conn.execute(
-                    "INSERT INTO page_type(key, site, host, path_tpl, params, verdict, why, sample_id, sample_url, "
-                    "n_pages, n_strong, n_weak, source) VALUES (?,?,?,?,?,'todo','new',?,?,1,?,?,'crawl')",
-                    (key, parts.site, parts.host, parts.path_tpl, json.dumps(list(parts.params)), url_id, url,
-                     int(strong), int(weak)))
-            else:
-                n_pages = row["n_pages"] + (0 if again else 1)
-                n_strong = max(0, row["n_strong"] + int(strong) - int(again and bool(prev[1])))
-                n_weak = row["n_weak"] + (0 if again else int(weak))
-                signs = _signs(row["verdict"], strong=strong, click=bool(click), n_pages=n_pages, n_weak=n_weak)
-                verdict, why = row["verdict"], row["why"]
-                if signs and row["source"] in CHANGEABLE_SOURCES:
-                    verdict, why, retyped = "todo", signs[0], signs[0]
-                elif signs:
-                    kept = signs
-                conn.execute(
-                    "UPDATE page_type SET n_pages=?, n_strong=?, n_weak=?, verdict=?, why=?, "
-                    "sample_id=coalesce(sample_id, ?), sample_url=coalesce(sample_url, ?) WHERE key=?",
-                    (n_pages, n_strong, n_weak, verdict, why, url_id, url, key))
-            conn.execute("UPDATE url SET page_type=? WHERE id=?", (key, url_id))
-        except BaseException:
-            conn.execute("ROLLBACK TO pagetypes_observe")
-            conn.execute("RELEASE pagetypes_observe")
-            raise
-        conn.execute("RELEASE pagetypes_observe")
+        prev = conn.execute(f"SELECT page_type, {_HAS_HINT} FROM url WHERE id=?", (url_id,)).fetchone()
+        if prev is None:
+            raise KeyError(f"url row {url_id} does not exist")
+        again = prev[0] == key
+        if prev[0] is not None and not again:  # counted under a key the rules no longer give: not there now
+            conn.execute("UPDATE page_type SET n_pages=max(n_pages - 1, 0), n_strong=max(n_strong - ?, 0) "
+                         "WHERE key=?", (int(bool(prev[1])), prev[0]))
+        if click is None:
+            click = click_hint(conn, url_id)
+        row = conn.execute("SELECT * FROM page_type WHERE key=?", (key,)).fetchone()
+        new = row is None
+        retyped, kept = None, ()
+        if new:
+            conn.execute(
+                "INSERT INTO page_type(key, site, host, path_tpl, params, verdict, why, sample_id, sample_url, "
+                "n_pages, n_strong, n_weak, source) VALUES (?,?,?,?,?,'todo','new',?,?,1,?,?,'crawl')",
+                (key, parts.site, parts.host, parts.path_tpl, json.dumps(list(parts.params)), url_id, url,
+                 int(strong), int(weak)))
+        else:
+            n_pages = row["n_pages"] + (0 if again else 1)
+            n_strong = max(0, row["n_strong"] + int(strong) - int(again and bool(prev[1])))
+            n_weak = row["n_weak"] + (0 if again else int(weak))
+            signs = _signs(row["verdict"], strong=strong, click=bool(click), n_pages=n_pages, n_weak=n_weak)
+            verdict, why = row["verdict"], row["why"]
+            if signs and row["source"] in CHANGEABLE_SOURCES:
+                verdict, why, retyped = "todo", signs[0], signs[0]
+            elif signs:
+                kept = signs
+            conn.execute(
+                "UPDATE page_type SET n_pages=?, n_strong=?, n_weak=?, verdict=?, why=?, "
+                "sample_id=coalesce(sample_id, ?), sample_url=coalesce(sample_url, ?) WHERE key=?",
+                (n_pages, n_strong, n_weak, verdict, why, url_id, url, key))
+        conn.execute("UPDATE url SET page_type=? WHERE id=?", (key, url_id))
     return Observed(key=key, new=new, flags=(HINT_FLAG,) if strong else (), retyped=retyped, kept=kept)
 
 

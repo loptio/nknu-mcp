@@ -22,7 +22,9 @@ The chain of one list (§7.5):
    downloads that came to no file or failed back: their list's next GET presses only them (REDO_KEY).
 5. listwalk.ended_by says how the walk ended (§7.5 step 7): last_page, no_rows_ok, walking, mismatch:unknown_button
    (a button or a GET pager link the profile does not know: never last_page then), mismatch:no_next, mismatch:page,
-   mismatch:empty, mismatch:clv2, mismatch:total, max_pages, post_failed.
+   mismatch:empty, mismatch:clv2, mismatch:total, max_pages, post_failed. A list grid that holds nothing that leads
+   anywhere but text is a table of content (PageRead.content, FIX 3 11-06): no list at all with no pager; with one
+   its pages are pressed as a list's, and its last page ends it with no mismatch:empty.
 
 GET-paged lists (a site with no profile, WordPress, the SSO unit sites' MoreNews and 书表) are walked by the crawler's
 own GETs; get_walk() reads the pages' pager links (page_res role pager, with the ones a profile's pager box names:
@@ -56,7 +58,7 @@ from warcio.exceptions import ArchiveLoadFailed
 from warcio.statusandheaders import StatusAndHeadersParserException
 
 from nknu.archive import links, outcome, profiles, scope, sniff
-from nknu.archive.frontier import Frontier, wall
+from nknu.archive.frontier import Frontier, ids_clause, wall
 from nknu.crawl import webforms
 from nknu.crawl.adapter import Target
 from nknu.crawl.fetch import DecodeError, decode_body
@@ -126,6 +128,9 @@ class PageRead:
     # the crawler writes them as unhandled (要人看), never dropped unseen 【Claude 的执行办法】
     unplanned: tuple[str, ...] = ()
     unplanned_at: tuple[tuple[str, str], ...] = ()  # the same buttons, each (target, argument) as the page writes it
+    # the list grid is a table of content, no list (_content_table; FIX 3, 11-06): with a pager its pages are pressed
+    # as a list's and list_end gives no mismatch:empty for it; with none read_page gives walk none
+    content: bool = False
 
 
 def norm(text: str | None) -> str:
@@ -285,6 +290,10 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
     if lst.claimed and (m := re.search(lst.claimed, text)):
         claimed = int(m.group(1))
     empty = any(w in grid_text or (not rows and w in text) for w in lst.empty)
+    content = not rows and not empty and claimed is None and _content_table(lst, tree, pbs, rules)
+    if content and (pager is None or not pager.found):  # a table of content with no pager: no list (FIX 3, 11-06)
+        return PageRead(profile.name, None, "none", presses=tuple(presses), unknown=unknown, unplanned=unplanned,
+                        unplanned_at=unplanned_at, content=True)
     unknown_pagers: tuple[str, ...] = ()
     if lst.walk != "get":
         if page is None:
@@ -300,7 +309,62 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
                         unplanned_at=unplanned_at)
     return PageRead(profile.name, lst.name, lst.walk, rows, tuple(presses), pager.next, pager.how, pager.current,
                     pager.max_seen, pager.found, claimed, empty, unknown, unknown_pagers, suspicious, unplanned,
-                    unplanned_at)
+                    unplanned_at, content=content)
+
+
+_NO_PAGE = ("mailto:", "tel:")  # links that open no page: a table of people may hold them
+
+
+def _grid_row(node: LexborNode, grid: LexborNode) -> LexborNode | None:
+    """The row of the grid a node is in: its outermost tr inside the grid (a nested table's rows are its cell's)."""
+    row = None
+    while node is not None and node.mem_id != grid.mem_id:
+        if node.tag == "tr":
+            row = node
+        node = node.parent
+    return row
+
+
+def _content_table(rs: profiles.Rows, tree: LexborHTMLParser, pbs, rules) -> bool:
+    """Whether a list grid that shows no row (and no words for none, and no 「共 N 筆」: read_page) is a table of
+    content, not a list (FIX 3, 11-06, 【用户同意 Claude 的建议】: Claude's 11-04 fix 「用一条统一的判断：表格里一个链接
+    都没有、也没有翻页按钮的，就不当列表。这样不用一页一页加例外」, the owner 11-04 「待会再修」, 11-06 the button 「先修
+    三件再一起重开」): affair's forumsview.aspx (a discussion thread), tecs's activeorder.aspx (a sign-up table),
+    c.nknu's member.aspx (編制與業務, P51 11-03), tg's honor.aspx (an honour roll paged by Page$N). Nothing in the grid leads anywhere — no link (an <a href> or <area href>) but mailto:, tel: and the
+    postbacks the profile knows as its pager's or ignores (a Sort$ header), no onclick, no form control but hidden
+    inputs — and a cell (td) holds text in a row of the grid that holds no <a> but mailto: and tel: links and no
+    postback: never the pager's row, whose page shown is a number outside any link (spe's last page writes its
+    「下一頁」 as an <a> with no href). A javascript: link that is no postback, an href="#", a button, a postback the
+    profile does not know or presses for a row: a list (mismatch:empty, 要人看), what it opens is not known. How the
+    judgement reads a grid, and a paged table of content walked to its last page: 【Claude 的执行办法】"""
+    grid = tree.css_first(rs.grid)
+    if grid is None:
+        return False
+    posts = {n.mem_id for n, _t, _a in pbs}
+    known = {n.mem_id for n, t, a in pbs
+             if (b := rules[(t, a, n.mem_id)]) is not None and (b.role == "pager" or b.decision == "ignore")}
+    for n in grid.css("a[href], area[href], [onclick]"):
+        href = (n.attributes.get("href") or "").strip().lower()
+        if n.mem_id not in known and not (href.startswith(_NO_PAGE) and "onclick" not in n.attributes):
+            return False
+    for n in grid.css("input, select, textarea, button"):
+        hidden = n.tag == "input" and (n.attributes.get("type") or "").strip().lower() == "hidden"
+        if n.mem_id not in known and not hidden:
+            return False
+    for td in grid.css("td"):
+        if norm(td.text(separator=" ")) and (row := _grid_row(td, grid)) is not None and _plain_row(row, posts):
+            return True
+    return False
+
+
+def _plain_row(row: LexborNode, posts: set[int]) -> bool:
+    """A row of the grid with no postback in it and no <a> but mailto: and tel: links (an <a> with no href counts: spe's
+    disabled 「下一頁」 on its last page)."""
+    for x in row.css("a, [onclick], [onchange]"):
+        href = (x.attributes.get("href") or "").strip().lower()
+        if x.mem_id in posts or (x.tag == "a" and not href.startswith(_NO_PAGE)):
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -481,7 +545,7 @@ def list_end(pr: PageRead, rows_unique: int | None = None) -> str:
     """How the walk ends at this page when there is no next page to press (§7.5 step 7)."""
     if pr.has_pager and pr.current is None:
         return "mismatch:page"
-    if not pr.rows:
+    if not pr.rows and not pr.content:  # a table of content's page has no rows: its pager says where it ends (FIX 3)
         return "no_rows_ok" if pr.empty_said else "mismatch:empty"
     if pr.suspicious:
         return "mismatch:clv2"
@@ -638,12 +702,15 @@ def as_text(body: bytes, ctype: str | None) -> str:
 @dataclass
 class Stored:
     """What page_stored() did: the page's role by its profile (list: the crawler writes url.page_role), the presses
-    planned, and how its walk stands."""
+    planned, how its walk stands, and whether it is no list for a reason the page shows (content)."""
 
     page_role: str | None
     presses: int = 0
     ended_by: str | None = None
     unplanned: tuple[str, ...] = ()  # PageRead.unplanned: buttons to press that no press covers (要人看)
+    # no list, its grid a table of content (PageRead.content, no pager, no GET pager link): the crawler takes off what
+    # an older reading wrote of it as a list (its listwalk, page_role list; FIX 3, 11-06)
+    content: bool = False
 
 
 @dataclass
@@ -734,7 +801,16 @@ class Chains:
                                  self._rows_unique(list_id))
                 self._walk(list_id, site, prof.name, epoch, pages=1, rows=len(pr.rows), claimed=pr.claimed,
                            ended=ended, note="one page")
-        return Stored("list" if pr.walk != "none" or has_pagers else None, n, ended, pr.unplanned)
+        return Stored("list" if pr.walk != "none" or has_pagers else None, n, ended, pr.unplanned,
+                      content=pr.content and pr.walk == "none" and not has_pagers)
+
+    def not_a_list(self, page_id: int) -> None:
+        """A page read as a table of content (Stored.content: no list by its profile, no GET pager link; FIX 3, 11-06):
+        what an older reading wrote of it as a list goes, its listwalk (列表没翻完) and its page_role list (列表没核对).
+        Only on that proof: a page whose answer came back without its grid (no row set at all) keeps what its last
+        reading said (CLAUDE.md: 保留旧值). 【Claude 的执行办法】"""
+        self.f.x("UPDATE url SET page_role=NULL WHERE id=? AND page_role='list'", (page_id,))
+        self.f.x("DELETE FROM listwalk WHERE list_id=?", (page_id,))
 
     def _new_epoch(self, list_id: int) -> int:
         """A new GET of a list starts a new epoch: what is left of the older one is superseded (§7.5 step 9)."""
@@ -911,52 +987,61 @@ class Chains:
                   note or None, self.clock()))
 
     # ---- handing presses to the crawler
-    def next_action(self, queue: str, now: float | None = None, sites: Iterable[str] | None = None
-                    ) -> sqlite3.Row | None:
+    def next_action(self, queue: str, now: float | None = None, sites: Iterable[str] | None = None,
+                    ids: Iterable[int] | None = None) -> sqlite3.Row | None:
         """The next press of a queue (design §6.7: a chain's next step goes before the queue's url rows), marked
         active: a chain's rows before its next page, chains in the order they began; hosts in cool-down or within
-        their Crawl-delay wait. sites: only these sites' (a run given --sites)."""
+        their Crawl-delay wait. sites: only these sites' (a run given --sites); ids: only the presses of these url
+        rows, a press going with its list page's (action.list_id: a run given --only)."""
         now = self.clock() if now is None else now
         only, args = "", [queue, now, now, now]
         if sites is not None:
             sites = sorted(sites)
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
             args += sites
+        by_id, id_args = ids_clause("a.list_id", ids)
         with self.f.lock:
             row = self.f.conn.execute(
                 f"""SELECT a.* FROM action a LEFT JOIN host h ON h.host = a.host
                     WHERE a.queue = ? AND a.state = 'pending' AND coalesce(h.cooldown_until, 0) <= ?
-                      AND coalesce(h.not_before, 0) <= ? AND a.next_at <= ?{only}
+                      AND coalesce(h.not_before, 0) <= ? AND a.next_at <= ?{only}{by_id}
                     ORDER BY a.kind = 'click', a.list_id, a.epoch, a.step, a.kind = 'pager', a.id LIMIT 1""",
-                args).fetchone()
+                [*args, *id_args]).fetchone()
             if row is not None:
                 self.f.conn.execute("UPDATE action SET state='active' WHERE id=?", (row["id"],))
             return row
 
-    def due_queues(self, now: float | None = None, sites: Iterable[str] | None = None) -> list[str]:
+    def due_queues(self, now: float | None = None, sites: Iterable[str] | None = None,
+                   ids: Iterable[int] | None = None) -> list[str]:
         """The queues with a press due now (design §6.7: a chain's next step is that queue's work too), none paused
-        (its own pause, its network's or every queue's): the run starts their workers as it does for url rows."""
+        (its own pause, its network's or every queue's): the run starts their workers as it does for url rows. ids:
+        only the presses of these url rows (action.list_id: a run given --only)."""
         now = self.clock() if now is None else now
         only, args = "", [now, now, now]
         if sites is not None:
             sites = sorted(sites)
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
             args += sites
+        by_id, id_args = ids_clause("a.list_id", ids)
         queues = [r[0] for r in self.f.q(
             f"""SELECT DISTINCT a.queue FROM action a LEFT JOIN host h ON h.host = a.host
                 WHERE a.state = 'pending' AND coalesce(h.cooldown_until, 0) <= ? AND coalesce(h.not_before, 0) <= ?
-                  AND a.next_at <= ? AND a.queue NOT IN ('?', '', 'dns-fail'){only}""", args)]
+                  AND a.next_at <= ? AND a.queue NOT IN ('?', '', 'dns-fail'){only}{by_id}""", [*args, *id_args])]
         return [q for q in queues if self.f.paused_until(q) <= now]
 
-    def waiting(self, sites: Iterable[str] | None = None) -> tuple[int, float | None, list[sqlite3.Row]]:
-        """For the run's end (review 10-26 B1): how many presses (of these sites) are pending or active, when the
-        soonest pending one is due (its host's cool-down and Crawl-delay, its queue's pauses), and the active ones
-        (with no worker alive, a crash's: Crawler._should_end)."""
+    def waiting(self, sites: Iterable[str] | None = None,
+                ids: Iterable[int] | None = None) -> tuple[int, float | None, list[sqlite3.Row]]:
+        """For the run's end (review 10-26 B1): how many presses (of these sites; of these url rows, by
+        action.list_id, for a run given --only) are pending or active, when the soonest pending one is due (its
+        host's cool-down and Crawl-delay, its queue's pauses), and the active ones (with no worker alive, a crash's:
+        Crawler._should_end)."""
         only, args = "", []
         if sites is not None:
             sites = sorted(sites)
             only = f" AND a.site IN ({','.join('?' * len(sites))})"
             args = sites
+        by_id, id_args = ids_clause("a.list_id", ids)
+        only, args = only + by_id, [*args, *id_args]
         n = self.f.q(f"SELECT count(*) FROM action a WHERE a.state IN ('pending','active'){only}", args)[0][0]
         due = self.f.q(f"""SELECT min(max(coalesce(h.cooldown_until, 0), coalesce(h.not_before, 0), a.next_at,
                               coalesce((SELECT max(p.until) FROM pause p WHERE p.queue IN
@@ -1258,17 +1343,21 @@ class Chains:
         self.f.event("info", "chain_restart", why, row["host"] if row is not None else None,
                      row["url"] if row is not None else None)
 
-    def resume(self) -> int:
+    def resume(self, ids: Iterable[int] | None = None) -> int:
         """At a run's start (§7.5 step 9): every chain with a press pending or active starts again from its GET (an
         active press may have been sent: never sent again); a file button left active is failed (crash:left_active)
         for a person to put back; a read of a data address left active is pending again (it only reads: a new
-        request, design §23 C1). Returns the chains started again."""
+        request, design §23 C1). ids: only the presses of these url rows (action.list_id: a run given --only leaves
+        every other chain, and its list page's row, as it is, for the next full run). Returns the chains started
+        again."""
+        by_id, id_args = ids_clause("list_id", ids)
         lists = [r[0] for r in self.f.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
-                                        "state IN ('pending','active')")]
+                                        f"state IN ('pending','active'){by_id}", id_args)]
         for list_id in lists:
             self.restart_chain(list_id, "resume")
-        self.f.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' AND state='active'")
-        self.f.x("UPDATE action SET state='pending' WHERE kind='data' AND state='active'")
+        self.f.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' AND state='active'"
+                 f"{by_id}", id_args)
+        self.f.x(f"UPDATE action SET state='pending' WHERE kind='data' AND state='active'{by_id}", id_args)
         return len(lists)
 
     def retry_post_failed(self, list_ids: Iterable[int] | None = None) -> int:

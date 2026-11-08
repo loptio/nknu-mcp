@@ -11,6 +11,8 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="NKNU 校园�
 BACKUP_KEEP = 14
 # the names `nknu backup` gives its copies, and the only files its retention ever deletes
 BACKUP_NAME = re.compile(r"facts-\d{8}-\d{6}\.db")
+# one line of `nknu archive run --only`'s file: a url id as monitor and export write it (u50251), or bare (50251)
+ONLY_ID = re.compile(r"[uU]?(\d+)")
 # `nknu notify-failure` gets the failed unit from systemd (%i); anything else is not echoed into a Discord message
 UNIT_NAME = re.compile(r"nknu-[a-z]{1,20}")
 UNIT_FAILED = {"nknu-backup": "facts.db 这次没有备份成功", "nknu-build": "serve.db 没有重建，答案的「今天」停在上一版"}
@@ -639,6 +641,104 @@ def _gap_option(text: str) -> tuple[float, float]:
         raise typer.Exit(1) from None
 
 
+_STATE_ZH = {"done": "已经抓过", "failed": "已经失败", "skipped": "已经跳过", "later": "留给第二轮", "held": "被上限挡下"}
+
+
+def _ids_text(ids, at_most: int = 20) -> str:
+    """u5、u6…: the first at_most of them, then how many in all."""
+    ids = sorted(ids)
+    head = "、".join(f"u{i}" for i in ids[:at_most])
+    return head if len(ids) <= at_most else f"{head} 等 {len(ids)} 个"
+
+
+def _only_option(text: str) -> frozenset[int]:
+    """--only PATH (the owner 11-02): the url ids of the rows the run may fetch, one a line (u50251 or 50251);
+    blank lines and lines starting with # are skipped. A file that cannot be read: exit 1; a line that is no id, or
+    no id at all: exit 2, nothing started."""
+    from pathlib import Path
+
+    path = Path(text).expanduser()
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError) as exc:
+        typer.echo(f"读不了 --only 的文件 {path}：{exc}")
+        raise typer.Exit(1) from None
+    ids: set[int] = set()
+    bad: list[str] = []
+    for n, line in enumerate(lines, start=1):
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        m = ONLY_ID.fullmatch(entry)
+        if m is None:
+            bad.append(f"第 {n} 行「{entry[:60]}」")
+        else:
+            ids.add(int(m[1]))
+    if bad:
+        typer.echo(f"--only 的文件 {path} 有不是网址编号的行（一行一个编号，写 u50251 或 50251；空行和 # 开头的行不算）："
+                   + "、".join(bad[:10]) + (f" 等 {len(bad)} 行" if len(bad) > 10 else "") + "。没有开始抓。")
+        raise typer.Exit(2)
+    if not ids:
+        typer.echo(f"--only 的文件 {path} 里没有网址编号。没有开始抓。")
+        raise typer.Exit(2)
+    return frozenset(ids)
+
+
+def _only_rows(root, ids: frozenset[int]) -> dict[int, str]:
+    """The listed rows' states as the url table has them now (id -> state), read without writing."""
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{root / 'frontier.db'}?mode=ro", uri=True)
+    try:
+        return dict(conn.execute("SELECT id, state FROM url WHERE id IN (SELECT value FROM json_each(?))",
+                                 (json.dumps(sorted(ids)),)).fetchall())
+    finally:
+        conn.close()
+
+
+def _only_brought(root, ids: frozenset[int]) -> list[int]:
+    """The rows the listed rows brought (found_from) that still wait and are not listed themselves, read without
+    writing: a Drive item's content, a redirect's target, a page's links, which a run given --only enqueues and never
+    fetches (review 11-02: a listed Drive row can be the item's metadata only)."""
+    import json
+    import sqlite3
+
+    listed = json.dumps(sorted(ids))
+    conn = sqlite3.connect(f"file:{root / 'frontier.db'}?mode=ro", uri=True)
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT id FROM url WHERE state = 'pending' AND found_from IN (SELECT value FROM json_each(?)) "
+            "AND id NOT IN (SELECT value FROM json_each(?)) ORDER BY id", (listed, listed))]
+    finally:
+        conn.close()
+
+
+def _only_check(root, ids: frozenset[int]) -> None:
+    """Before a run given --only (under run.lock: no run changes the rows meanwhile): an id the url table lacks
+    refuses it (exit 2, every such id named); listed rows not waiting (done, failed, left for later…) are said and
+    skipped (the crawler fetches the pending ones only); none waiting: nothing is started (exit 0)."""
+    got = _only_rows(root, ids)
+    missing = ids - got.keys()
+    if missing:
+        typer.echo(f"待抓清单（{root / 'frontier.db'}）里没有这些网址编号：{_ids_text(missing)}。--only 只能列待抓清单里"
+                   "已有的网址（monitor、export 写的 u 开头的编号）。没有开始抓。")
+        raise typer.Exit(2)
+    skipped: dict[str, list[int]] = {}
+    for i, state in got.items():
+        if state not in ("pending", "active"):  # active: left by a run that was killed, taken back by this one
+            skipped.setdefault(state, []).append(i)
+    if skipped:
+        said = (f"{_STATE_ZH.get(s, s)}（{s}）{len(v)} 个：{_ids_text(v)}" for s, v in sorted(skipped.items()))
+        typer.echo(f"--only 列出的 {len(ids)} 个网址里，这些不在待抓，这次跳过：" + "；".join(said))
+    left = len(ids) - sum(len(v) for v in skipped.values())
+    if not left:
+        typer.echo("--only 列出的网址没有一个在待抓。没有开始抓。")
+        raise typer.Exit(0)
+    typer.echo(f"--only：这次只抓列出的 {left} 个待抓网址；这些网站的其他网址都不抓、不改，也不对账。抓的时候带出的新网址"
+               "（云端硬盘档案的内容、转址的目标、网页上的链接）照常记进待抓清单，这次不抓。")
+
+
 @archive_app.command("run")
 def archive_run(dir: str = typer.Option(None, "--dir"),
                 limit: int = typer.Option(None, "--limit", help="抓这么多个页面就停（试跑用）"),
@@ -648,14 +748,22 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
                                                               "c.nknu.edu.tw/reality,sso.nknu.edu.tw/web/595）"),
                 end_wait: float = typer.Option(1800.0, "--end-wait", help="剩下的网址最早也要这么多秒以后才到期时，这次 run "
                                                                        "先结束、留给下一次；默认 1800（30 分钟，比服务器"
-                                                                       "固定休息的 15 分钟长）")) -> None:
+                                                                       "固定休息的 15 分钟长）"),
+                only: str = typer.Option(None, "--only", help="只抓这个文件列出的网址：一行一个 url 编号（u50251 或 "
+                                                            "50251，空行和 # 开头的行不算）；这些网站的其他网址都不抓、"
+                                                            "不改，也不对账")) -> None:
     """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等（默认 2–5 秒）；中断后重跑会接着抓。同一个目录只能有一个在跑，
     同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址、而且最早也要 --end-wait 秒以后才到期时，自己结束，
     留给下一次。一个网站抓完（只剩等重试的），就先对它做不连网的对账（浏览器抽查 R6 等 run 停下后用 archive reconcile 做），
-    看板上它会变成「纪录齐了，还没对账」。"""
+    看板上它会变成「纪录齐了，还没对账」。加 --only <文件>（用户 11-02）：只抓文件列出、还在待抓的网址，同一个网站、同一台
+    服务器的其他网址都不抓、不改，也不对账；列出的抓完（或只剩等重试的）就结束。编号不在待抓清单里：退出码 2，没有开始抓；
+    已经抓过或失败的列出来、跳过。和 --sites 一起用时两个条件都要符合。列出的网址所在的服务器只回 http 或只回 https 时，
+    抓的是另一种写法的同一个地址（设计 §6.6）。抓的时候带出的新网址（云端硬盘档案的内容、转址的目标、网页上的链接）只记进待抓清单，
+    这次不抓，跑完会列出它们的编号。"""
     import logging
     import signal
     import threading
+    from collections import Counter
 
     from nknu.archive import crawler as archive
     from nknu.archive import reconcile
@@ -666,12 +774,24 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
     if end_wait <= 0:
         typer.echo("--end-wait 是秒数，要大于 0（默认 1800）")
         raise typer.Exit(1)
-    only = frozenset(x.strip() for x in sites.split(",") if x.strip()) if sites else None
+    site_keys = frozenset(x.strip() for x in sites.split(",") if x.strip()) if sites is not None else None
+    if site_keys is not None and not site_keys:  # 11-06: a site list a script could not read is no site, never all
+        typer.echo("--sites 是空的（一个网站键都没有：名单档读不到？），没有开始。要抓所有网站就不要加 --sites。")
+        raise typer.Exit(1)
+    ids = _only_option(only) if only is not None else None
+    if ids is not None:
+        _archive_db(root)  # the ids are the archive's rows: a mistyped --dir is no archive, and nothing is made there
     try:
         lock = archive.hold_run_lock(root)  # held until this process ends; the kernel lets go even after kill -9
     except archive.AlreadyRunning as exc:
         typer.echo(f"另一个 archive run 正在用这个目录（pid {exc.pid}），没有再启动。要换程序，先 nknu archive stop。")
         raise typer.Exit(1) from None
+    if ids is not None:
+        try:
+            _only_check(root, ids)
+        except typer.Exit:
+            lock.close()
+            raise
     try:
         school = schoollock.hold()  # one program per machine sends to the school (design §6.9)
     except schoollock.SchoolLockBusy as exc:
@@ -689,9 +809,9 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
         stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
         (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
         # each site that finishes is reconciled offline by this process (design §18.2a step 3; R6 waits for
-        # `archive reconcile` once the run stopped)
-        crawler = archive.Crawler(root, limit=limit, gap=span, sites=only, end_wait_s=end_wait,
-                                  reconcile_sources=reconcile.Sources())
+        # `archive reconcile` once the run stopped); none with --only (its sites are not complete)
+        crawler = archive.Crawler(root, limit=limit, gap=span, sites=site_keys, end_wait_s=end_wait, only=ids,
+                                  reconcile_sources=None if ids is not None else reconcile.Sources())
 
         def watch() -> None:
             while not crawler.stop.wait(archive.STOP_POLL_S):
@@ -706,24 +826,38 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
         school.close()
         lock.close()
     typer.echo(f"archive run stopped ({crawler.end_reason or 'stop'})")
+    if ids is not None:
+        states = sorted(Counter(_only_rows(root, ids).values()).items())
+        typer.echo(f"--only 列出的 {len(ids)} 个网址现在：" + "、".join(f"{s} {n} 个" for s, n in states))
+        if brought := _only_brought(root, ids):  # a listed row done is not always its file in hand
+            typer.echo(f"列出的网址带出的 {len(brought)} 个网址还在待抓，这次没抓（云端硬盘档案的内容、转址的目标、网页上的链接"
+                       f"等）：{_ids_text(brought)}。要抓，把它们列进 --only 的文件再跑一次。")
     if crawler.end_reason == "waiting":
-        _next_run(crawler)
+        _next_run(crawler, only)
 
 
-def _next_run(crawler) -> None:
+def _next_run(crawler, only: str | None = None) -> None:
     """A run that ended with only waits left (B1) says when the soonest of them comes due: the earliest a run again
-    has something to do (second review 10-26, END_WAIT_S: a person, or a timer, starts it)."""
+    has something to do (second review 10-26, END_WAIT_S: a person, or a timer, starts it). only: the --only file
+    of the run, whose listed rows these are: the run to start again is one given it (a plain run would fetch the
+    other rows of those sites too)."""
     from datetime import datetime
 
-    left, nxt = crawler.frontier.waiting(crawler.sites)
+    left, nxt = crawler.frontier.waiting(crawler.sites, ids=getattr(crawler, "only", None) if only else None)
     if nxt is not None:
-        typer.echo(f"还有 {left} 个网址在等（重试、DNS、冷却或服务器休息）；最早 "
-                   f"{datetime.fromtimestamp(nxt).astimezone():%m-%d %H:%M} 起再执行一次 nknu archive run 就会接着抓")
+        again = f"同样加 --only {only} 的 nknu archive run（不加 --only 会连这些网站的其他网址一起抓）" if only \
+            else "nknu archive run"
+        typer.echo(f"{'列出的网址' if only else ''}还有 {left} 个网址在等（重试、DNS、冷却或服务器休息）；最早 "
+                   f"{datetime.fromtimestamp(nxt).astimezone():%m-%d %H:%M} 起再执行一次 {again} 就会接着抓")
 
 
 @archive_app.command("status")
 def archive_status(dir: str = typer.Option(None, "--dir")) -> None:
-    """健康报告：有没有爬错（礼貌、范围、robots）或爬漏。写进 archive/reports/。有硬性违反时退出码 2。"""
+    """健康报告：有没有爬错（礼貌、范围、robots）或爬漏。写进 archive/reports/，顺便重写问题记录
+    reports/problems-latest.log（一行一个问题，Tab 分隔；爬虫跑完后另存一份带时间的）。有硬性违反时退出码 2。"""
+    import sqlite3
+
+    from nknu.archive import progress
     from nknu.archive.frontier import OutdatedFrontier
     from nknu.archive.monitor import report
 
@@ -735,6 +869,17 @@ def archive_status(dir: str = typer.Option(None, "--dir")) -> None:
         typer.echo(f"{exc}。监控只读、不改资料库：先执行一次 nknu archive seed（或 archive run）升级它，再看状态。")
         raise typer.Exit(1) from None
     typer.echo(text)
+    # the problem log (dashboard design 2026-11-04 §1.3): the lines the dashboard's 错 N counts; a failure to write it
+    # is said and leaves the exit code report()'s
+    try:
+        written = progress.write_problem_log(root)
+    except (OSError, sqlite3.Error, OutdatedFrontier) as exc:
+        typer.echo(f"问题记录没写成（{type(exc).__name__}: {exc}）")
+    else:
+        latest = (root / "reports" / progress.LATEST_LOG).read_text(encoding="utf-8").splitlines()
+        typer.echo(f"问题记录：{written[0]}（{latest[1].removeprefix('# ')}）")
+        for path in written[1:]:
+            typer.echo(f"这次 run 的问题记录另存一份：{path}")
     raise typer.Exit(code)
 
 
@@ -765,6 +910,7 @@ def archive_stop(dir: str = typer.Option(None, "--dir")) -> None:
 
 @archive_app.command("retry")
 def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头，例如 http_5（所有 5xx）、timeout、connect、dns、"
+                                                        "server_down（连续约 2 小时连不上的服务器）、"
                                                         "host_unreachable、robots_unreachable、host_cooldown、crash；"
                                                         "post_failed：回传失败的列表从第 1 页重走；click：失败的下载按钮"
                                                         "（电子系）放回再按；download：SSO 的下载按钮取回来不是档案或"
@@ -843,9 +989,12 @@ def archive_export(dir: str = typer.Option(None, "--dir", help="存档目录，�
 
 @archive_app.command("browse")
 def archive_browse(dir: str = typer.Option(None, "--dir"),
-                   port: int = typer.Option(8877, "--port", help="本机端口（只开在 127.0.0.1）")) -> None:
-    """在本机浏览器看进度看板和抓到的每一页：进度看板（每 30 秒自动更新，只读、不拖慢爬虫）、按单位和网站列出、看文字或
-    不连网的预览、问题清单。Ctrl+C 结束。"""
+                   port: int = typer.Option(8877, "--port", help="端口"),
+                   host: str = typer.Option("127.0.0.1", "--host",
+                                            help="在哪个位址上听：预设 127.0.0.1，只有本机连得到；实验室的 Docker 容器里用 "
+                                                 "0.0.0.0，由 Docker 只从主机自己的 127.0.0.1 转进来")) -> None:
+    """在本机浏览器看进度看板和抓到的每一页：进度看板（每 10 秒自动更新，只读、不拖慢爬虫）、错误记录、按单位和网站列出、
+    看文字或不连网的预览、问题清单。不管在哪个位址上听，只回答用本机名字（127.0.0.1、localhost）连进来的请求。Ctrl+C 结束。"""
     import errno
 
     from nknu.archive.viewer import index_in_background, serve
@@ -855,14 +1004,14 @@ def archive_browse(dir: str = typer.Option(None, "--dir"),
         typer.echo(f"找不到 {root / 'frontier.db'}")
         raise typer.Exit(1)
     try:
-        server = serve(root, port)
+        server = serve(root, port, host)
     except OSError as exc:
         if exc.errno != errno.EADDRINUSE:
             raise
         typer.echo(f"端口 {port} 已经有程序在用：检查工具多半已经开着，直接打开 http://127.0.0.1:{port}/progress ；"
                    f"要另开一个就加 --port 8878")
         raise typer.Exit(0) from None
-    typer.echo(f"进度看板：http://127.0.0.1:{port}/progress")
+    typer.echo(f"进度看板：http://127.0.0.1:{port}/progress" + (f"（在 {host} 上听）" if host != "127.0.0.1" else ""))
     typer.echo(f"存档总览：http://127.0.0.1:{port}/")
     typer.echo("存档索引在背景建立（第一次要几分钟，之后只补新的部分；看板不用等它）")
     index_in_background(root, lambda added: typer.echo(f"存档索引好了：新增 {added} 笔"))
@@ -944,6 +1093,7 @@ def archive_jscheck(dir: str = typer.Option(None, "--dir"),
     --set <类型键> ok|js|frame|click --note …：人看过以后改判（run 在跑时拒绝）。"""
     import signal
 
+    from nknu.archive import crawler as archive
     from nknu.archive import jscheck
 
     _drop_secrets(jscheck.SECRET_ENV)
@@ -964,7 +1114,7 @@ def archive_jscheck(dir: str = typer.Option(None, "--dir"),
         typer.echo("--note 只和 --set 一起用")
         raise typer.Exit(1)
     span = _gap_option(gap)
-    check = jscheck.JsCheck(root, old=_old_of(root, old), gap=span)
+    check = jscheck.JsCheck(root, old=_old_of(root, old), gap=span, campus_url=archive.CAMPUS_URL)  # 11-03, P33
     signal.signal(signal.SIGTERM, lambda *_: check.halt("stop", "sigterm"))
     try:
         report = check.run()
@@ -1035,8 +1185,9 @@ def archive_reconcile(batch: str = typer.Option(None, "--batch", help="这一批
                 typer.echo(_unshared(exc))
                 raise typer.Exit(1) from None
             try:
-                got, out = reconcile.reconcile(root, batch=batch, sites=_site_list(sites), sources=sources,
-                                               spot_factory=lambda fr: jscheck.SpotChecker(root, fr, gap=span))
+                got, out = reconcile.reconcile(  # campus_url: 11-03, P33
+                    root, batch=batch, sites=_site_list(sites), sources=sources,
+                    spot_factory=lambda fr: jscheck.SpotChecker(root, fr, gap=span, campus_url=archive.CAMPUS_URL))
             finally:
                 school.close()
     except archive.AlreadyRunning as exc:

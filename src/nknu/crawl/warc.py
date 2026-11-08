@@ -89,10 +89,17 @@ class WarcSink:
         pairs = request_headers.items() if isinstance(request_headers, Mapping) else request_headers
         kept = [(k, "[redacted]" if k.lower() in _SECRET else v) for k, v in pairs]
         req = StatusAndHeaders(f"{snap.target.method} {target} HTTP/1.1", kept, is_http_request=True)
-        w.write_record(w.create_warc_record(snap.url, "request", payload=io.BytesIO(request_body), http_headers=req))
-        request_len = buf.tell()
+        req_rec = w.create_warc_record(snap.url, "request", payload=io.BytesIO(request_body), http_headers=req)
         resp, payload = _as_received(snap) if snap.raw_headers else _made_by_hand(snap)
-        w.write_record(w.create_warc_record(snap.url, "response", payload=io.BytesIO(payload), http_headers=resp))
+        # the two records name each other (WARC 1.1 WARC-Concurrent-To; 11-03, P72): pywb's indexer joins a POST's
+        # request to its response only through this header, without it every postback page replays as 404
+        req_id = req_rec.rec_headers.get_header("WARC-Record-ID")
+        resp_rec = w.create_warc_record(snap.url, "response", payload=io.BytesIO(payload), http_headers=resp,
+                                        warc_headers_dict={"WARC-Concurrent-To": req_id})
+        req_rec.rec_headers.add_header("WARC-Concurrent-To", resp_rec.rec_headers.get_header("WARC-Record-ID"))
+        w.write_record(req_rec)
+        request_len = buf.tell()
+        w.write_record(resp_rec)
         records = buf.getvalue()
         data = memoryview(records)
         start = os.fstat(self._fh.fileno()).st_size

@@ -11,8 +11,9 @@ its host nknulib, the library's off-campus proxy *.rpa.lib),
 social platforms, platforms that refuse programs (Linktree, Dcard, Medium, Strikingly: scope record 三·14), what is not
 content (maps, share buttons, trackers: record 一·1), Google Drive/Docs/Calendar pages (their APIs read those; a Google
 form is read once by GET), media files (video, sound, style sheets, scripts, fonts; images are page resources now),
-search pages, crawler traps, and any link a program would have to guess or post. robots.txt no longer blocks anything
-(owner, 10-25): what it used to block is written out here.
+search pages, crawler traps, this machine itself (localhost, 127.0.0.1 and the like: 11-06), and any link a program
+would have to guess or post. robots.txt no longer blocks anything (owner, 10-25): what it used to block is written
+out here.
 
 Everything else is "in_scope" (school hosts, the school's 140.127.* addresses, school-account Google Sites) or off
 campus ("offsite", "google_other": SOFT_OUT). Which of those this round fetches, which wait for round 2 and which page
@@ -27,6 +28,7 @@ import ipaddress
 import itertools
 import posixpath
 import re
+import socket
 import string
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -169,9 +171,21 @@ INSTITUTIONS = re.compile(r"(?i)(?:^|\.)(?:gov\.tw|gov|edu\.tw)$")
 # big platforms whose host is not one unit's website (a directory page's search box, fonts, sign-in)
 NOT_A_SITE = re.compile(r"(?i)(?:^|\.)(?:google\.com|googleapis\.com|gstatic\.com|microsoft\.com|office\.com|live\.com|"
                         r"apple\.com|github\.com)$")
+# this machine (11-06, 【用户同意 Claude 的建议】: Claude's 11-04 fix 「127.0.0.1、localhost 这类网址直接列为不抓」, the
+# owner 11-04 「待会再修」, 11-06 the button 「先修三件再一起重开」; the first batch's SSO page linked an attachment at
+# http://localhost/WebServices/…, which waited on queue ip:127.0.0.1 for ever): its names (localhost,
+# localhost.localdomain, every name under .localhost: RFC 6761 §6.3) and its addresses, loopback (127.0.0.0/8, ::1)
+# and unspecified (0.0.0.0, ::, which a connection takes for this machine), IPv4-mapped too (::ffff:127.0.0.1), and an
+# IPv4 address written the short ways a resolver still reads (127.1, 2130706433, 0x7f000001, 0177.0.0.1: inet_aton).
+# A school page's link there is the school's broken link (outcome.LOOPBACK_OUT: bad_link, 要人看), never 规则不抓
+# (【Claude 的执行办法】: a missing attachment is never hidden as 规则不抓).
+# Private addresses (10/8, 172.16/12, 192.168/16) are not this machine (the offline rehearsal gives the hosts its old
+# archive never resolved 10.254.254.254: rehearsal.UNKNOWN_IP)
+LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain"})
+_NUMERIC_V4 = re.compile(r"(?i)[0-9a-fx.]+")  # what inet_aton may read as an address; it decides
 # the verdicts no request may ever get, robots.txt and probe requests included (the monitor's audit)
 HARD_OUT = frozenset({"login", "internal_service", "never_host", "social", "refuses", "bad_host", "bad_url", "scheme",
-                      "system", "search", "not_content"})
+                      "system", "search", "not_content", "loopback"})
 # off campus: not a rule against fetching. round1.verdict() places these (round 2, one layer out: record 一·1).
 SOFT_OUT = frozenset({"offsite", "google_other"})
 # IIS servers (case-insensitive paths and parameter names): the probe's ASP.NET hosts, plus any school page whose path is
@@ -182,9 +196,25 @@ IIS_HOSTS = frozenset({"c.nknu.edu.tw", "sso.nknu.edu.tw", "news.nknu.edu.tw", "
                        "priws.nknu.edu.tw"})
 _IIS_EXT = (".aspx", ".asp", ".ashx", ".asmx", ".axd")
 # the platforms' own pages, one path for a whole platform's sites: no variant cap (how many there are is bounded by what
-# pages really link to), and no trap warning
+# pages really link to), and no trap warning. SSO's activity detail pages since 11-03 (P02): 446 of academicactivities'
+# were held (cap:variant) in the official archive, one activity per unid (design §7.4 detail_paths: 免上限).
+# PLATFORM_DETAIL_PATHS: those activity pages (the shared module sso.nknu.edu.tw/services, one activity per unid), a
+# platform's detail pages that no platform file describes: since 11-06 free of every page cap as a profile's
+# detail_paths are (crawler._cap; design §9 平台页面免上限), the depth limit aside, and still counted for their site. On
+# the lab machine services had its 4,000 pages and 7,467 activity pages held cap:site (4,270 campusactivities',
+# 3,197 academicactivities'), no other page of it (【用户同意 Claude 的建议】: Claude's 11-04 fix 「让这两种活动页也不受
+# 整站上限；重开时，被挡下的会自动放回去抓」, the owner 11-04 「待会再修」, 11-06 the button 「先修三件再一起重开」)
+PLATFORM_DETAIL_PATHS = frozenset({"/services/academicactivities/actdetail.aspx",
+                                   "/services/campusactivities/actdetail.aspx"})
 PLATFORM_PATHS = frozenset({"/services/web/default.aspx", "/services/site/index.aspx", "/news/lastnews.aspx",
-                            "/news/attachedfile.aspx"})
+                            "/news/attachedfile.aspx"}) | PLATFORM_DETAIL_PATHS
+# SSO WebIdx: the names one page is written with (11-03, P05). In the 10-26/27 pilot every page fetched under more than
+# one of …?webidx=N&menuid=M, …?cwebidx=N&cmenuid=M (each also with &pagenum=1) answered the same links, buttons and
+# files (27 groups, sha256 of the files): one address, webidx/menuid, page 1 without its pagenum. Other names
+# (ctheme, cselpage, selpage, sort …) were not shown to be the same page and keep their spelling.
+SSO_WEB_PATH = "/services/web/default.aspx"
+_SSO_WEB_ALIAS = {"cwebidx": "webidx", "cmenuid": "menuid", "webidx": "webidx", "menuid": "menuid",
+                  "pagenum": "pagenum"}
 # attachments and images that have no file extension in their URL: SSO's download programs (design §4.5)
 FILE_PATHS = frozenset({"/news/attachedfile.aspx", "/webservices/ajaxdownloadfile.aspx",
                         "/webservices/ajaxdownloadfilecourse.aspx", "/webservices/ajaxfile.aspx"})
@@ -217,7 +247,7 @@ class Verdict:
     ok: bool
     # "in_scope", "directory_site", "form" (a Google form's page), or why not: login, internal_service, social,
     # refuses, not_content, system, search, trap, offsite, media, never_host, scheme, too_long, google_other, bad_host,
-    # bad_url
+    # bad_url, loopback (this machine: own_address)
     reason: str
 
 
@@ -340,7 +370,23 @@ def _canonical(url: str, base: str | None) -> str | None:
     if is_iis(host, path):
         path = _iis_lower(path)
         params = [_iis_name(p) for p in params]
+    if host == "sso.nknu.edu.tw" and path == SSO_WEB_PATH:
+        params = _sso_web(params)
     return urlunsplit((scheme, netloc, path, "&".join(params), ""))
+
+
+def _sso_web(params: list[str]) -> list[str]:
+    """A WebIdx page's query in its one spelling (SSO_WEB_PATH, 11-03 P05): cwebidx/cmenuid as webidx/menuid, and a
+    menu's page 1 without its pagenum=1. As written when any other name is there, or a name twice."""
+    names = [p.partition("=")[0] for p in params]
+    if not names or not set(names) <= _SSO_WEB_ALIAS.keys():
+        return params
+    out = [f"{_SSO_WEB_ALIAS[n]}={p.partition('=')[2]}" for n, p in zip(names, params, strict=True)]
+    if len({p.partition("=")[0] for p in out}) != len(out):
+        return params
+    if "menuid" in {p.partition("=")[0] for p in out}:
+        out = [p for p in out if p != "pagenum=1"]
+    return out
 
 
 def _iis_name(param: str) -> str:
@@ -424,6 +470,15 @@ def is_platform_path(url: str) -> bool:
         return False
 
 
+def is_platform_detail(url: str) -> bool:
+    """SSO's activity detail pages (PLATFORM_DETAIL_PATHS): free of the page caps as a profile's detail pages are
+    (crawler._cap, 11-06)."""
+    try:
+        return urlsplit(url).path.lower() in PLATFORM_DETAIL_PATHS
+    except ValueError:
+        return False
+
+
 def _school_ip(host: str) -> bool:
     try:
         return ipaddress.ip_address(host) in SCHOOL_NET
@@ -464,6 +519,26 @@ def good_host(host: str) -> bool:
         return True
     except UnicodeError:
         return False
+
+
+def own_address(host: str | None) -> bool:
+    """Whether a host (a URL's, or an address a resolver answered) is this machine (11-06): one of its names
+    (LOCAL_NAMES, under .localhost), or a loopback or unspecified address however it is written (IPv6, IPv4-mapped,
+    IPv4 as inet_aton reads it). Never raises."""
+    host = (host or "").lower().rstrip(".")
+    if host in LOCAL_NAMES or host.endswith(".localhost"):
+        return True
+    try:
+        if ":" in host:
+            addr = ipaddress.ip_address(host.split("%", 1)[0])  # a zone (fe80::1%eth0) is no part of the address
+            addr = addr.ipv4_mapped or addr
+        elif _NUMERIC_V4.fullmatch(host):
+            addr = ipaddress.IPv4Address(socket.inet_aton(host))
+        else:
+            return False
+    except (ValueError, OSError):
+        return False
+    return addr.is_loopback or addr.is_unspecified
 
 
 def _login_url(host: str, path: str, query: str = "") -> bool:
@@ -541,6 +616,8 @@ def judge(url: str, directory_sites: Collection[str] = ()) -> Verdict:
         return Verdict(False, "scheme")
     if not good_host(host):
         return Verdict(False, "bad_host")
+    if own_address(host):  # this machine (11-06): never a request, the school's broken link (bad_link)
+        return Verdict(False, "loopback")
     if CAPTCHA.search(host + unquote(parts.path)):  # before media and images: a captcha's picture is never fetched
         return Verdict(False, "login")
     if _not_content(host, parts.path):  # before search: www.google.com/maps/search/… is a map

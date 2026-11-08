@@ -29,9 +29,22 @@ PII_SAMPLES: dict[str, set[str]] = {
     "tests/archive/test_google_api.py": {"email:c_0123456789abcdef@group.calendar.google.com", "email:nknuOOO@gmail.com",
                                          "email:holiday@group.v.calendar.google.com", "email:e1@google.com"},
     "tests/archive/test_export_1027.py": {"email:c_0123456789abcdef@group.calendar.google.com"},
+    "tests/archive/test_tables_1106.py": {"email:o@example.test"},  # a made-up address in a table cell
+    # the content stage's (11-08): made-up addresses, the school's public Google calendar ID (CLAUDE.md), and the
+    # title of a regulation (修正學生請假…) that the staff-leave pattern takes for a leave note
+    "src/nknu/content/build.py": {"staff_leave:(修正學生請假"},
+    "tests/content/test_assemble.py": {"email:x@example.invalid"},
+    "tests/content/test_build.py": {"email:nknubf@gmail.com"},
+    "tests/content/test_corpus.py": {"email:nknubf@gmail.com"},
+    "tests/content/test_links.py": {"email:aca@example.edu"},
+    "tests/content/test_minutes_1108.py": {"staff_leave:（修正學生請假"},
+    "tests/content/test_multisite_1108.py": {"email:nknubf@gmail.com"},
 }
 _SAMPLES_FILE = "src/nknu/admin/checks.py"  # this file: it spells the samples out above, and only those
 _SELF_TESTS = {"test_checks.py"}  # writes the forbidden strings into temp files on purpose
+# generated lock files of package versions and sha256 digests, never written by a person: a digest's nine digits look
+# like a student number (11-03, P98: uv.lock); every other file is scanned as before
+_LOCK_FILES = {"uv.lock"}
 
 
 def check_licenses() -> list[str]:
@@ -59,6 +72,8 @@ def check_pii(paths: list[Path], *, root: Path = REPO_ROOT, allow: dict[str, set
     out = []
     files = sorted({f for p in map(Path, paths) for f in (p.rglob("*") if p.is_dir() else [p]) if f.is_file()})
     for f in files:
+        if f.name in _LOCK_FILES:
+            continue
         data = f.read_bytes()
         if b"\0" in data:
             continue  # binary

@@ -40,12 +40,13 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 from nknu.archive import links, round1, scope
+from nknu.archive.frontier import ids_clause
 from nknu.crawl.adapter import Target
 
 API_HOST = "www.googleapis.com"
@@ -438,21 +439,24 @@ def key_set() -> bool:
     return bool(os.environ.get(KEY_ENV, "").strip())
 
 
-def hold_for_key(frontier, now: float) -> bool:
+def hold_for_key(frontier, now: float, ids: Iterable[int] | None = None) -> bool:
     """At the start of a run (design §7.6). No key: the googleapis queue rests (why no_api_key), its waiting rows say
     no_api_key, nothing counts as a failure, and an event warns. A key: a rest left by a key problem of an earlier run
-    is lifted and those rows are due again (the key can only change between runs). Returns whether the key is set."""
+    is lifted and those rows are due again (the key can only change between runs). ids: only these rows say so or are
+    due again (a run given --only touches no other row; the queue's rest is the queue's). Returns whether the key is
+    set."""
+    by_id, id_args = ids_clause("id", ids)
     with frontier.lock:
         if key_set():
             rows = frontier.q("SELECT why FROM pause WHERE queue=?", (QUEUE,))
             if rows and (rows[0]["why"] or "").startswith(KEY_PAUSE_WHY):
                 frontier.unpause(QUEUE)
-            frontier.x("UPDATE url SET reason=NULL, next_at=0 WHERE host=? AND state='pending' AND reason IN (?, ?)",
-                       (API_HOST, *KEY_PAUSE_WHY))
+            frontier.x("UPDATE url SET reason=NULL, next_at=0 WHERE host=? AND state='pending' AND reason IN (?, ?)"
+                       f"{by_id}", (API_HOST, *KEY_PAUSE_WHY, *id_args))
             return True
         frontier.pause(QUEUE, now + KEY_PAUSE_S, "no_api_key")
         n = frontier.x("UPDATE url SET reason='no_api_key' WHERE host=? AND state='pending' AND "
-                       "(reason IS NULL OR reason IN (?, ?))", (API_HOST, *KEY_PAUSE_WHY))
+                       f"(reason IS NULL OR reason IN (?, ?)){by_id}", (API_HOST, *KEY_PAUSE_WHY, *id_args))
         frontier.event("warn", "key_check", f"{KEY_ENV} is not set: {n} Drive and calendar rows wait (no_api_key), "
                        "none counts as a failure; set it (set -a; source …; set +a) and run again")
         return False

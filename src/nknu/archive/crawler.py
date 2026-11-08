@@ -15,18 +15,22 @@ row or a page came to is outcome.py's views.
   the link table only). A round-1 page's attachments, images, frames, forms, short links and school scripts are its
   resources: page_res rows with their need (must, no with why, round2), so nothing it uses is dropped unseen.
 - Caps hold rows back (held, cap:site/file/image/variant/depth: design §9); a pager link adds no depth. A platform's
-  list page goes first (prio 0) and has no variant cap; its detail pages have no page cap (§7.4).
+  list page goes first (prio 0) and has no variant cap; its detail pages, and SSO's activity detail pages
+  (scope.PLATFORM_DETAIL_PATHS, 11-06), have no page cap (§7.4). A run's start lets go of a row one of these caps held
+  that the rules of today no longer hold (_release_caps); Google's own caps are google_api's and stay.
 - Queue = the server that answers (getaddrinfo, the lowest IPv4); Google's web names share one named queue (google),
   its APIs another (googleapis: google_api.queue_for). A name that
-  does not resolve is tried again after 10 min, doubling up to 6 h, then given up (`archive retry dns`). The order in
-  a queue (§6.7): tier, prio, the host the connection is on, depth, id.
+  does not resolve is tried again after 10 min, doubling up to 6 h, then given up (`archive retry dns`); one that
+  resolves to this machine is one of those (_lookup, 11-06), and nothing is ever sent on such a queue. The order
+  in a queue (§6.7): tier, prio, the host the connection is on, depth, id.
 - The gap after every response (§6.3, B6): a random wait inside the run's gap (default 2–5 s; 1–2 s once the pilot
   passed and the owner says so: `archive run --gap 1-2`; never below 1 s), and never less than what the server took to
   answer (at most 30 s); a longer Crawl-delay is that host's own wait (host.not_before).
 - Every request that may have reached a server is logged, one request row per request on the wire (fetch.Sent: the
   try, a new or kept connection, TCP and TLS times, the server's address, bytes, the WARC record) with where it was
-  made from (campus: on, off or unknown, B4: SSO's own check page, on SSO's queue, hourly and whenever this machine's
-  address changes; crawling goes on wherever it is, the dashboard warns), and followed by the full gap.
+  made from (campus: on, off or unknown, B4: SSO's own check page, on SSO's queue, hourly, whenever this machine's
+  address changes and when a network pause ends; a check that cannot tell keeps the last finding, and a run on the
+  same address starts from it; crawling goes on wherever it is, the dashboard warns), and followed by the full gap.
 - robots.txt is read per host before its first request (robots.py): for its Crawl-delay, its sitemaps and whether the
   host answers; it blocks nothing (owner 10-25). A 5xx or no answer never overwrites rules already known (B3). A 404
   probe per page host records what a missing page looks like (soft404).
@@ -52,10 +56,14 @@ row or a page came to is outcome.py's views.
   URL or the press at once, never retried, nothing held against its server or the network; a robots.txt it lacks
   reads as no new rules, an id probe it lacks is not asked again that run.
 - Network down: a connection failure on a network that answered nothing for 2 min asks the connectivity check; a
-  failed check pauses the networks that answer nothing, 5 min at a time; three school servers failing while the
-  check passes pause the school's queues 15 min (B2: the school's network is down, not ours). What those failures
-  cost is undone. When the school's pause is over, nothing says it is back until one of its servers answers: until
-  then a connection failure there costs no server anything (second review: the check asks www.google.com only).
+  failed check pauses the networks that answer nothing, 5 min at a time; two school servers that were working
+  failing with no school answer since (within 17 min) while the check passes pause the school's queues 15 min (B2:
+  the school's network is down, not ours). A server that never answered, or one already failing on its own, is no
+  sign of it (owner 11-06), and a school answer that came after a teller's failure lifts the pause (the servers that
+  told it failed on their own, and keep their own rests). What those failures cost is undone (a school pause: the
+  servers' counts). When a pause is over, SSO's check page is asked first; nothing says the school's network is
+  back until one of its servers answers: until then a connection failure there costs no server anything (second
+  review: the check asks www.google.com only).
 - No request goes out on a queue that is paused, nor to a host before its Crawl-delay is over.
 - A run looks up the hosts of the rows it may fetch that nobody looked up (`retry` brings back round two's and held
   rows; the old archive's hosts are seeded with queue '?'), and ends when nothing is left, or when nothing left comes
@@ -87,6 +95,23 @@ row or a page came to is outcome.py's views.
   reads; a stop ends it between pages, review 10-26), and again whenever the site got more work and finished again;
   before run_end at a natural end. Only when given reconcile_sources (`archive run` gives it); a failure is an error
   event, never the run's end.
+- A run given only (`archive run --only PATH`, the owner 11-02: these rows and none of the other rows of their sites)
+  fetches the listed url rows that are pending when it starts, and nothing else: every choice of due work (the
+  frontier's queues, next row, waiting and next-due counts, the chains' queues, next press and waiting) keeps to
+  them, a press runs only when its own row (its list page, action.list_id) is listed, and the run ends once none of
+  them is left (a retry follows end_wait_s as always). A row not listed is never requested, even on the same host,
+  and keeps its state, attempts and next_at: what the run's start puts right (rows left active, chains left
+  pressing, names to look up again, hosts nobody looked up, the Google key's reasons) and what it judges of a host,
+  a directory or a site (refusals in a row, robots.txt unreachable, a server that never connects, an outage undone,
+  rows left active with no worker, a Google Sites picture refused: that picture alone waits for round two) touch the
+  listed rows only, and a run given only never gives a name up (that fails every row of its host: a full run's to
+  do). What a listed row brings (its links, its redirect's target, its Drive item's content) is enqueued as usual
+  (a round-two row it links becomes this round's) for a later run; the address of a listed row moved to its other
+  scheme (§6.6) is the listed row's from then on, the same resource, even when that address had a row of its own;
+  a listed Google Sites page read again settles its own pictures' rows as any reading does (§23 B2: addresses it
+  replaced, pictures left for round two). Hosts, queues and directories keep their own state as in any run. No site
+  is reconciled (they are not complete); run_start and run_end say how many ids were listed, and name the sites
+  whose records the run can change (_only_sites) where a full run writes null, every site.
 - Nothing is parsed into facts here.
 """
 
@@ -108,7 +133,7 @@ import socket
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,7 +143,16 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import httpx
 
 from nknu.archive import google_api, links, outcome, pagetypes, postback, profiles, round1, scope, sniff
-from nknu.archive.frontier import ALL_QUEUES, NETWORKS, Frontier, net_key, network_of, wall
+from nknu.archive.frontier import (
+    ALL_QUEUES,
+    NETWORKS,
+    OLD_VIAS,
+    Frontier,
+    ids_clause,
+    net_key,
+    network_of,
+    wall,
+)
 from nknu.archive.links import extract
 from nknu.archive.robots import (
     FRESH_S,
@@ -157,6 +191,9 @@ FILE_CAP = 6000  # attachments per site, counted apart from the pages
 IMAGE_CAP = 6000  # images per site: they take none of the 4,000 pages
 VARIANT_CAP = 2000  # URLs per site + path (query variants), platform paths aside: a guard against endless calendars
 MAX_DEPTH = 15
+# the reasons _cap gives (design §9): what a run's start judges again (_release_caps). Google's caps (cap:drive,
+# cap:drive_depth, cap:drive_list, cap:calendar) are google_api's own counts, which _cap knows nothing of: never here
+CAP_REASONS = ("cap:depth", "cap:file", "cap:image", "cap:site", "cap:variant")
 GAP = (2.0, 5.0)  # the gap after each response (CLAUDE.md, design §6.3): the default
 GAP_FAST = (1.0, 2.0)  # the owner 10-26: once the pilot passed (record 一·3); never the default
 MIN_GAP_S = 1.0  # no setting goes below this
@@ -173,7 +210,10 @@ COOLDOWN = (900.0, 86400.0)  # a Retry-After is waited at least 15 min, at most 
 SERVER_REST_S = 900.0  # second review 10-26: a server that said 503, or erred three times in a row, rests whole, fixed
 REST_NOW = frozenset({"http_503"})  # 「太忙」: the server rests at the first one (a 429 or a Retry-After: RetryLater)
 CONN_PAUSE_S = 900.0  # B2: a server that does not connect: its whole queue rests this long, never doubled
-CONN_GIVE_UP = 8  # B2: that many in a row (about two hours): a warning, and the lab for school hosts never answered off
+CONN_GIVE_UP = 8  # B2: that many in a row (about two hours): its rows fail (server_down), the lab's school hosts aside
+# … a server that answered this archive before waits longer, a day of failures in a row (it may be down for maintenance,
+# yet must not keep a run from ending for ever; review 11-08)
+CONN_GIVE_UP_ANSWERED = 96
 DOOR_WINDOW_S = 120.0  # a door (scheme, port) of a server that answers on another within this long is closed, not down
 END_WAIT_S = 600.0  # B1: a run whose soonest row is due later than this ends, leaving its rows for the next run
 # C0 (design §11): `archive run --end-wait`'s own default, longer than the fixed 15-minute rest of a server (and the
@@ -197,7 +237,9 @@ ROBOTS_HOPS = 5
 REDIRECTS = (301, 302, 303, 307, 308)
 DNS_RETRY_S = 600.0  # a name that did not resolve is tried again after 10 min, doubling, at most 6 h
 DNS_RETRY_MAX_S = 6 * 3600.0
-DNS_GIVE_UP = 8  # tries (about a day): then its URLs fail with reason dns, so the run can end
+# lookups (about an hour: 10, 20 and 40 min apart; 8, about a day, until the owner's 11-08 「不用再傻等了」): then its URLs
+# fail with reason dns, so the run can end
+DNS_GIVE_UP = 4
 NET_KINDS = frozenset({"dns", "connect"})  # failures that may be our network's, not the server's
 CONN_KINDS = frozenset({"connect"})  # B2: refused, connect timeout, TLS handshake timeout (httpx.ConnectTimeout)
 TLS_KINDS = frozenset({"tls", "tls_cert"})  # a TLS failure; tls_cert: the certificate failed its check (expired …)
@@ -206,6 +248,18 @@ TRANSPORT_KINDS = frozenset({"dns", "connect", "tls", "tls_cert", "timeout"})  #
 # the offline rehearsal's answer for what its old archive does not hold (design §18.1, fetch.NotArchived): the URL's
 # own failure at once (state failed, reason not_archived), never retried, never a server's or a network's
 NOT_ARCHIVED = "not_archived"
+# the frontier database held by another connection past its wait, or written under a read (SQLITE_BUSY_SNAPSHOT: the
+# lab run of 11-07 05:45 stopped on it, the database whole): never the run's end (the owner 11-08); the row is fetched
+# again this much later
+DB_BUSY = "db_busy"
+DB_BUSY_RETRY_S = 60.0
+SERVER_DOWN = "server_down"  # a row of a server that did not connect for about two hours (_server_down)
+# what an address only an old source names answers once its site moved (lis 11-07: 151 of the old archive's download
+# addresses): it fails at once, its server's streak untouched (the owner 11-08: 「lis 旧死链不重试」)
+OLD_GONE = "http_500"
+# … unless its server gave this many 5xx in a row with no other answer between: then it may be erring as a whole, and
+# that 500 is the server's as before (it rests; review 11-08: lis's dead downloads come mixed with answers)
+SPARE_RUN = 20
 # the id probe (design §10.1, once per platform host and detail type): one that got no answer is asked again with a
 # later detail page; a timeout or a broken answer (net_*) may have reached the server, so at most PROBE_TRIES of those
 # a run; a lookup, a connection or a handshake that failed sent nothing, and does not count (review 10-26 phase 3,
@@ -214,6 +268,17 @@ PROBE_TRIES = 2
 PROBE_UNSENT = frozenset({"dns", "connect", "tls", "tls_cert"})
 NET_WINDOW_S = 120.0
 NET_QUEUES = 3
+# the school's network is down when this many school servers that were working fail with no school answer (review
+# 11-06: the first batch's school work is on two servers, SSO's and c.nknu's; with three it could never be told)
+SCHOOL_SIGNS = 2
+# a school server is still taken to have been working with at most this many connection failures in a row held
+# against it: an outage's first failures are held against the servers when another school server answered moments
+# before (review 11-06)
+SIGN_STREAK = 1
+# a working school server's failure stays a sign this long (a server's rest and the window), until a school answer
+# comes after it: two whose first failures after an outage are minutes apart tell it (second review 11-06: one was
+# resting when the network dropped, and both counted to red); a school pause undoes the costs of that long too
+SIGN_KEEP_S = CONN_PAUSE_S + NET_WINDOW_S
 NET_PAUSE_S = 300.0
 NET_UNDO_S = 300.0
 NETCHECK_CACHE_S = 30.0
@@ -222,12 +287,16 @@ STOP_POLL_S = 1.0  # how often `archive run` looks for STOP, and `archive stop` 
 # §18.2a step 3: how often (real seconds) the main loop looks for sites that finished, to reconcile them offline: a
 # finished site's look reads all its rows, and a minute's delay changes nothing of an early warning 【Claude 的执行办法】
 SITE_LOOK_S = 60.0
+# the main loop's beat (meta run:alive_at, run seconds): a run that holds run.lock yet wrote none for minutes hangs, where
+# one whose queues all rest still beats (dashboard design 2026-11-04 §2.5) 【Claude 的执行办法】
+ALIVE_S = 60.0
 STOP_WAIT_S = 600.0
 NO_RATE = RateLimit(per_host_concurrency=1, min_interval_s=0.0, jitter_s=0.0)  # the worker waits, per queue
 # B4: where SSO tells a visitor whether they are on the school's network (research/site_probe_2026-10-23: from off
 # campus it says 「您的IP 不在校內網路」; on campus it sends the visitor on to the system named by cURL, never followed)
 CAMPUS_URL = "https://sso.nknu.edu.tw/zthat/checkcampusip.aspx?curl=edocap.nknu.edu.tw"
 CAMPUS_EVERY_S = 3600.0
+CAMPUS_KEY = "campus:last"  # meta: what the last check that could tell found, and this machine's address then
 _CAMPUS_OFF = re.compile(r"不在校[內内]網路|不在校内网络")
 _HTML = ("text/html", "application/xhtml+xml")
 _LOGIN_TITLE = re.compile(r"(?i)登入|登錄|log ?in|sign ?in")
@@ -453,6 +522,16 @@ def _erred(kind: str | None) -> bool:
     return kind is not None and (kind.startswith(("http_5", "net_")) or kind in ("http_408", "timeout"))
 
 
+def db_busy(exc: BaseException) -> bool:
+    """A database error that passes (DB_BUSY): the file held by another connection (SQLITE_BUSY and its extended codes,
+    SQLITE_BUSY_SNAPSHOT among them; SQLITE_LOCKED), never a broken, full or read-only one. Python 3.11+ gives the code;
+    an error without one counts by its words."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc)
+
+
 def _door(url: str) -> tuple[str, int]:
     """The door of a server an address knocks on: its scheme and port."""
     parts = urlsplit(url)
@@ -512,42 +591,77 @@ class Enqueued:
 
 class _NetWatch:
     """Tells our network going down from a server's own failure. Answers and connection errors are noted per network
-    ("school" = 140.127.*, "other"). A connection error on a network that answered within NET_WINDOW_S is that server's
-    problem. Otherwise the connectivity check is asked (a fresh one once NET_QUEUES of that network's queues failed in
-    that window, the cached one before): when it fails, the networks that answered nothing within NET_WINDOW_S pause
-    (our network is down). When it passes and NET_QUEUES school servers failed with no school answer, the school's
-    network is down (B2: the check alone, www.google.com, cannot tell). What connection errors cost (attempts,
-    robots_fail, cool-downs, server pauses) is noted per network, so a pause can undo the costs on the networks it
-    holds.
+    ("school" = 140.127.*, "other") at the time they came back (Crawler._send: before the gap after them). A connection
+    error on a network that answered within NET_WINDOW_S before it is that server's problem. Otherwise the connectivity
+    check is asked (a fresh one once NET_QUEUES of that network's queues failed in that window, the cached one before):
+    when it fails, the networks that answered nothing within NET_WINDOW_S pause (our network is down). When it passes
+    and SCHOOL_SIGNS school servers that were working failed with no school answer since (within SIGN_KEEP_S: one may
+    have been resting when the network dropped), the school's network is down (B2: the check alone, www.google.com,
+    cannot tell). A server that was working: it answered at some time (a request row with a status, this run's or an
+    earlier one's: a server down from the start says nothing of its network), at most SIGN_STREAK of its connection
+    failures in a row are held against it (which happens only while its network is taken to work), and no school
+    answer refuted a pause it told (owner 11-06: the first batch's last school rows sat on servers down for days, and
+    three of them failing together paused the whole school's network 105 times in 33 h, the live servers with it). An
+    HTTP answer of a school server that came after a teller's failure says that one failed on its own (no sign until it
+    answers); with fewer than SCHOOL_SIGNS tellers left the pause is lifted (Crawler._school_answered). What connection
+    errors cost (attempts, robots_fail, cool-downs, server pauses) is noted per network, so a pause can undo the costs
+    on the networks it holds.
 
     After a pause the other network is assumed to work until it shows otherwise. The school's is not (second review
     10-26: the check asks www.google.com, which says nothing of the school's): it is unsure until one of its servers
     answers, and while it is a connection failure there is held against no server (Crawler._conn_failed)."""
 
-    def __init__(self, clock: Callable[[], float], check: Callable[[], bool]):
-        self.clock, self._check = clock, check
+    def __init__(self, clock: Callable[[], float], check: Callable[[], bool],
+                 streak: Callable[[str], int] = lambda queue: 0,
+                 answered_ever: Callable[[str], bool] = lambda queue: True):
+        self.clock, self._check, self._streak, self._ever = clock, check, streak, answered_ever
         self.lock = threading.Lock()
         self.last_answer: dict[str, float] = {}
-        self.errors: list[tuple[float, str, str]] = []
+        self.errors: list[tuple[float, str, str, bool]] = []  # (when, network, queue, whether it was working)
         self.charges: list[tuple[float, str, tuple]] = []
         self.unsure: set[str] = set()  # networks whose pause is over and none of whose servers answered since
+        self.told: dict[str, float] = {}  # the school servers whose failures told the school's pause that holds: when
+        self.refuted: set[str] = set()  # school servers whose pause a school answer refuted: no sign until they answer
+        self.known: dict[str, bool] = {}  # school queues: whether they ever answered (looked up once, then each answer)
         self._checked_at, self._ok = -math.inf, True
 
-    def answered(self, queue: str) -> None:
+    def answered(self, queue: str, http: bool = True, at: float | None = None) -> bool:
+        """Something on the queue's network answered, at `at` (now when not given): an HTTP answer (any status), or not
+        (http False: a timeout, a broken answer: the connection was made). Returns whether an HTTP answer of a school
+        server lifts the school's pause that holds: the tellers that failed before it came failed on their own (no
+        sign until each answers), and fewer than SCHOOL_SIGNS are left (second review 11-06: an answer that came
+        before the network dropped, noted after its gap, refuted a real outage)."""
         with self.lock:
             net = network_of(queue)
-            self.last_answer[net] = self.clock()
+            at = self.clock() if at is None else at
+            self.last_answer[net] = max(self.last_answer.get(net, -math.inf), at)
             self.unsure.discard(net)
+            if not http:
+                return False
+            self.known[queue] = True
+            self.refuted.discard(queue)
+            if net != "school" or not self.told:
+                return False
+            own = {q for q, t in self.told.items() if t <= at}  # at the same moment the answer wins (down_after too)
+            self.refuted |= own - {queue}
+            for q in own:
+                del self.told[q]
+            if len(self.told) >= SCHOOL_SIGNS:
+                return False
+            self.told = {}
+            return True
 
     def grace(self, network: str | None = None) -> None:
         """After a pause (of every network, or of one): the other network is assumed to work until it shows otherwise;
-        the school's is unsure until one of its servers answers."""
+        the school's is unsure until one of its servers answers. A school pause that ran its course was not refuted:
+        its tellers stay signs."""
         nets = NETWORKS if network is None else (network,)
         with self.lock:
             now = self.clock()
             for n in nets:
                 if n == "school":
                     self.unsure.add(n)
+                    self.told = {}
                 else:
                     self.last_answer[n] = now
             self.errors = [e for e in self.errors if e[1] not in nets]
@@ -557,38 +671,63 @@ class _NetWatch:
         with self.lock:
             return network_of(queue) in self.unsure
 
+    def still_told(self) -> bool:
+        """Whether the school's pause just told stands: no school answer lifted it since down_after told it."""
+        with self.lock:
+            return bool(self.told)
+
     def check(self, fresh: bool = False) -> bool:
         now = self.clock()
         if fresh or now - self._checked_at > NETCHECK_CACHE_S:
             self._ok, self._checked_at = bool(self._check()), now
         return self._ok
 
-    def down_after(self, queue: str) -> tuple[frozenset[str], bool]:
-        """Called after a connection error from queue: (the networks to pause, whether it is ours: the check failed).
-        Empty: the server's own problem."""
+    def _known(self, queue: str) -> bool:
+        """Whether this school server ever answered: looked up once, then kept by answered() (only the queue's own
+        worker asks and answers for it)."""
+        if queue not in self.known:
+            self.known[queue] = bool(self._ever(queue))
+        return self.known[queue]
+
+    def down_after(self, queue: str, at: float | None = None) -> tuple[frozenset[str], bool]:
+        """Called after a connection error from queue (that came back at `at`, now when not given), before it is held
+        against the server: (the networks to pause, whether it is ours: the check failed). Empty: the server's own
+        problem. Whether the server was working is taken now, so that the failure held against the first server of an
+        outage still counts when a later one tells it. The school's network is told down on a fresh check, and not
+        when one of its servers answered while the check was asked."""
         now, net = self.clock(), network_of(queue)
+        at = now if at is None else at
+        working = net == "school" and self._streak(queue) <= SIGN_STREAK and self._known(queue)
         with self.lock:
-            self.errors = [e for e in self.errors if now - e[0] <= NET_WINDOW_S] + [(now, net, queue)]
-            if now - self.last_answer.get(net, -math.inf) <= NET_WINDOW_S:
+            working = working and queue not in self.refuted
+            self.errors = [e for e in self.errors if now - e[0] <= (SIGN_KEEP_S if e[3] else NET_WINDOW_S)]
+            self.errors.append((at, net, queue, working))
+            seen = self.last_answer.get(net, -math.inf)
+            if at - seen <= NET_WINDOW_S:
                 return frozenset(), False
-            many = len({q for _, n, q in self.errors if n == net}) >= NET_QUEUES
-        if self.check(fresh=many):
-            if net == "school" and many:
-                return frozenset({"school"}), False
-            return frozenset(), False
+            many = len({q for t, n, q, _w in self.errors if n == net and now - t <= NET_WINDOW_S}) >= NET_QUEUES
+            signs = {q: t for t, n, q, w in self.errors if n == net and w and t > seen}
+        tell = len(signs) >= SCHOOL_SIGNS
+        if self.check(fresh=many or tell):
+            with self.lock:
+                if not tell or self.last_answer.get(net, -math.inf) != seen:
+                    return frozenset(), False
+                self.told.update(signs)
+            return frozenset({"school"}), False
         with self.lock:
             return frozenset(n for n in NETWORKS if now - self.last_answer.get(n, -math.inf) > NET_WINDOW_S), True
 
     def charge(self, queue: str, *undo) -> None:
         with self.lock:
             now = self.clock()
-            self.charges = [c for c in self.charges if now - c[0] <= NET_UNDO_S] + [(now, network_of(queue), undo)]
+            self.charges = [c for c in self.charges if now - c[0] <= SIGN_KEEP_S] + [(now, network_of(queue), undo)]
 
-    def take_charges(self, networks: frozenset[str]) -> list[tuple]:
-        """The recent costs on these networks (to be undone); those on other networks are kept."""
+    def take_charges(self, networks: frozenset[str], within: float = NET_UNDO_S) -> list[tuple]:
+        """The costs on these networks of the last `within` seconds (to be undone); those on other networks are
+        kept."""
         with self.lock:
             now = self.clock()
-            out = [u for t, n, u in self.charges if now - t <= NET_UNDO_S and n in networks]
+            out = [u for t, n, u in self.charges if now - t <= within and n in networks]
             self.charges = [c for c in self.charges if c[1] not in networks]
             return out
 
@@ -604,7 +743,7 @@ class Crawler:
                  gap: tuple[float, float] = GAP, sites: frozenset[str] | None = None,
                  campus_url: str | None = CAMPUS_URL, local_address: Callable[[], str | None] = local_address,
                  decide: Callable[[str, str], str | None] | None = profiles.decision, end_wait_s: float = END_WAIT_S,
-                 google_step: bool = True, reconcile_sources: Any = None):
+                 google_step: bool = True, reconcile_sources: Any = None, only: Iterable[int] | None = None):
         """plan: the site list (round1.load() when not given). gap: the run's (check_gap). sites: only these sites'
         rows (`archive run --sites`). campus_url: the campus check (None: no check, campus stays unknown). decide:
         the platform file's decision for a site and a writing's key (profiles.decision; None: nothing decided, every
@@ -613,7 +752,9 @@ class Crawler:
         unhandled:google, B8). reconcile_sources: a reconcile.Sources; given, each round-1 site of the run is
         reconciled offline by this process as it finishes (design §18.2a step 3: reconcile.site_done, every check but
         R6), and again whenever it got more work and finished again (`archive run` gives it; None: no reconciling, as
-        a test's crawl and rejudge's offline crawler)."""
+        a test's crawl and rejudge's offline crawler). only: url ids (`archive run --only`): the run fetches those of
+        them pending when it starts and touches no other row (the module's docstring); no site is reconciled then,
+        reconcile_sources or not. An empty only is no row at all, never every row."""
         if end_wait_s <= 0:
             raise ValueError(f"end_wait_s is a time in seconds greater than 0 (got {end_wait_s:g})")
         self.root = root
@@ -626,13 +767,19 @@ class Crawler:
         self.site_cap, self.variant_cap, self.file_cap, self.image_cap = site_cap, variant_cap, file_cap, image_cap
         self.disk_free = disk_free
         self.sites = frozenset(sites) if sites else None
-        self.net = _NetWatch(clock, netcheck)
+        # --only: the rows this run may fetch (narrowed to those pending when it starts, run(); the row of a listed
+        # address moved to its other scheme joins them, _carry_only), and how many ids it was given (run_start, run_end)
+        self.only = None if only is None else frozenset(int(i) for i in only)
+        self._only_listed = None if self.only is None else len(self.only)
+        self._only_lock = threading.Lock()
+        self.net = _NetWatch(clock, netcheck, streak=self.frontier.server_fails, answered_ever=self._ever_answered)
         self.stop = threading.Event()
         self.end_reason: str | None = None
         self.run_id = int(time.time())
         self.campus_url, self.local_address = campus_url, local_address
         self.campus = "unknown"  # on, off or unknown: written on every request row (B4)
         self._campus_at, self._campus_addr = -math.inf, None
+        self._campus_resume()
         self.decide = decide or (lambda _site, _key: None)
         self.end_wait_s = float(end_wait_s)
         # the Google step (design §7.6): a Drive, Docs or Calendar address becomes its API rows; None: B8's wait
@@ -647,6 +794,9 @@ class Crawler:
         self._door_lock = threading.Lock()
         self._tl = threading.local()  # row: the url row a worker is handling now (a scheme move hands it another)
         self._last_kind: dict[str, str] = {}
+        self._came: dict[str, float] = {}  # queue -> when its last request's answer or failure came back (_send)
+        self._down_warned: set[str] = set()  # server queues warned server_down, until they answer
+        self._fives: dict[str, int] = {}  # a server queue's 5xx in a row with no other answer between (SPARE_RUN)
         self._prefer: dict[str, str] = {}
         self._deny_rests: dict[str, int] = {}  # directory -> streaks of refusals answered by a wait this run
         self._answered_off: set[str] = set()
@@ -655,12 +805,13 @@ class Crawler:
         self._stuck = 0  # loops in a row with rows due that no queue takes
         self._probe_tries: dict[tuple[str, str], int] = {}  # (host, detail type) -> id probes that got no answer
         # §18.2a step 3: the sites to reconcile as they finish (those this run worked on, and those never reconciled),
-        # and those reconciled since they last got work
-        self.reconcile_sources = reconcile_sources
+        # and those reconciled since they last got work; none for a run given --only (its sites are not complete)
+        self.reconcile_sources = reconcile_sources if self.only is None else None
         self._site_lock = threading.Lock()
         self._to_reconcile: set[str] = set()
         self._reconciled_now: set[str] = set()
         self._site_look_at = -math.inf  # time.monotonic() of the main loop's last look for finished sites
+        self._alive_at = -math.inf  # self.clock() of the main loop's last beat (ALIVE_S)
         self._reconciler: threading.Thread | None = None  # the thread that reconciles finished sites (review 10-26)
         self._gsimg_lock = threading.RLock()  # a site's Google Sites picture state (design §23 B): one writer at a time
 
@@ -683,11 +834,22 @@ class Crawler:
             self.frontier.set_host(host, queue=named, dns_at=self.clock(), dns_fail=0)
             return named
         started = time.perf_counter()
-        queue, ip, cname = self.resolver(host)
+        queue, ip, cname = self._lookup(host)
         self.frontier.set_host(host, queue=queue, ip=ip, cname=cname, dns_at=self.clock(),
                                dns_fail=int(queue == "dns-fail"), dns_ms=(time.perf_counter() - started) * 1000)
         self._dns_timed[queue] = self.clock()
         return queue
+
+    def _lookup(self, host: str) -> tuple[str, str | None, str | None]:
+        """The resolver's answer, but a name that resolves to this machine (scope.own_address: a loopback or an
+        unspecified address) resolves to no server we may ask: dns-fail, which no worker sends on (run()), so its rows
+        wait and then fail as a name that does not resolve does (its back-off, `archive retry dns`, failed dns at
+        DNS_GIVE_UP: the lab bucket on the pages that use them, 等搬到实验室 / 校内也连不上, never 规则不抓). A URL that
+        names this machine is scope.judge's (loopback), before any lookup. 11-06, with that rule 【Claude 的执行办法】"""
+        queue, ip, cname = self.resolver(host)
+        if scope.own_address(ip) or (queue.startswith("ip:") and scope.own_address(queue[3:])):
+            return "dns-fail", None, None
+        return queue, ip, cname
 
     def _dns_step(self, queue: str) -> bool:
         """§6.2: TCP's connect time includes the name lookup, so each host of a queue has its lookup timed again every
@@ -821,8 +983,10 @@ class Crawler:
         if owner is None:
             return None
         pk = profiles.page_kind(url)
-        if pk == "detail" and kind == "page":
-            return None  # a platform's detail pages are free of the caps (design §7.4 detail_paths: 免上限)
+        if kind == "page" and (pk == "detail" or scope.is_platform_detail(url)):
+            # a platform's detail pages, and SSO's activity detail pages (11-06), are free of the caps (design §7.4
+            # detail_paths: 免上限), the depth limit aside; they still count for their site (frontier.COUNT_SITE)
+            return None
         if kind == "file" and self.frontier.count_site(owner, "file") >= self.file_cap:
             return "cap:file"
         if kind == "image" and self.frontier.count_site(owner, "image") >= self.image_cap:
@@ -833,6 +997,62 @@ class Crawler:
                 and self.frontier.count_path(owner, url.split("?", 1)[0]) >= self.variant_cap):
             return "cap:variant"
         return None
+
+    def _release_caps(self) -> int:
+        """At a run's start: a row held by one of the crawler's caps (CAP_REASONS) that the rules of today no longer
+        hold is due again, as a new row would be (_due: its host is looked up now if nobody had); one a cap still
+        holds stays held, its reason as it was. In id order, the order the rows were found: each one let go counts at
+        once (frontier.COUNT_SITE), so a site with room for k more pages lets go of its first k. Every site's rows, a
+        run given --sites too, as _skip_aliases. 11-03 (P02): the variant cap, SSO's activity detail pages free of it;
+        11-06: every cap _cap gives, SSO's activity detail pages free of the site cap too (scope.PLATFORM_DETAIL_PATHS;
+        【用户同意 Claude 的建议】: Claude's 11-04 fix 「让这两种活动页也不受整站上限；重开时，被挡下的会自动放回去抓」,
+        the owner 11-04 「待会再修」, 11-06 the button 「先修三件再一起重开」; every cap of _cap and none of Google's:
+        【Claude 的执行办法】). A run given --only lets none go: its rows are those pending at its start (_narrow_only,
+        before this). Returns the rows let go."""
+        by_id, id_args = ids_clause("id", self.only)
+        marks = ",".join("?" * len(CAP_REASONS))
+        let_go: dict[str, int] = {}
+        for r in self.frontier.q(f"SELECT * FROM url WHERE state='held' AND reason IN ({marks}){by_id} ORDER BY id",
+                                 (*CAP_REASONS, *id_args)):
+            if self._cap(r["url"], r["owner_site"], r["kind"], r["depth"]) is not None:
+                continue
+            state, reason, next_at = self._due(r["url"], r["host"])
+            if self.frontier.x("UPDATE url SET state=?, reason=?, next_at=? WHERE id=? AND state='held'",
+                               (state, reason, next_at, r["id"])):
+                let_go[r["reason"]] = let_go.get(r["reason"], 0) + 1
+        n = sum(let_go.values())
+        if n:
+            self.frontier.event("info", "caps_released", f"{n} rows held by a cap are free of it now ("
+                                + ", ".join(f"{k} {v}" for k, v in sorted(let_go.items())) + ")")
+        return n
+
+    def _skip_aliases(self) -> int:
+        """At a run's start (11-03, P05): a row not fetched yet (pending, held, later) whose address canonical() now
+        writes another way (an SSO WebIdx page under cwebidx/cmenuid or with pagenum=1) is skipped, out:alias, its
+        final_url the one address, and is neither fetched nor pressed: that address's row is (made from this one, with
+        its state, when there is none, as _moved_row does), and a page's resource that pointed at the alias points
+        there. --only: the listed rows only. Returns the rows skipped."""
+        by_id, id_args = ids_clause("id", self.only)
+        n = 0
+        for r in self.frontier.q(f"SELECT * FROM url WHERE state IN ('pending','held','later'){by_id} ORDER BY id",
+                                 id_args):
+            canon = scope.canonical(r["url"])
+            if canon is None or canon == r["url"]:
+                continue
+            if self.frontier.row(canon) is None:
+                self.frontier.add(canon, host=r["host"], site=scope.site_key(canon), unit=r["unit"], tier=r["tier"],
+                                  kind=r["kind"], depth=r["depth"], found_via=r["found_via"],
+                                  found_from=r["found_from"], state=r["state"], reason=r["reason"],
+                                  next_at=r["next_at"], owner_site=r["owner_site"], prio=r["prio"], leaf=r["leaf"],
+                                  kind0=r["kind0"], added_at=self.clock(), old_ref=r["old_ref"],
+                                  referrer=r["referrer"])
+            one = self.frontier.row(canon)
+            self.frontier.x("UPDATE page_res SET res_id=? WHERE res_id=?", (one["id"], r["id"]))
+            self.frontier.finish(r["id"], state="skipped", reason="out:alias", final_url=canon, fetched_at=None)
+            n += 1
+        if n:
+            self.frontier.event("info", "aliases_skipped", f"{n} rows are the same page as another row's address")
+        return n
 
     def _scheme_rewrite(self, url: str) -> str:
         """An address of a host known to answer on one scheme only is written in that one (design §6.6)."""
@@ -846,21 +1066,37 @@ class Crawler:
         """Names that did not resolve, tried again when their back-off is over (all of them when force). Every pending
         row of such a host waits for its name, whatever brought it (a row `retry` put back keeps no next_at of its
         own: second review 10-26), and its reason says so (dns); nothing was ever sent to a name that never resolved,
-        so when it resolves they are all due."""
+        so when it resolves they are all due. A run given --only looks up again the names of its listed rows only and
+        moves those rows only (the host's other rows keep their wait), and never gives a name up: that fails every row
+        of the host, a full run's to do (its lookups still count, up to one short of it)."""
         now = self.clock()
-        for h in self.frontier.q("SELECT host, dns_fail, dns_at FROM host WHERE queue='dns-fail' AND dns_fail < ?",
-                                 (DNS_GIVE_UP,)):
+        if force and self.only is None:
+            # a name looked up DNS_GIVE_UP times or more under a higher limit (8 before 11-08) is never looked up again:
+            # its rows still waiting give up now, as at the lookup that reaches the limit
+            for h in self.frontier.q("SELECT host, dns_fail FROM host WHERE queue='dns-fail' AND dns_fail >= ? AND host "
+                                     "IN (SELECT host FROM url WHERE state='pending')", (DNS_GIVE_UP,)):
+                n = self.frontier.x("UPDATE url SET state='failed', reason='dns' WHERE host=? AND state='pending'",
+                                    (h["host"],))
+                self.frontier.event("warn", "dns_gave_up", f"did not resolve {h['dns_fail']} times: {n} URLs failed "
+                                    "(nknu archive retry dns tries again)", h["host"])
+        by_id, id_args = self._ids("u.id")
+        mine = f" AND host IN (SELECT u.host FROM url u WHERE u.state = 'pending'{by_id})" if by_id else ""
+        row_id, row_args = self._ids("id")
+        for h in self.frontier.q("SELECT host, dns_fail, dns_at FROM host WHERE queue='dns-fail' AND dns_fail < ?"
+                                 f"{mine}", (DNS_GIVE_UP, *id_args)):
             host = h["host"]
             if not force and now < h["dns_at"] + _dns_wait(h["dns_fail"]):
                 continue
-            queue, ip, cname = self.resolver(host)
+            queue, ip, cname = self._lookup(host)
             if queue != "dns-fail":
                 self.frontier.set_host(host, queue=queue, ip=ip, cname=cname, dns_fail=0, dns_at=now)
                 n = self.frontier.x("UPDATE url SET next_at=0, reason=CASE WHEN reason='dns' THEN NULL ELSE reason END "
-                                    "WHERE host=? AND state='pending'", (host,))
+                                    f"WHERE host=? AND state='pending'{row_id}", (host, *row_args))
                 self.frontier.event("info", "dns_back", f"resolves now ({queue}): {n} URLs due", host)
                 continue
             fails = h["dns_fail"] + (1 if self.net.check() else 0)  # an outage is not the name's fault
+            if self.only is not None:
+                fails = min(fails, DNS_GIVE_UP - 1)
             self.frontier.set_host(host, dns_fail=fails, dns_at=now)
             if fails >= DNS_GIVE_UP:
                 n = self.frontier.x("UPDATE url SET state='failed', reason='dns' WHERE host=? AND state='pending'",
@@ -868,22 +1104,25 @@ class Crawler:
                 self.frontier.event("warn", "dns_gave_up", f"did not resolve {fails} times: {n} URLs failed "
                                     "(nknu archive retry dns tries again)", host)
             else:
-                self.frontier.x("UPDATE url SET next_at=max(next_at, ?), reason='dns' WHERE host=? AND state='pending'",
-                                (now + _dns_wait(fails), host))
+                self.frontier.x("UPDATE url SET next_at=max(next_at, ?), reason='dns' WHERE host=? AND state='pending'"
+                                f"{row_id}", (now + _dns_wait(fails), host, *row_args))
 
     def _place_hosts(self) -> int:
         """The hosts of pending rows that nobody looked up (second review 10-26: `retry` brings back round two's rows
         and those a cap held, which never had their host looked up; the old archive's hosts are seeded with queue '?'):
         looked up now, before any is fetched, so that each goes out on its server's own queue. One that does not
-        resolve waits like any other such name (reason dns, its back-off). Returns how many hosts were looked up."""
+        resolve waits like any other such name (reason dns, its back-off). A run given --only looks up the hosts of
+        its listed rows only, and moves those rows only. Returns how many hosts were looked up."""
+        by_id, id_args = self._ids("u.id")
         hosts = [r[0] for r in self.frontier.q(
             "SELECT DISTINCT u.host FROM url u LEFT JOIN host h ON h.host = u.host "
-            "WHERE u.state = 'pending' AND (h.host IS NULL OR h.queue IN ('?', ''))")]
+            f"WHERE u.state = 'pending' AND (h.host IS NULL OR h.queue IN ('?', '')){by_id}", id_args)]
+        row_id, row_args = self._ids("id")
         for host in hosts:
             if self.queue_of(host) == "dns-fail":
                 h = self.frontier.host(host)
-                self.frontier.x("UPDATE url SET next_at=max(next_at, ?), reason='dns' WHERE host=? AND state='pending'",
-                                (h["dns_at"] + _dns_wait(h["dns_fail"]), host))
+                self.frontier.x("UPDATE url SET next_at=max(next_at, ?), reason='dns' WHERE host=? AND state='pending'"
+                                f"{row_id}", (h["dns_at"] + _dns_wait(h["dns_fail"]), host, *row_args))
         if hosts:
             log.info("looked up %d hosts nobody had looked up", len(hosts))
         return len(hosts)
@@ -897,53 +1136,72 @@ class Crawler:
         if self._real_net and not schoollock.held():
             raise schoollock.SchoolLockNotHeld(f"a crawl on the real network holds the machine-wide lock on school "
                                                f"requests ({schoollock.lock_path()}) for its whole run: none was taken")
-        n = self.frontier.requeue_active()
+        n = self.frontier.requeue_active(ids=self.only)
         if n:
             log.info("requeued %d URLs left active by the last run", n)
-        chains = self.chains.resume()  # §7.5 step 9: a chain left pressing starts again from its GET
+        if self.only is not None:
+            self._narrow_only()
+        # §7.5 step 9: a chain left pressing starts again from its GET (--only: a listed row's chain only)
+        chains = self.chains.resume(ids=self.only)
         if chains:
             log.info("%d lists start their walk again from their GET (left pressing by the last run)", chains)
-        google_api.hold_for_key(self.frontier, self.clock())  # §7.6: no key, the googleapis queue waits (no failure)
+        # §7.6: no key, the googleapis queue waits (no failure); --only: the listed rows' reasons only
+        google_api.hold_for_key(self.frontier, self.clock(), ids=self.only)
+        self._skip_aliases()  # 11-03 P05: a row under a spelling canonical() now merges is never fetched
+        self._release_caps()  # 11-03 P02, 11-06: a row held by a cap the rules of today no longer hold is let go
         sites = sorted(self.sites) if self.sites else None
-        self.frontier.event("info", "run_start", json.dumps({"pid": os.getpid(), "gap": list(self.gap),
-                                                             "sites": sites, "end_wait_s": self.end_wait_s,
-                                                             "school_lock": str(schoollock.lock_path())}))
+        if self.only is not None and self.sites is None:
+            sites = self._only_sites()  # never null (every site) for a run given --only
+        start = {"pid": os.getpid(), "gap": list(self.gap), "sites": sites, "end_wait_s": self.end_wait_s,
+                 "school_lock": str(schoollock.lock_path())}
+        if self._only_listed is not None:  # --only: how many ids were listed, and how many of them were pending
+            start |= {"only": self._only_listed, "only_pending": len(self.only)}
+        self.frontier.event("info", "run_start", json.dumps(start))
         workers: dict[str, threading.Thread] = {}
         self._never_reconciled()
         try:
             self._reresolve(force=True)
             self._place_hosts()
             while not self.stop.is_set():
-                if self._limit_reached():
-                    self.halt("limit")
-                    break
-                self._reresolve()
-                if not self._paused():
-                    now = self.clock()
-                    due = self.frontier.queues(now, self.sites)
-                    for q in self.chains.due_queues(now, self.sites):  # a queue whose only work is a press
-                        due.setdefault(q, [])
-                    # the campus check goes on SSO's queue, and only when that queue may send: a worker started for a
-                    # check its paused queue cannot make would idle, and keep the run from ever ending (second review)
-                    if (self._campus_due() and (cq := self.campus_queue()) not in (None, "dns-fail")
-                            and self.frontier.paused_until(cq) <= now):
-                        due.setdefault(cq, [])
-                    for queue in due:
-                        if queue == "dns-fail":
-                            continue
-                        t = workers.get(queue)
-                        if t is None or not t.is_alive():
-                            t = threading.Thread(target=self._work, args=(queue,), name=f"q-{queue}", daemon=True)
-                            workers[queue] = t
-                            t.start()
-                if not any(t.is_alive() for t in workers.values()) and self._should_end():
-                    if self.end_reason in ("finished", "waiting"):  # the sites it leaves done, before its run_end
-                        self._join_reconciler()
-                        self._reconcile_finished()
-                    break
-                if time.monotonic() - self._site_look_at >= SITE_LOOK_S:
-                    self._site_look_at = time.monotonic()
-                    self._reconcile_in_background()
+                try:
+                    self._beat()
+                    if self._limit_reached():
+                        self.halt("limit")
+                        break
+                    self._reresolve()
+                    if not self._paused():
+                        now = self.clock()
+                        due = self.frontier.queues(now, self.sites, ids=self.only)
+                        # a queue whose only work is a press
+                        for q in self.chains.due_queues(now, self.sites, ids=self.only):
+                            due.setdefault(q, [])
+                        # the campus check goes on SSO's queue, and only when that queue may send: a worker started for a
+                        # check its paused queue cannot make would idle, and keep the run from ever ending (second review)
+                        if (self._campus_due() and (cq := self.campus_queue()) not in (None, "dns-fail")
+                                and self.frontier.paused_until(cq) <= now):
+                            due.setdefault(cq, [])
+                        for queue in due:
+                            if queue == "dns-fail":
+                                continue
+                            t = workers.get(queue)
+                            if t is None or not t.is_alive():
+                                t = threading.Thread(target=self._work, args=(queue,), name=f"q-{queue}", daemon=True)
+                                workers[queue] = t
+                                t.start()
+                    if not any(t.is_alive() for t in workers.values()) and self._should_end():
+                        if self.end_reason in ("finished", "waiting"):  # the sites it leaves done, before its run_end
+                            self._join_reconciler()
+                            self._reconcile_finished()
+                        break
+                    if time.monotonic() - self._site_look_at >= SITE_LOOK_S:
+                        self._site_look_at = time.monotonic()
+                        self._reconcile_in_background()
+                except sqlite3.DatabaseError as exc:
+                    if not db_busy(exc):
+                        raise
+                    # held by another connection (db_busy): the next turn tries again, the run goes on (11-08)
+                    log.warning("the frontier database was busy (%s): the run goes on", exc)
+                    self._db_busy_event(f"the run's main loop: {exc}; tried again at its next turn")
                 self.stop.wait(poll_s)
         except sqlite3.DatabaseError:
             log.exception("the frontier database failed, stopping the run")
@@ -956,21 +1214,64 @@ class Crawler:
             with suppress(sqlite3.Error):
                 self.chains.sso_totals()  # §7.5 step 7: SSO 公告中心's categories add up to its whole list
             with suppress(sqlite3.Error):
-                left, nxt = self.frontier.waiting(self.sites)
-                presses, p_nxt, _active = self.chains.waiting(self.sites)
+                left, nxt = self.frontier.waiting(self.sites, ids=self.only)
+                presses, p_nxt, _active = self.chains.waiting(self.sites, ids=self.only)
                 nxt = min((t for t in (nxt, p_nxt) if t is not None), default=None)
-                self.frontier.event("info", "run_end", json.dumps({"reason": self.end_reason or "stop", "sites": sites,
-                                                                   "pending": left, "presses": presses,
-                                                                   "next_due": nxt}))
+                if self.only is not None and self.sites is None:  # and those of a listed row moved to its other scheme
+                    sites = sorted({*(sites or ()), *self._only_sites()})
+                end = {"reason": self.end_reason or "stop", "sites": sites, "pending": left, "presses": presses,
+                       "next_due": nxt}
+                if self._only_listed is not None:  # --only: pending and presses are the listed rows'
+                    end["only"] = self._only_listed
+                self.frontier.event("info", "run_end", json.dumps(end))
+
+    def _ids(self, column: str) -> tuple[str, list[str]]:
+        """--only's condition on a column holding a url id (frontier.ids_clause), with its argument: ('', []) for a
+        run without it."""
+        return ids_clause(column, self.only)
+
+    def _narrow_only(self) -> None:
+        """At the start of a run given --only (after rows left active went back to pending): the listed rows it may
+        fetch are those pending now. One done, failed or left for later is skipped, its presses with it (a done
+        list page's chain is never started again from a new GET of it)."""
+        by_id, id_args = self._ids("id")
+        pending = frozenset(r[0] for r in self.frontier.q(f"SELECT id FROM url WHERE state = 'pending'{by_id}",
+                                                          id_args))
+        with self._only_lock:
+            skipped, self.only = len(self.only) - len(pending), pending
+        if skipped:
+            log.info("--only: %d of the %d listed rows are not pending (done, failed or left for later): skipped",
+                     skipped, self._only_listed)
+
+    def _only_sites(self) -> list[str]:
+        """The sites whose records a run given --only (and no --sites) can change: those its rows count for, and those
+        of the pages that use them (page_res; '' for a row of no site, as the dashboard keys it). Its run_start and
+        run_end name them where a full run writes null, every site: monitor reads a run_end as newer than the
+        reconciliation and the browser check of each site it covers (review 11-02)."""
+        by_id, id_args = self._ids("u.id")
+        by_res, res_args = self._ids("r.res_id")
+        return [r[0] for r in self.frontier.q(
+            f"SELECT coalesce(u.owner_site, '') FROM url u WHERE 1{by_id} UNION SELECT coalesce(p.owner_site, '') "
+            f"FROM page_res r JOIN url p ON p.id = r.page_id WHERE 1{by_res} ORDER BY 1", [*id_args, *res_args])]
+
+    def _carry_only(self, uid: int, moved_id: int) -> None:
+        """A listed row moved to the address in its other scheme (design §6.6, _move_scheme, _switch_scheme): that
+        row is the listed row's from now on (a run given --only fetches, retries and waits for it as it would the
+        listed row)."""
+        if self.only is None or uid not in self.only:
+            return
+        with self._only_lock:
+            self.only = self.only | {moved_id}
 
     def _should_end(self) -> bool:
         """With no worker alive: whether the run ends now (and why, in end_reason). Nothing left: finished. Rows still
         active have no worker to hold them (a bug's): each is a crash, and the run looks again. The soonest row due
         later than END_WAIT_S: waiting (B1). Rows due now that no queue takes (none looked up, or one nobody can
         dispatch): the hosts are looked up once more, and if that is not it two loops in a row, the run ends (stuck),
-        with an error event, instead of waiting for ever with both locks held."""
-        left, nxt = self.frontier.waiting(self.sites)
-        presses, p_nxt, active = self.chains.waiting(self.sites)
+        with an error event, instead of waiting for ever with both locks held. A run given --only counts, and puts
+        right, its listed rows and their presses only: it ends once none of them is left."""
+        left, nxt = self.frontier.waiting(self.sites, ids=self.only)
+        presses, p_nxt, active = self.chains.waiting(self.sites, ids=self.only)
         if left == 0 and presses == 0:
             self.end_reason = self.end_reason or "finished"
             log.info("nothing left to fetch")
@@ -978,10 +1279,12 @@ class Crawler:
         if active:  # presses left active with no worker holding them (a bug's): sent or not, never sent again
             for list_id in sorted({a["list_id"] for a in active if a["kind"] not in postback.SOLO_KINDS}):
                 self.chains.restart_chain(list_id, "crash:left_active")
+            by_list, list_args = self._ids("list_id")
             n = self.frontier.x("UPDATE action SET state='failed', reason='crash:left_active' WHERE kind='click' "
-                                "AND state='active'")
+                                f"AND state='active'{by_list}", list_args)
             # a read of a data address only reads (design §23 C1): read again with a new request
-            self.frontier.x("UPDATE action SET state='pending' WHERE kind='data' AND state='active'")
+            self.frontier.x(f"UPDATE action SET state='pending' WHERE kind='data' AND state='active'{by_list}",
+                            list_args)
             self.frontier.event("error", "left_active", f"{len(active)} presses were left active with no worker "
                                 f"holding them (a crawler bug): their lists start again from their GET, {n} file "
                                 "buttons failed as crash:left_active (nknu archive retry click puts them back)")
@@ -991,7 +1294,9 @@ class Crawler:
             if nxt is None:
                 return False  # only active rows and presses being restarted: the run looks again
         if nxt is None:  # only active rows, and no worker holds them
-            n = self.frontier.x("UPDATE url SET state='failed', reason='crash:left_active' WHERE state='active'")
+            by_id, id_args = self._ids("id")
+            n = self.frontier.x("UPDATE url SET state='failed', reason='crash:left_active' WHERE state='active'"
+                                f"{by_id}", id_args)
             self.frontier.event("error", "left_active", f"{n} URLs were left active with no worker holding them (a "
                                 "crawler bug): failed as crash:left_active (nknu archive retry crash tries again)")
             return False
@@ -1000,8 +1305,8 @@ class Crawler:
             self.end_reason = self.end_reason or "waiting"
             log.info("only rows that wait for later are left (%d, %d presses): left for the next run", left, presses)
             return True
-        if (nxt <= now and not [q for q in self.frontier.queues(now, self.sites) if q != "dns-fail"]
-                and not self.chains.due_queues(now, self.sites)):
+        if (nxt <= now and not [q for q in self.frontier.queues(now, self.sites, ids=self.only) if q != "dns-fail"]
+                and not self.chains.due_queues(now, self.sites, ids=self.only)):
             if self._place_hosts():
                 self._stuck = 0
                 return False
@@ -1036,6 +1341,14 @@ class Crawler:
         sites = self.sites if self.sites is not None else {s.site for s in self.plan.sites.values() if s.round == "1"}
         with self._site_lock:
             self._to_reconcile |= {s for s in sites if s not in have and self._round1_site(s)}
+
+    def _beat(self) -> None:
+        """meta run:alive_at, at most once per ALIVE_S: when the main loop last went round, so the dashboard tells a run
+        that hangs while it holds run.lock from one whose queues all rest (dashboard design 2026-11-04 §2.5)."""
+        now = self.clock()
+        if now - self._alive_at >= ALIVE_S:
+            self._alive_at = now
+            self.frontier.meta("run:alive_at", f"{now:.3f}")
 
     def _reconcile_in_background(self) -> None:
         """Start the reconciliation of finished sites on a thread of its own, unless one is at work (review 10-26: on
@@ -1143,6 +1456,8 @@ class Crawler:
                 self.frontier.unpause(key)
                 network = None if key == ALL_QUEUES else network_of(queue)
                 self.net.grace(network)
+                if network in (None, "school"):
+                    self._campus_again()
                 self.frontier.event("info", "online", "the network is back: every queue resumes" if network is None
                                     else "the school network's pause is over: its queues try again, and no connection "
                                     "failure is held against its servers until one of them answers"
@@ -1150,9 +1465,10 @@ class Crawler:
             return False
 
     def _next(self, queue: str) -> sqlite3.Row | None:
-        """The queue's next row, as its worker takes it: the run's sites only, the host it is on first."""
+        """The queue's next row, as its worker takes it: the run's sites (and --only's rows) only, the host it is on
+        first."""
         return self.frontier.next_for(self.frontier.hosts_of(queue), self.clock(), prefer_host=self._prefer.get(queue),
-                                      sites=self.sites)
+                                      sites=self.sites, ids=self.only)
 
     def _work(self, queue: str) -> None:
         sink = WarcSink(self.root / "warc", re.sub(r"[^\w.-]", "_", queue), self.run_id, _utc())
@@ -1169,8 +1485,9 @@ class Crawler:
                 if not paused and self._step(self._campus_step, queue, client, sink):
                     continue
                 self._dns_step(queue)
-                # a chain's next press goes before the queue's url rows (design §6.7, §7.5 step 4)
-                press = None if paused else self.chains.next_action(queue, self.clock(), self.sites)
+                # a chain's next press goes before the queue's url rows (design §6.7, §7.5 step 4); --only: a press of a
+                # listed row only
+                press = None if paused else self.chains.next_action(queue, self.clock(), self.sites, ids=self.only)
                 if press is not None:
                     idle_since = None
                     self._prefer[queue] = press["host"]
@@ -1181,7 +1498,7 @@ class Crawler:
                     idle_since = idle_since or self.clock()
                     if self.clock() - idle_since > IDLE_EXIT_S:
                         return
-                    due = None if paused else self.frontier.next_due(self.frontier.hosts_of(queue))
+                    due = None if paused else self.frontier.next_due(self.frontier.hosts_of(queue), ids=self.only)
                     self.stop.wait(min(IDLE_POLL_S, max(0.05, due - self.clock())) if due else IDLE_POLL_S)
                     continue
                 idle_since = None
@@ -1235,7 +1552,9 @@ class Crawler:
                 self.frontier.event("error", "warc_write", f"{exc} — the run stops; fix the archive directory, then "
                                     "nknu archive run again"[:500], row["host"], row["url"])
             self.halt("warc_write" if isinstance(exc, ArchiveWriteError) else "disk_low")
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if db_busy(exc) and self._db_busy_row(queue, row, exc):
+                return
             log.exception("queue %s: the frontier database failed, stopping the run", queue)
             self.halt("db_error")
         except schoollock.SchoolLockNotHeld as exc:
@@ -1255,6 +1574,53 @@ class Crawler:
         r = self.frontier.row_by_id(uid)
         if r is not None and r["state"] not in ("pending", "active"):
             self.chains.get_walk_for(uid)
+
+    def _db_busy_row(self, queue: str, row, exc: sqlite3.DatabaseError) -> bool:
+        """The row being handled met the frontier database held by another connection (DB_BUSY; the lab run of 11-07
+        05:45 stopped on it, the database whole): it is pending again, fetched again DB_BUSY_RETRY_S later (what of its
+        answer got written may be only part of it), no attempt used, and the run goes on (the owner 11-08: 「修好'数据库
+        写入撞车'」). False when it cannot be put back either: the run stops, as for any other database error."""
+        uid = self._tl.row
+        try:  # a row already given its end keeps it (a Google Sites page's kept answer among them, §23.9 B2)
+            back = self.frontier.x("UPDATE url SET state='pending', next_at=?, fetched_at=NULL WHERE id=? AND "
+                                   "state='active'", (self.clock() + DB_BUSY_RETRY_S, uid))
+        except sqlite3.Error:
+            return False
+        what = f"fetched again in {DB_BUSY_RETRY_S:.0f} s" if back else "already given its end, kept"
+        log.warning("queue %s: the frontier database was busy (%s): row %s %s", queue, exc, uid, what)
+        self._db_busy_event(f"row {uid}: {exc}; {what}, the run goes on", row["host"], row["url"])
+        return True
+
+    def _db_busy_press(self, a, exc: sqlite3.DatabaseError) -> bool:
+        """A press that met the frontier database held by another connection (_db_busy_row): a read of a data address
+        only reads, so it is pending again, DB_BUSY_RETRY_S later (as resume() puts one back after a stop); any other may
+        have reached the server and is never sent again (§6.4): still active (no answer written), it failed as one that
+        got no answer (postback.Chains.failed: its chain starts again from its GET once; a file button waits for `retry
+        click`); answered, its chain starts again from its GET so that what the answer brings is found again (review
+        11-08). False when that cannot be written either: the run stops, as for any other database error."""
+        try:
+            now = self.frontier.q("SELECT state FROM action WHERE id=?", (a["id"],))
+            if a["kind"] == "data":  # whatever got written of its answer: read again (what it links, written again)
+                self.frontier.x("UPDATE action SET state='pending', next_at=? WHERE id=?",
+                                (self.clock() + DB_BUSY_RETRY_S, a["id"]))
+                what = "read again later"
+            elif now and now[0][0] == "active":
+                self.chains.failed(a, DB_BUSY)
+                what = "failed as one that got no answer"
+            elif a["kind"] not in postback.SOLO_KINDS:  # answered: what its answer brings is found again from the GET
+                self.chains.restart_chain(a["list_id"], f"{a['kind']} {a['row_key'][:12]}: {DB_BUSY} after its answer")
+                what = "its answer kept, its chain starts again from its GET"
+            else:
+                what = "its answer kept (a file button: nknu archive retry click presses it again)"
+        except sqlite3.Error:
+            return False
+        log.warning("press %s: the frontier database was busy (%s): %s", a["id"], exc, what)
+        self._db_busy_event(f"press {a['id']} ({a['kind']}): {exc}; {what}, the run goes on", a["host"], a["target"])
+        return True
+
+    def _db_busy_event(self, what: str, host: str | None = None, url: str | None = None) -> None:
+        with suppress(sqlite3.Error):  # the database may still be held: the log above has it
+            self.frontier.event("warn", DB_BUSY, what[:500], host, url)
 
     # ---- a press (design §7.4 clicks, §7.5)
     def _press(self, queue: str, client: Client, sink: WarcSink, a) -> None:
@@ -1278,7 +1644,9 @@ class Crawler:
             self.frontier.event("error", "warc_write", f"{exc} — the run stops; fix the archive directory, then "
                                 "nknu archive run again"[:500], a["host"], a["target"])
             self.halt("warc_write")
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if db_busy(exc) and self._db_busy_press(a, exc):
+                return
             log.exception("queue %s: the frontier database failed, stopping the run", queue)
             self.halt("db_error")
         except schoollock.SchoolLockNotHeld as exc:
@@ -1608,6 +1976,7 @@ class Crawler:
             raise
         finally:
             if sent:
+                self._came[queue] = self.clock()  # before the log and the gap: what the network said, and when
                 try:
                     self._log(queue, host, target.url, purpose, started, got, status, error, scope_reason, robots_sha,
                               client)
@@ -1643,8 +2012,14 @@ class Crawler:
 
     def _request(self, queue: str, client: Client, target: Target, purpose: str,
                  pass_statuses: frozenset[int] | None = None, scope_reason: str | None = None,
-                 robots_sha: str | None = None, max_bytes: int = MAX_BYTES) -> Snapshot | FetchError:
+                 robots_sha: str | None = None, max_bytes: int = MAX_BYTES,
+                 spare: bool = False) -> Snapshot | FetchError:
+        """One request and what its answer says of its server. spare: the address only an old source names, whose 500
+        (OLD_GONE) is its own end (_gone): neither the server's error streak nor the client's breaker counts it (the
+        owner 11-08), while its server gave no more than SPARE_RUN 5xx in a row with no other answer between; a 502,
+        503 or 504 there, or a 500 past that, is the server's as any other."""
         got = self._send(queue, client, target, purpose, pass_statuses, scope_reason, robots_sha, max_bytes)
+        came = self._came.pop(queue, None)
         if isinstance(got, HostCircuitOpen):
             return got
         host = urlsplit(target.url).hostname or ""
@@ -1653,30 +2028,66 @@ class Crawler:
             return got
         if kind is not None:
             self._last_kind[host] = kind
-        if kind is None or kind.startswith("http_") or kind == "retry_after":  # an answer, a 5xx too: it is there
+        answer = kind is None or kind.startswith("http_") or kind == "retry_after"  # a 5xx too: it is there
+        if answer:
             self._server_ok(queue)
             self._door_answered(queue, target.url)
-        if _erred(kind):
+        if kind is not None and kind.startswith("http_5"):
+            self._fives[queue] = self._fives.get(queue, 0) + 1
+        elif answer:
+            self._fives[queue] = 0
+        if self._gone(queue, spare, kind):  # _process_row fails it at once
+            client.reset_host(host)  # the client's breaker (three in a row on one name) forgets it
+        elif _erred(kind):
             self._server_erred(queue, client, host, target.url, kind)
         elif kind is None:
             self.frontier.server_err_clear(queue)
         if kind not in NET_KINDS:
-            self.net.answered(queue)  # something on that network answered (a 5xx is an answer too)
+            if self.net.answered(queue, http=answer, at=came):  # something on that network answered
+                self._school_answered(host)
             return got
-        networks, ours = self.net.down_after(queue)
+        networks, ours = self.net.down_after(queue, at=came)
         if networks:
-            self._go_offline(host, networks, ours)
+            self._go_offline(host, networks, ours, queue)
             raise _Offline
         return got
 
+    def _gone(self, queue: str, spare: bool, kind: str | None) -> bool:
+        """An address only an old source names (spare) whose 500 is its own end (OLD_GONE): while its server gave no
+        more than SPARE_RUN 5xx in a row with no other answer between (_request counts them)."""
+        return spare and kind == OLD_GONE and self._fives.get(queue, 0) <= SPARE_RUN
+
+    def _ever_answered(self, queue: str) -> bool:
+        """Whether this server queue ever answered us (a request row with an HTTP status, this run's or an earlier
+        one's): a school server that never did is no sign of its network going down (_NetWatch)."""
+        return bool(self.frontier.q("SELECT 1 FROM request WHERE queue=? AND status IS NOT NULL LIMIT 1", (queue,)))
+
     def _server_ok(self, queue: str) -> None:
-        if self.frontier.server_fails(queue):
+        self._down_warned.discard(queue)
+        if fails := self.frontier.server_fails(queue):
+            if fails >= CONN_GIVE_UP:  # given up (_server_down): what it failed is due again
+                self._server_back(queue)
             self.frontier.server_answered(queue, self.clock())
 
-    def _go_offline(self, host: str, networks: frozenset[str], ours: bool) -> None:
+    def _server_back(self, queue: str) -> None:
+        """A server _server_down gave up on answered: its rows failed as SERVER_DOWN are due again (review 11-08: a
+        server that only seemed dead must not keep them failed). A run given --only: its listed rows only."""
+        row_id, row_args = self._ids("id")
+        n = 0
+        for host in self.frontier.hosts_of(queue):
+            n += self.frontier.x(f"UPDATE url SET state='pending', reason=NULL, next_at=0 WHERE host=? AND "
+                                 f"state='failed' AND reason=?{row_id}", (host, SERVER_DOWN, *row_args))
+        if n:
+            self.frontier.event("info", "server_back", f"server queue {queue} answered again: {n} URLs it failed as "
+                                f"{SERVER_DOWN} are due again")
+
+    def _go_offline(self, host: str, networks: frozenset[str], ours: bool, queue: str | None = None) -> None:
         """Pause the networks that do not answer (every queue when none does) and undo what their connection errors
         of the last minutes cost. ours: the connectivity check failed (5 min, then checked again); else the school's
-        network is down while ours works (B2: 15 min, then its servers are asked again)."""
+        network is down while ours works (B2: 15 min, then its servers are asked again). A school pause gives the
+        servers back their counts, not the rests of their own failures, and the server whose failure (queue) told it
+        rests too: a school answer may still lift it, and none of them is asked again before its rest is over (second
+        review 11-06, R3)."""
         now = self.clock()
         every = networks >= frozenset(NETWORKS)
         keys = [ALL_QUEUES] if every else [net_key(n) for n in sorted(networks)]
@@ -1689,16 +2100,32 @@ class Crawler:
             self.frontier.pause(key, now + wait, "the network is down" if every else
                                 "this network does not answer and the connectivity check failed" if ours else
                                 "the school's servers do not connect while the internet answers")
-        undone = self._undo(self.net.take_charges(networks))
+        undone = self._undo(self.net.take_charges(networks, NET_UNDO_S if ours else SIGN_KEEP_S), keep_rests=not ours)
+        if not ours and queue is not None:
+            self.frontier.pause(queue, now + CONN_PAUSE_S, f"{host}: no connection")
+        if not ours and not self.net.still_told():  # a school answer came while the pause was written: lifted
+            self.frontier.unpause(net_key("school"))
         if first:
             why = ("the network is down" if ours else
-                   f"{NET_QUEUES} school servers do not connect while the internet works: the school's network is down")
+                   "school servers that were working do not connect while the internet works: the school's network "
+                   "is down")
             self.frontier.event("warn", "offline", f"{why}: {what} pause {wait / 60:.0f} min; "
                                 f"{undone} connection failures are not held against URLs, hosts or servers", host)
 
-    def _undo(self, charges: list[tuple]) -> int:
+    def _school_answered(self, host: str) -> None:
+        """A school server answered while the school's pause held (its request was on the wire when it began): the
+        school's network works, so the pause is lifted, and the servers that told it failed on their own
+        (_NetWatch.refuted: each counts its failures, no sign until it answers)."""
+        self.frontier.unpause(net_key("school"))
+        self.frontier.event("info", "online", f"a school server ({host}) answered while the school network's pause "
+                            "held: the school's network works, its queues resume, and the servers that told the pause "
+                            "count their own connection failures", host)
+
+    def _undo(self, charges: list[tuple], keep_rests: bool = False) -> int:
         """Take back what connection errors cost while the network was in fact down (latest first, so each row ends
-        as it was before the outage)."""
+        as it was before the outage). A run given --only puts back its listed rows only (it failed no other).
+        keep_rests: the servers' counts only, each keeps the rest its failure began (a school pause)."""
+        row_id, row_args = self._ids("id")
         for kind, *args in reversed(charges):
             if kind == "url":
                 uid, attempts = args
@@ -1709,13 +2136,15 @@ class Crawler:
                 self.frontier.set_host(host, **before)
                 if mass:
                     self.frontier.x("UPDATE url SET state='pending', reason='net_down' WHERE host=? AND state='failed' "
-                                    "AND reason='host_unreachable'", (host,))
+                                    f"AND reason='host_unreachable'{row_id}", (host, *row_args))
             elif kind == "cool":
                 host, until, seconds = args
                 self.frontier.set_host(host, cooldown_until=until, cooldown_s=seconds)
             elif kind == "conn":
                 queue, fails, until = args
                 self.frontier.server_set(queue, fails)
+                if keep_rests:
+                    continue
                 if until > 0:
                     self.frontier.x("UPDATE pause SET until=? WHERE queue=?", (until, queue))
                 else:
@@ -1781,9 +2210,10 @@ class Crawler:
         its whole queue rests CONN_PAUSE_S (fixed) and the row waits, no URL ever losing an attempt for it (B2; second
         review: it used to cost every row of the server one attempt every CONN_GIVE_UP failures). The failure counts
         against the server only while its network is known to work: not during a pause of that network, nor after
-        the school's pause until one of its servers answered (_NetWatch.unsure). At CONN_GIVE_UP in a row,
-        _server_down. back, fail: what a press does instead of a row (a POST that never reached the server waits;
-        one at a closed door fails, never sent again)."""
+        the school's pause until one of its servers answered (_NetWatch.unsure; review 11-06: a server already failing
+        on its own then counted, and a long outage undid its count at every school pause, warning server_down every 15
+        minutes). At CONN_GIVE_UP in a row, _server_down. back, fail: what a press does instead of a row (a POST that
+        never reached the server waits; one at a closed door fails, never sent again)."""
         host = row["host"]
         if self._closed_door(queue, url):
             if fail is not None:
@@ -1812,19 +2242,37 @@ class Crawler:
         if n >= CONN_GIVE_UP and not unsure:
             self._server_down(queue, n)
 
+    def _lab_may_reach(self, host: str, h: Mapping[str, Any] | None) -> bool:
+        """A school host this run could not reach that the school's network alone may reach (host_unreachable: the lab
+        machine tries again, record 三·19): one that never answered us off campus, while this run is not itself on
+        campus. On the lab machine (campus on; the first batch runs there, owner 11-04) such a host is down like any
+        other: handing it to the lab would leave its rows waiting for a machine that already tried them. A run with a
+        campus check hands nothing over while the check has not told where this machine is (unknown; the deploy check
+        11-06, 【Claude 的执行办法】: the lab's ledger, written by the 11-04 code, holds no campus:last, and in Docker a
+        container's address, local_address, is new at each start, so the lab's restarts start unknown, and a long-dead
+        school server that failed before SSO's check came back handed its rows to the lab machine): its rows are
+        treated as on campus, waiting with every attempt at a server's connection failures (_server_down, B2) and
+        losing one when robots.txt stays unreachable for hours (_give_up_hosts), and go to the lab at a later failure
+        once the check found this machine off campus."""
+        if self.campus == "on" or (self.campus == "unknown" and self.campus_url):
+            return False
+        return schoollock.is_school_host(host) and not (h is not None and h["answered_off"])
+
     def _give_up_hosts(self, hosts: list[str], kind: str) -> tuple[int, int]:
         """Hosts that did not answer for hours: a school host that never answered us off campus may be one only the
         school's network reaches (host_unreachable: the lab machine tries again, record 三·19); any other is down for
-        now (B3), and each of its rows loses one attempt (reason kind), three in all. Returns (lab, charged)."""
+        now (B3), and each of its rows loses one attempt (reason kind), three in all. A run given --only: its listed
+        rows only (a later run that meets the host so judges the others). Returns (lab, charged)."""
         now, lab, charged = self.clock(), 0, 0
+        row_id, row_args = self._ids("id")
         for host in hosts:
             h = self.frontier.host(host)
-            if schoollock.is_school_host(host) and not (h is not None and h["answered_off"]):
+            if self._lab_may_reach(host, h):
                 lab += self.frontier.x("UPDATE url SET state='failed', reason='host_unreachable' WHERE host=? AND "
-                                       "state IN ('pending','active')", (host,))
+                                       f"state IN ('pending','active'){row_id}", (host, *row_args))
                 continue
-            for r in self.frontier.q("SELECT id, attempts FROM url WHERE host=? AND state IN ('pending','active')",
-                                     (host,)):
+            for r in self.frontier.q("SELECT id, attempts FROM url WHERE host=? AND state IN ('pending','active')"
+                                     f"{row_id}", (host, *row_args)):
                 attempts = r["attempts"] + 1
                 if attempts < MAX_ATTEMPTS:
                     self.frontier.finish(r["id"], state="pending", attempts=attempts, reason=kind, fetched_at=None,
@@ -1837,23 +2285,57 @@ class Crawler:
     def _server_down(self, queue: str, n: int) -> None:
         """A server that did not connect n ≥ CONN_GIVE_UP times in a row (about two hours of pauses): a school host on
         it that never answered us off campus may be one only the school's network reaches (host_unreachable: the lab
-        machine tries again, record 三·19); every other row keeps waiting with all its attempts (B2: no URL loses one
-        while its server is down; second review 10-26). One warning when the streak reaches CONN_GIVE_UP (the
-        dashboard shows it red); the streak goes on counting until the server answers."""
-        lab = 0
+        machine tries again, record 三·19); every other row of it still waiting fails, reason SERVER_DOWN, no attempt
+        charged, and a row found on it later fails at its next failure (the owner 11-08: 「连不上的死服务器……直接标成连不上
+        /跳过，不用再傻等了」; until then B2 of the second review 10-26 kept them waiting with every attempt, so the run
+        never ended). `nknu archive retry server_down` puts them back. One warning when the streak reaches CONN_GIVE_UP
+        (the dashboard shows it red), once until the server answers (second review 11-06: a school pause that gave a
+        failure back made it reach CONN_GIVE_UP twice); the streak goes on counting until the server answers. A run
+        given --only fails its listed rows only (the streak stays the server's: a later run that meets it fails the
+        others)."""
+        lab = failed = 0
+        row_id, row_args = self._ids("id")
+        # a run whose campus check has not told yet where this machine is (each lab restart: unknown till SSO's check
+        # answers) fails nothing: on campus its rows fail at the next failure after it, off campus they go to the lab
+        unsure = self.campus == "unknown" and bool(self.campus_url)
+        # only a server that never answered this archive is dead (the owner's 168 URLs, 11-08); one that answered
+        # before is down for now (maintenance, a firewall): its rows keep waiting, every attempt kept (B2), for a day
+        # (CONN_GIVE_UP_ANSWERED; review 11-08)
+        dead = n >= CONN_GIVE_UP_ANSWERED or not self._ever_answered(queue)
         for host in self.frontier.hosts_of(queue):
             h = self.frontier.host(host)
-            if schoollock.is_school_host(host) and not (h is not None and h["answered_off"]):
-                lab += self.frontier.x("UPDATE url SET state='failed', reason='host_unreachable' WHERE host=? AND "
-                                       "state IN ('pending','active')", (host,))
+            if self._lab_may_reach(host, h):
+                reason = "host_unreachable"
+            elif unsure or not dead:
+                continue
+            else:
+                reason = SERVER_DOWN
+            k = self.frontier.x(f"UPDATE url SET state='failed', reason=? WHERE host=? AND state IN ('pending','active')"
+                                f"{row_id}", (reason, host, *row_args))
+            if reason == SERVER_DOWN:
+                failed += k
+            else:
+                lab += k
         if lab:
             self.frontier.event("warn", "host_unreachable", f"server queue {queue} did not connect {n} times in a row: "
                                 f"{lab} URLs of school hosts that never answered off campus wait for the lab machine "
                                 "(nknu archive retry host_unreachable)")
-        if n == CONN_GIVE_UP:
+        if n == CONN_GIVE_UP and queue not in self._down_warned:
+            self._down_warned.add(queue)
+            if not dead:
+                what = ("it answered before, so its rows keep waiting, every one with all its attempts (B2), until "
+                        f"{CONN_GIVE_UP_ANSWERED} in a row (about a day); a person should look whether it is down for good")
+            elif unsure:
+                what = (f"it never answered: its rows wait until the campus check tells where this machine is, then "
+                        f"fail ({SERVER_DOWN})")
+            else:
+                what = (f"it never answered: {failed} URLs failed ({SERVER_DOWN}, no attempt charged), and a later one "
+                        f"fails at its next failure; they are due again if it answers (nknu archive retry "
+                        f"{SERVER_DOWN} puts them back too)")
             self.frontier.event("warn", "server_down", f"server queue {queue} did not connect {n} times in a row "
-                                f"(about {n * CONN_PAUSE_S / 3600:.0f} h): its rows keep waiting, every one with all its "
-                                "attempts (B2); a person should look whether it is down for good")
+                                f"(about {n * CONN_PAUSE_S / 3600:.0f} h): {what}")
+        elif failed:
+            log.info("server queue %s, down (%d in a row): %d more URLs failed (%s)", queue, n, failed, SERVER_DOWN)
 
     # ---- robots.txt and the probe
     def _robots(self, queue: str, client: Client, row, admitted: str) -> Robots:
@@ -2101,6 +2583,13 @@ class Crawler:
             if verdict.reason in _HARD_SKIP and not (kind0 == "script" and verdict.reason == "media"):
                 self.frontier.finish(row["id"], state="skipped", reason=f"out:{verdict.reason}", fetched_at=None)
                 return
+        if queue.startswith("ip:") and scope.own_address(queue[3:]):
+            # a name looked up before 11-06 that resolves to this machine: nothing is sent (robots.txt neither); looked
+            # up again (_lookup: dns-fail), it waits as a name that does not resolve
+            self.frontier.set_host(row["host"], queue="?")
+            self.frontier.finish(row["id"], state="pending", fetched_at=None)
+            self._place_hosts()
+            return
         if row["referrer"] and not self._gsimg_live(row):  # a runtime picture no longer to ask for (§23 B2, B3)
             return
         if self.disk_free(self.root) < MIN_FREE_BYTES:
@@ -2161,8 +2650,10 @@ class Crawler:
         # a Google Sites runtime picture carries the Referer its page's referrer policy gives, and nothing else of a
         # browser's (design §23 B1); every other request carries none
         target = google_api.target(self.frontier, url) if api else Target(url, headers=self._referer(row, url))
+        # an address only an old source names: its 500 is its own end, never its server's error (OLD_GONE, lis 11-07)
+        spare = row["found_via"] in OLD_VIAS and self.frontier.old_only(uid)
         got = self._request(queue, client, target, "page", scope_reason=admitted, robots_sha=robots.sha,
-                            max_bytes=google_api.max_bytes(url) if api else MAX_BYTES)
+                            max_bytes=google_api.max_bytes(url) if api else MAX_BYTES, spare=spare)
         if isinstance(got, HostCircuitOpen):  # nothing was sent
             h = self.frontier.host(host)
             before = (h["cooldown_until"], h["cooldown_s"])
@@ -2191,6 +2682,9 @@ class Crawler:
             kind = error_kind(got)
             if kind in SWITCH_KINDS:
                 self._door_failed(queue, client, sink, row, got, kind)
+                return
+            if self._gone(queue, spare, kind):  # failed at once, never tried again by itself (`retry http_5` puts it back)
+                self.frontier.finish(uid, state="failed", attempts=row["attempts"] + 1, reason=kind)
                 return
             self._failed(queue, row, got)
             return
@@ -2400,6 +2894,7 @@ class Crawler:
             return None
         self.frontier.x("UPDATE url SET state='active' WHERE id=?", (moved["id"],))
         self._tl.row = moved["id"]
+        self._carry_only(row["id"], moved["id"])
         return self.frontier.row_by_id(moved["id"])
 
     def _moved_row(self, row, other: str):
@@ -2444,6 +2939,7 @@ class Crawler:
         if moved["state"] in ("pending", "active"):
             self.frontier.x("UPDATE url SET state='active' WHERE id=?", (moved["id"],))
             self._tl.row = moved["id"]
+            self._carry_only(row["id"], moved["id"])
             self._store(queue, self.frontier.row_by_id(moved["id"]), got, sink)
         return "moved"
 
@@ -2649,14 +3145,16 @@ class Crawler:
         again for new addresses (GSIMG_REREADS times at most); after that, this picture and the page's pictures not
         sent yet (their addresses as old as this one) wait for round two. A site none of whose pictures came yet:
         its page is read again once, at the first refusal; each refusal after that leaves that picture for round two,
-        and the GSIMG_TRIES-th gives the site up (_gsimg_giveup)."""
+        and the GSIMG_TRIES-th gives the site up (_gsimg_giveup). A run given --only: this picture alone waits for
+        round two (the page read again, the page's other pictures, the site's count and its giving up are rows and
+        judgments beyond the listed ones: a full run's)."""
         entry = self._gsimg_entry(row)
         if entry is None:
             return
         page_id, key = entry
         site = row["owner_site"] or ""
         with self._gsimg_lock:
-            if self._gsimg_given_up(site):
+            if self.only is not None or self._gsimg_given_up(site):
                 self._gsimg_round2(page_id, [key])
                 return
             st = self._gsimg_state(site)
@@ -2862,10 +3360,33 @@ class Crawler:
         return len(ids)
 
     def _directory_rows(self, host: str, directory: str) -> list[int]:
-        return [r["id"] for r in self.frontier.q("SELECT id, url FROM url WHERE host=? AND state='pending'", (host,))
+        """The directory's rows still to fetch, which a streak of refusals holds back or parks (a run given --only:
+        its listed rows only)."""
+        row_id, row_args = self._ids("id")
+        return [r["id"] for r in self.frontier.q(f"SELECT id, url FROM url WHERE host=? AND state='pending'{row_id}",
+                                                 (host, *row_args))
                 if deny_dir(r["url"]) == directory]
 
     # ---- B4: where the requests are made from
+    def _campus_resume(self) -> None:
+        """A run on the address the last check that could tell was made from starts from what it found (second review
+        11-06: on the lab machine every run started unknown, and a long-dead school server failing before SSO's check
+        came back had its rows handed to the lab machine, _lab_may_reach); the check is still asked at once."""
+        if not self.campus_url:
+            return
+        try:
+            last = json.loads(self.frontier.meta(CAMPUS_KEY) or "null")
+        except ValueError:
+            return
+        if isinstance(last, dict) and last.get("state") in ("on", "off") and last.get("addr") == self.local_address():
+            self.campus, self._campus_addr = last["state"], last["addr"]
+
+    def _campus_again(self) -> None:
+        """A network pause is over: SSO's check page is asked at once. Its answer is a school server's: it ends the
+        school's unsure time, or lifts a pause told again by servers down on their own (second review 11-06)."""
+        with self._campus_lock:
+            self._campus_at = -math.inf
+
     def campus_queue(self) -> str | None:
         if not self.campus_url:
             return None
@@ -2896,12 +3417,21 @@ class Crawler:
     def _campus_step(self, queue: str, client: Client, sink: WarcSink) -> bool:
         """On the campus check page's own queue (SSO's), when due: one GET of SSO's check page. Off campus it says so
         (「您的IP 不在校內網路」); on campus it sends the visitor on (never followed). Every request row after it says
-        where it was made from. Crawling goes on either way (the owner 10-26 「听你的」: 照抓、记下来、看板提醒)."""
+        where it was made from. Crawling goes on either way (the owner 10-26 「听你的」: 照抓、记下来、看板提醒). A
+        check that cannot tell (no answer, an error page, another page) keeps what the last one found while this
+        machine's address is the same (second review 11-06: on the lab machine an unknown handed the long-dead school
+        servers' rows to the lab machine); what one that could tell found is kept in meta (CAMPUS_KEY)."""
         with self._campus_lock:
             if queue != self.campus_queue() or not self._campus_due():
                 return False
+            before = self._campus_at
             self._campus_addr, self._campus_at = self.local_address(), self.clock()
-        got = self._request(queue, client, Target(self.campus_url), "campus", scope_reason="campus")
+        try:
+            got = self._request(queue, client, Target(self.campus_url), "campus", scope_reason="campus")
+        except _Paused:  # a rest began on its queue: never sent, still due
+            with self._campus_lock:
+                self._campus_at = before
+            raise
         if isinstance(got, Snapshot) and got.status in REDIRECTS:
             # on campus SSO sends the visitor on to the system cURL names; any other redirect (its error page, https)
             # says nothing of where we are (second review 10-26)
@@ -2918,6 +3448,10 @@ class Crawler:
                                     self.campus_url)
         else:
             state = "unknown"
+        if state == "unknown":  # it cannot tell: this machine did not move, so it is where the last check found
+            state = self.campus
+        else:
+            self.frontier.meta(CAMPUS_KEY, json.dumps({"state": state, "addr": self._campus_addr}))
         if state != self.campus:
             if state == "on":
                 self.frontier.event("warn", "campus", "这台机器在校内网络：有些页面校内看得到全文、校外只看到标题；照抓，"
@@ -3191,6 +3725,8 @@ class Crawler:
         stored = self.chains.page_stored(self.frontier.row_by_id(uid), text, cols.get("warc"), snap.warc_offset, page)
         if stored.page_role == "list" and cols.get("page_role") != "list":
             self.frontier.x("UPDATE url SET page_role='list' WHERE id=?", (uid,))
+        elif stored.page_role is None and stored.content:  # a table of content (FIX 3, 11-06): no list any more
+            self.chains.not_a_list(uid)
         if stored.unplanned:  # buttons the platform file says to press that no press of this page covers: 要人看
             self.frontier.add_page_res(uid, postback.unpressed_entries(stored.unplanned))
         self._replay_parts(uid)

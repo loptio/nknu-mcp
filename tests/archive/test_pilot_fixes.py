@@ -385,28 +385,6 @@ def test_the_decisions_the_pilot_settled():
     assert profiles.decision("w.nknu.edu.tw", "js_link:parseInt") == "ignore"
 
 
-# ---------------------------------------------------------------- F6: the dashboard's estimate during a --sites run
-
-import json
-
-from nknu.archive import progress
-from tests.archive.test_progress import NOW, event, two_servers
-
-
-def test_the_estimate_counts_only_the_running_runs_sites(tmp_path):
-    f = two_servers(tmp_path, 10, 1000)  # a: 10 rows left, b: 1,000; the run covers a only
-    event(f, NOW - 60, "info", "run_start", json.dumps({"pid": 1, "gap": [2, 5], "sites": ["a.nknu.edu.tw"]}))
-    conn = progress.connect(f.path)
-    try:
-        est = progress.snapshot(conn, NOW, running="1")["eta"]
-        assert set(est["servers"]) == {"ip:140.127.9.1"} and est["sites"] == ["a.nknu.edu.tw"]
-        whole = progress.snapshot(conn, NOW, running=None)["eta"]  # no run: the whole round, as before
-        assert "ip:140.127.9.2" in whole["servers"] and whole["sites"] is None
-    finally:
-        conn.close()
-        f.close()
-
-
 # ---------------------------------------------------------------- R6 and a page that POSTs for its data
 
 

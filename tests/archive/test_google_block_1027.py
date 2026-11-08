@@ -8,7 +8,7 @@ D2 the block streak and when it began live in frontier.db (meta), so the rest ke
    days or the 6th block in a row is an error event google_block_long, the Google server red on the dashboard, and a
    line of verify's item 17.
 D3 the dashboard's words: a block is 「Google 暂时挡下载…」, never 「隔 30 分钟再试，共 3 次」; api: reasons (a pause's
-   why with its host in front too) have their own words; a blocked request is no 「被拒绝」.
+   why with its host in front too) have their own words; a row Google blocked is no problem (错), never 「被拒绝」.
 All offline: fake networks and clocks, made-up file ids, no key."""
 
 from __future__ import annotations
@@ -169,25 +169,45 @@ def test_a_long_block_is_an_error_for_a_person(tmp_path, monkeypatch, streak, da
     assert google_api.block_long(*google_api.block_state(f), clock()) is long_
 
 
-def test_the_dashboard_turns_the_google_server_red_on_a_long_block_and_verify_lists_it(tmp_path):
+SITE_A = "w.nknu.edu.tw/a"
+
+
+def _site_with_google_rows(f: Frontier, *rows: tuple[str, dict]) -> None:
+    """A round-1 site whose home page was fetched, with these rows of its own (url, columns)."""
+    f.x("INSERT INTO site_plan(site, name, imp, round, platform, home) VALUES (?, '测试', '全校重要', '1', 'c.nknu', ?)",
+        (SITE_A, HOME))
+    f.set_host("w.nknu.edu.tw", queue=WQ)
+    f.set_host(google_api.API_HOST, queue=GQ)
+    f.x("INSERT INTO page_type(key, site, verdict, n_pages) VALUES ('t:ok', ?, 'ok', 1)", (SITE_A,))
+    for url, cols in ((HOME, {"kind": "page", "state": "done", "status": 200, "sniff": "html", "page_type": "t:ok",
+                              "found_via": "seed"}), *rows):
+        row = {"url": url, "path": url.split("?")[0], "host": url.split("/")[2], "site": SITE_A, "owner_site": SITE_A,
+               "tier": 0, "kind": "file", "kind0": cols.get("kind", "file"), "depth": 1, "found_via": "link", **cols}
+        f.x(f"INSERT INTO url({', '.join(row)}) VALUES ({','.join('?' * len(row))})", tuple(row.values()))
+
+
+def test_the_dashboard_turns_the_google_card_red_on_a_long_block_and_verify_lists_it(tmp_path):
     f = Frontier(tmp_path / "frontier.db")
     now = 2_000_000.0
-    f.set_host(google_api.API_HOST, queue=GQ)
+    _site_with_google_rows(f, (google_api.media_url(FA), {"state": "pending", "reason": "api:automated_queries"}))
     f.pause(GQ, now + 8 * HOUR, f"{google_api.API_HOST}: api:automated_queries")
-    by_host = {google_api.API_HOST: {"left": 3, "last_retry": None, "fetched": 0, "n": 3}}
+    f.event("info", "run_start", json.dumps({"pid": 1, "gap": [2, 5], "sites": None}))
 
     def status():
         conn = progress.connect(f.path)
         try:
-            return progress._servers(conn, now, {}, by_host)[GQ]["status"]
+            snap = progress.snapshot(conn, now, running="1")  # a run holds the lock
         finally:
             conn.close()
+        site_card = next(c for c in snap["cards"] if SITE_A in {r["site"] for r in c["rows"]})
+        assert site_card["state"]["words"] == "等 Google"  # its own server has nothing left: never 完成
+        return next(c for c in snap["small"] if c["key"] == "google")["state"]
 
     s = status()
-    assert s["color"] == "yellow" and progress.PLAIN["google_block"] in s["words"]
+    assert (s["words"], s["color"]) == ("被 Google 挡", "yellow") and progress.PLAIN["google_block"] in s["tip"]
     _blocked(f, 6, now - DAY)
     s = status()
-    assert s["color"] == "red" and "要人看" in s["words"] and "6 次" in s["words"]
+    assert s["color"] == "red" and "要人看" in s["tip"] and "6 次" in s["tip"]
     c = monitor.Check("17", "逐站的问题清单")
     ctx = monitor._Ctx(f, None, None, True, None, {}, monitor.Rounds(f), False, False, None)
     monitor._c17(ctx, c)
@@ -219,24 +239,24 @@ def test_a_block_has_its_own_plain_words_never_thirty_minutes_three_times():
     assert "30 分钟" not in block and "共 3 次" not in block
 
 
-def test_requests_blocked_by_google_are_a_block_not_a_refusal(tmp_path):
+def test_rows_blocked_by_google_are_no_problem_and_the_schools_403_is_a_refusal(tmp_path):
     f = Frontier(tmp_path / "frontier.db")
     now = 2_000_000.0
     url = google_api.media_url(FA)
-    f.x("INSERT INTO url(url, path, host, site, tier, kind, depth, found_via, state, reason) "
-        "VALUES (?,?,?,?,2,'file',1,'drive','pending','api:automated_queries')",
-        (url, url.split("?")[0], google_api.API_HOST, "w.nknu.edu.tw/a"))
+    refused = "https://w.nknu.edu.tw/a/staff.aspx"
+    _site_with_google_rows(f, (url, {"state": "pending", "reason": "api:automated_queries"}),
+                           (refused, {"kind": "page", "state": "done", "status": 403, "sniff": "html",
+                                      "page_type": "t:ok"}))
     for n in range(3):
         f.request(GQ, google_api.API_HOST, url, "page", now - 600 + n, now - 599 + n, 403, None)
-    f.request("ip:140.127.1.1", "c.nknu.edu.tw", "https://c.nknu.edu.tw/aca/x", "page", now - 500, now - 499, 403,
-              None)
     conn = progress.connect(f.path)
     try:
-        errs = {e["code"]: e for e in progress._errors(conn, now) if e["level"] == "request"}
+        snap = progress.snapshot(conn, now)
+        slow = progress.slow_snapshot(conn, now, site_status=monitor.site_status, facts=monitor.facts)
     finally:
         conn.close()
-    assert errs["google_block"]["n"] == 3 and errs["google_block"]["plain"] == progress.PLAIN["google_block"]
-    assert errs["refused"]["n"] == 1  # the school's own 403 stays a refusal
+    lines = progress.log_view(snap, slow, site=SITE_A)["rows"]
+    assert [(x["url"], x["kind_zh"], x["label"]) for x in lines] == [(refused, "失败", "被拒绝（401、403、451）")]
     f.close()
 
 
