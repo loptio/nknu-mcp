@@ -13,7 +13,8 @@ and says how to read on (more, and part with heading for a long text: E); each b
 節〕 line and parts lists the sections shown (E); a summary, window or read page that starts inside a table shows
 the table's header row above it (H2); read lists the pages that reference a file from their text (D, H3); format
 copies are told apart from address copies (I5). Addendum M2 (owner 11-08): a background result (an archive member,
-journal or exam, ranked after the primary documents) carries background: true, and NOTE_BACKGROUND says what it is.
+journal or exam, ranked after the primary documents; since 11-08 10:16 a file of meeting minutes too) carries
+background: true, and NOTE_BACKGROUND says what it is.
 
 No series (owner 11-03, 「可以，这样砍」; plan addendum L): each result is one document, no answer has a series field,
 a folded list, a series part in its identity line or a series note, and read takes an id that starts with s (a series
@@ -98,7 +99,7 @@ NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程�
                        "若下列原文都不能回答問題，請換幾個說法再查；"
                        "仍然沒有，請告訴使用者：目前收錄的資料裡查無相關內容，不要推測。")
 # addendum M2 (owner 11-08): background material comes after the primary documents (search.py step 3)
-NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（壓縮檔裡的會議紀錄等文件、學報、歷屆考題），"
+NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、歷屆考題），"
                    "排在主要文件後面；需要時再看。")
 # plan 2026-11-08 T1: each copy carries its own id, which read answers with the kept document (NOTE_ALIAS)
 NOTE_COPIES = ("【系統】copies 是同一份文件（標題和內容都相同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"

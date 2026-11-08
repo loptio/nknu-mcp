@@ -1,7 +1,8 @@
 """Bigram search over the content database (plan 2026-11-01, Task A). No LLM.
 
 1. One FTS5 MATCH ORs the query's words (textnorm bigrams), its terms and cohorts as canonical tokens (115-1,
-   115學年度第1學期, 115學年度上學期 and 這學期 are all term115s1) and its alias expansions. The term, cohort and
+   115學年度第1學期, 115學年度上學期 and 這學期 are all term115s1) and its alias expansions: the alias table's groups and,
+   one way, the unit tree's short names (事經系 brings 事業經營學系; unit_names, RankConfig.unit_names). The term, cohort and
    relative-word spans are taken out of the words first, so how a term is spelled changes nothing; so are question
    words (什麼時候, 怎麼, 嗎 ...: they say that something is asked, not what; 請問 and 請教 only where a clause starts).
    When nothing else is left, the query's terms and aliases are searched alone, and the question words only when the
@@ -13,14 +14,16 @@
    score = W_COVERAGE*coverage + W_BM25*bm25_norm + W_PERIOD*period_match + W_COHORT*cohort_match,
    ties newest identity date first (no date last), then doc_id.
    coverage: share of the query's words in the document's kept chunks (its canonical tokens when the query is
-   only terms); a word inside a matched alias counts when another member of the alias group is all there.
+   only terms); a word inside a matched alias counts when another member of the alias group is all there; a word
+   only the document's unit words have (chunk_fts.unit_tokens, pipeline-5) counts RankConfig.unit_cover.
    bm25_norm: the document's best chunk bm25 over the best of all candidates.
    period_match: 1.0 when the query names the document's (學年度, 學期), 0.6 when only the year matches.
    cohort_match: 1.0 when a 入學 year the query names is one the document applies to.
    Ranking v2 (spec 「排序 v2」, 11-01; RankConfig) adds, when the query names no term or year (a cohort is not one):
    w_recent * exp(-days before today / tau_days) of the identity date, else of a calendar event's last day (a day
    after today counts as today), else no_date_factor * w_recent.
-3. By tier (owner 11-08, addendum M2; RankConfig.tier): archive members, journals and exams are background material
+3. By tier (owner 11-08, addendum M2; RankConfig.tier): archive members, journals, exams and (since 11-08 10:16)
+   files of meeting minutes are background material
    (background_ids: docs.tier, which the build writes since plan 2026-11-08 T1; in an older database the 11-08 rule
    on the id's shape and doc_type). The first TOP_N - BACKGROUND_SLOTS primary documents come first, then the best
    BACKGROUND_SLOTS background ones, then the other primary documents and the other background ones, each part in
@@ -92,11 +95,12 @@ _FTS = ("SELECT chunk_id, score FROM ("
         "  SELECT m.chunk_id, m.score, c.doc_id,"
         "   ROW_NUMBER() OVER (PARTITION BY c.doc_id ORDER BY m.score, m.chunk_id) AS n,"
         "   MIN(m.score) OVER (PARTITION BY c.doc_id) AS best"
-        "  FROM (SELECT rowid AS chunk_id, bm25(chunk_fts, ?, 1.0) AS score FROM chunk_fts WHERE chunk_fts MATCH ?) m"
+        "  FROM (SELECT rowid AS chunk_id, bm25(chunk_fts, ?, 1.0, ?) AS score FROM chunk_fts WHERE chunk_fts MATCH ?) m"
         "  JOIN chunks c ON c.chunk_id = m.chunk_id)"
         " WHERE n <= ?)"
         " WHERE d <= ? ORDER BY d, score")
-_TOKENS = "SELECT rowid, title_tokens, body_tokens FROM chunk_fts WHERE rowid IN ({})"
+_TOKENS = "SELECT rowid, title_tokens, body_tokens{} FROM chunk_fts WHERE rowid IN ({})"  # {}: ', unit_tokens' or ''
+# (a database before pipeline-5 has no such column: its unit words, if any, are title tokens)
 # background material by source (addendum M2): docs.tier, which the build writes since plan 2026-11-08 T1 (archive
 # members, journals and exams: build.tier_of). A database built before has no such column and keeps the 11-08 rule:
 # archive members, which assemble wrote as a<序号>m<k> (T7a; doc_id da…m…), and the documents the build typed journal
@@ -112,13 +116,22 @@ class RankConfig:
     """Ranking v2's date part (module docstring, step 2) and the tier (step 3). Date defaults chosen offline on 11-01
     (【Claude】, research/eval_2026-11-01/ranking_v2.md): most top-3 hits, fewest questions ranked lower, then the
     smallest weights. A date bonus should stay below what one missing query word costs (W_COVERAGE / number of
-    words): 0.3 does up to 6 words. tier replaced type_prior, w_journal and w_exam on 11-08 (addendum M2)."""
+    words): 0.3 does up to 6 words. tier replaced type_prior, w_journal and w_exam on 11-08 (addendum M2).
+    unit_names (owner 11-08 10:16): a unit's short name in the query brings its name and other short names (step 1).
+    unit_weight and unit_cover (owner 11-08 10:16, N11; a database with chunk_fts.unit_tokens, pipeline-5): the bm25
+    weight of the unit words' column (the owner: 「放进 body_tokens（1 倍权重）或者控制单位词在 BM25 里的权重」), and
+    what a query word found only there counts in coverage 【Claude】 (1.0: as much as one in the document's own words;
+    the unit words were title tokens before, weight TITLE_WEIGHT, counting fully). unit_names applies to any database
+    with the unit tables, the 11-04 and 11-08 builds too: RankConfig(unit_names=False) ranks those as before."""
 
     recency: bool = True
     w_recent: float = 0.3
     tau_days: float = 365
     no_date_factor: float = 0.5
     tier: bool = True
+    unit_names: bool = True
+    unit_weight: float = 1.0
+    unit_cover: float = 0.5
 
 
 @dataclass
@@ -133,6 +146,7 @@ class _Doc:
     score: float = 0.0
     ranked: list[int] | None = None  # hybrid's chunk order (reranked picks first, then dense hits); None: by bm25
     background: bool = False  # step 3: an archive member, journal or exam (set when the tier applies)
+    unit_tokens: set[str] = field(default_factory=set)  # its unit words' (chunk_fts.unit_tokens, pipeline-5)
 
     @property
     def bm25(self) -> float:
@@ -186,12 +200,18 @@ def _period_match(terms: list[Term], ay: int | None, sem: int | None) -> float:
     return 0.6 if any(t.ay == ay for t in terms) else 0.0
 
 
-def _coverage(words: list[str], tokens: set[str], alias_sets: list[tuple[set[str], list[set[str]]]]) -> float:
+def _coverage(words: list[str], tokens: set[str], alias_sets: list[tuple[set[str], list[set[str]]]],
+              unit: set[str] | frozenset[str] = frozenset(), unit_cover: float = 1.0) -> float:
+    """The share of words the document has (tokens; a word inside a matched alias when another member is all there);
+    a word only its unit words have (unit, with tokens) counts unit_cover (RankConfig.unit_cover)."""
     if not words:
         return 0.0
-    covered = sum(1 for w in words if w in tokens
-                  or any(w in own and any(o and o <= tokens for o in others) for own, others in alias_sets))
-    return covered / len(words)
+
+    def found(w: str, have: set[str]) -> bool:
+        return w in have or any(w in own and any(o and o <= have for o in others) for own, others in alias_sets)
+
+    every = tokens | unit if unit else tokens
+    return sum(1.0 if found(w, tokens) else unit_cover if unit and found(w, every) else 0.0 for w in words) / len(words)
 
 
 def doc_rows(conn: sqlite3.Connection, ids: list[str]) -> dict[str, _Doc]:
@@ -208,15 +228,22 @@ def _candidates(conn: sqlite3.Connection, rows: list) -> dict[str, _Doc]:
     ids = [r[0] for r in rows]
     owner = {r[0]: r[1] for r in conn.execute(
         f"SELECT chunk_id, doc_id FROM chunks WHERE chunk_id IN ({_marks(len(ids))})", ids)}
-    tokens = {r[0]: (r[1], r[2]) for r in conn.execute(_TOKENS.format(_marks(len(ids))), ids)}
+    unit = ", unit_tokens" if has_unit_tokens(conn) else ""
+    tokens = {r[0]: r[1:] for r in conn.execute(_TOKENS.format(unit, _marks(len(ids))), ids)}
     docs = doc_rows(conn, list(dict.fromkeys(owner.values())))
     for rowid, score in rows:
         d = docs.get(owner.get(rowid, ""))
         if d is not None:
             d.chunks.append((score, rowid))
-            title_tokens, body_tokens = tokens.get(rowid, ("", ""))
-            d.tokens.update(title_tokens.split(), body_tokens.split())
+            title_tokens, body_tokens, *unit_tokens = tokens.get(rowid, ("", ""))
+            d.tokens.update((title_tokens or "").split(), (body_tokens or "").split())
+            d.unit_tokens.update(*((u or "").split() for u in unit_tokens))
     return docs
+
+
+def has_unit_tokens(conn: sqlite3.Connection) -> bool:
+    """chunk_fts has the unit words' column (a database built since pipeline-5)."""
+    return any(r[1] == "unit_tokens" for r in conn.execute("PRAGMA table_info(chunk_fts)"))
 
 
 def _event_ends(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
@@ -227,8 +254,8 @@ def _event_ends(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
 
 
 def background_ids(conn: sqlite3.Connection, ids: list[str]) -> set[str]:
-    """Step 3: the documents of ids that are background material (archive members, journals, exams): docs.tier, or
-    the 11-08 rule in a database without that column."""
+    """Step 3: the documents of ids that are background material (archive members, journals, exams, meeting minutes):
+    docs.tier, or the 11-08 rule in a database without that column (no minutes there)."""
     tiered = any(r[1] == "tier" for r in conn.execute("PRAGMA table_info(docs)"))
     sql, args = (_BACKGROUND, [BACKGROUND]) if tiered else (_BACKGROUND_OLD, [JOURNAL, EXAM])
     out: set[str] = set()
@@ -290,26 +317,48 @@ def sort_docs(docs: Iterable[_Doc]) -> list[_Doc]:
     return ordered
 
 
+def unit_names(conn: sqlite3.Connection) -> list[list[str]]:
+    """The unit tree's groups for alias expansion (aliases.expand's names): each unit below the school that has short
+    names, its name first, then those (the build's tables units and unit_aliases, plan 2026-11-02 T7d); [] without
+    them. The school gives none 【Claude】, as on the unit line (build.unit_words): 高師大 would bring 國立高雄師範大學's
+    大學, 高雄 ... to every query that names the school."""
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN"
+                                       " ('units', 'unit_aliases')")}
+    if have != {"units", "unit_aliases"}:
+        return []
+    short: dict[str, list[str]] = {}
+    for alias, unit_id in conn.execute("SELECT alias, unit_id FROM unit_aliases ORDER BY rowid"):
+        short.setdefault(unit_id, []).append(alias)
+    out = []
+    for unit_id, name in conn.execute("SELECT unit_id, name FROM units WHERE parent_id IS NOT NULL ORDER BY rowid"):
+        group = list(dict.fromkeys([name, *(a for a in short.get(unit_id, ()) if a and tokenize(a))]))
+        if len(group) > 1 and tokenize(name):
+            out.append(group)
+    return out
+
+
 def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]],
                  rank: RankConfig | None = None) -> KeywordPool:
     """Steps 1 and 2: the FTS match and each document's score, added up exactly as search_docs always has (the float
     sums decide ties that the stable sorts and the 11-01 offline numbers rely on)."""
     q = query[:MAX_QUERY_CHARS]
+    rank = rank if rank is not None else RankConfig()
     named = query_terms(q, today)
     canon = canonical_tokens(q, today)
-    extra, matched = expand(q, aliases)
+    names = unit_names(conn) if rank.unit_names else []
+    extra, matched = expand(q, aliases, names)
     words = _words(named.rest, fallback=not (canon or matched))
     cohorts = list(dict.fromkeys(ay for ay, _ in named.cohorts))
     understood = Understood(words, canon, matched, [_label(t) for t in named.terms], cohorts)
     tokens = list(dict.fromkeys(words + canon + extra))
-    rank = rank if rank is not None else RankConfig()
     recent = rank.recency and not named.terms
-    rows = conn.execute(_FTS, (TITLE_WEIGHT, fts_query(tokens), PER_DOC, POOL_DOCS)).fetchall() if tokens else []
+    rows = (conn.execute(_FTS, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens), PER_DOC, POOL_DOCS)).fetchall()
+            if tokens else [])
     if not rows:
         return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, {}, [], 0, rank.tier)
 
     docs = _candidates(conn, rows)
-    alias_sets = [(set(tokenize(m)), [set(tokenize(o)) for g in aliases if m in g for o in g if o != m])
+    alias_sets = [(set(tokenize(m)), [set(tokenize(o)) for g in [*aliases, *names] if m in g for o in g if o != m])
                   for m in matched]
     applies = _cohort_docs(conn, list(docs), cohorts)
     ends = _event_ends(conn, list(docs)) if recent else {}
@@ -317,7 +366,7 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
         mark_background(conn, docs)
     best = min((d.bm25 for d in docs.values() if d.chunks), default=0.0)
     for d in docs.values():
-        d.coverage = _coverage(words or canon, d.tokens, alias_sets)
+        d.coverage = _coverage(words or canon, d.tokens, alias_sets, d.unit_tokens, rank.unit_cover)
         bm25_norm = min(1.0, max(0.0, d.bm25 / best)) if best < 0 else 0.0
         d.score = (W_COVERAGE * d.coverage + W_BM25 * bm25_norm + W_PERIOD * _period_match(named.terms, d.ay, d.sem)
                    + W_COHORT * (d.doc_id in applies))

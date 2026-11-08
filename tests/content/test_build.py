@@ -254,8 +254,9 @@ def test_meta_pipeline(built):
     meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
     # changed 11-03 on purpose: the series tables went (addendum L), so the schema is pipeline-2 (was pipeline-1); and
     # on 11-08 (plan 2026-11-08 T1): doc_alias and docs.tier came, so it is pipeline-3; and (plan 2026-11-08 T4) the
-    # sites table, docs.site and docs.unit_line, so it is pipeline-4
-    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-4"
+    # sites table, docs.site and docs.unit_line, so it is pipeline-4; and (owner 11-08 10:16, N11) chunk_fts.unit_tokens,
+    # so it is pipeline-5
+    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-5"
     assert meta["id_scheme"] == "serial"  # this corpus's ids are its own (no keys): not the stable ids of assemble
     assert meta["text_pipeline"] == ""  # the 10-29 corpus: no record says where its text came from
     tables = tables_of(conn)
@@ -295,7 +296,7 @@ def test_report(built):
     assert report.no_date == 6 and report.no_text == 4
     # changed 11-03 on purpose: no series count, and no file-name date (da1's 「1151020」 gave one before)
     assert report.counts["chunks"] > 0 and "filename" not in report.counts["dates"]
-    assert report.counts["doc_types"] == {"journal": 0, "exam": 0}  # nothing here is a paper or an exam
+    assert report.counts["doc_types"] == {"journal": 0, "exam": 0, "minutes": 0}  # no paper, exam or minutes
     assert report.warnings == []
 
 
@@ -552,7 +553,7 @@ def test_doc_types_written_and_counted(tmp_path):
     finally:
         conn.close()
     assert types == {"dp271": "journal", "da50": "journal", "da52": "exam"}  # every other document: ''
-    assert report.counts["doc_types"] == {"journal": 2, "exam": 1}
+    assert report.counts["doc_types"] == {"journal": 2, "exam": 1, "minutes": 0}
 
 
 # ---------------------------------------------------------------- sections, chunks, index

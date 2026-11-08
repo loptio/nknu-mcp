@@ -73,7 +73,8 @@ site's 资料截至 (respond). meta keeps the first input in the keys of one inp
 The unit patch (owner 11-08 04:08, plan 2026-11-08 T4): 「请把文件的单位名、组别（以及单位简称）加进索引和 passage，免得
 搜『某系 + 某事』时搜不到对应系所的网页」. unit_words gives each document its unit's name and short names (the unit
 tree's aliases), a section's office before it (學生事務處（學務處） 生活輔導組（生輔組）: T4 review), and its 組別 (with
-the other names of the section it names: build.publisher_of); they go into every chunk's title_tokens, and
+the other names of the section it names: build.publisher_of), and since 11-08 10:16 the colleges, departments and
+programs its scope applies to (適用：…); they go into every chunk's unit_tokens (title_tokens until 11-08 10:16), and
 docs.unit_line (單位：<unit>（<short names>） <組別>) is the second line of every passage (nknu.content.embed.passage,
 PASSAGE_VERSION 2), so the vector cache misses once for every chunk (BuildReport.passage). The school's own words are
 left out: it is every unit's root (unit_words). The report lists the site table's units the tree gives no short name
@@ -120,7 +121,7 @@ from nknu.content.dates import (
 )
 from nknu.content.documents import LINK_SEP, Document, build_documents, one_event_per_id, one_per_id
 from nknu.content.embed import PAGE_SIZE, PASSAGE_VERSION, EmbedStats, VecCache, embed_chunks
-from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, PRIMARY, create_schema
+from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, MINUTES, PRIMARY, create_schema
 from nknu.content.terms import Term, canonical_tokens, event_term, find_cohorts, find_terms, term_tokens
 from nknu.content.units import CAMPUSES, LEVELS, Unit, ancestors, doc_scope, load_units, reach, resolve
 from nknu.core import models
@@ -164,10 +165,19 @@ _JOURNAL_PAGE = re.compile(r"学报(?![到考名])")  # 高雄師大學報; not 
 _WHOLE_ISSUE = re.compile(r"总档|全上传")  # 1111228-53期-總檔, 51全上傳: a whole issue, on the 學報 page only
 _ABOUT_JOURNAL = re.compile(r"征稿|投稿|撰稿|审查|格式|须知|启事|名单")  # forms and lists for authors: never papers
 _EXAM = re.compile(r"考古题|历届[考试]题")  # 歷屆考題 folder; 歷屆簡章 is brochures, a bare 試題 can be a form
+# a file of meeting minutes (owner 11-08 10:16): 會議紀錄 / 會議記錄 / 議事錄 in its title or its page's title; never
+# a rule or a blank form (_is_minutes)
+_MINUTES = re.compile(r"会议[纪记]录|议事录")
+_RULE = re.compile(r"办法|要点|规则|规定|准则|章程|须知|细则|标准|注意事项|公约|守则|条例")
+_FORM = re.compile(r"范本|范例|格式|表格|空白|申请表|[纪记]录表|样张|样本")
+_LAWS = re.compile(r"法规|规章")  # a page 「相關法規及會議紀錄」 lists rules too
+_NOTE = re.compile(r"\([^)]*\)|（[^）]*）|「[^」]*」|【[^】]*】")  # 會議紀錄(修正學生請假辦法): a note, not the title's kind
 # an archive member's doc_id in a corpus assembled before 11-08 (a<序号>m<k>): still background (tier_of) 【Claude】
 _OLD_MEMBER = re.compile(r"da\d+m\d+")
 INPUT_SEP = "::"  # --input CORPUS::EXPORT (plan 2026-11-08 T4)
 UNIT_LABEL = "單位："  # the unit line's label (plan 2026-11-08 T4's format); a passage's words, never an index token
+APPLIES_LABEL = "適用："  # its second label (owner 11-08 10:16 (b)): the units the document's scope narrows to
+APPLIES_KINDS = ("学院", "系所", "学程")  # units.KINDS a document's applies_to puts on its unit line (unit_words)
 OFFICE_KIND, SECTION_KIND = "行政单位", "行政组别"  # the unit tree's kinds of an office and of its sections (office_of)
 # BuildReport.passage (plan 2026-11-08 T4: 「Note that in the build report」): what changed in this PASSAGE_VERSION
 PASSAGE_NOTE = ("passage 第 2 版（计划 2026-11-08 T4，用户 11-08 04:08 要的单位补丁）：重排读的 passage 第二行多了单位行"
@@ -175,7 +185,7 @@ PASSAGE_NOTE = ("passage 第 2 版（计划 2026-11-08 T4，用户 11-08 04:08 �
                 "向量默认不放单位行（11-08 实验室电脑量过：放进向量，点名组别的问题会把同组别的文件都拉近），所以向量快取照常能用；"
                 "加 --unit-words-in-vectors 才放进向量，那时第 1 版的向量快取对不上，第一次 --embed 每个小段都要重算")
 # the same with --no-unit-words (plan 2026-11-08 T4 review: the patch measured alone, Review Focus 5)
-PASSAGE_NOTE_OFF = ("这次没加单位词（--no-unit-words，用来单独量单位补丁）：没有单位行，title_tokens 里也没有单位名、组别、简称，"
+PASSAGE_NOTE_OFF = ("这次没加单位词（--no-unit-words，用来单独量单位补丁）：没有单位行，关键词索引（unit_tokens）里也没有单位名、组别、简称，"
                     "passage 和第 1 版一样，所以第 1 版的向量快取照样命中；和同样输入、加了单位词的库比，差的就只是单位补丁")
 
 
@@ -213,7 +223,8 @@ class BuildReport:
 class UnitWords:
     """A document's unit words (plan 2026-11-08 T4, the owner's unit patch): its unit's name and short names, its 組別
     as written and the other names of the section the 組別 names; for a unit that is a section of an office, the
-    office's name and short names first (T4 review). Empty parts are left out."""
+    office's name and short names first (T4 review); then each college, department or program its scope applies to
+    that these do not name already, with its short names (owner 11-08 10:16 (b)). Empty parts are left out."""
 
     name: str = ""
     aliases: tuple[str, ...] = ()
@@ -221,6 +232,7 @@ class UnitWords:
     group_aliases: tuple[str, ...] = ()
     office: str = ""
     office_aliases: tuple[str, ...] = ()
+    applies: tuple[tuple[str, tuple[str, ...]], ...] = ()  # (name, short names) per unit, in the tree's order
 
     def _parts(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
         return (self.office, self.office_aliases), (self.name, self.aliases), (self.group, self.group_aliases)
@@ -228,14 +240,16 @@ class UnitWords:
     @property
     def line(self) -> str:
         """單位：[<office>（<its short names>） ]<unit>（<short names joined by 、>） <組別>（<its other names>）, the
-        plan's format; '' when empty."""
-        parts = [w + (f"（{'、'.join(more)}）" if more else "") for w, more in self._parts() if w]
-        return UNIT_LABEL + " ".join(parts) if parts else ""
+        plan's format, then 適用：<unit>（<short names>） ... for the units it applies to; '' when empty."""
+        def said(parts: Sequence[tuple[str, tuple[str, ...]]]) -> str:
+            return " ".join(w + (f"（{'、'.join(more)}）" if more else "") for w, more in parts if w)
+        own, applies = said(self._parts()), said(self.applies)
+        return " ".join(([UNIT_LABEL + own] if own else []) + ([APPLIES_LABEL + applies] if applies else []))
 
     @property
     def words(self) -> tuple[str, ...]:
-        """Each name once, in the line's order: what title_tokens gets, a word at a time (no bigram across two)."""
-        return tuple(dict.fromkeys(w for name, more in self._parts() for w in (name, *more) if w))
+        """Each name once, in the line's order: what unit_tokens gets, a word at a time (no bigram across two)."""
+        return tuple(dict.fromkeys(w for name, more in (*self._parts(), *self.applies) for w in (name, *more) if w))
 
 
 @dataclass
@@ -274,8 +288,9 @@ def id_scheme(records: list[Record]) -> str:
 
 def tier_of(doc_id: str, dtype: str) -> str:
     """docs.tier (plan 2026-11-08 T1; addendum M2 by source): BACKGROUND for an archive member (its record id starts
-    with m, ids.record_id; an older corpus's a<序号>m<k>) and for a journal or an exam (doc_type); PRIMARY else."""
-    if doc_id.startswith("dm") or _OLD_MEMBER.fullmatch(doc_id) or dtype in (JOURNAL, EXAM):
+    with m, ids.record_id; an older corpus's a<序号>m<k>) and for a journal, an exam or meeting minutes (doc_type);
+    PRIMARY else."""
+    if doc_id.startswith("dm") or _OLD_MEMBER.fullmatch(doc_id) or dtype in (JOURNAL, EXAM, MINUTES):
         return BACKGROUND
     return PRIMARY
 
@@ -350,11 +365,16 @@ def _term(d: Document, event: Event | None) -> Term | None:
     return terms[0] if terms else None
 
 
-def doc_type(title: str, parent_title: str, url: str) -> str:
-    """JOURNAL, EXAM or '' (spec 「排序 v2」: only what the title, the parent's title or the address says plainly;
-    rather too few than one wrong). exam: 考古題 / 歷屆考題 / 歷屆試題 in any of the three. journal: the site's 學報
-    folder; a title naming an issue (55期學報); or a 總檔 / 全上傳 file whose parent is the 學報 page. A title about
-    the journal's forms and lists (徵稿, 撰稿須知, 審查, 委員名單 ...) is never a paper."""
+def doc_type(title: str, parent_title: str, url: str, kind_class: str = "") -> str:
+    """JOURNAL, EXAM, MINUTES or '' (spec 「排序 v2」: only what the title, the parent's title or the address says
+    plainly; rather too few than one wrong). exam: 考古題 / 歷屆考題 / 歷屆試題 in any of the three. journal: the site's
+    學報 folder; a title naming an issue (55期學報); or a 總檔 / 全上傳 file whose parent is the 學報 page. A title about
+    the journal's forms and lists (徵稿, 撰稿須知, 審查, 委員名單 ...) is never a paper.
+
+    minutes (owner 11-08 10:16, 「其他网站很多会议纪录是单独上传的 PDF/Word，不在压缩包里」: 會議紀錄 / 會議記錄 /
+    議事錄 in the title or the parent page's title, rules and blank forms left out, so 宿委會's minutes no longer push
+    the rules off 「停車」): a file (kind_class attachment; a page named 會議紀錄 is where they are listed, and the
+    owner named files 【Claude】) that _is_minutes."""
     t, p = norm_text(title), norm_text(parent_title)
     path = norm_text(unquote(urlsplit(url).path))
     if any(_EXAM.search(s) for s in (t, p, path)):
@@ -363,7 +383,27 @@ def doc_type(title: str, parent_title: str, url: str) -> str:
         return JOURNAL
     if not _ABOUT_JOURNAL.search(t) and (_ISSUE.search(t) or (_JOURNAL_PAGE.search(p) and _WHOLE_ISSUE.search(t))):
         return JOURNAL
+    if kind_class == "attachment" and _is_minutes(t, p):
+        return MINUTES
     return ""
+
+
+def _is_minutes(title: str, parent_title: str) -> bool:
+    """title, parent_title: norm_text. A title that says 會議紀錄 (bracketed notes aside) is minutes unless it names a
+    form anywhere (會議紀錄範本, 空白會議紀錄, 會議紀錄表) or a rule after it (會議紀錄撰寫要點); a rule before it is
+    what the meeting was about (法規委員會會議紀錄, 研議「請假規則」修正案會議紀錄), and so is one in a note
+    (會議紀錄(修正學生請假辦法)) 【Claude, after the review of 11-08 10:16's change】. A title that does not say it, or
+    says it only in a note, is minutes when the title or its page's title says it and the title names no rule and no
+    form (宿舍委員會設置辦法 on the page 會議紀錄 is a rule), the page's title naming neither (a page 「相關法規及會議紀錄」
+    holds both, so there only a file's own title can say it is minutes)."""
+    bare = _NOTE.sub(" ", title)
+    said = list(_MINUTES.finditer(bare))
+    if said:
+        return not _FORM.search(title) and not _RULE.search(bare[said[-1].end():])
+    named = _MINUTES.search(title) or (_MINUTES.search(parent_title)
+                                       and not (_RULE.search(parent_title) or _FORM.search(parent_title)
+                                                or _LAWS.search(parent_title)))
+    return bool(named) and not (_RULE.search(title) or _FORM.search(title))
 
 
 def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date]) -> list[_Row]:
@@ -374,7 +414,7 @@ def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date
         facts = _facts(d, by_id.get(d.parent_id or ""), event, server)
         term = _term(d, event)
         out.append(_Row(d, facts, identity_date(facts), term.ay if term else None, term.sem if term else None,
-                        _cohorts(d), doc_type(d.title, d.parent_title, d.url)))
+                        _cohorts(d), doc_type(d.title, d.parent_title, d.url, d.kind_class)))
     return out
 
 
@@ -530,18 +570,21 @@ def _chunks(d: Document) -> tuple[list, list[Chunk]]:
 
 def _write_index(conn: sqlite3.Connection, rows: list[_Row]) -> tuple[int, int]:
     """sections, chunks (with the offsets of the table header a chunk starts under) and chunk_fts (rowid = chunk_id);
-    title_tokens: title, parent title, link text, the section heading and the unit words (plan 2026-11-08 T4: the
-    unit's name and short names, the 組別; unit_words), each on a line of its own; body_tokens: the chunk, after its
-    table header when it has one (T7a: a row far down a table still finds the column names). Both carry the term
-    tokens (term115s1 ...); an event's title column also carries its own term's, which its title seldom writes (fix
-    round 2, 11-01: 「下學期 選課」 finds next term's 選課)."""
+    title_tokens: title, parent title, link text and the section heading, each on a line of its own; body_tokens: the
+    chunk, after its table header when it has one (T7a: a row far down a table still finds the column names). Both
+    carry the term tokens (term115s1 ...); an event's title column also carries its own term's, which its title seldom
+    writes (fix round 2, 11-01: 「下學期 選課」 finds next term's 選課). unit_tokens: the unit words (plan 2026-11-08 T4:
+    the unit's name and short names, the 組別, the units it applies to; unit_words), a word at a time; in title_tokens
+    until 11-08 10:16, a column of their own since (N11: search weighs them apart, RankConfig.unit_weight, and counts
+    a query word only they have as part found, RankConfig.unit_cover)."""
     n_sec = chunk_id = 0
     chunk_rows, fts_rows = [], []
 
     def flush() -> None:
         conn.executemany("INSERT INTO chunks(chunk_id, doc_id, sec_id, start, end, head_start, head_end)"
                          " VALUES (?, ?, ?, ?, ?, ?, ?)", chunk_rows)
-        conn.executemany("INSERT INTO chunk_fts(rowid, title_tokens, body_tokens) VALUES (?, ?, ?)", fts_rows)
+        conn.executemany("INSERT INTO chunk_fts(rowid, title_tokens, body_tokens, unit_tokens) VALUES (?, ?, ?, ?)",
+                         fts_rows)
         chunk_rows.clear()
         fts_rows.clear()
 
@@ -554,16 +597,17 @@ def _write_index(conn: sqlite3.Connection, rows: list[_Row]) -> tuple[int, int]:
         heading = {s.sec_id: s.heading for s in sections}
         own_term = term_tokens(Term(r.ay, r.sem)) if d.kind_class == "event" and r.ay is not None else None
         titles: dict[int, str] = {}
+        unit = _tokens("\n".join(r.unit.words))
         for c in chunks:
             chunk_id += 1
             if c.sec_id not in titles:
-                titles[c.sec_id] = _tokens("\n".join((d.title, d.parent_title, d.linktext, heading.get(c.sec_id, ""),
-                                                      *r.unit.words)), own_term)
+                titles[c.sec_id] = _tokens("\n".join((d.title, d.parent_title, d.linktext, heading.get(c.sec_id, ""))),
+                                           own_term)
             chunk_rows.append((chunk_id, d.doc_id, c.sec_id, c.start, c.end, c.head_start, c.head_end))
             body = d.text[c.start : c.end]
             if c.head_start is not None:
                 body = d.text[c.head_start : c.head_end] + "\n" + body
-            fts_rows.append((chunk_id, titles[c.sec_id], _tokens(body)))
+            fts_rows.append((chunk_id, titles[c.sec_id], _tokens(body), unit))
         if len(fts_rows) >= BATCH:
             flush()
     flush()
@@ -613,7 +657,21 @@ def _not_prefixed(names: Sequence[str], base: Sequence[str], prefixes: Sequence[
     return tuple(n for n in names if _squashed(n) not in said)
 
 
-def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None) -> UnitWords:
+def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None,
+               applies: Sequence[str] = ()) -> UnitWords:
+    """The unit words of a document (_own_unit_words), then the units of applies (its doc_scope applies_to, in the
+    tree's order) that are a college, a department or a program (APPLIES_KINDS) and that those words do not name, each
+    with its short names (owner 11-08 10:16 (b): 「如果一份文件的 doc_scope 把 applies_to 缩小到了具体的学院/系所/学程
+    （非全校），请把该适用单位的全称和简称也加进它的 unit_words / passage 里」, so the 323 pages of a 教務處 file for one
+    department find 「某系 + 某事」 in every chunk). The school is no such unit; an office or a center is left out too."""
+    own = _own_unit_words(d, units, school)
+    tree = units or {}
+    more = tuple((tree[u].name, tree[u].aliases) for u in applies
+                 if u in tree and tree[u].kind in APPLIES_KINDS and tree[u].name not in own.words)
+    return dataclasses.replace(own, applies=more) if more else own
+
+
+def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None) -> UnitWords:
     """The unit words of a document (plan 2026-11-08 T4; the owner, 11-08 04:08: the unit name, the 組別 and the
     unit's short names, so 「某系 + 某事」 finds the department's pages that never name it): its unit (Document.unit,
     the site table's) by its name in the tree with its aliases (units.yaml and the site probe's), as written when the
@@ -655,13 +713,25 @@ def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None
     return UnitWords(name, aliases, group, more, **head)
 
 
-def _set_unit_words(rows: list[_Row], units: Mapping[str, Unit] | None, on: bool) -> None:
-    """Each row's unit words (unit_words), or none when on is False (--no-unit-words, plan 2026-11-08 T4 review): no
-    unit line and no unit tokens, so every passage is version 1's (the vector cache of a build before T4 serves it) and
-    a build of the same inputs with and without them measures the owner's patch alone (Review Focus 5)."""
+def _set_unit_words(rows: list[_Row], units: Mapping[str, Unit] | None, on: bool,
+                    applies: Mapping[str, Sequence[str]] | None = None) -> None:
+    """Each row's unit words (unit_words, with the units its doc_scope applies to: applies, doc_id -> unit ids), or
+    none when on is False (--no-unit-words, plan 2026-11-08 T4 review): no unit line and no unit tokens, so every
+    passage is version 1's (the vector cache of a build before T4 serves it) and a build of the same inputs with and
+    without them measures the owner's patch alone (Review Focus 5)."""
     school = sites.table().school
+    applies = applies or {}
     for r in rows:
-        r.unit = unit_words(r.doc, units, school) if on else UnitWords()
+        r.unit = unit_words(r.doc, units, school, applies.get(r.doc.doc_id, ())) if on else UnitWords()
+
+
+def _applies(scope: _UnitScope | None) -> dict[str, list[str]]:
+    """doc_id -> the units its applies_to rows name, each once, in the rows' order (the tree's: unit_scope)."""
+    out: dict[str, list[str]] = {}
+    for doc_id, relation, unit_id, *_ in scope.rows if scope is not None else ():
+        if relation == "applies_to" and unit_id not in out.setdefault(doc_id, []):
+            out[doc_id].append(unit_id)
+    return out
 
 
 def site_units_without_alias(units: Mapping[str, Unit]) -> list[str]:
@@ -907,13 +977,16 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     rows, copies = _merge_copies(_rows(docs, {"e" + ev.id: ev for ev in events}, server),
                                  _file_digest(first.export, records), excluded)
     docs = [r.doc for r in rows]
-    _set_unit_words(rows, units, unit_words)
-    id_aliases = _aliases(rows, copies)  # doc_alias (not config/aliases.yaml, the synonym groups)
     scope = unit_scope(docs, units) if units is not None else None
+    _set_unit_words(rows, units, unit_words, _applies(scope))
+    id_aliases = _aliases(rows, copies)  # doc_alias (not config/aliases.yaml, the synonym groups)
     if scope is not None:
+        named = Counter(len(r.unit.applies) for r in rows if r.unit.applies)
         scope.report = {"site_list": str(site_list), "site_list_sha256": _sha256(Path(site_list)),
                         "units_config": str(units_config), "units_config_sha256": _sha256(Path(units_config)),
-                        **scope.report, "site_units_no_alias": site_units_without_alias(units)}
+                        **scope.report, "site_units_no_alias": site_units_without_alias(units),
+                        # owner 11-08 10:16 (b): documents whose unit line names units they apply to, by how many
+                        "unit_line_applies": {"docs": sum(named.values()), "by_count": dict(sorted(named.items()))}}
         warnings += _scope_warnings(scope.report, len(docs))
     site_rows = _site_rows(read, docs, warnings)
 
@@ -927,7 +1000,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     counts = {"docs": {**Counter(d.kind_class for d in docs), "total": len(docs)}, "sections": 0, "chunks": 0,
               "dates": dict(Counter(f.kind for r in rows for f in r.facts)),
               "cohort_rows": sum(len(r.cohorts) for r in rows),
-              "doc_types": {t: sum(r.dtype == t for r in rows) for t in (JOURNAL, EXAM)},
+              "doc_types": {t: sum(r.dtype == t for r in rows) for t in (JOURNAL, EXAM, MINUTES)},
               "doc_refs": sum(len(d.refs) for d in docs),
               "attachments": {"title_from_page": sum(d.title_from_context for d in attachments),
                               "title_file_name": sum(not d.title_from_context for d in attachments),
@@ -1041,7 +1114,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--unit-words-in-vectors", action="store_true",
                     help="单位行也放进向量（默认只放进关键词索引和重排读的文字：11-08 实验室电脑量过，放进向量会让同组别的文件都靠近点名组别的问题）")
     ap.add_argument("--no-unit-words", action="store_true",
-                    help="不加单位词（单位行，和 title_tokens 里的单位名、组别、简称）：passage 和第 1 版一样，"
+                    help="不加单位词（单位行，和关键词索引 unit_tokens 里的单位名、组别、简称）：passage 和第 1 版一样，"
                          "用来单独量单位补丁（计划 2026-11-08 T4 审查）；平时不要用")
     args = ap.parse_args(argv)
     pairs = _pairs(args)
@@ -1081,10 +1154,13 @@ def main(argv: list[str] | None = None) -> int:
               f"提及单位 {report.scope['docs']['mentions']} 份" if n else "")
     bare = report.scope.get("site_units_no_alias")
     scoped += f"；网站的单位没有简称的 {len(bare)} 个（报告 scope.site_units_no_alias）" if bare else ""
+    applied = report.scope.get("unit_line_applies", {}).get("docs")
+    scoped += f"；单位行写了适用单位的 {applied} 份" if applied else ""
     words = "" if report.passage["unit_words"] else "；没加单位词（--no-unit-words）"
     print(f"{args.out}：{docs['total']} 份文件、{report.counts['chunks']} 小段；"
           f"网站 {len(report.sites)} 个（各站资料截至和缺漏见报告 sites）；"
           f"无日期 {report.no_date}、无文字 {report.no_text}；学报 {types[JOURNAL]}、考题 {types[EXAM]}、"
+          f"会议纪录 {types[MINUTES]}、"
           f"背景资料共 {report.counts['tiers'].get(BACKGROUND, 0)}；"
           f"编号转址 {sum(report.counts['doc_alias'].values())} 笔（副本、其他格式、重复）；"
           f"文字来源 {sources or '（没有）'}{vectors}{scoped}{words}；报告 {report_path}")

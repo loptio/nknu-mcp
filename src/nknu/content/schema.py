@@ -29,14 +29,15 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = "pipeline-4"
-# docs.doc_type: journal | exam | '' (build.doc_type, spec 2026-11-01 「排序 v2」); build.tier_of makes both background
-# in docs.tier, which search ranks after the primary documents (addendum M2; plan 2026-11-08 T1)
+SCHEMA_VERSION = "pipeline-5"
+# docs.doc_type: journal | exam | minutes | '' (build.doc_type, spec 2026-11-01 「排序 v2」); build.tier_of makes all
+# three background in docs.tier, which search ranks after the primary documents (addendum M2; plan 2026-11-08 T1)
 JOURNAL = "journal"  # 學報: issues, tables of contents, abstracts, papers
 EXAM = "exam"  # past exam papers (歷屆考題, 考古題)
+MINUTES = "minutes"  # a file of meeting minutes and their material (owner 11-08 10:16, addendum M9)
 # docs.tier (plan 2026-11-08 T1; addendum M2): background material is ranked after the first primary documents
 PRIMARY = "primary"
-BACKGROUND = "background"  # archive members, journals, exams
+BACKGROUND = "background"  # archive members, journals, exams, meeting minutes
 # doc_alias.why (plan 2026-11-08 T1): a copy at another address, another format of it, a second record of its identity
 ALIAS_WHYS = ("copy", "format", "duplicate")
 
@@ -63,10 +64,10 @@ CREATE TABLE docs (
     period_sem  INTEGER,                    -- 1 or 2; NULL when the title names a year only
     ident_date  TEXT,                       -- ISO date: the first date by IDENTITY_ORDER, NULL when none
     ident_kind  TEXT,                       -- dates.kind of ident_date
-    doc_type    TEXT NOT NULL DEFAULT '',   -- journal | exam | '' (build.doc_type; lists and brochures stay '')
+    doc_type    TEXT NOT NULL DEFAULT '',   -- journal | exam | minutes | '' (build.doc_type; lists, brochures stay '')
     text_source TEXT NOT NULL DEFAULT '',   -- totext | fallback-1029 | none (assemble); '' for the 10-29 corpus
     tier        TEXT NOT NULL DEFAULT 'primary', -- primary | background (build.tier_of: archive members, journals,
-                                                 -- exams)
+                                                 -- exams, meeting minutes)
     site        TEXT NOT NULL DEFAULT '',   -- the export it came from: a sites.site (plan 2026-11-08 T4)
     unit_line   TEXT NOT NULL DEFAULT ''    -- 單位：<unit>（<short names>） <組別>, a passage's second line; ''
                                             -- when its unit is the school and it has no 組別 (build.unit_words)
@@ -164,8 +165,11 @@ CREATE TABLE doc_scope (
     cohort_from  INTEGER             -- applies_to: 「X學年度起入學」 X; NULL: none
 );                                   -- applies_to: one row per unit x campus x level, the cohort on each
 
--- space-joined tokens from nknu.core.textnorm.tokenize plus nknu.content.terms.canonical_tokens
-CREATE VIRTUAL TABLE chunk_fts USING fts5(title_tokens, body_tokens, tokenize='unicode61 remove_diacritics 0');
+-- space-joined tokens from nknu.core.textnorm.tokenize plus nknu.content.terms.canonical_tokens; unit_tokens: the
+-- document's unit words (build.unit_words), a column of their own since pipeline-5 (owner 11-08 10:16, N11): search
+-- weighs them apart and counts a query word they alone have as part found (RankConfig.unit_weight, unit_cover)
+CREATE VIRTUAL TABLE chunk_fts USING fts5(title_tokens, body_tokens, unit_tokens,
+                                          tokenize='unicode61 remove_diacritics 0');
 
 CREATE INDEX dates_doc ON dates(doc_id);
 CREATE INDEX applies_doc ON applies_to(doc_id);

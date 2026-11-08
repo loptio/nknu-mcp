@@ -713,13 +713,17 @@ def test_a_department_page_is_found_by_its_short_name_though_its_text_never_says
     assert conn.execute("SELECT count(*) FROM docs WHERE text LIKE '%軟體%'").fetchone() == (0,)
     hits = {h.doc_id: h for h in search_docs(conn, "軟體系 師資", today=TODAY, aliases=[]).hits}
     # 化學系's page says 師資 twice and leads by its own words without the patch; the unit line puts 軟體系's first,
-    # all of the query covered, then 軟體系's other page (its unit words alone), then 化學系's (師資 alone)
-    assert list(hits) == [d["soft"], d["bus"], d["chem"]]
-    assert [round(h.coverage, 2) for h in hits.values()] == [1.0, 0.67, 0.33]
+    # then 軟體系's other page (its unit words alone), then 化學系's (師資 alone). Changed 11-08 10:16 on purpose (owner,
+    # N11): a word only the unit words have counts half (RankConfig.unit_cover), so 1.0, 0.67 are 0.67, 0.33 now; and
+    # 軟體系 brings 軟體工程與管理學系's words (search.unit_names), whose 學系 finds 化學系's other pages, none covered
+    assert list(hits)[:3] == [d["soft"], d["bus"], d["chem"]]
+    assert [round(h.coverage, 2) for h in hits.values()] == [0.67, 0.33, 0.33] + [0.0] * 6
     assert search_docs(conn, "化學系 師資", today=TODAY, aliases=[]).hits[0].doc_id == d["chem"]
-    title = conn.execute("SELECT f.title_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid"
-                         " WHERE c.doc_id = ?", (d["soft"],)).fetchone()[0].split()
-    assert {"软体", "体系", "软工", "工系", "管理", "学系"} <= set(title) and "单位" not in title  # words, not the label
+    title, unit = (t.split() for t in conn.execute(
+        "SELECT f.title_tokens, f.unit_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid WHERE c.doc_id = ?",
+        (d["soft"],)).fetchone())
+    assert {"软体", "体系", "软工", "工系", "管理", "学系"} <= set(unit) and "单位" not in unit  # words, not the label
+    assert not {"软体", "软工"} & set(title)  # a column of their own since 11-08 10:16
     line = conn.execute("SELECT unit_line FROM docs WHERE doc_id = ?", (d["soft"],)).fetchone()[0]
     assert line == "單位：軟體工程與管理學系（軟體系、軟工系）"
     chunk = conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (d["soft"],)).fetchone()[0]
@@ -733,10 +737,10 @@ def test_the_school_is_no_unit_word(tmp_path):
     conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
     try:
         unit, line = conn.execute("SELECT unit, unit_line FROM docs").fetchone()
-        title = conn.execute("SELECT title_tokens FROM chunk_fts").fetchone()[0].split()
+        title, words = conn.execute("SELECT title_tokens, unit_tokens FROM chunk_fts").fetchone()
     finally:
         conn.close()
-    assert (unit, line) == (SCHOOL, "") and not {"高雄", "师范", "大学"} & set(title)
+    assert (unit, line, words) == (SCHOOL, "", "") and not {"高雄", "师范", "大学"} & set(title.split())
 
 
 def test_the_report_says_every_passage_changed(departments):
@@ -767,7 +771,9 @@ def test_a_sections_page_is_found_by_its_offices_short_name(tmp_path):
     finally:
         conn.close()
     assert [h.doc_id for h in hits[:2]] == [d["life"], d["aca"]]
-    assert [round(h.coverage, 2) for h in hits[:2]] == [1.0, 0.67]  # 学务 务处 宿舍; 务处 宿舍
+    # 学务 务处 宿舍; 务处 宿舍: changed 11-08 10:16 on purpose (owner, N11), 学务 务处 are only the unit words', which
+    # count half (RankConfig.unit_cover): 1.0, 0.67 are 0.67, 0.5 now
+    assert [round(h.coverage, 2) for h in hits[:2]] == [0.67, 0.5]
     assert line == "單位：學生事務處（學務處） 生活輔導組（生輔組）"
 
 
@@ -828,9 +834,10 @@ def test_without_unit_words_the_build_leaves_the_whole_patch_out(tmp_path, capsy
         # each passage is the one with words less its unit line: version 1's
         assert all(lines[c] and b[c] == a[c].replace("\n" + lines[c], "", 1) for c in chunks)
         assert not any(UNIT_LABEL in p for p in b.values())
-        title = without.execute("SELECT f.title_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid"
-                                " WHERE c.doc_id = ?", (DEPARTMENT_IDS["soft"],)).fetchone()[0].split()
-        assert not {"软体", "体系", "软工", "工系"} & set(title)
+        title, unit = (t.split() for t in without.execute(
+            "SELECT f.title_tokens, f.unit_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid"
+            " WHERE c.doc_id = ?", (DEPARTMENT_IDS["soft"],)).fetchone())
+        assert not {"软体", "体系", "软工", "工系"} & set(title) and unit == []  # unit_tokens since 11-08 10:16
         # without the patch 化學系's page leads 「軟體系 師資」 by its own words (with it, 軟體系's: the test above)
         assert search_docs(without, "軟體系 師資", today=TODAY, aliases=[]).hits[0].doc_id == DEPARTMENT_IDS["chem"]
     finally:
