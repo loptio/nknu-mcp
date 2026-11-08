@@ -4,22 +4,40 @@ was walked to its last page (listwalk). Nothing here sends a request: the crawle
 its own polite queue, and hands every answer back (answered, failed).
 
 The chain of one list (§7.5):
-1. A list page arrives by GET and is archived; page_stored() reads it with its platform profile (profiles.py): the
-   rows, the row buttons to press (a detail, a download), the next page's button, the page shown, the 「共 N 筆」. Each
+1. A list page arrives by GET and is archived; page_stored() reads it with its platform profile (profiles.py; the
+   platform its own address is written on, profiles.profile_for: a /site/ key's pages that are WebIdx pages are read as
+   WebIdx's, gaps ② ③ of 11-08; the site it counts for, url.owner_site, stays every row key's, action.site and
+   listwalk.site): the rows, the row buttons to press (a detail, a download), the next page's button, the page shown,
+   the 「共 N 筆」. Each
    press is one action row whose form_src points at that page's response record in the WARC, and one page_res entry
    of the list page (pb:<kind>:<row_key>) points at the action.
 2. target_for() reads that very page back from the WARC and builds the form from it (webforms.postback, the form
-   that holds the button: form_for_control): the form state and the row number ctlNN always come from one page.
+   that holds the button: form_for_control): the form state and the row number ctlNN always come from one page. An
+   ASP.NET ImageButton (<input type="image">, argument IMAGE_ARG: the software icons, gap ⑪ of 11-08) calls no
+   __doPostBack: its press is the form that holds it (image_form) with the click's coordinates, name.x and name.y.
 3. A row's buttons go before the next page (the queue's order: next_action). A detail's title must begin with its
    row's (cut) title, or the press is mismatch and the chain starts again from its GET once; a detail with nothing
-   in it but its title is thin (empty_answer, §10.1 nonempty); the next page's answer must show the page asked for.
+   in it but its title is thin (empty_answer, §10.1 nonempty); the next page's answer must show the page asked for,
+   except a 「下一頁」 answer that names no page shown (c.nknu's pager past page 5 of a list longer than 15 pages),
+   taken as the page asked for on what it shows (unnumbered_next, gap ⑤ of 11-08); an answer that holds no list or
+   is another page ends the walk, whatever page it shows, its note saying why (answer_elsewhere).
    A button to press in an answer that no press covers is written on the list page (要人看: _unpressed). A
-   redirect's Location is for the crawler to queue; a file is sniffed.
+   redirect's Location is for the crawler to queue; a file is sniffed. A row's press sent elsewhere brought neither
+   its detail nor its file (the session lapsed: §23.9 A2), except a download sent to a file on its own host, which is
+   that file's address (file_redirect: WebIdx's notice files answer 302 to /WebServices/ajaxDownloadFileCourse.aspx,
+   gap ① of 11-08), and a detail sent to another page of its own site that is neither the list, the site's home nor
+   a sign-in, which is that detail's page (detail_redirect, gap ⑪ of 11-08): press_redirect says which. A detail's
+   answer may show the button pressed again (an opened folder is still a button of its folder list): never pressed
+   from that answer (_without_pressed).
 4. A POST is never sent twice: a press that fails (or mismatches) starts the chain again from its GET once (a new
    epoch; rows pressed already are known by their row_key and not pressed again); failing again it stays failed, and a
    pager that fails twice ends the walk as post_failed. A stopped run's chains start again from their GET at the next
-   run (resume): the actions left are superseded. `nknu archive retry download` (retry_downloads, §23 A3) puts the
-   downloads that came to no file or failed back: their list's next GET presses only them (REDO_KEY).
+   run (resume): the actions left are superseded. `nknu archive retry post_failed` and `retry mismatch:page`
+   (retry_walks) walk the lists that ended so again from their GET. `nknu archive retry download` (retry_downloads,
+   §23 A3) puts the downloads that came to no file or failed back, never one a redirect sent to its file
+   (file_redirects adopts that): their list's next GET presses only them (REDO_KEY). `nknu archive retry unpressed`
+   (retry_unpressed) puts back the pages whose buttons today's platform file presses and nobody pressed: their next
+   GET plans them with its own form state.
 5. listwalk.ended_by says how the walk ended (§7.5 step 7): last_page, no_rows_ok, walking, mismatch:unknown_button
    (a button or a GET pager link the profile does not know: never last_page then), mismatch:no_next, mismatch:page,
    mismatch:empty, mismatch:clv2, mismatch:total, max_pages, post_failed. A list grid that holds nothing that leads
@@ -47,10 +65,10 @@ import sqlite3
 import unicodedata
 import zlib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 from warcio.archiveiterator import ArchiveIterator
@@ -78,6 +96,9 @@ _INT = re.compile(r"\s*(\d{1,4})\s*")
 _ELLIPSIS = ".…。 "
 _DIRECT_DETAIL_MIN = 8  # a detail title shorter than this is never taken as the row's cut title
 _FORM_NAME = re.compile(r'form\[(?:id|name)="([^"]+)"\]')
+_SIMPLE_ID = re.compile(r"[A-Za-z_][\w:.-]*")  # a form's id or name a CSS selector may name as written
+IMAGE_ARG = profiles.IMAGE_ARG  # an ImageButton's argument (<input type="image">: no __doPostBack, gap ⑪ of 11-08)
+_IMAGE_XY = ("1", "1")  # the click's coordinates an ImageButton's press sends (name.x, name.y): any point of the image
 
 
 # ---------------------------------------------------------------- reading one page (no database)
@@ -93,6 +114,7 @@ class Press:
     text: str  # the row's title (the pager's: its own text)
     step: int  # the page it is on (the pager: the page it goes to)
     form_id: str = ""  # the id of the form that holds the button ("" outside any)
+    rowset: str = ""  # the row set its row is of ("" for the pager): a detail's answer is checked by its detail_title
 
 
 @dataclass(frozen=True)
@@ -131,6 +153,14 @@ class PageRead:
     # the list grid is a table of content, no list (_content_table; FIX 3, 11-06): with a pager its pages are pressed
     # as a list's and list_end gives no mismatch:empty for it; with none read_page gives walk none
     content: bool = False
+    # the 「下一頁」 control the profile presses (target, argument, text, form id), found whatever page the pager says
+    # it shows (a page past c.nknu's window names none: unnumbered_next, gap ⑤ of 11-08); None for a page_n pager
+    next_control: tuple[str, str, str, str] | None = None
+    # the action attribute of the form that holds the list grid, as written ("" when it has none; None: no form)
+    posts_to: str | None = None
+    # (button key, its text) of each button the profile presses, the first of a key's: an unpressed entry carries its
+    # text, which a rule that names one decides by (安裝說明's folder, gap ⑪ of 11-08: verify check 8, retry unpressed)
+    texts: tuple[tuple[str, str], ...] = ()
 
 
 def norm(text: str | None) -> str:
@@ -155,17 +185,60 @@ def row_key(site: str, scope_of: str, title: str, date: str = "", category: str 
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
-def _postbacks(tree: LexborHTMLParser) -> list[tuple[LexborNode, str, str]]:
+def _postbacks(tree: LexborHTMLParser, profile: profiles.Profile | None = None) -> list[tuple[LexborNode, str, str]]:
     """Every (element, target, argument) the page posts back with, in document order: a link's href, an onclick or an
-    onchange (a submit button's WebForm_PostBackOptions)."""
-    out = []
-    for node in tree.css("[href], [onclick], [onchange]"):
+    onchange (a submit button's WebForm_PostBackOptions); and an ASP.NET ImageButton that `profile` has a rule for, its
+    name as the target and IMAGE_ARG as the argument (gap ⑪ of 11-08: it calls no __doPostBack, the browser sends its
+    form with the click's coordinates). One no rule names stays unseen, as before (the report viewer's toolbar on
+    english's pages) 【Claude 的执行办法】. Each element once: lexbor gives an element once for each selector of the list
+    it matches (<a href="#" onclick="__doPostBack(…)">, a named submit input's onclick), which would press its row
+    twice."""
+    out, seen = [], set()
+    for node in tree.css("[href], [onclick], [onchange], input[name]"):
+        if node.mem_id in seen:
+            continue
+        seen.add(node.mem_id)
+        got = []
         for attr in ("href", "onclick", "onchange"):
             code = node.attributes.get(attr)
             if not code or (attr == "href" and node.tag not in ("a", "area")):
                 continue
-            out += [(node, t, a) for t, a in webforms.postback_calls(code)]
+            got += [(node, t, a) for t, a in webforms.postback_calls(code)]
+        if not got and profile is not None and (name := _image_button(node)) is not None \
+                and profiles.rule_in(profile, name, IMAGE_ARG, _label(node)) is not None:
+            got.append((node, name, IMAGE_ARG))
+        out += got
     return out
+
+
+def _image_button(node: LexborNode) -> str | None:
+    """The name of an ASP.NET ImageButton (<input type="image" name="…">, not disabled, in a form), else None."""
+    a = node.attributes
+    if node.tag != "input" or (a.get("type") or "").strip().lower() != "image" or "disabled" in a:
+        return None
+    name = (a.get("name") or "").strip()
+    return name if name and _form_action(node) is not None else None
+
+
+def image_form(html: str, name: str) -> tuple[str | None, str]:
+    """The form a press of the ImageButton `name` sends (gap ⑪ of 11-08): a CSS selector that picks the one form that
+    holds it, by its id, else its name (as webforms.form_for_control names a form), and ""; or None and why not:
+    control_missing (the page holds no such ImageButton), no_form (the form that holds it cannot be named alone)."""
+    tree = LexborHTMLParser(html or "")
+    node = next((n for n in tree.css("input[name]") if _image_button(n) == name), None)
+    if node is None:
+        return None, "control_missing"
+    form = node.parent
+    while form is not None and form.tag != "form":
+        form = form.parent
+    for attr in ("id", "name"):
+        value = form.attributes.get(attr) if form is not None else None
+        if value and _SIMPLE_ID.fullmatch(value):
+            css = f'form[{attr}="{value}"]'
+            hits = tree.css(css)
+            if len(hits) == 1 and hits[0].mem_id == form.mem_id:
+                return css, ""
+    return None, "no_form"
 
 
 def _label(node: LexborNode) -> str:
@@ -179,6 +252,15 @@ def _form_id(node: LexborNode | None) -> str:
             return node.attributes.get("id") or node.attributes.get("name") or ""
         node = node.parent
     return ""
+
+
+def _form_action(node: LexborNode | None) -> str | None:
+    """The action attribute of the form that holds node, as written ("" when it has none), or None outside any."""
+    while node is not None:
+        if node.tag == "form":
+            return (node.attributes.get("action") or "").strip()
+        node = node.parent
+    return None
 
 
 def _real_href(node: LexborNode) -> str | None:
@@ -239,23 +321,29 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
               parent_key: str | None = None, page: links.PageLinks | None = None,
               step: int | None = None, walks: tuple[str, ...] = profiles.WALKS) -> PageRead:
     """Read one page of a profiled site: its list (the first row set whose grid is on the page and walks), every row
-    set's row buttons to press, the next page's button. list_url: the chain's list (row keys are the list's, across
-    its pages); parent_key: the row key of the detail this page is the answer of (its files' keys). page: the page's
-    links.extract, when the caller has it (GET pager candidates are read from it). step: the page number this answer
-    was asked for (the presses' step when the page shows none). walks: only the row sets that walk so (a detail's
-    answer: none, its files)."""
+    set's row buttons to press, the next page's button. Its buttons are decided by `profile` (the platform the page
+    is written on: profiles.rule_in), site is the site its rows count for (url.owner_site: their row keys).
+    list_url: the chain's list (row keys are the list's, across its pages); parent_key: the row key of the detail this
+    page is the answer of (its files' keys). page: the page's links.extract, when the caller has it (GET pager
+    candidates are read from it). step: the page number this answer was asked for (the presses' step when the page
+    shows none). walks: only the row sets that walk so (a detail's answer: none, its files)."""
     tree = LexborHTMLParser(html or "")
     try:
         path, query = urlsplit(url).path.lower(), urlsplit(url).query.lower()
     except ValueError:
         path = query = ""
-    pbs = _postbacks(tree)
+    pbs = _postbacks(tree, profile)
     rules = {}
     for node, t, a in pbs:
         if (t, a, node.mem_id) not in rules:
-            rules[(t, a, node.mem_id)] = profiles.button(site, t, a, _label(node))
+            rules[(t, a, node.mem_id)] = profiles.rule_in(profile, t, a, _label(node))
     unknown = tuple(dict.fromkeys(f"{profiles.norm_key(t)}|{a}" for node, t, a in pbs
                                   if rules[(t, a, node.mem_id)] is None))
+    said: dict[str, str] = {}
+    for node, t, a in pbs:
+        if (b := rules[(t, a, node.mem_id)]) is not None and b.decision == "press":
+            said.setdefault(button_key(t, a), _label(node))
+    texts = tuple(said.items())
     sets = [rs for rs in profile.rows if rs.walk in walks and (not rs.paths or re.search(rs.paths, path))
             and (not rs.query or re.search(rs.query, query)) and tree.css_first(rs.grid)]
     lst = next((rs for rs in sets if rs.walk != "none"), None)
@@ -282,7 +370,7 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
     unplanned = tuple(dict.fromkeys(button_key(t, a) for t, a in unplanned_at))
     if lst is None:
         return PageRead(profile.name, None, "none", presses=tuple(presses), unknown=unknown, unplanned=unplanned,
-                        unplanned_at=unplanned_at)
+                        unplanned_at=unplanned_at, texts=texts)
     text = norm(tree.body.text(separator=" ")) if tree.body is not None else ""
     grid = tree.css_first(lst.grid)
     grid_text = norm(grid.text(separator=" ")) if grid is not None else ""
@@ -293,7 +381,7 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
     content = not rows and not empty and claimed is None and _content_table(lst, tree, pbs, rules)
     if content and (pager is None or not pager.found):  # a table of content with no pager: no list (FIX 3, 11-06)
         return PageRead(profile.name, None, "none", presses=tuple(presses), unknown=unknown, unplanned=unplanned,
-                        unplanned_at=unplanned_at, content=True)
+                        unplanned_at=unplanned_at, content=True, texts=texts)
     unknown_pagers: tuple[str, ...] = ()
     if lst.walk != "get":
         if page is None:
@@ -301,15 +389,16 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
         unknown_pagers = tuple(page.pagers)
     suspicious = bool(lst.suspicious and rows and len(rows) % 10 == 0 and any(
         re.fullmatch(lst.suspicious, t) and a.startswith("Page$") for _n, t, a in pbs))
+    posts_to = _form_action(grid)
     if pager is None or not pager.found:
         one = lst.walk in ("one_get", "postback")  # a postback list with no pager: one page
         return PageRead(profile.name, lst.name, lst.walk, rows, tuple(presses), claimed=claimed, empty_said=empty,
                         unknown=unknown, unknown_pagers=unknown_pagers, suspicious=suspicious,
                         current=1 if one else None, max_seen=1 if one else None, unplanned=unplanned,
-                        unplanned_at=unplanned_at)
+                        unplanned_at=unplanned_at, posts_to=posts_to, texts=texts)
     return PageRead(profile.name, lst.name, lst.walk, rows, tuple(presses), pager.next, pager.how, pager.current,
                     pager.max_seen, pager.found, claimed, empty, unknown, unknown_pagers, suspicious, unplanned,
-                    unplanned_at, content=content)
+                    unplanned_at, content=content, next_control=pager.control, posts_to=posts_to, texts=texts)
 
 
 _NO_PAGE = ("mailto:", "tel:")  # links that open no page: a table of people may hold them
@@ -374,6 +463,7 @@ class _PagerRead:
     max_seen: int | None
     next: Press | None
     found: bool
+    control: tuple[str, str, str, str] | None = None  # PageRead.next_control
 
 
 _BOX = {"page_n": ("table",), "next": ("div", "td", "p", "nav", "ul", "tr")}
@@ -382,7 +472,9 @@ _BOX = {"page_n": ("table",), "next": ("div", "td", "p", "nav", "ul", "tr")}
 def _pager(rs: profiles.Rows, tree: LexborHTMLParser, pbs, rules) -> _PagerRead:
     """The pager of a postback list: which way it pages (Page$N, or a 「下一頁」 control), the page shown (a number
     the pager writes outside any link), the largest page it names, and the next page's press. The pager is found by
-    its family of controls, so the last page (where a 「下一頁」 may be gone) still says which page it is."""
+    its family of controls, so the last page (where a 「下一頁」 may be gone) still says which page it is. A 「下一頁」
+    the profile presses is kept as the control (target, argument, text, form id) whether or not a page shown was
+    read: a page that names none is the caller's to judge (unnumbered_next)."""
     for pg in rs.pagers:
         if pg.how == "page_n":
             fam = [(n, t, a) for n, t, a in pbs if re.fullmatch(pg.target, t) and a.startswith("Page$")
@@ -418,11 +510,13 @@ def _pager(rs: profiles.Rows, tree: LexborHTMLParser, pbs, rules) -> _PagerRead:
     if nxt is not None and ((b := rules[(nxt[1], nxt[2], nxt[0].mem_id)]) is None or b.decision != "press"):
         nxt = None  # only what the profile says to press
     max_seen = max([*numbers, *([current] if current is not None else [])], default=None)
-    press = None
+    press = control = None
+    if nxt is not None and pg.how == "next":
+        control = (nxt[1], nxt[2], _label(nxt[0]), _form_id(nxt[0]))
     if nxt is not None and current is not None:
         node, t, a = nxt
         press = Press("pager", t, a, f"p{current + 1}", _label(node), current + 1, _form_id(node))
-    return _PagerRead(pg.how, current, max_seen, press, True)
+    return _PagerRead(pg.how, current, max_seen, press, True, control)
 
 
 def _rows(rs: profiles.Rows, tree, pbs, rules, *, site: str, scope_of: str, profile: profiles.Profile,
@@ -475,16 +569,17 @@ def _rows(rs: profiles.Rows, tree, pbs, rules, *, site: str, scope_of: str, prof
                 continue
             n_kind[b.role] += 1
             rk = key if n_kind[b.role] == 1 else f"{key}/{n_kind[b.role]}"
-            presses.append(Press(b.role, t, a, rk, title or _label(node), step, _form_id(node)))
+            presses.append(Press(b.role, t, a, rk, title or _label(node), step, _form_id(node), rs.name))
     return tuple(rows), presses, by_get_buttons
 
 
-def profile_pagers(site: str, url: str, html: str, base: str | None = None) -> list[str]:
+def profile_pagers(url: str, html: str, base: str | None = None) -> list[str]:
     """The pages of a list walked by GET that its platform file's pager box names (Rows.get_pager; review 10-26 phase
     3): each link in the box whose text is a page number or a next word, on the page's own host and path, canonical.
     The crawler adds them to links.extract's pagers (a link is_pager does not see, as WebIdx's first MoreNews page
-    links its pages with a sort=date it does not carry). 【Claude 的执行办法】"""
-    prof = profiles.profile_for_site(site)
+    links its pages with a sort=date it does not carry). The platform file is the one the page's own address is
+    written on (profiles.profile_for: 图资处's MoreNews pages are WebIdx pages, gap ③ of 11-08). 【Claude 的执行办法】"""
+    prof = profiles.profile_for(url)
     if prof is None:
         return []
     try:
@@ -558,6 +653,64 @@ def list_end(pr: PageRead, rows_unique: int | None = None) -> str:
     return "last_page"
 
 
+# action.reason of a 「下一頁」 press whose answer named no page shown and was taken as the page asked for
+# (unnumbered_next, gap ⑤ of 11-08): a trace for a person, its result stays ok
+UNNUMBERED = "unnumbered"
+
+
+def answer_elsewhere(pr: PageRead, asked: str) -> str | None:
+    """Why the answer to a press of a list's pager is no page of that list, in words for the walk's note, or None
+    (gap ⑤ of 11-08): it holds no list grid (c.nknu's pe album.aspx?pn=48 answers page 2 with the site's home page,
+    tecs's activeviewlist.aspx draws no list on a postback), or the form that holds its list posts back to another
+    program than the one asked (a Server.Transfer: tecs's publish.aspx answers page 2 with Default.aspx's, its form
+    posting to Default.aspx). asked: the address the press was sent to, not the list's: a list page that the school
+    answers with another program's page from its GET on (tecs's page.aspx, posting to Default.aspx) is walked where
+    its form posts. Paths are compared in lower case (IIS reads them so); a grid in no form says nothing here.
+    【Claude 的执行办法】"""
+    if pr.rowset is None:
+        return "holds no list"
+    if pr.posts_to is None:
+        return None
+    try:
+        there = urlsplit(urljoin(asked, pr.posts_to)).path.lower()
+        here = urlsplit(asked).path.lower()
+    except ValueError:
+        return None
+    return None if there == here else f"is another page ({there})"
+
+
+def unnumbered_next(pr: PageRead, want: int, walked: Collection[str], asked: str) -> tuple[PageRead | None, str]:
+    """A 「下一頁」 answer that names no page shown, read as the page asked for (gap ⑤ of 11-08, 【Claude 的执行办法】).
+    c.nknu's pager (MasterGrid$ctlNN$lbnNext) writes ten page links and the page shown as a <span>; on page n ≥ 6 of an
+    N-page list its links run from max(n − 5, N − 9) to N, so on a list of more than 15 pages, pages 6 … N − 10 name
+    no page shown (tg's 最新消息, 112 pages: page 6 shows the links 103 … 112 and no span). A press of 「下一頁」 asks
+    for the page after the one its form state was built from: the answer is taken as page `want` when all of these
+    hold. It is a page of the list asked (answer_elsewhere: it holds the list, and its form posts back to the address
+    asked); it still has the 「下一頁」 the profile presses; its pager names page `want` or a later one (or no page
+    number at all); it has rows, at least half of them on no page walked before (walked: the row keys of this walk's
+    earlier pages; a few rows pinned on every page pass, the same page again does not). Returns the page read so
+    (shown: want; the next press built from that control) and "", or None and why not, in words for the walk's
+    note. An answer that names its page, or a page_n pager's (ASP.NET's numeric pager always marks the page shown),
+    is not judged here: (None, "")."""
+    if pr.pager_how != "next" or pr.current is not None:
+        return None, ""
+    why = answer_elsewhere(pr, asked)
+    if why is not None:
+        return None, why
+    if pr.next_control is None:
+        return None, "shows no page number and no 「下一頁」 to press"
+    if pr.max_seen is not None and pr.max_seen < want:
+        return None, f"shows no page number and its pager names pages up to {pr.max_seen} only"
+    if not pr.rows:
+        return None, "shows no page number and no rows"
+    old = sum(1 for r in pr.rows if r.key in walked)
+    if old * 2 > len(pr.rows):
+        return None, f"shows no page number and {old} of {len(pr.rows)} rows walked already"
+    target, argument, text, form_id = pr.next_control
+    nxt = Press("pager", target, argument, f"p{want + 1}", text, want + 1, form_id)
+    return replace(pr, current=want, next=nxt), ""
+
+
 def title_ok(row_title: str, html: str, css: str | None, exclude: str | None = None) -> bool:
     """§7.5 step 5: the detail's title area begins with the row's title (the list may cut it, an ellipsis after it).
     Spaces are not compared. With no title area known (css None) the row's title (its first 30 characters) must be
@@ -585,27 +738,133 @@ def title_ok(row_title: str, html: str, css: str | None, exclude: str | None = N
 EMPTY_DETAIL = outcome.EMPTY_DETAIL  # action.reason of a detail answered with nothing but its title: thin
 
 
-# a download press's answer that names where the file is: SSO's startup script creates a hidden iframe at
-# /WebServices/ajaxDownloadFile.aspx, which the session answers with the file once (pilot 10-26, F3: the 61 presses
-# on web/595 and the 5 on site/100061 all answered 200 text/html, the page again with this script)
-_EXPORT_IFRAME = re.compile(r"""iframeExport\.src\s*=\s*(['"])([^'"]+)\1""")
+def _without_pressed(pr: PageRead, action) -> PageRead:
+    """A detail's answer read for its own buttons, less the button that brought it (gap ⑪ of 11-08, 【Claude 的执行办法】):
+    an answer may show the button pressed again (the 安裝說明 folder it opened is still a button of the folder list), and
+    pressed from that answer it would bring the same answer again under a new row key, and again."""
+    same = (action["target"], action["argument"] or "")
+    return replace(pr, presses=tuple(p for p in pr.presses if (p.target, p.argument or "") != same))
 
 
-def file_followup(html: str, base: str) -> str | None:
+# a download press's answer that names where the file is, in a frame the page opens: SSO's startup script creates a
+# hidden iframe at /WebServices/ajaxDownloadFile.aspx (var iframeExport = document.createElement('iframe');
+# iframeExport.src = '…'), which the session answers with the file once (pilot 10-26, F3: the 61 presses on web/595 and
+# the 5 on site/100061 all answered 200 text/html, the page again with this script). A script may give a frame its
+# address three ways (X.src = '…' for X an iframe it creates or one of the page's, document.getElementById('X').src =
+# '…', $('#X').attr('src', '…')); the page may also come back with a hidden frame of its own filled in (osa's
+# <iframe id="DownloadEventAtt" width="0" height="0">, empty on the page pressed: gap ④ of 11-08)
+_SRC_SET = re.compile(r"""(?<![\w$.])(?P<who>[A-Za-z_$][\w$]*)\.src\s*=\s*(?P<q>['"])(?P<src>[^'"]+)(?P=q)""")
+_ID_SRC_SET = re.compile(r"""document\.getElementById\(\s*(?P<q1>['"])(?P<who>[^'"]+)(?P=q1)\s*\)\.src\s*=\s*"""
+                         r"""(?P<q>['"])(?P<src>[^'"]+)(?P=q)""")
+_JQ_SRC_SET = re.compile(r"""\$\(\s*(?P<q1>['"])#(?P<who>[^'"\s]+)(?P=q1)\s*\)\.attr\(\s*(?P<q2>['"])src(?P=q2)\s*,\s*"""
+                         r"""(?P<q>['"])(?P<src>[^'"]+)(?P=q)\s*\)""")
+_MADE_FRAME = re.compile(r"""(?P<who>[A-Za-z_$][\w$]*)\s*=\s*document\.createElement\(\s*(['"])iframe\2\s*\)""",
+                         re.IGNORECASE)
+_HIDDEN_STYLE = re.compile(r"(?i)display\s*:\s*none|visibility\s*:\s*hidden")
+
+
+def _same_host(url: str, base: str) -> bool:
+    try:
+        return (urlsplit(url).hostname or "").lower() == (urlsplit(base).hostname or "").lower()
+    except ValueError:
+        return False
+
+
+def _frames(html: str) -> list[LexborNode]:
+    return list(LexborHTMLParser(html or "").css("iframe"))
+
+
+def _hidden(node: LexborNode) -> bool:
+    a = node.attributes
+    zero = {(a.get("width") or "").strip().lower(), (a.get("height") or "").strip().lower()} <= {"0", "0px"}
+    return zero or "hidden" in a or bool(_HIDDEN_STYLE.search(a.get("style") or ""))
+
+
+def file_followup(html: str, base: str, pressed: str | None = None) -> str | None:
     """The canonical address a download press's answer sends the browser to for the file, on the press's own host
     (the file is bound to this session: another host's address is no such export), or None: the page names none
-    and is the answer itself."""
-    m = _EXPORT_IFRAME.search(html)
-    if m is None:
+    and is the answer itself. First an address a script of the answer gives a frame (_SRC_SET, _ID_SRC_SET,
+    _JQ_SRC_SET: a frame the script creates, or one of the answer's <iframe> by its id or name), then a hidden
+    <iframe> of the answer (width and height 0, hidden, display:none or visibility:hidden) whose address no frame of
+    the page pressed had (pressed: that page's HTML; None: not known, every hidden frame counts). Only an address the
+    crawler's own address rules let in (scope.judge ok, as file_redirect asks): the follow-up GET is sent as it is,
+    and a sign-in, a log-out, a captcha or a back office the answer names is never fetched (review of 11-09); the next
+    address named is taken instead, or none. What the follow-up GET brings is judged as any download's answer
+    (Chains.file_answered): a wrong address can only end not_file, never ok. Gap ④ of 11-08, 【Claude 的执行办法】."""
+    frames = _frames(html)
+    names = {n.attributes.get(k) for n in frames for k in ("id", "name")} - {None, ""}
+    made = {m.group("who") for m in _MADE_FRAME.finditer(html or "")}
+    found = [(m.start(), m.group("src")) for m in _SRC_SET.finditer(html or "") if m.group("who") in made | names]
+    found += [(m.start(), m.group("src")) for rx in (_ID_SRC_SET, _JQ_SRC_SET) for m in rx.finditer(html or "")
+              if m.group("who") in names]
+    before = {scope.canonical(n.attributes.get("src") or "", base) for n in _frames(pressed)} if pressed else set()
+    srcs = [src for _at, src in sorted(found)]
+    srcs += [n.attributes.get("src") or "" for n in frames if _hidden(n)]
+    for src in srcs:
+        url = scope.canonical(src.strip(), base) if src.strip() else None
+        if url is not None and url not in before and _same_host(url, base) and scope.judge(url).ok:
+            return url
+    return None
+
+
+def file_redirect(location: str | None, base: str) -> str | None:
+    """Where a download press's redirect leads when that is its file (gap ① of 11-08, 【Claude 的执行办法】): the
+    canonical Location when it stays on the press's own host (base: the address pressed) and the crawler's own address
+    rules call it a file that may be fetched (scope.kind_of file or image: an attachment's or a picture's extension, or
+    one of SSO's download programs, design §4.5; scope.judge ok). WebIdx's notice files (ucNews$rptFiles$ctlNN$
+    lnkDownloadFile in a detail's answer) answer 302 to /WebServices/ajaxDownloadFileCourse.aspx?action=download&path=…,
+    which a plain GET answers with the file (387 such rows of round one, every one done 200 a file). None for every
+    other redirect: SSO's home, a sign-in page, an error page, another host: the session lapsed (§23.9 A2)."""
+    url = scope.canonical(location, base) if location else None
+    if url is None or not _same_host(url, base) or scope.kind_of(url) not in ("file", "image"):
         return None
-    url = scope.canonical(m.group(2), base)
-    if url is None:
+    return url if scope.judge(url).ok else None
+
+
+_HOME_LEAVES = ("default.aspx", "index.aspx")  # a site's home page by its address's last part (SSO's own and its units')
+
+
+def _home(url: str) -> bool:
+    """Whether an address is a site's home page: its host's root or its site key's (sso.nknu.edu.tw/software/), or a
+    default.aspx or index.aspx anywhere (SSO's home, a WebIdx or cLv2 unit's home: default.aspx?webidx=N)."""
+    try:
+        path = urlsplit(url).path.lower().rstrip("/")
+    except ValueError:
+        return False
+    root = scope.site_key(url).partition("/")[2]
+    return path in ("", f"/{root}" if root else "") or path.rsplit("/", 1)[-1] in _HOME_LEAVES
+
+
+def detail_redirect(location: str | None, base: str, list_url: str | None = None) -> str | None:
+    """Where a detail press's redirect leads when that is the detail's own page (gap ⑪ of 11-08, 【Claude 的执行办法】:
+    SSO may answer a software icon's press with 302 to campussoftware.aspx?cSoftID=N, which a GET answers): the
+    canonical Location when it stays on the press's own host and site key (base: the address pressed), is neither the
+    address pressed nor the list page (list_url), nor a site's home (_home), a sign-in page (scope.LOGIN_PATH) or the
+    school's error page (outcome.error_signature), and the crawler's address rules let it in (scope.judge ok). None
+    for every other redirect: the session lapsed (§23.9 A2)."""
+    url = scope.canonical(location, base) if location else None
+    if url is None or not _same_host(url, base) or scope.site_key(url) != scope.site_key(base):
+        return None
+    if url in (scope.canonical(base), scope.canonical(list_url or "")) or _home(url):
         return None
     try:
-        same = (urlsplit(url).hostname or "").lower() == (urlsplit(base).hostname or "").lower()
+        path = urlsplit(url).path
     except ValueError:
         return None
-    return url if same else None
+    if scope.LOGIN_PATH.search(path) or outcome.error_signature(url) is not None:
+        return None
+    return url if scope.judge(url).ok else None
+
+
+def press_redirect(kind: str, location: str | None, base: str, list_url: str | None = None) -> str | None:
+    """Where a row's press answered with a redirect leads when that is what it was pressed for, one rule for both
+    (gaps ① and ⑪ of 11-08): a download's file (file_redirect), a detail's page (detail_redirect); None for any other
+    redirect of a row's press, the session lapsed (§23.9 A2), and for a kind no row has (the pager, a file button)."""
+    if kind == "download":
+        return file_redirect(location, base)
+    if kind == "detail":
+        return detail_redirect(location, base, list_url)
+    return None
 
 
 NOT_FILE = outcome.NOT_FILE  # action.reason of a download whose answer is no file: not_file:<why> (§23 A1, A2)
@@ -713,6 +972,7 @@ class Stored:
     # no list, its grid a table of content (PageRead.content, no pager, no GET pager link): the crawler takes off what
     # an older reading wrote of it as a list (its listwalk, page_role list; FIX 3, 11-06)
     content: bool = False
+    texts: tuple[tuple[str, str], ...] = ()  # PageRead.texts: the unplanned buttons' texts (unpressed_entries)
 
 
 @dataclass
@@ -764,9 +1024,11 @@ class Chains:
         """A page of a round-1 site was fetched by GET and archived (after the crawler wrote its own page_res: this
         adds to it). Its profile's presses become actions of a new epoch (the leftovers of an older one superseded),
         its rows item entries of page_res, its walk a listwalk row. A page with GET pager links (no profile, or a
-        profile that walks by GET) gets its walk from get_walk()."""
+        profile that walks by GET) gets its walk from get_walk(). The profile is the platform the page's own address
+        is written on (profiles.profile_for, gaps ② ③ of 11-08); the site it counts for (url.owner_site) keys its
+        rows, its actions (action.site: a run's --sites) and its walk."""
         site = row["owner_site"] or scope.site_key(row["url"])
-        prof = profiles.profile_for_site(site)
+        prof = profiles.profile_for(row["url"])
         has_pagers = bool(page.pagers) if page is not None else row["page_role"] == "list"
         if prof is None:
             ended = self.get_walk(row["id"]) if has_pagers else None
@@ -783,7 +1045,7 @@ class Chains:
                 self.f.x("UPDATE listwalk SET ended_by=NULL, ok=0 WHERE list_id=?", (list_id,))
             nobody = tuple(dict.fromkeys((*pr.unplanned, *(button_key(p.target, p.argument)
                                                            for p in (*pr.presses, *([pr.next] if pr.next else []))))))
-            return Stored("list" if pr.walk != "none" else None, 0, None, nobody)
+            return Stored("list" if pr.walk != "none" else None, 0, None, nobody, texts=pr.texts)
         redo = self._redo(list_id)
         if redo is not None:  # `retry download` put this list back for these downloads only (§23 A3)
             return self._redo_stored(row, pr, redo, warc, warc_offset, has_pagers)
@@ -804,7 +1066,7 @@ class Chains:
                 self._walk(list_id, site, prof.name, epoch, pages=1, rows=len(pr.rows), claimed=pr.claimed,
                            ended=ended, note="one page")
         return Stored("list" if pr.walk != "none" or has_pagers else None, n, ended, pr.unplanned,
-                      content=pr.content and pr.walk == "none" and not has_pagers)
+                      content=pr.content and pr.walk == "none" and not has_pagers, texts=pr.texts)
 
     def not_a_list(self, page_id: int) -> None:
         """A page read as a table of content (Stored.content: no list by its profile, no GET pager link; FIX 3, 11-06):
@@ -898,11 +1160,11 @@ class Chains:
         except (OSError, ValueError, StopIteration):
             return 0
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
-        pr = read_page(prof, url, as_text(body, headers.get("content-type")), site=site, parent_key=a["row_key"],
-                       step=a["step"], walks=("none",))
+        pr = _without_pressed(read_page(prof, url, as_text(body, headers.get("content-type")), site=site,
+                                        parent_key=a["row_key"], step=a["step"], walks=("none",)), a)
         n, _end = self._plan(list_id, epoch, pr, list_row, a["warc"], a["warc_offset"], pages=0, base=url,
                              only=frozenset() if redo else None, left=left)
-        self._unpressed(list_id, pr.unplanned_at)
+        self._unpressed(list_id, pr.unplanned_at, pr.texts)
         return n
 
     def rebuild(self, list_id: int) -> int:
@@ -953,19 +1215,24 @@ class Chains:
                              (list_id, epoch, p.kind, p.row_key)).fetchone()
             if same is not None:
                 return same[0]
+            # action.profile: the platform and the list's row set; a detail's own row set (whose detail_title checks its
+            # answer: a folder button of a software page, which shows no list, gap ⑪ of 11-08)
+            rowset = (p.rowset if p.kind == "detail" else "") or pr.rowset or "-"
             cur = c.execute(
                 "INSERT INTO action(list_id, epoch, step, kind, queue, host, site, profile, form_src_warc, "
                 "form_src_offset, form_id, target, argument, row_key, row_text, state, created) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
-                (list_id, epoch, p.step, p.kind, queue, host, site, f"{pr.profile}/{pr.rowset or '-'}", warc, offset,
+                (list_id, epoch, p.step, p.kind, queue, host, site, f"{pr.profile}/{rowset}", warc, offset,
                  p.form_id, p.target, p.argument, p.row_key, p.text[:300], self.clock()))
             return cur.lastrowid
 
-    def _unpressed(self, list_id: int, buttons: Iterable[tuple[str, str]]) -> int:
+    def _unpressed(self, list_id: int, buttons: Iterable[tuple[str, str]],
+                   texts: Iterable[tuple[str, str]] = ()) -> int:
         """Buttons to press in a press's answer (a detail, a next page) that no press covers (PageRead.unplanned_at):
         written on the list page as unhandled (要人看, the same why as a GET page's: UNPRESSED), never dropped unseen
-        (review 10-26 phase 3). A button the list's presses press already (any epoch: an answer may show the whole
-        list again) is no new one. Returns the entries written. 【Claude 的执行办法】"""
+        (review 10-26 phase 3), each with its text (texts: PageRead.texts). A button the list's presses press already
+        (any epoch: an answer may show the whole list again) is no new one. Returns the entries written.
+        【Claude 的执行办法】"""
         buttons = list(buttons)
         if not buttons:
             return 0
@@ -973,11 +1240,17 @@ class Chains:
                                                   "kind NOT IN ('click', 'data')", (list_id,))}
         keys = tuple(dict.fromkeys(button_key(t, a) for t, a in buttons if (t, a) not in planned))
         if keys:
-            self.f.add_page_res(list_id, unpressed_entries(keys))
+            self.f.add_page_res(list_id, unpressed_entries(keys, texts))
         return len(keys)
 
     def _rows_unique(self, list_id: int) -> int:
         return self.f.q("SELECT count(*) FROM page_res WHERE page_id=? AND res_key LIKE 'item:%'", (list_id,))[0][0]
+
+    def _walked(self, list_id: int) -> frozenset[str]:
+        """The row keys of the pages this walk read so far: the list page's item entries (the GET that opened the
+        epoch wrote its page_res anew, and each page's answer adds its own: _plan)."""
+        return frozenset(r[0][len("item:"):] for r in self.f.q(
+            "SELECT res_key FROM page_res WHERE page_id=? AND res_key LIKE 'item:%'", (list_id,)))
 
     def _walk(self, list_id: int, site: str, profile: str, epoch: int, *, pages: int, rows: int | None,
               claimed: int | None, ended: str | None, note: str) -> None:
@@ -1065,7 +1338,8 @@ class Chains:
             # run goes only while its clicks rule still presses it (review 10-26 phase 3)
             name = urlsplit(action["target"]).path.rsplit("/", 1)[-1]
             key = f"click:{name}({action['row_key'].removeprefix('click:')})"
-            if profiles.decision(action["site"], key) != "handle":
+            page = self._list_row(action)  # the platform its page is written on decides (action.site: the owner)
+            if profiles.decision(scope.site_key(page["url"]) if page is not None else action["site"], key) != "handle":
                 self._end(action, "mismatch", "rule_changed")
                 return None
             return Target(action["target"], "POST", parse_qsl(action["argument"] or "", keep_blank_values=True),
@@ -1076,19 +1350,32 @@ class Chains:
             self._end(action, "mismatch", f"form_src: {type(exc).__name__}")
             return None
         html = as_text(body, headers.get("content-type"))
-        if (action["target"], action["argument"]) not in {(t, a) for t, a, _x in webforms.find_postbacks(html)}:
-            self._end(action, "mismatch", "control_missing")
-            return None
-        css = webforms.form_for_control(html, action["target"])
-        if css is None:
-            self._end(action, "mismatch", "no_form")
-            return None
+        image = action["argument"] == IMAGE_ARG
+        if image:  # an ImageButton (gap ⑪ of 11-08): the form that holds it, as a browser sends it when it is clicked
+            css, why = image_form(html, action["target"])
+            if css is None:
+                self._end(action, "mismatch", why)
+                return None
+        else:
+            if (action["target"], action["argument"]) not in {(t, a) for t, a, _x in webforms.find_postbacks(html)}:
+                self._end(action, "mismatch", "control_missing")
+                return None
+            css = webforms.form_for_control(html, action["target"])
+            if css is None:
+                self._end(action, "mismatch", "no_form")
+                return None
         prof, _rs = self._profile(action)
         form = _FORM_NAME.fullmatch(css)
         if prof is not None and prof.forms and (form is None or form.group(1) not in prof.forms):
             self._end(action, "mismatch", f"form_not_in_profile:{form.group(1) if form else css}")
             return None  # §7.5 step 10: a form the platform file does not name is never sent
-        post_url, fields = webforms.postback(html, url, action["target"], action["argument"], form_css=css)
+        if image:
+            # the form's own fields (its hidden __EVENTTARGET too, when it has one) and the click's coordinates, as the
+            # HTML Standard's entry list has them for an image button (name.x, name.y; no __doPostBack, nothing else)
+            post_url, fields = webforms.form_state(html, url, css)
+            fields = [*fields, (f"{action['target']}.x", _IMAGE_XY[0]), (f"{action['target']}.y", _IMAGE_XY[1])]
+        else:
+            post_url, fields = webforms.postback(html, url, action["target"], action["argument"], form_css=css)
         if (urlsplit(post_url).hostname or "").lower() != action["host"]:
             self._end(action, "mismatch", f"form_posts_to:{urlsplit(post_url).hostname}")
             return None
@@ -1123,22 +1410,27 @@ class Chains:
         takes what comes."""
         a, cols = self._answer(snap, warc)
         out = Followup(action["list_id"])
-        if a.status in REDIRECTS and action["kind"] in ("download", "detail"):
-            # a row's press sent elsewhere (the session or its view state lapsed: SSO's home, a sign-in page) brought
-            # neither its file nor its detail (design §23.9 A2, 【Claude 的执行办法】; §23 A2 for the export GET): the
-            # press failed, the chain walks again from its GET once (a new form state, never this POST again); the
-            # second time a download is not_file:redirect, a detail mismatch (redirect). The Location is never
-            # queued: no 要登录, no 学校那边缺 for where the session went
-            loc = scope.canonical(a.headers.get("location", ""), a.url)
-            out = self.failed(action, "press_redirect", location=loc, **cols)
-            if not out.restart:
-                if action["kind"] == "download":
-                    self._end(action, "done", NOT_FILE + "redirect", location=loc, **cols)
-                else:
-                    self._end(action, "mismatch", "redirect", location=loc, **cols)
-            return out
         if a.status in REDIRECTS:
             loc = scope.canonical(a.headers.get("location", ""), a.url)
+            list_row = self._list_row(action) if action["kind"] == "detail" else None
+            led = press_redirect(action["kind"], loc, a.url, list_row["url"] if list_row is not None else None)
+            if action["kind"] in ("download", "detail") and led is None:
+                # a row's press sent elsewhere (the session or its view state lapsed: SSO's home, a sign-in page)
+                # brought neither its file nor its detail (design §23.9 A2, 【Claude 的执行办法】; §23 A2 for the export
+                # GET): the press failed, the chain walks again from its GET once (a new form state, never this POST
+                # again); the second time a download is not_file:redirect, a detail mismatch (redirect). The Location
+                # is never queued: no 要登录, no 学校那边缺 for where the session went
+                out = self.failed(action, "press_redirect", location=loc, **cols)
+                if not out.restart:
+                    if action["kind"] == "download":
+                        self._end(action, "done", NOT_FILE + "redirect", location=loc, **cols)
+                    else:
+                        self._end(action, "mismatch", "redirect", location=loc, **cols)
+                return out
+            # a next page's or a file button's redirect, a download sent to its file on the press's own host
+            # (file_redirect, gap ① of 11-08), and a detail sent to its own page (detail_redirect, gap ⑪ of 11-08):
+            # done, the Location for the crawler to queue as the list page's resource (the press's result is redirect:
+            # page_completeness rests it on that row, which judges the file or the page)
             self._end(action, "done", "", location=loc, **cols)
             out.location = loc
             if action["kind"] == "pager":  # a redirect is no next page: the walk cannot go on
@@ -1159,9 +1451,10 @@ class Chains:
         if action["kind"] == "download" and cols["sniff"] == "html":
             # SSO (WebIdx's lnkDownloadFile, cLv2's downloadBtnN) answers a download with the page again and a startup
             # script that opens the file's address in an iframe (pilot 10-26, F3): the file is the answer to that GET,
-            # in this session, right after the press. The press's own answer is kept until the file's replaces it.
+            # in this session, right after the press. The press's own answer is kept until the file's replaces it. A
+            # hidden frame of the answer counts when the page pressed (form_src) had no such frame (gap ④ of 11-08)
             html = a.text if a.text is not None else as_text(a.body, cols["ctype"])
-            if (follow := file_followup(html, a.url)) is not None:
+            if (follow := file_followup(html, a.url, self._pressed(action))) is not None:
                 self._set(action, **cols)
                 out.file_get = follow
                 return out
@@ -1178,6 +1471,16 @@ class Chains:
 
     def _list_row(self, action) -> sqlite3.Row | None:
         return self.f.row_by_id(action["list_id"])
+
+    def _pressed(self, action) -> str | None:
+        """The page a press was built from, as archived (form_src), as text; None when it cannot be read back."""
+        if not action["form_src_warc"] or action["form_src_offset"] is None or action["form_src_offset"] < 0:
+            return None
+        try:
+            _url, _status, headers, body = self.read(action["form_src_warc"], action["form_src_offset"])
+        except (OSError, ValueError, StopIteration):
+            return None
+        return as_text(body, headers.get("content-type"))
 
     def _profile(self, action) -> tuple[profiles.Profile | None, profiles.Rows | None]:
         name, _sep, rowset = (action["profile"] or "").partition("/")
@@ -1201,16 +1504,22 @@ class Chains:
         list_row = self._list_row(action)
         if prof is not None and list_row is not None:
             site = list_row["owner_site"] or scope.site_key(list_row["url"])
-            pr = read_page(prof, a.url, html, site=site, parent_key=action["row_key"], step=action["step"],
-                           walks=("none",))  # a detail's own buttons only: its files
+            # a detail's own buttons only (its files; a software page's 安裝說明 folder), never the one just pressed
+            pr = _without_pressed(read_page(prof, a.url, html, site=site, parent_key=action["row_key"],
+                                            step=action["step"], walks=("none",)), action)
             if warc is not None and a.warc_offset is not None:
                 self._plan(action["list_id"], action["epoch"], pr, list_row, warc, a.warc_offset, pages=0, base=a.url)
-                self._unpressed(action["list_id"], pr.unplanned_at)
+                self._unpressed(action["list_id"], pr.unplanned_at, pr.texts)
             else:  # nothing to build its files' forms from: nobody presses them
-                self._unpressed(action["list_id"], (*pr.unplanned_at, *((p.target, p.argument) for p in pr.presses)))
+                self._unpressed(action["list_id"], (*pr.unplanned_at, *((p.target, p.argument) for p in pr.presses)),
+                                pr.texts)
         return out
 
     def _pager_answer(self, action, a: _Answer, html: str, cols: dict, warc: str | None) -> Followup:
+        """The answer to a press of the pager (§7.5 steps 6, 7): the page asked for goes on (its presses, the next
+        page), or the walk ends. An answer that is no page of the list (answer_elsewhere) ends it mismatch:page, its
+        note saying why, even when it shows the page number asked for; a 「下一頁」 answer that names no page shown is
+        read by unnumbered_next (gap ⑤ of 11-08)."""
         prof, _rs = self._profile(action)
         list_row = self._list_row(action)
         out = Followup(action["list_id"])
@@ -1222,17 +1531,31 @@ class Chains:
         pages = (lw[0]["pages"] or 0) if lw else 0
         rows = (lw[0]["rows"] or 0) if lw else 0
         pr = read_page(prof, a.url, html, site=site, list_url=list_row["url"], step=action["step"])
-        self._unpressed(action["list_id"], pr.unplanned_at)
+        self._unpressed(action["list_id"], pr.unplanned_at, pr.texts)
         want = action["step"]
         note = ""
-        if pr.current != want:
-            if pr.pager_how == "next" and pr.current == want - 1:
-                # spe's 「下一頁」 answered with the page it was on: the list ends there (the server's own word)
+        why = answer_elsewhere(pr, a.url)  # a.url: the address the press was sent to
+        if why is None and pr.current is None and pr.pager_how == "next":
+            taken, why = unnumbered_next(pr, want, self._walked(action["list_id"]), a.url)
+            if taken is not None:
+                pr, why = taken, None
+                self._set(action, reason=UNNUMBERED)
+                note = f"page {want} shows no page number: taken as asked (下一頁)"
+        # an answer from elsewhere is no page of this list whatever page it shows (review of 11-09: a Server.Transfer
+        # whose other program applies the posted Page$N to its own grid shows the very number asked for)
+        if why is not None or pr.current != want:
+            if why is None and pr.pager_how == "next" and pr.current == want - 1:
+                # spe's 「下一頁」 answered with the page it was on: the list ends there (the server's own word; only
+                # from the list's own page: another page's pager says nothing of where this list ends)
                 end = list_end(replace(pr, next=None), self._rows_unique(action["list_id"]))
                 self._walk(action["list_id"], site, prof.name, action["epoch"], pages=pages, rows=rows,
                            claimed=pr.claimed, ended=end, note=f"next stayed on page {pr.current}")
                 return out
-            note = f"asked for page {want}, the answer shows {pr.current}"
+            if why is None:
+                told = f"shows {pr.current}" if pr.current is not None else "shows no page number"
+            else:
+                told = f"{why}, showing {pr.current}" if pr.current is not None else why
+            note = f"asked for page {want}, the answer {told}"
             self._walk(action["list_id"], site, prof.name, action["epoch"], pages=pages, rows=rows,
                        claimed=pr.claimed, ended="mismatch:page", note=note)
             return out
@@ -1294,6 +1617,30 @@ class Chains:
     @staticmethod
     def _not_file(a: _Answer, cols: dict) -> str | None:
         return not_file_reason(a.body, cols["sniff"], cols["filename"], a.text, cols["ctype"])
+
+    def file_redirects(self, list_id: int) -> list[str]:
+        """The files this list's download presses were sent to by a redirect (file_redirect, gap ① of 11-08), each
+        once, for the crawler to queue as the list page's attachments (Crawler._replay_parts: on every reading of the
+        page, a rejudge's too, so that none is left unqueued; a row already there is found again, nothing more). A
+        press that took such a redirect for a lapsed session before 11-08 (§23.9 A2: done not_file:redirect, or failed
+        press_redirect) is done now, its reason cleared: its result is redirect, page_completeness rests it on that
+        file's row, and `retry download` no longer takes it. Sends nothing. 【Claude 的执行办法】"""
+        page = self.f.row_by_id(list_id)
+        if page is None:
+            return []
+        out: dict[str, None] = {}
+        for a in self.f.q("SELECT id, state, reason, location FROM action WHERE list_id=? AND kind='download' AND "
+                          "status BETWEEN 300 AND 399 AND location IS NOT NULL ORDER BY epoch, id", (list_id,)):
+            old = (a["state"], a["reason"]) in (("done", NOT_FILE + "redirect"), ("failed", "press_redirect"))
+            if not old and (a["state"], a["reason"]) != ("done", None):
+                continue
+            loc = file_redirect(a["location"], page["url"])
+            if loc is None:
+                continue
+            if old:
+                self.f.x("UPDATE action SET state='done', reason=NULL WHERE id=?", (a["id"],))
+            out[loc] = None
+        return list(out)
 
     def failed(self, action: sqlite3.Row, error: str, **cols) -> Followup:
         """A press that got no answer (or one that did not go through: a 5xx, a 408, a 429; a pager's 4xx; a download
@@ -1362,18 +1709,29 @@ class Chains:
         self.f.x(f"UPDATE action SET state='pending' WHERE kind='data' AND state='active'{by_id}", id_args)
         return len(lists)
 
-    def retry_post_failed(self, list_ids: Iterable[int] | None = None) -> int:
-        """`nknu archive retry post_failed`: the walks that ended post_failed (or these lists) start again from their
-        GET, their failed and mismatched presses no longer counted (superseded, the old reason kept)."""
+    def retry_walks(self, ended: str, list_ids: Iterable[int] | None = None) -> int:
+        """`nknu archive retry post_failed` and `retry mismatch:page` (a person looked first): the walks that ended
+        so (or these lists) start again from their GET (restart_chain: chain_restart, prio 0, the walk walking), their
+        failed and mismatched presses no longer counted (superseded, the old reason kept after "retried: "); a `retry
+        download` waiting for the list goes (the whole walk, every press). mismatch:page (gap ⑤ of 11-08): the lists
+        whose 「下一頁」 answers named no page shown are walked on by today's reading (unnumbered_next); a list the
+        school answers with another page ends so again, its note saying why. Returns the lists put back."""
+        if ended not in ENDS:
+            raise ValueError(f"no walk ends {ended!r}")
         if list_ids is None:
-            list_ids = [r[0] for r in self.f.q("SELECT list_id FROM listwalk WHERE ended_by='post_failed'")]
+            list_ids = [r[0] for r in self.f.q("SELECT list_id FROM listwalk WHERE ended_by=? ORDER BY list_id",
+                                               (ended,))]
         list_ids = list(list_ids)
         for list_id in list_ids:
             self.f.x("UPDATE action SET state='superseded', reason='retried: ' || coalesce(reason, '') WHERE list_id=? "
                      "AND kind NOT IN ('click', 'data') AND state IN ('failed','mismatch')", (list_id,))
             self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{list_id}",))  # the whole walk, every press
-            self.restart_chain(list_id, "retry")
+            self.restart_chain(list_id, f"retry {ended}")
         return len(list_ids)
+
+    def retry_post_failed(self, list_ids: Iterable[int] | None = None) -> int:
+        """`nknu archive retry post_failed`: retry_walks of the walks that ended post_failed (or these lists)."""
+        return self.retry_walks("post_failed", list_ids)
 
     def retry_downloads(self) -> tuple[int, int]:
         """`nknu archive retry download` (design §23 A3, 【Claude 的执行办法】; a person looked first): every download
@@ -1381,16 +1739,29 @@ class Chains:
         (restart_chain, chain_restart, prio 0; its walk stays what it was) and that GET presses only these buttons
         again (REDO_KEY: _redo_stored), with the form state of that new GET: no old POST is sent again as it was.
         Their older presses (failed, mismatched, not_file) are superseded, the reason kept after "retried: ". A press
-        answered too large is too_large, not failed: a person decides about it, this leaves it. Returns (lists,
-        buttons)."""
+        answered too large is too_large, not failed: a person decides about it, this leaves it. A press a redirect sent
+        to a file on its own host (file_redirect: round one took it for a lapsed session, not_file:redirect or failed
+        press_redirect) is left too: its file is that Location, which the page's next reading adopts and queues
+        (file_redirects; review of 11-09: superseded here before the rejudge, it was adopted by nothing and its file
+        never queued). Returns (lists, buttons)."""
         newest: dict[tuple[int, str], sqlite3.Row] = {}
-        for a in self.f.q("SELECT a.list_id, a.row_key, r.result FROM action a JOIN action_result r ON r.id = a.id "
-                          "WHERE a.kind = 'download' AND a.state <> 'superseded' ORDER BY a.epoch, a.id"):
+        for a in self.f.q("SELECT a.list_id, a.row_key, a.status, a.location, r.result FROM action a JOIN "
+                          "action_result r ON r.id = a.id WHERE a.kind = 'download' AND a.state <> 'superseded' "
+                          "ORDER BY a.epoch, a.id"):
             newest[(a["list_id"], a["row_key"])] = a
         todo: dict[int, list[str]] = defaultdict(list)
+        lists: dict[int, str | None] = {}  # list id -> its page's address, the base file_redirects judges with
         for (list_id, key), a in newest.items():
-            if a["result"] in ("not_file", "failed"):
-                todo[list_id].append(key)
+            if a["result"] not in ("not_file", "failed"):
+                continue
+            # the presses file_redirects adopts: a 3xx with a Location that file_redirect takes for the file's
+            if a["status"] is not None and 300 <= a["status"] <= 399 and a["location"] is not None:
+                if list_id not in lists:
+                    page = self.f.row_by_id(list_id)
+                    lists[list_id] = page["url"] if page is not None else None
+                if lists[list_id] is not None and file_redirect(a["location"], lists[list_id]) is not None:
+                    continue
+            todo[list_id].append(key)
         for list_id, keys in sorted(todo.items()):
             for key in keys:
                 ids = [r[0] for r in self.f.q(
@@ -1452,7 +1823,33 @@ class Chains:
         self.rebuild(list_id)
         lw = self.f.q("SELECT ended_by FROM listwalk WHERE list_id=?", (list_id,))
         unplanned = tuple(dict.fromkeys((*pr.unplanned, *left)))
-        return Stored("list" if pr.walk != "none" or has_pagers else None, n, lw[0][0] if lw else None, unplanned)
+        return Stored("list" if pr.walk != "none" or has_pagers else None, n, lw[0][0] if lw else None, unplanned,
+                      texts=pr.texts)
+
+    def retry_unpressed(self, sites: Iterable[str] | None = None) -> tuple[int, int]:
+        """`nknu archive retry unpressed` (gaps ② ③ ④ of 11-08, 【Claude 的执行办法】; a person looked first, after a
+        rejudge): every stored page whose page_res names a button nobody pressed (how unhandled, need must: unpressed,
+        or unknown when it was written before the platform file said to press it) that today's platform file, read
+        by the page's own address (url.site) with the button's text, presses is put back: its GET is pending again
+        (restart_chain: chain_restart, prio 0, its walk walking) and that GET plans the presses with its own form
+        state, a button pressed well before never again (no old POST is sent again). A `retry download` waiting for
+        the page is dropped (REDO_KEY): the new GET presses every button not pressed well before, those too. sites:
+        only the pages of these sites (url.owner_site). Returns (pages, button keys: postback:<control, ctlNN as
+        ctl*>, one key for a whole column of buttons)."""
+        only, args = "", []
+        if sites is not None:
+            sites = sorted(set(sites))
+            only, args = f" AND u.owner_site IN ({','.join('?' * len(sites))})", sites
+        todo: dict[int, set[str]] = defaultdict(set)
+        for r in self.f.q("SELECT pr.page_id, pr.res_key, pr.text, u.url, u.site FROM page_res pr JOIN url u ON "
+                          "u.id = pr.page_id WHERE pr.how = 'unhandled' AND pr.need = 'must' AND pr.res_key LIKE "
+                          f"'postback:%' AND u.kind = 'page' AND u.state = 'done'{only}", args):
+            if profiles.decision(r["site"] or scope.site_key(r["url"]), r["res_key"], r["text"]) == "press":
+                todo[r["page_id"]].add(r["res_key"])
+        for page_id in sorted(todo):
+            self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{page_id}",))
+            self.restart_chain(page_id, f"retry unpressed: {len(todo[page_id])}")
+        return len(todo), sum(len(keys) for keys in todo.values())
 
     def retry_clicks(self) -> int:
         """`nknu archive retry click`: the file buttons that failed are pending again (a person looked first)."""
@@ -1465,7 +1862,7 @@ class Chains:
         """The action of one file button: one per site and row_key (click:k=<K>,id=<number>), whichever page shows
         it first is its list_id; later pages point their page_res at the same action (§7.4, index action_click)."""
         site = page_row["owner_site"] or scope.site_key(page_row["url"])
-        prof = profiles.profile_for_site(site)
+        prof = profiles.profile_for(page_row["url"])
         host, queue = self._place(plan.url, page_row)
         with self.f.lock:
             self.f.conn.execute(
@@ -1485,7 +1882,7 @@ class Chains:
         page of the site that asks it (list_id; its archived page is form_src); target the address, argument the
         request's body as the page's script writes it. Later pages point their page_res at the same action."""
         site = page_row["owner_site"] or scope.site_key(page_row["url"])
-        prof = profiles.profile_for_site(site)
+        prof = profiles.profile_for(page_row["url"])
         host, queue = self._place(api.url, page_row)
         key = f"{api.name}:{value}"
         with self.f.lock:
@@ -1587,7 +1984,7 @@ class Chains:
         if not edges:
             return None
         rows = {r["id"]: r for r in self.f.q(
-            f"SELECT id, state, status, kind, page_role, owner_site, reason FROM url WHERE id IN "
+            f"SELECT id, url, state, status, kind, page_role, owner_site, reason FROM url WHERE id IN "
             f"({','.join('?' * len(group))})", sorted(group))}
         num: dict[int, int] = {}
         nexts = []
@@ -1633,7 +2030,7 @@ class Chains:
         n_pages = len([i for i in group if stored(i)])
         for i in page_rows:
             site = rows[i]["owner_site"] or ""
-            prof = profiles.profile_for_site(site)
+            prof = profiles.profile_for(rows[i]["url"])  # the platform the page is written on (gaps ② ③ of 11-08)
             self._walk(i, site, prof.name if prof is not None else GENERIC, 1, pages=n_pages, rows=None, claimed=None,
                        ended=ended, note=note)
             if ended is None:
@@ -1670,9 +2067,13 @@ UNPRESSED = "unhandled:unpressed"
 REDO_KEY = "redo_download:"  # meta key + list id: the download row keys (JSON) `retry download` put back (§23 A3)
 
 
-def unpressed_entries(keys: Iterable[str]) -> list[dict]:
-    """The page_res entries of buttons to press that nobody presses (need must, why UNPRESSED: 要人看)."""
-    return [{"res_key": k, "how": "unhandled", "role": "click", "need": "must", "why": UNPRESSED} for k in keys]
+def unpressed_entries(keys: Iterable[str], texts: Iterable[tuple[str, str]] = ()) -> list[dict]:
+    """The page_res entries of buttons to press that nobody presses (need must, why UNPRESSED: 要人看), each with its
+    button's text where it is known (texts: (key, text), PageRead.texts): a rule that names a text decides by it
+    (verify check 8, `retry unpressed`; 安裝說明's folder, gap ⑪ of 11-08), as page_res.text of any button."""
+    said = dict(texts)
+    return [{"res_key": k, "how": "unhandled", "role": "click", "need": "must", "why": UNPRESSED,
+             "text": (said.get(k) or "")[:100] or None} for k in keys]
 
 
 def click_entry(plan: profiles.ClickPlan, *, res_id: int | None = None, action_id: int | None = None) -> dict:

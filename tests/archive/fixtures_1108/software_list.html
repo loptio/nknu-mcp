@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>校園授權軟體下載區（測試）</title></head>
+<body>
+<form method="post" action="./campussoftware.aspx" id="uForm">
+<div class="aspNetHidden">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="VS-SOFTWARE-LIST" />
+</div>
+<div id="mainFrameHeader">
+  <button onclick="__doPostBack('ctl00$btnLangTC','')" id="btnLangTC" class="btn">繁中</button>
+  <button onclick="__doPostBack('ctl00$btnLangE','')" id="btnLangE" class="btn">English</button>
+</div>
+<div id="mainFrameContent">
+  <h3>校園授權軟體下載區</h3>
+  <input type="hidden" name="ctl00$phMain$SelTab" id="ctl00_phMain_SelTab" value="1" />
+  <span>檢視模式 </span>
+  <a id="ctl00_phMain_linkList" title="清單檢視" href="javascript:__doPostBack(&#39;ctl00$phMain$linkList&#39;,&#39;&#39;)"><i class="fas fa-bars"></i></a>
+  <input type="hidden" name="ctl00$phMain$SelTab_Software" id="ctl00_phMain_SelTab_Software" value="2" />
+  <div style="display: flex; flex-wrap: wrap">
+    <div class="act-box">
+      <div class="act-top"><span id="ctl00_phMain_dataList1_ctrl0_lbcTypeIDName">軟體甲</span></div>
+      <div class="img_parentDiv">
+        <input type="image" name="ctl00$phMain$dataList1$ctrl0$uImage" id="ctl00_phMain_dataList1_ctrl0_uImage" class="img-responsive" src="data:image/png;base64,AAAA" />
+      </div>
+      <div class="act-info">下載次數：<span id="ctl00_phMain_dataList1_ctrl0_iHitCount">12</span></div>
+    </div>
+    <div class="act-box">
+      <div class="act-top"><span id="ctl00_phMain_dataList1_ctrl1_lbcTypeIDName">軟體乙</span></div>
+      <div class="img_parentDiv">
+        <input type="image" name="ctl00$phMain$dataList1$ctrl1$uImage" id="ctl00_phMain_dataList1_ctrl1_uImage" class="img-responsive" src="data:image/png;base64,AAAA" />
+      </div>
+      <div class="act-info">下載次數：<span id="ctl00_phMain_dataList1_ctrl1_iHitCount">34</span></div>
+    </div>
+  </div>
+</div>
+<div class="aspNetHidden">
+<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="0000TEST" />
+<input type="hidden" name="__VIEWSTATEENCRYPTED" id="__VIEWSTATEENCRYPTED" value="" />
+</div>
+</form>
+</body></html>

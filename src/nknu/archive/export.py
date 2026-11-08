@@ -149,7 +149,8 @@ RULE_WHY = {"decor:repeat": "网站版面的图示（很多页都有同一张）
             "never_host": "绝不抓的网站", "social": "社群平台", "refuses": "不让爬虫抓的网站",
             "internal_service": "学校内部的服务", "bad_url": "网址写错了", "too_long": "网址太长",
             "scheme": "不是网页网址（http、https 以外的）", "bad_host": "主机名不对", "error_page": "学校的错误页",
-            "media:drive_video": "云端硬盘的影片（只记档名和大小）", "media:drive_audio": "云端硬盘的声音档（只记档名和大小）"}
+            "media:drive_video": "云端硬盘的影片（只记档名和大小）", "media:drive_audio": "云端硬盘的声音档（只记档名和大小）",
+            google_api.INSTALLER_WHY: "云端硬盘的安装档（只记档名和大小）"}
 # how a list walk ended (listwalk.ended_by, postback.ENDS), in words
 ENDED_ZH = {"last_page": "翻到最后一页", "no_rows_ok": "列表是空的（网页自己写没有资料）", "walking": "还在翻",
             "mismatch:unknown_button": "没翻完：有程序不认得的翻页按钮或链接",
@@ -1220,7 +1221,11 @@ class Builder:
                 it.final_url = r["final_url"]
             it.modified = changed_at((s.drive_of_content.get(uid) or d or {}).get("modified"))
             it.why = _why(result, r["reason"], r["status"])
-            if d is not None and (d.get("mime") or "").startswith(("video/", "audio/")):
+            item = s.drive_of_content.get(uid) or d  # a program on Drive: its metadata row, or its content row got
+            if item is not None and not (item.get("mime") or "").startswith(google_api.GOOGLE_APPS) \
+                    and outcome.installer_name(item.get("name")):  # before the rule (gap ⑪ of 11-08): listed only
+                it.result, it.why = "rule", RULE_WHY[google_api.INSTALLER_WHY]
+            elif d is not None and (d.get("mime") or "").startswith(("video/", "audio/")):
                 it.result, it.why = "rule", RULE_WHY["media:drive_" + ("video" if d["mime"].startswith("video/")
                                                                        else "audio")]
             it.bucket = monitor.bucket(it.result)

@@ -203,9 +203,14 @@ _IIS_EXT = (".aspx", ".asp", ".ashx", ".asmx", ".axd")
 # detail_paths are (crawler._cap; design §9 平台页面免上限), the depth limit aside, and still counted for their site. On
 # the lab machine services had its 4,000 pages and 7,467 activity pages held cap:site (4,270 campusactivities',
 # 3,197 academicactivities'), no other page of it (【用户同意 Claude 的建议】: Claude's 11-04 fix 「让这两种活动页也不受
-# 整站上限；重开时，被挡下的会自动放回去抓」, the owner 11-04 「待会再修」, 11-06 the button 「先修三件再一起重开」)
+# 整站上限；重开时，被挡下的会自动放回去抓」, the owner 11-04 「待会再修」, 11-06 the button 「先修三件再一起重开」).
+# Since 11-09 also 成教所's 所友名錄 pages (c.nknu.edu.tw/tg/student_detail.aspx?aid=N, one alumnus each, the detail
+# page of the c.nknu template's student.aspx list): round one has 128 of them, and walking the list past page 6 (gap
+# ⑤-1) brings about 1,850 more with about 1,780 of the site's notices, past its 4,000 pages (the owner 11-09, asked
+# whether to lift the cap for them: 「放开，一起抓」【用户】). A path here, not a CNKNU detail_paths entry, which the
+# content stage reads as a notice (pagetext.page_kind): it reads them as pages, as before 【Claude 的执行办法】
 PLATFORM_DETAIL_PATHS = frozenset({"/services/academicactivities/actdetail.aspx",
-                                   "/services/campusactivities/actdetail.aspx"})
+                                   "/services/campusactivities/actdetail.aspx", "/tg/student_detail.aspx"})
 PLATFORM_PATHS = frozenset({"/services/web/default.aspx", "/services/site/index.aspx", "/news/lastnews.aspx",
                             "/news/attachedfile.aspx"}) | PLATFORM_DETAIL_PATHS
 # SSO WebIdx: the names one page is written with (11-03, P05). In the 10-26/27 pilot every page fetched under more than
@@ -471,8 +476,8 @@ def is_platform_path(url: str) -> bool:
 
 
 def is_platform_detail(url: str) -> bool:
-    """SSO's activity detail pages (PLATFORM_DETAIL_PATHS): free of the page caps as a profile's detail pages are
-    (crawler._cap, 11-06)."""
+    """SSO's activity detail pages and 成教所's 所友名錄 pages (PLATFORM_DETAIL_PATHS): free of the page caps as a
+    profile's detail pages are (crawler._cap, 11-06, 11-09)."""
     try:
         return urlsplit(url).path.lower() in PLATFORM_DETAIL_PATHS
     except ValueError:

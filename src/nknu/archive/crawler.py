@@ -15,8 +15,8 @@ row or a page came to is outcome.py's views.
   the link table only). A round-1 page's attachments, images, frames, forms, short links and school scripts are its
   resources: page_res rows with their need (must, no with why, round2), so nothing it uses is dropped unseen.
 - Caps hold rows back (held, cap:site/file/image/variant/depth: design §9); a pager link adds no depth. A platform's
-  list page goes first (prio 0) and has no variant cap; its detail pages, and SSO's activity detail pages
-  (scope.PLATFORM_DETAIL_PATHS, 11-06), have no page cap (§7.4). A run's start lets go of a row one of these caps held
+  list page goes first (prio 0) and has no variant cap; its detail pages, SSO's activity detail pages and 成教所's
+  所友名錄 pages (scope.PLATFORM_DETAIL_PATHS, 11-06, 11-09) have no page cap (§7.4). A run's start lets go of a row one of these caps held
   that the rules of today no longer hold (_release_caps); Google's own caps are google_api's and stay.
 - Queue = the server that answers (getaddrinfo, the lowest IPv4); Google's web names share one named queue (google),
   its APIs another (googleapis: google_api.queue_for). A name that
@@ -746,10 +746,11 @@ class Crawler:
                  google_step: bool = True, reconcile_sources: Any = None, only: Iterable[int] | None = None):
         """plan: the site list (round1.load() when not given). gap: the run's (check_gap). sites: only these sites'
         rows (`archive run --sites`). campus_url: the campus check (None: no check, campus stays unknown). decide:
-        the platform file's decision for a site and a writing's key (profiles.decision; None: nothing decided, every
-        writing unknown). end_wait_s: a run ends when what is left comes due later than this (C0, `archive run
-        --end-wait`). google_step: Drive, Docs and Calendar addresses go to google_api's step (False: they wait as
-        unhandled:google, B8). reconcile_sources: a reconcile.Sources; given, each round-1 site of the run is
+        the platform file's decision for a page's own site key (the platform it is written on) and a writing's key
+        (profiles.decision; None: nothing decided, every writing unknown). end_wait_s: a run ends when what is left
+        comes due later than this (C0, `archive run --end-wait`). google_step: Drive, Docs and Calendar addresses go
+        to google_api's step (False: they wait as unhandled:google, B8). reconcile_sources: a reconcile.Sources; given,
+        each round-1 site of the run is
         reconciled offline by this process as it finishes (design §18.2a step 3: reconcile.site_done, every check but
         R6), and again whenever it got more work and finished again (`archive run` gives it; None: no reconciling, as
         a test's crawl and rejudge's offline crawler). only: url ids (`archive run --only`): the run fetches those of
@@ -984,8 +985,9 @@ class Crawler:
             return None
         pk = profiles.page_kind(url)
         if kind == "page" and (pk == "detail" or scope.is_platform_detail(url)):
-            # a platform's detail pages, and SSO's activity detail pages (11-06), are free of the caps (design §7.4
-            # detail_paths: 免上限), the depth limit aside; they still count for their site (frontier.COUNT_SITE)
+            # a platform's detail pages, SSO's activity detail pages (11-06) and 成教所's 所友名錄 pages (11-09) are
+            # free of the caps (design §7.4 detail_paths: 免上限), the depth limit aside; they still count for their
+            # site (frontier.COUNT_SITE)
             return None
         if kind == "file" and self.frontier.count_site(owner, "file") >= self.file_cap:
             return "cap:file"
@@ -1742,7 +1744,10 @@ class Crawler:
             if out is None:
                 return
         if out.location is not None:
-            e = self._resource_of(out.location, list_row, "redirect", list_row, [list_id])
+            # a download's redirect is here only when it leads to its file (postback.file_redirect, gap ① of 11-08):
+            # the page's attachment, wherever its address is (kind0 file)
+            e = self._resource_of(out.location, list_row, "redirect", list_row, [list_id],
+                                  kind0="file" if a["kind"] == "download" else None)
             self.frontier.link(list_id, out.location, "[postback]", e.verdict)
         for f in out.files:
             pages = [r[0] for r in self.frontier.q("SELECT DISTINCT page_id FROM page_res WHERE action_id=?",
@@ -1885,7 +1890,7 @@ class Crawler:
         if row["tier"] not in round1.TIER_OF_IMP.values():
             return []
         out = []
-        for api, value in profiles.data_api_reads(row["owner_site"] or row["site"], html):
+        for api, value in profiles.data_api_reads(scope.site_key(row["url"]), html):  # the page's platform's
             key = profiles.data_api_key(api, value)
             if value is None:
                 out.append({"res_key": key, "how": "unhandled", "role": "data", "need": "must",
@@ -3659,9 +3664,9 @@ class Crawler:
         page = extract(text, snap.url, css)
         # its referrer policy: the answer's Referrer-Policy header, then its <meta name="referrer"> (design §23 B1)
         page.policy = links.referrer_policy(snap.headers.get("referrer-policy"), page.referrer_meta)
-        # a GET-walked list's pages its platform file's pager box names (WebIdx: sort=date, review 10-26 phase 3)
-        page.pagers.extend(u for u in postback.profile_pagers(row["owner_site"] or row["site"], snap.url, text,
-                                                              page.base) if u not in page.pagers)
+        # a GET-walked list's pages its platform file's pager box names (WebIdx: sort=date, review 10-26 phase 3; the
+        # platform the page's own address is written on, gaps ② ③ of 11-08)
+        page.pagers.extend(u for u in postback.profile_pagers(snap.url, text, page.base) if u not in page.pagers)
         h = self.frontier.host(row["host"])
         root = urlsplit(row["url"]).path in ("", "/") or row["found_via"] == "seed"
         if not root and h is not None and h["probe_status"] == 200 and (snap.sha256 == h["probe_sha"] or (
@@ -3728,7 +3733,7 @@ class Crawler:
         elif stored.page_role is None and stored.content:  # a table of content (FIX 3, 11-06): no list any more
             self.chains.not_a_list(uid)
         if stored.unplanned:  # buttons the platform file says to press that no press of this page covers: 要人看
-            self.frontier.add_page_res(uid, postback.unpressed_entries(stored.unplanned))
+            self.frontier.add_page_res(uid, postback.unpressed_entries(stored.unplanned, stored.texts))
         self._replay_parts(uid)
 
     # ---- what a page's parts brought (design §4.4, §7.4, §7.5, §7.6)
@@ -3807,6 +3812,11 @@ class Crawler:
                  if (u := self.frontier.row(a["location"])) is not None]
         if files:
             self.frontier.add_page_res(page_id, files)
+        # the files its download presses were sent to (gap ① of 11-08): queued as the page's attachments, as the
+        # answer itself queues them (_press_answer); the presses round one took for a lapsed session are adopted here
+        for loc in self.chains.file_redirects(page_id):
+            e = self._resource_of(loc, page, "redirect", page, [page_id], kind0="file")
+            self.frontier.link(page_id, loc, "[postback]", e.verdict)
         for a in self.frontier.q("SELECT * FROM action WHERE site=? AND kind='data' AND state='done' AND reason "
                                  "LIKE 'read:events:%' AND warc IS NOT NULL AND warc_offset IS NOT NULL",
                                  (page["owner_site"] or page["site"],)):
@@ -3989,12 +3999,14 @@ class Crawler:
             e = self._enqueue(src, base=base, from_row=row, how="script", depth=depth, found_via="link")
             if e.id is not None:
                 put(target, how="get", role="script", need="no", why="script", res_id=e.id)
-        site = row["owner_site"] or ""
+        # the site these count for keys the postback table and a file button's action; the platform the page's own
+        # address is written on decides (gaps ② ③ of 11-08: a /site/ key's WebIdx pages are WebIdx's)
+        site, plat = row["owner_site"] or "", scope.site_key(url)
         for c in page.clicks:
             # the platform file's clicks rule reads the click's writing exactly (handle), else its decision (§7.8)
-            decision = (profiles.click_decision(site, c, html, url) if self.decide is profiles.decision
-                        else self.decide(site, c.key))
-            plan = (profiles.click_plan(site, c, html, url)
+            decision = (profiles.click_decision(plat, c, html, url) if self.decide is profiles.decision
+                        else self.decide(plat, c.key))
+            plan = (profiles.click_plan(plat, c, html, url)
                     if decision == "handle" and row["tier"] in round1.TIER_OF_IMP.values() else None)
             if plan is not None and plan.method == "GET":  # oia's tab: one GET per tab, the shown one too (§7.4)
                 e = self._enqueue(plan.url, from_row=row, how="click", depth=depth, found_via="click")
@@ -4011,7 +4023,7 @@ class Crawler:
             need, why = links.click_need(c, "round2" if decision == "handle" else decision)
             put(c.key, how="click", role="click", need=need, why=why or None, zone=c.zone, text=c.text)
         for u in page.unhandled:
-            need, why = links.unhandled_need(self.decide(site, u.key))
+            need, why = links.unhandled_need(self.decide(plat, u.key))
             put(u.key, how="unhandled", role="click", need=need, why=why, zone=u.zone, text=u.text)
             if u.auto:  # §8.4: the page fires it on load; jscheck opens the page (outcome.AUTO_KEY)
                 put(outcome.AUTO_KEY + u.key, how=outcome.AUTO_HOW, role="click", need="no", why=outcome.AUTO_WHY,
@@ -4020,8 +4032,8 @@ class Crawler:
             # with its argument: MasterGrid's Page$N is pressed, its Sort$x is not (profiles._button_key); with its
             # text: a rule that names one holds for that text only (SSO's bare ctlNN 「查詢」, review 10-26 phase 3)
             key = postback.button_key(b.target, b.argument)
-            decision = (profiles.decision(site, key, b.text) if self.decide is profiles.decision
-                        else self.decide(site, key)) or "unknown"
+            decision = (profiles.decision(plat, key, b.text) if self.decide is profiles.decision
+                        else self.decide(plat, key)) or "unknown"
             self.frontier.postback(site, b.target, src_id, b.argument, b.text, b.form_id,
                                    decision if decision in ("press", "never", "ignore") else "unknown")
             if decision == "press":

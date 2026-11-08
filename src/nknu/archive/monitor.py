@@ -1894,7 +1894,8 @@ def expected_unhandled(site: str | None, res_key: str, text: str | None, why_now
     """need and why the platform file gives a how='unhandled' page_res entry now (design §7.8, §10.4 rule 9: with the
     button's text, page_res.text, or a rule that names a text never holds and a decided 「查詢」 reads unknown). None:
     no such entry should be there (the file now presses the button or handles the click; a rejudge drops it). A button
-    the file says to press that nobody pressed is unhandled:unpressed (postback.UNPRESSED) while it says press."""
+    the file says to press that nobody pressed is unhandled:unpressed (postback.UNPRESSED) while it says press. site:
+    the page's own site key (url.site: the platform it is written on, as the crawler decides, gaps ② ③ of 11-08)."""
     from nknu.archive.postback import UNPRESSED
 
     d = profiles.decision(site, res_key, text)
@@ -1910,11 +1911,13 @@ def _c8(ctx: _Ctx, c: Check) -> None:
 
     f = ctx.f
     n = Counter()
-    for r in f.q("""SELECT p.site, p.target, p.argument, p.text, p.n, u.url FROM postback p
+    # a button is decided by the platform its page is written on (the sample page's url.site, as the crawler decides:
+    # Crawler._parts), the site it counts for (postback.site, url.owner_site) named in what is written
+    for r in f.q("""SELECT p.site, p.target, p.argument, p.text, p.n, u.url, u.site AS page_site FROM postback p
                     LEFT JOIN url u ON u.id = p.sample ORDER BY p.site, p.target"""):
         key = button_key(r["target"], r["argument"] or "")
         try:
-            d = profiles.decision(r["site"], key, r["text"])
+            d = profiles.decision(r["page_site"] or r["site"], key, r["text"])
         except ValueError as exc:
             d, why = "unknown", str(exc)
         else:
@@ -1930,11 +1933,11 @@ def _c8(ctx: _Ctx, c: Check) -> None:
         c.add(FAIL, f"{r['owner_site']}：{what} {r['res_key']}（{r['n']} 页，例如 {r['u']}）")
     cache: dict[tuple, tuple | None] = {}
     wrong: dict[tuple, list] = {}
-    for r in f.q("""SELECT pr.res_key, pr.need, pr.why, pr.text, u.owner_site, u.url FROM page_res pr
+    for r in f.q("""SELECT pr.res_key, pr.need, pr.why, pr.text, u.owner_site, u.site, u.url FROM page_res pr
                     JOIN url u ON u.id = pr.page_id WHERE pr.how = 'unhandled'"""):
         if r["res_key"].startswith("google:") or (r["why"] or "").startswith("unhandled:google"):
             continue  # what google_api.parse_link cannot read: no platform file decides it (counted above)
-        k = (r["owner_site"], r["res_key"], r["text"], r["why"])
+        k = (r["site"] or r["owner_site"], r["res_key"], r["text"], r["why"])  # the page's own platform decides
         if k not in cache:
             try:
                 cache[k] = expected_unhandled(*k)

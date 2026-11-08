@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>校園授權軟體下載區（測試）</title></head>
+<body>
+<form method="post" action="./campussoftware.aspx?csoftid=7" id="uForm">
+<div class="aspNetHidden">
+<input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="" />
+<input type="hidden" name="__EVENTARGUMENT" id="__EVENTARGUMENT" value="" />
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="VS-SOFTWARE-7" />
+</div>
+<div id="mainFrameHeader">
+  <button onclick="__doPostBack('ctl00$btnLangTC','')" id="btnLangTC" class="btn">繁中</button>
+  <button onclick="__doPostBack('ctl00$btnLangE','')" id="btnLangE" class="btn">English</button>
+</div>
+<div id="mainFrameContent">
+  <input type="hidden" name="ctl00$phMain$SelTab" id="ctl00_phMain_SelTab" value="2" />
+  <button onclick="__doPostBack('ctl00$phMain$btBack1','')" id="ctl00_phMain_btBack1" class="btn" type="button">返回</button>
+  <h3><label id="ctl00_phMain_lbSoftName" class="control-label">軟體甲</label></h3>
+  <span>檢視模式 </span>
+  <a id="ctl00_phMain_download_linkGrid" title="格狀檢視" href="javascript:__doPostBack(&#39;ctl00$phMain$download_linkGrid&#39;,&#39;&#39;)"><i class="fas fa-grip-horizontal"></i></a>
+  <input type="hidden" name="ctl00$phMain$SelTab_Download" id="ctl00_phMain_SelTab_Download" value="2" />
+  <ul id="ctl00_phMain_ascxDownload_ListMode_ulFolderName" class="list-group"><li class="list-group-item"><button onclick="__doPostBack('ctl00$phMain$ascxDownload_ListMode$btFolder_41','')" id="ctl00_phMain_ascxDownload_ListMode_btFolder_41" class="btn">Windows 作業系統</button></li><li class="list-group-item"><button onclick="__doPostBack('ctl00$phMain$ascxDownload_ListMode$btFolder_42','')" id="ctl00_phMain_ascxDownload_ListMode_btFolder_42" class="btn">Mac作業系統</button></li><li class="list-group-item"><button onclick="__doPostBack('ctl00$phMain$ascxDownload_ListMode$btFolder_43','')" id="ctl00_phMain_ascxDownload_ListMode_btFolder_43" class="btn">安裝說明</button></li></ul>
+  <div id="ctl00_phMain_ascxDownload_ListMode_divDownloadFolder">
+    <div class="card">
+      <h5 class="card-header"><label id="ctl00_phMain_ascxDownload_ListMode_ctl05_lbFolderHeader" class="control-label">Windows 作業系統</label></h5>
+      <div class="card-body">
+        <ul id="ctl00_phMain_ascxDownload_ListMode_ctl05_ulLinks" class="list-group"><li class="list-group-item"><a href="/software/files/setup_x64.exe" target="_blank" onclick="addClickCount(&#39;501&#39;)">安裝程式（測試）</a><span class="badge">9 次下載</span></li></ul>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="aspNetHidden">
+<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="0000TEST" />
+</div>
+</form>
+</body></html>

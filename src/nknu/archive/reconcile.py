@@ -615,7 +615,7 @@ def r7_page(fr: Frontier, row, html: str, url: str, page: links.PageLinks, cache
     decision; a click a clicks rule fits that only an outside script binds waits for the next round, since nothing
     this round presses it). Writes nothing (write_r7 does)."""
     out = R7Page()
-    site = row["owner_site"] or ""
+    site = scope.site_key(row["url"])  # the platform the page is written on decides, as the crawler's (Crawler._parts)
     ids, codes = [], []
     for s in fr.q("SELECT u.* FROM page_res pr JOIN url u ON u.id = pr.res_id WHERE pr.page_id=? AND pr.role='script' "
                   "ORDER BY u.id", (row["id"],)):
@@ -718,8 +718,7 @@ def _page_read(row, html: str, url: str) -> links.PageLinks:
     """links.extract of a stored page as the crawler reads it (its platform's content area, and the pager links its
     platform's pager box names: Crawler._page)."""
     page = links.extract(html, url, profiles.content_css(row["url"]))
-    page.pagers.extend(u for u in postback.profile_pagers(row["owner_site"] or row["site"], url, html, page.base)
-                       if u not in page.pagers)
+    page.pagers.extend(u for u in postback.profile_pagers(url, html, page.base) if u not in page.pagers)
     return page
 
 
@@ -735,8 +734,9 @@ def _expected(plan: round1.Plan, row, html: str, url: str, page: links.PageLinks
     """What the crawler writes of one page (Crawler._parts): the link table's targets ({address: what}) and the
     page_res keys ({key: what}). A Google address's rows are the Google step's (drive:<id> …): its link only. A
     Google Sites runtime picture's key is where it sits (links.google_sites_keys, design §23 B2), read against src_id:
-    the row its HTML was read from (the page's own, or an embed box's)."""
-    base, site = page.base, row["owner_site"] or ""
+    the row its HTML was read from (the page's own, or an embed box's). The platform the page's own address is
+    written on decides, as the crawler's (gaps ② ③ of 11-08)."""
+    base, site = page.base, scope.site_key(row["url"])
     want_links: dict[str, str] = {}
     want_keys: dict[str, str] = {}
     pictures = {scope.canonical(img.src, base) for img in page.images}
@@ -1720,8 +1720,8 @@ class _RejudgeChains(postback.Chains):
 
     def page_stored(self, row, html: str, warc: str | None, warc_offset: int | None,
                     page: links.PageLinks | None = None) -> postback.Stored:
-        site = row["owner_site"] or scope.site_key(row["url"])
-        prof = profiles.profile_for_site(site)
+        site = row["owner_site"] or scope.site_key(row["url"])  # the rows' keys and the walk's, as Chains'
+        prof = profiles.profile_for(row["url"])  # the platform the page is written on (gaps ② ③ of 11-08)
         has_pagers = bool(page.pagers) if page is not None else row["page_role"] == "list"
         list_id = row["id"]
         if prof is None:
@@ -1749,7 +1749,7 @@ class _RejudgeChains(postback.Chains):
                 a_prof, _rs = self._profile(a)
                 got = postback.read_page(a_prof or prof, url, text, site=site, parent_key=a["row_key"],
                                          step=a["step"], walks=("none",))
-            self._unpressed(list_id, got.unplanned_at)
+            self._unpressed(list_id, got.unplanned_at, got.texts)
         ended = None
         if pr.walk in ("postback", "one_get"):
             lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (list_id,))
@@ -1767,7 +1767,7 @@ class _RejudgeChains(postback.Chains):
                            ended=ended, note="one page")
         return postback.Stored("list" if pr.walk != "none" or has_pagers else None, 0, ended,
                                tuple(dict.fromkeys(unplanned)),
-                               content=pr.content and pr.walk == "none" and not has_pagers)
+                               content=pr.content and pr.walk == "none" and not has_pagers, texts=pr.texts)
 
     def _ended_again(self, row, prof: profiles.Profile, site: str, pr: postback.PageRead, lw) -> str:
         """A walk that ended mismatch:empty, judged again with today's list_end on the page it ended on (FIX 3, 11-06:

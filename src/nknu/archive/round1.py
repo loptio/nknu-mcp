@@ -13,7 +13,8 @@ each (kind0='login_check'), and the off-campus pages round two fetches one page 
 The verdict is layer 2 of three (§4.3): scope.judge() first (its out:<rule> goes to the link table only), then
 verdict(): r1 (the key is a round-1 site, inside its paths), resource (a part of the round-1 page that uses it: an
 attachment on any host, off campus too, the file only (the owner, 10-26, record 五·15), an image on any host, a school
-frame, a Google Sites embed box, a Google form, anything of the attachment service, a school script it loads, a tab
+frame, a frame of a school unit's own site off campus (offsite_unit: one layer, gap ⑫ of 11-08), a Google Sites embed
+box, a Google form, anything of the attachment service, a school script it loads, a tab
 its platform rule presses, a short link it names: one GET to learn where it leads, admit()), or round 2 (a url row
 with state 'later' and reason round2:<why>: js_site, other_site, offsite_unit by the list, and off campus offsite or
 offsite_file, one layer only: leaf=1). The list comes before the question whether a URL is the school's: a unit's site
@@ -387,7 +388,8 @@ def verdict(plan: Plan, url: str, from_row: Mapping[str, Any] | None = None, how
 
     1 an extra seed; 2 a script or a tab a round-1 page uses is that page's resource, whatever site it is on (a tab
     pressed with no round-1 page behind it is a crawler bug: ValueError); 3 a round-1 site's part; 4 an off-campus
-    frame the page hides; 5 a round-1 page's other resources; 6 a unit's site off campus, by the list (its paths and
+    frame the page hides; 5 a round-1 page's other resources (a page of a unit's site off campus that it frames among
+    them, one layer: gap ⑫ of 11-08); 6 a unit's site off campus, by the list (its paths and
     params; leaf as the list says), before 8, which would make it one page; 7 a JavaScript site; 8 off campus, one
     layer; 9 another school site."""
     key, kind0 = scope.site_key(url), _kind0(url, how)
@@ -427,7 +429,11 @@ def _round1_page(row: Mapping[str, Any] | None) -> bool:
 def _resource(url: str, site: Site | None, kind0: str, how: str, src: Mapping[str, Any]) -> Placement | None:
     """A part of the round-1 page src (design §4.4): its attachments (on any host: the owner, 10-26, record 五·15:
     「抓吧」, the file only, never followed), images, frames, forms, and the attachment service; None for an ordinary
-    link. Off-campus frames are noted for round 2, one layer only."""
+    link. Off-campus frames are noted for round 2, one layer only, but for a page of a school unit's own site off
+    campus (the list's offsite_unit, inside its paths and params) that a school page src frames: src's content,
+    fetched with it, one layer (leaf 1: its links stay round two's; what it frames in turn too, since it is no school
+    page: review of 11-09). Gap ⑫ of 11-08: 性别所's pages frame their Wix pages (an iframe a script loads,
+    data-src), where the content is; a hidden frame never gets here (verdict) 【Claude 的执行办法】."""
     school = scope.school_url(url)
 
     def part(leaf: int) -> Placement:
@@ -440,10 +446,24 @@ def _resource(url: str, site: Site | None, kind0: str, how: str, src: Mapping[st
             return part(0)  # a frameset's pages hold the content (design §4.4, review: frames are not leaves)
         if (urlsplit(url).hostname or "").lower().endswith(_GOOGLE_EMBED):
             return part(1)
+        if how == "frame" and site is not None and site.round == "2" and site.why == "offsite_unit" \
+                and site.holds(url) and _school_page(src):
+            return part(1)  # a school unit's own page off campus, framed in: the page's content (gap ⑫ of 11-08)
         return Placement("round2", "round2:offsite", scope.site_key(url), ROUND2_TIER, 1, kind0)
     if site is not None and site.round == "resource":
         return part(1)
     return None
+
+
+def _school_page(row: Mapping[str, Any]) -> bool:
+    """Whether the page a URL was found on is on a school host (scope.school_url of its url row's address), as every
+    round-1 site's page is; a page a round-1 page brought in from off campus as its part (a unit's Wix page framed in,
+    gap ⑫ of 11-08) is not. A row that names no address (one made by hand: a test's) counts as a school page."""
+    try:
+        url = row["url"]
+    except (KeyError, IndexError):  # a dict without it; sqlite3.Row says IndexError
+        return True
+    return not url or scope.school_url(url)
 
 
 def _kind0(url: str, how: str) -> str:

@@ -1,7 +1,10 @@
 """Platform profiles (round-1 design §7.4, §7.8, §10.1): what the crawler knows of each school platform it walks, as
 data, and the decisions it takes from it. Nothing here sends anything; postback.py presses what these say to press.
 
-A profile holds, for the sites it covers (by site key, scope.site_key / url.owner_site):
+A profile holds, for the sites it covers (by site key, scope.site_key). A page is read by the platform it is written
+on, the site key of its own address (url.site), never by the site it counts for (url.owner_site, which stays every
+key's and count's): a seed that redirects to another platform makes that platform's pages part of its site (the /site/
+keys' pages and 图资处's are SSO WebIdx pages, gaps ② ③ of 11-08). A profile holds:
 - rows: the list grids and row sets a page may hold (Rows): where the rows are, what a row's title, date and category
   are, how the list is walked (postback presses of a pager, GET pager links, one GET with every row, or none: a
   detail page's attachment buttons), how to tell the page number shown, the 「共 N 筆」 it states, the words of an empty
@@ -10,7 +13,8 @@ A profile holds, for the sites it covers (by site key, scope.site_key / url.owne
   body text, an attachment, an image or a related link; §10.1), the id probe (§10.1: an id that cannot exist) and the
   date field (the export's 网页上写的日期: export.own_date);
 - buttons: each kind of ASP.NET postback button: press (pager, detail, download), never (sign-in, captcha, a form
-  sent, a search, a language switch), ignore (each with its reason);
+  sent, a search, a language switch), ignore (each with its reason); an ImageButton (<input type="image">, which calls
+  no __doPostBack: its form is sent with the click's coordinates) by its name, its argument IMAGE_ARG;
 - writings: the decision on a writing a crawler of plain GETs cannot follow (links.Unhandled, §7.8): ignore, never,
   no_content, round2, each with its reason; none written is unknown (要人看);
 - clicks: the rules for a click that loads something whose writing the crawler can read (§7.4 clicks, record 二·3,
@@ -22,7 +26,8 @@ A profile holds, for the sites it covers (by site key, scope.site_key / url.owne
   10-27, how 【Claude 的执行办法】); the
   browser check never counts it as a data address the round cannot read (known_data_api).
 
-decision(site, res_key) is the one answer the crawler, rejudge and verify check 8 share (design §15): for a button's
+decision(site, res_key) is the one answer the crawler, rejudge and verify check 8 share (design §15; site: the page's
+own site key, the platform it is written on): for a button's
 key (postback:<control, ctlNN as ctl*>[|<argument>], with the button's text, page_res.text, where a rule names one:
 SSO's bare ctlNN 「查詢」) press, never, ignore or unknown; for a click's key handle (a clicks rule presses it),
 no_content, never, round2 or unknown; for any other writing ignore, never, no_content, round2 or unknown. A site's
@@ -57,6 +62,10 @@ GONE_PAGE, BAD_LINK = "gone_page", "bad_link"
 # a file the school's page says is missing is fetched once more this much later; the same answer twice is gone (§10.2)
 GONE_RECHECK_S = 3600.0
 GONE_RECHECK = "gone_page:recheck"  # url.reason while the second look waits
+# the argument an ASP.NET ImageButton (<input type="image" name="…">) is written with in a Button rule, a press and a
+# button's key: it calls no __doPostBack, the browser sends its form with name.x and name.y (postback.target_for; gap ⑪
+# of 11-08) 【Claude 的执行办法】
+IMAGE_ARG = "@image"
 _CTL = re.compile(r"(?i)ctl\d+")
 
 
@@ -414,6 +423,84 @@ SSO_CLV2 = Profile(
                       "书表的分类筛选：载入时是「請選擇...」，列出全部分类的书表"),),
 )
 
+# 学务处的系统 (sso.nknu.edu.tw/osa; gap ④ of 11-08, read on round one's pages, read only): a 高教深耕 event page
+# (hesp/eventlist.aspx?event=N) lists its attachments as links that post back, one a row of the table
+# #EventDetails1_EventAttachmentList (EventDetails1$EventAttachmentList$ctlNN$EventAttachmentD, the file's name as the
+# link's text), in form1, whose state is an encrypted __VIEWSTATE with no __EVENTVALIDATION. Right after the table the
+# page holds an empty hidden frame (<iframe id="DownloadEventAtt" width="0" height="0">): the answer most likely gives
+# it the file's address, which postback.file_followup reads (a hidden frame the press filled). No press was ever made,
+# so how the school answers is not known yet; an answer the follow-up cannot read is not_file (要人看), never ok
+# 【Claude 的执行办法】
+SSO_OSA = Profile(
+    name="sso_osa", platform="学务处系统（osa）", sites=r"sso\.nknu\.edu\.tw/osa", forms=("form1",),
+    rows=(Rows("osa_event_files", grid="#EventDetails1_EventAttachmentList", row="tr", walk="none"),),
+    buttons=(
+        Button(r"EventDetails1\$EventAttachmentList\$ctl\d+\$EventAttachmentD\w*", "press",
+               "活动页的附件下载：附件只能按这个按钮下载（缺口 ④，用户 11-08 定补抓）", role="download"),
+        Button(r"BackList", "ignore", "「關閉」：关掉活动页、回到活动列表（onclick 先 window.close()）；列表页本身有普通链接"),
+        Button(r"QueryEventSCYear|QueryEventTheme|QueryStaSub", "round2",
+               "学年度、主题、统计的「查詢」：要送查询表单，这一轮不送（缺口 ⑪ 这一轮只补软件清单，Claude 11-08 的建议）"),
+    ),
+    writings=(Writing(r"select:(?:QuerySCYearList|StaSemList|StaYearList)", "round2",
+                      "上面那几个「查詢」的条件（学年度、学期）：这一轮不送查询表单"),),
+)
+
+# 法规汇编 (sso.nknu.edu.tw/regulations; gap ④ of 11-08, read on round one's pages, read only), on SSO's master page as
+# the 公告中心 (form uForm): each regulation is a row of #ctl00_phMain_reggv, its name a link to /previewPdf.aspx?
+# cPathAndFileName=… (got by GET); a row whose link has no address shows a 「檔案下載」 button instead
+# (ctl00$phMain$reggv$ctlNN$downloadBtn), the only way to its file (4 pages of 160, one regulation). Every unit's and
+# category's list has an address of its own (default.aspx?cPara=…, a GET page each), so the search is never needed
+SSO_REGULATIONS = Profile(
+    name="sso_regulations", platform="法规汇编（SSO）", sites=r"sso\.nknu\.edu\.tw/regulations", forms=("uForm",),
+    rows=(Rows("reg_files", grid="#ctl00_phMain_reggv", row="tr", walk="none", title="a[id$='_fileview']"),),
+    buttons=(
+        Button(r"ctl\d+\$phMain\$reggv\$ctl\d+\$downloadBtn", "press",
+               "「檔案下載」：这一列没有 previewPdf.aspx 的预览链接，档案只能按它下载（缺口 ④，用户 11-08 定补抓）",
+               role="download"),
+        Button(r"ctl\d+\$phMain\$searchBtn", "never",
+               "关键字搜索（§7.4、§7.5 第 10 点）：各单位、各类别的法规列表另有自己的 default.aspx?cPara= 网址"),
+    ),
+    writings=(Writing(r"select:ctl\d+\$phMain\$unitLv2DDL", "never",
+                      "搜索的单位条件（配合上面的搜索）；各单位的法规列表另有自己的网址"),),
+)
+
+# 校园授权软件 (sso.nknu.edu.tw/software; gap ⑪ of 11-08, read on round one's pages, read only), on SSO's master page
+# (form uForm). campussoftware.aspx shows every licensed software as an icon box (.act-box: its name in span
+# #…_lbcTypeIDName, its download count), one GET with all of them (15, no pager); the icon is an ASP.NET ImageButton
+# (<input type="image" name="ctl00$phMain$dataList1$ctrlN$uImage">, IMAGE_ARG), the only way to the software's own
+# page. 「清單檢視」 (linkList) lays the same list out again. A software's page (campussoftware.aspx?csoftid=N, a GET page
+# too: the 10-24 archive linked csoftid=10) shows its name (#…_lbSoftName) and its folders as buttons
+# (ascxDownload_ListMode$btFolder_<the folder's number>, the folder's name as the text), one folder open (its header
+# #…_lbFolderHeader, its links #…_ulLinks): an operating system's installers, or 安裝說明. Round one presses each
+# software's icon and its 安裝說明 folder, never an installer folder; a Drive installer a page shows anyway is listed by
+# its name only (google_api.settle: media:drive_installer). The fill-in of ⑩⑪⑫ is the owner's (11-08 19:58); the gap
+# report had suggested for ⑪ 「除了软件清单都不处理」 【Claude】; which buttons stand for it 【Claude 的执行办法】
+SSO_SOFTWARE = Profile(
+    name="sso_software", platform="SSO 校园授权软件", sites=r"sso\.nknu\.edu\.tw/software", forms=("uForm",),
+    detail_paths=r"csoftid=",
+    rows=(
+        Rows("software_items", grid="div:has(> .act-box)", row=".act-box", walk="one_get",
+             title="span[id$='_lbcTypeIDName']", detail_title="label[id$='_lbSoftName']",
+             detail_body="div[id$='_ascxDownload_ListMode_divDownloadFolder']", detail_files="ul[id$='_ulLinks'] a",
+             paths=r"/campussoftware\.aspx$", query=r"^$"),
+        Rows("software_folders", grid="ul[id$='_ascxDownload_ListMode_ulFolderName']", row="li", walk="none",
+             title="button", detail_title="label[id$='_lbFolderHeader']", detail_body="ul[id$='_ulLinks']",
+             detail_files="ul[id$='_ulLinks'] a"),
+    ),
+    buttons=(
+        Button(r"ctl\d+\$phMain\$dataList1\$ctrl\d+\$uImage", "press",
+               "每个授权软件自己的页面：清单上的图示是图片按钮，只能按它进去（缺口 ⑪，11-08 补抓）", role="detail",
+               argument=re.escape(IMAGE_ARG)),
+        Button(r"ctl\d+\$phMain\$ascxDownload_ListMode\$btFolder_\d+", "press",
+               "软件页的「安裝說明」资料夹：安装步骤和说明文件（缺口 ⑪，11-08 补抓）", role="detail", text=r"說明"),
+        Button(r"ctl\d+\$phMain\$ascxDownload_ListMode\$btFolder_\d+", "ignore",
+               "软件页的其他资料夹（各作业系统的安装档）：第一轮不按、不下载安装档（缺口 ⑪）"),
+        Button(r"ctl\d+\$phMain\$(?:linkList|download_linkGrid)", "ignore",
+               "检视模式（清單檢視、格狀檢視）：只换排版，还是同一批软件、同一批档案"),
+        Button(r"ctl\d+\$phMain\$btBack1", "ignore", "「返回」：回到已经抓过的软件清单"),
+    ),
+)
+
 _CNKNU_DETAILS = (
     # newsdetail states its date apart from its text: <h5>發佈人員：…｜公告日期：<span id="lbl_AddTime">…</span></h5>
     Detail(r"/newsdetail\.aspx", text="#lbl_Contents", files="#lbl_FileLink a", title="#lbl_Title", id_param="Nid",
@@ -551,15 +638,18 @@ ID = Profile(name="id", platform="工设系（自建）", sites=r"id\.nknu\.edu\
                              text="#article .blog_content, section.block_area", title=".title_block h1",
                              date=".title_block li"),))
 
-PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, CNKNU, OIA, EE, LIS, ELEC, ENGLISH, CLCTS, WORDPRESS, GEO, ID)
+PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, SSO_OSA, SSO_REGULATIONS, SSO_SOFTWARE, CNKNU, OIA, EE, LIS, ELEC, ENGLISH,
+            CLCTS, WORDPRESS, GEO, ID)
 
 
 def profile_for_site(site: str | None) -> Profile | None:
-    """The profile of a site key (url.owner_site), or None for a site no platform file describes."""
+    """The profile of a site key, or None for a site no platform file describes."""
     return next((p for p in PROFILES if p.covers(site or "")), None)
 
 
 def profile_for(url: str) -> Profile | None:
+    """The profile of the platform a page is written on: its own address's site key (never url.owner_site: gaps ② ③
+    of 11-08)."""
     return profile_for_site(scope.site_key(url))
 
 
@@ -711,10 +801,16 @@ def _text_holds(b: Button, text: str | None) -> bool:
 
 
 def button(site: str | None, target: str, argument: str = "", text: str | None = None) -> Button | None:
-    """The rule for one postback button of a site (its control name as written, its argument and its text; a rule
-    that names a text holds only for that text: _text_holds), or None: the platform file says nothing (unknown,
-    要人看)."""
-    p = profile_for_site(site)
+    """The rule for one postback button of a site (rule_in with the site key's platform file)."""
+    return rule_in(profile_for_site(site), target, argument, text)
+
+
+def rule_in(p: Profile | None, target: str, argument: str = "", text: str | None = None) -> Button | None:
+    """The rule for one postback button in a platform file (p; None: a page no platform file describes, which has the
+    decisions every site shares only): its control name as written, its argument and its text (a rule that names a
+    text holds only for that text: _text_holds), or None: the platform file says nothing (unknown, 要人看).
+    postback.read_page asks the profile it reads the page with (the platform the page is written on, gaps ② ③ of
+    11-08), never the one of the site the page counts for."""
     rules = (*(p.buttons if p is not None else ()), *GLOBAL_BUTTONS)
     for b in rules:
         if not _re(b.target).fullmatch(target):
@@ -766,7 +862,8 @@ def _click_rule(p: Profile | None, key: str) -> ClickRule | None:
 
 def decision(site: str | None, res_key: str, text: str | None = None) -> str:
     """The platform file's decision for one key of a page (design §15), as the crawler, rejudge and verify check 8 ask
-    it: press/never/ignore/unknown for a button, handle/no_content/never/round2/unknown for a click, and
+    it with the page's own site key (url.site: the platform the page is written on, never url.owner_site):
+    press/never/ignore/unknown for a button, handle/no_content/never/round2/unknown for a click, and
     ignore/never/no_content/round2/unknown for any other writing. unknown: nobody has decided (要人看). text: a
     button's text (page_res.text), which a rule that names one needs (_text_holds)."""
     return decision_why(site, res_key, text)[0]

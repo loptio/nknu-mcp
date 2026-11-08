@@ -804,3 +804,55 @@ def test_an_off_campus_attachment_behind_a_rule_stays_out():
                                                                              "out:login")):
         got = v(url, ACA)
         assert (got.verdict, got.reason, got.row) == ("out", reason, False), url
+
+
+# ---------------------------------------------------------------- gap ⑫ of 11-08: a unit's own site off campus, framed
+
+
+GENDER = page("gender.nknu.edu.tw", 1)  # 性别所, 本系重要
+WIX_PAGE = "https://nknugender.wixsite.com/nknugender/recruit"  # the list's offsite_unit entry (round two, whole site)
+
+
+def test_a_round_1_page_framing_its_units_own_site_off_campus_fetches_that_page_now():
+    """性别所's pages frame the Wix pages of the unit's own site (the list's offsite_unit), where their content is: a
+    frame of one is the page's part, fetched now, one layer (leaf 1: what it links stays round two's). A link to it,
+    a frame the page hides, another Wix site and a round-2 page's frame are as before."""
+    framed = v(WIX_PAGE, GENDER, "frame")
+    assert (framed.verdict, framed.reason, framed.owner_site, framed.tier, framed.leaf, framed.kind0) == (
+        "resource", None, "gender.nknu.edu.tw", 1, 1, "page")
+    linked = v(WIX_PAGE, GENDER)
+    assert (linked.reason, linked.leaf, linked.owner_site) == ("round2:offsite_unit", 0,
+                                                               "nknugender.wixsite.com/nknugender")
+    assert v(WIX_PAGE, GENDER, "hidden").reason == "out:not_content"
+    other = v("https://someone.wixsite.com/site/a", GENDER, "frame")  # no unit's site of the list
+    assert (other.reason, other.leaf, other.owner_site) == ("round2:offsite", 1, "someone.wixsite.com/site")
+    assert v(WIX_PAGE, LATER, "frame").reason == "round2:offsite_unit"
+    canva = v("https://www.canva.com/design/DAF/view?embed", GENDER, "frame")
+    assert (canva.verdict, canva.reason) == ("round2", "round2:offsite")
+
+
+def test_a_units_page_framed_in_frames_nothing_more_in():
+    """One layer (the spec: 抓一层…不再往下跟; review of 11-09): the Wix page a round-1 page frames is a part fetched
+    with that page, off campus; what it frames in turn, of the unit's own site or of another unit's, stays round two's
+    as any off-campus frame does, however many layers deep. Its pictures are still its parts."""
+    framed = {"owner_site": "gender.nknu.edu.tw", "tier": 1, "url": scope.canonical(WIX_PAGE),
+              "site": "nknugender.wixsite.com/nknugender"}
+    for url in ("https://nknugender.wixsite.com/nknugender/blank-1", "https://ocsnknu.wixsite.com/index/about"):
+        deeper = v(url, framed, "frame")
+        assert (deeper.verdict, deeper.reason, deeper.tier, deeper.leaf) == ("round2", "round2:offsite", 2, 1), url
+    pic = v("https://static.wixstatic.com/media/abc.jpg", framed, "image")
+    assert (pic.verdict, pic.owner_site, pic.tier) == ("resource", "gender.nknu.edu.tw", 1)
+    # framed by a school page (its url on a school host, as every round-1 site's is): the one layer
+    school = {"owner_site": "gender.nknu.edu.tw", "tier": 1, "url": "https://gender.nknu.edu.tw/p/a.html",
+              "site": "gender.nknu.edu.tw"}
+    assert v(WIX_PAGE, school, "frame").verdict == "resource"
+
+
+def test_a_framed_page_outside_a_units_paths_is_no_part_of_its_site():
+    unit = round1.parse_site({"site": "unit.wixsite.com/unit", "round": 2, "why": "offsite_unit",
+                              "home": "https://unit.wixsite.com/unit/news", "paths": ["/unit/news"]})
+    plan = round1.Plan({unit.site: unit}, (), (), "test")
+    inside = round1.place(plan, "https://unit.wixsite.com/unit/news/a", GENDER, "frame")
+    assert (inside.verdict, inside.owner_site, inside.leaf) == ("resource", "gender.nknu.edu.tw", 1)
+    outside = round1.place(plan, "https://unit.wixsite.com/unit/shop", GENDER, "frame")
+    assert (outside.verdict, outside.reason, outside.leaf) == ("round2", "round2:offsite", 1)

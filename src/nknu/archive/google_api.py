@@ -45,7 +45,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from nknu.archive import links, round1, scope
+from nknu.archive import links, outcome, round1, scope
 from nknu.archive.frontier import ids_clause
 from nknu.crawl.adapter import Target
 
@@ -147,6 +147,11 @@ _CALENDAR_ID = re.compile(r"^[A-Za-z0-9._%+#-]+@[A-Za-z0-9.-]+$")
 _HOLIDAY_STUB = re.compile(r"^[a-z]{2,3}(?:[_-][a-z]{2,4})?\.[a-z_]+$")
 GOOGLE_OWN_CALENDARS = "@group.v.calendar.google.com"  # holidays, birthdays, week numbers: Google's, a link only
 _UI_IMAGE_HOSTS = re.compile(r"(?i)(?:^|\.)gstatic\.com$|^(?:www\.)?google\.com$")
+
+
+# an upload whose name says a program or a disk image (outcome.installer_name): listed only, as a video (settle; gap ⑪
+# of 11-08: the software pages' installers on Drive are never downloaded)
+INSTALLER_WHY = "media:drive_installer"
 
 
 def album_name(name: str | None) -> bool:
@@ -767,7 +772,9 @@ def settle(frontier, item, _hops: int = 0) -> tuple[int | None, str, str | None,
     """Where a page's entry for one Drive item points, and with what need (design §7.6): (res_id, need, why, role).
     Not read yet (waiting, held, failed, an API error): its metadata row, need must (its own result says it); a
     round-two row: round2. Read: its content row (a form's page: role form); a shortcut: what its target comes to; a
-    video or a sound: the metadata row, need no (media:drive_video, media:drive_audio: 只记档名和大小); a picture of
+    video or a sound: the metadata row, need no (media:drive_video, media:drive_audio: 只记档名和大小), and so an upload
+    whose name says a program or a disk image (outcome.installer_name: media:drive_installer, gap ⑪ of 11-08, one
+    downloaded before this rule too); a picture of
     an album: need no (album:drive); a Google type nobody can export (Sites, My Maps, Jamboard …): no row, need must,
     unhandled:drive_type (B11). Read and no content row (a crawler bug): the metadata row, which page_completeness
     counts as not_discovered."""
@@ -783,6 +790,8 @@ def settle(frontier, item, _hops: int = 0) -> tuple[int | None, str, str | None,
         return meta, "no", "media:drive_video", "drive"
     if mime.startswith("audio/"):
         return meta, "no", "media:drive_audio", "drive"
+    if not mime.startswith(GOOGLE_APPS) and outcome.installer_name(item["name"]):
+        return meta, "no", INSTALLER_WHY, "drive"
     if mime.startswith(GOOGLE_APPS) and mime not in (FOLDER, SHORTCUT, FORM, *EXPORT):
         return None, "must", "unhandled:drive_type", "drive"
     if item["content_id"] is None:
@@ -1077,8 +1086,10 @@ def _read_item(frontier, row, data, add: Add) -> Reading:
         content, kind0 = form_page_url(fid), "form"
     elif mime in EXPORT:
         content, kind0 = export_url(fid, EXPORT[mime]), "file"
-    elif mime.startswith(("video/", "audio/", GOOGLE_APPS)):
-        pass  # listed only (a video's name and size), or a Google type nobody can export (unhandled:drive_type)
+    elif mime.startswith(("video/", "audio/", GOOGLE_APPS)) or outcome.installer_name(data.get("name")):
+        # listed only (a video's or a program's name and size: settle), or a Google type nobody can export
+        # (unhandled:drive_type)
+        pass
     else:
         content, kind0 = media_url(fid), "image" if mime.startswith("image/") else "file"
         if size is not None and size > DOWNLOAD_MAX_BYTES:

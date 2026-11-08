@@ -5,6 +5,7 @@ campus check answered) and A2 (no run for an empty --sites): what the first run 
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -62,10 +63,28 @@ def _lab_ledger(tmp_path):
     f.close()
 
 
+def _once_the_campus_check_told(crawler, err, wait_s: float = 20.0):
+    """The dead server's answer (err), given only once SSO's campus check has told where this machine is (review of
+    11-09): each queue runs on its own thread, and on a busy machine the dead server's queue failed first now and
+    then, while campus was still unknown, which fails nothing (Crawler._server_down: unsure); its next try came after
+    the test run's end_wait, so the run ended with the row waiting. What the test asks is what that failure does once
+    the check answered, whichever thread runs first. A check that never answers lets it fail after wait_s (real
+    seconds), and the test says so."""
+
+    def route(_url):
+        deadline = time.monotonic() + wait_s
+        while crawler.campus == "unknown" and time.monotonic() < deadline:
+            time.sleep(0.005)
+        raise err
+
+    return route
+
+
 def test_the_first_run_of_the_new_code_on_a_lab_shaped_ledger(tmp_path):
     _lab_ledger(tmp_path)
     crawler, net, _clock = crawl(tmp_path, ROUTES, plan=OpenPlan(), queues=QUEUES, site_cap=2,
                                  campus_url=mod.CAMPUS_URL, local_address=lambda: ADDR)
+    net.routes["dead.nknu.edu.tw"] = _once_the_campus_check_told(crawler, conn_err())
     assert crawler.campus == "unknown"
     run(crawler)
     got = rows(crawler)

@@ -912,41 +912,70 @@ def archive_stop(dir: str = typer.Option(None, "--dir")) -> None:
 def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头，例如 http_5（所有 5xx）、timeout、connect、dns、"
                                                         "server_down（连续约 2 小时连不上的服务器）、"
                                                         "host_unreachable、robots_unreachable、host_cooldown、crash；"
-                                                        "post_failed：回传失败的列表从第 1 页重走；click：失败的下载按钮"
+                                                        "post_failed：回传失败的列表从第 1 页重走；mismatch:page：按下一页"
+                                                        "回来的不是那一页的列表从第 1 页重走（人看过以后用）；click：失败的下载按钮"
                                                         "（电子系）放回再按；download：SSO 的下载按钮取回来不是档案或"
                                                         "失败的，重新 GET 列表、只按这些按钮；data：资料接口（cLv2 的"
-                                                        "时间轴）读失败或读不懂的，用新的请求再读一次"),
-                  dir: str = typer.Option(None, "--dir")) -> None:
+                                                        "时间轴）读失败或读不懂的，用新的请求再读一次；unpressed：现在"
+                                                        "的平台档案说要按、却没人按过的按钮，它们所在的网页重新 GET、"
+                                                        "照现在的平台档案按"),
+                  dir: str = typer.Option(None, "--dir"),
+                  sites: str = typer.Option(None, "--sites", help="只给 unpressed 用：只放回这些网站的网页（网站键，逗号"
+                                                                "分隔）；默认全部")) -> None:
     """把某种原因失败、跳过或在等的网址放回待抓：次数归零，主机的 robots 失败次数、冷却和 DNS 退避也一起清掉。
     已存好的网页不动，只有存成 4xx 拒绝（http_4xx）的才放回。原因开头至少 3 个字。
     post_failed：回传两次都失败的列表（listwalk 记 post_failed）从列表第 1 页的 GET 重走；click：照规则按、失败了的
     POST 下载按钮放回待按（设计第 7.4、7.5 节；都只在人看过以后用，POST 绝不自动重送）。
+    mismatch:page：按「下一页」回来的不是要的那一页的列表（listwalk 记 mismatch:page），同样从第 1 页的 GET 重走。
+    11-08 缺口 ⑤：c.nknu 模板的「下一頁」翻到第 6 页以后，超过 15 页的列表回来的页面上不写现在是第几页，以前的程序就停在
+    第 5 页；现在照回来的页面认（还是这个列表、还有「下一頁」、页码排得到、一半以上的条目没见过），重走就能翻到底。学校
+    回别的网页的（体育系相簿、师培处两个列表）重走还是一样停，备注写清楚原因。
     download：SSO 的下载按钮（单位网站的附件、书表）最后一次的结果是「应该是档案，回来不是档案」或失败的，它们所在的
     列表重新 GET 一次、只按这些按钮（详情、翻页、已经抓到档案的都不再按；表单状态取自新的 GET，不原样重送旧的 POST）；
     新的 GET 上找不到的按钮记「按到的可能是别的公告」（row_gone）要人看。档案太大的不放回（设计第 23 节 A3）。
     data：资料接口（cLv2 单位网站的时间轴，每个网站读一次）试了 3 次都失败、回来读不懂、或学校说出错的，放回待读、次数归零，
-    下一次 archive run 用新的请求再读一次（只是读资料，不是回传；设计第 23.9 节 C1）。"""
+    下一次 archive run 用新的请求再读一次（只是读资料，不是回传；设计第 23.9 节 C1）。
+    unpressed：已存好的网页上，现在的平台档案（照网页自己的网址认平台）说要按、却没人按过的按钮（记成「该按没按」或
+    「平台档案没写决定」的），它们所在的网页放回待抓；下一次 archive run 重新 GET 这一页、用新的表单状态按（已经按好的不再按，
+    旧的 POST 不原样重送）。改了平台档案、rejudge 过以后用（11-08 缺口 ②③④）。--sites 只放回这些网站的网页。
+    和 retry 的其他原因一样，没有「只列出、不改」的模式：放回只是把网页改回待抓，下一次 archive run 才发请求；
+    印出放回了几页、几种按钮。"""
     from nknu.archive.frontier import RETRY_MIN_PREFIX, Frontier
 
     if len(reason.strip()) < RETRY_MIN_PREFIX:
         typer.echo(f"原因开头至少要 {RETRY_MIN_PREFIX} 个字（例如 http_5、dns），免得把不相干的网址一起放回")
         raise typer.Exit(1)
+    if sites is not None and reason.strip() != "unpressed":
+        typer.echo("--sites 只给 unpressed 用（其他原因放回全部）")
+        raise typer.Exit(1)
+    site_keys = [x.strip() for x in sites.split(",") if x.strip()] if sites is not None else None
+    if site_keys is not None and not site_keys:  # as archive run (11-06): a list a script could not read is no site
+        typer.echo("--sites 是空的（一个网站键都没有：名单档读不到？），没有放回。要放回所有网站的就不要加 --sites。")
+        raise typer.Exit(1)
     root = _round1_root(dir)
     db = _archive_db(root)
     lock = _hold_for_writing(root)
     try:
-        if reason.strip() in ("post_failed", "click", "download", "data"):
+        if reason.strip() in ("post_failed", "mismatch:page", "click", "download", "data", "unpressed"):
             from nknu.archive.postback import Chains
 
             f = Frontier(db)
             chains = Chains(f, root)
             if reason.strip() == "post_failed":
-                n = chains.retry_post_failed()
+                n = chains.retry_walks("post_failed")
                 msg = f"从第 1 页重走：{n} 个回传失败的列表（列表页放回待抓，下一次 archive run 接着按）"
+            elif reason.strip() == "mismatch:page":
+                n = chains.retry_walks("mismatch:page")
+                msg = (f"从第 1 页重走：{n} 个按下一页回来的不是要的那一页的列表（列表页放回待抓，下一次 archive run "
+                       "重新 GET、接着按）")
             elif reason.strip() == "download":
                 lists, buttons = chains.retry_downloads()
                 msg = (f"放回重按：{lists} 个列表、{buttons} 个下载按钮（列表页放回待抓，下一次 archive run 重新 GET "
                        "列表、只按这些按钮）")
+            elif reason.strip() == "unpressed":
+                pages, keys = chains.retry_unpressed(site_keys)
+                msg = (f"放回重按：{pages} 个网页、{keys} 种该按没按的按钮（网页放回待抓，下一次 archive run 重新 GET、"
+                       "照现在的平台档案按；一种按钮可能是一整栏）")
             elif reason.strip() == "data":
                 n = chains.retry_data()
                 msg = f"放回再读：{n} 个网站的资料接口（cLv2 时间轴；下一次 archive run 用新的请求再读一次）"

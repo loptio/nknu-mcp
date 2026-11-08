@@ -132,6 +132,23 @@ DRIVE_READ_TYPES = ("application/vnd.google-apps.folder", "application/vnd.googl
                     "application/vnd.google-apps.form", "application/vnd.google-apps.document",
                     "application/vnd.google-apps.spreadsheet", "application/vnd.google-apps.presentation",
                     "application/vnd.google-apps.drawing")
+# programs and disk images, by a file's name (design §4.5: scope.MEDIA_EXT keeps exe, msi, dmg, iso and apk out of a
+# plain address; with them macOS's installer package, pkg): a Drive upload named so is listed only, its name and size,
+# as a video is (google_api.settle: media:drive_installer; _drive_settled: rule). Gap ⑪ of 11-08: the software pages
+# link their installers on Drive, which round one does not download 【Claude 的执行办法】
+INSTALLER_EXT = ("exe", "msi", "dmg", "pkg", "iso", "apk")
+
+
+def installer_name(name: str | None) -> bool:
+    """Whether a file's name ends in a program's or a disk image's extension (INSTALLER_EXT, any case)."""
+    stem, dot, ext = (name or "").strip().lower().rpartition(".")
+    return bool(dot and stem and ext in INSTALLER_EXT)
+
+
+def _installer_sql(name: str, mime: str) -> str:
+    """SQL: a Drive upload (no Google type) whose name says a program or a disk image (installer_name)."""
+    ends = " OR ".join(f"lower(trim({name})) LIKE '%_.{e}'" for e in INSTALLER_EXT)
+    return f"(coalesce({mime}, '') NOT LIKE '{GOOGLE_APPS}%' AND ({ends}))"
 # a landing that holds no page of its own: what the page that is sent there uses is written on that page (the Google
 # step's entries: drive:<id>, every file of a folder, a calendar's pages, a form), so that page is judged by them
 GOOGLE_LANDING_KIND0 = ("drive", "drive_list", "calendar", "form")
@@ -591,7 +608,8 @@ def _off_file(verdict: str) -> str:
 def _drive_settled(meta: str, level: int = 0) -> str:
     """SQL: what the Drive item whose metadata row id is `meta` came to, by google_api.settle()'s rules, for a redirect
     that ends on that row once the row itself is ok (review 10-26 phase 3): its content row's result; a video or a
-    sound listed only is `rule` (record 一·1: 只记档名和大小); a Google type nobody can export, `unhandled`; read and no
+    sound listed only is `rule` (record 一·1: 只记档名和大小), as is a program or a disk image by its name (INSTALLER_EXT,
+    gap ⑪ of 11-08); a Google type nobody can export, `unhandled`; read and no
     content row (a crawler bug), `not_discovered`. A shortcut's content is its target's metadata row: that one in turn,
     once (Drive's shortcuts never point at a shortcut; one that does is not_discovered, for a person)."""
     d, c = f"dz{level}", f"cz{level}"
@@ -603,6 +621,7 @@ def _drive_settled(meta: str, level: int = 0) -> str:
         target = f"WHEN coalesce({c}.kind0, {c}.kind) = 'drive' THEN 'not_discovered'"
     return f"""coalesce((SELECT CASE
         WHEN {d}.mime LIKE 'video/%' OR {d}.mime LIKE 'audio/%' THEN 'rule'
+        WHEN {_installer_sql(f'{d}.name', f'{d}.mime')} THEN 'rule'
         WHEN {c}.id IS NULL AND {d}.mime LIKE '{GOOGLE_APPS}%' AND {d}.mime NOT IN {_sql_list(DRIVE_READ_TYPES)}
              THEN 'unhandled'
         WHEN {c}.id IS NULL THEN 'not_discovered'
