@@ -12,11 +12,14 @@ import os
 import shutil
 import socket
 import tempfile
+from pathlib import Path
 
 import pytest
 import stamina
 
 _REAL: dict[tuple[object, str], object] = {}
+_TESTS = Path(__file__).resolve().parent
+_NO_MODELS_IN = (_TESTS / "content", _TESTS / "retrieval")
 
 
 def _loopback(host) -> bool:
@@ -108,6 +111,27 @@ def _network_only_for_live_tests(request):
         yield
     finally:
         _set(request.config._nknu_guard)
+
+
+@pytest.fixture(autouse=True)
+def no_real_models(request):
+    """In tests/content and tests/retrieval the four scoring-model loaders raise ModelUnavailable unless a test is
+    marked models: both models sit in this machine's cache, so a forgotten fake would load 2.3 GB. Code calls them
+    through the module (models.shared_embedder()), which is where they are replaced. The test's own monkeypatch holds
+    the replacement, so patches a test adds on top are undone in the right order."""
+    path = Path(str(request.node.path)).resolve()
+    if request.node.get_closest_marker("models") is not None or not any(path.is_relative_to(d) for d in _NO_MODELS_IN):
+        yield
+        return
+    from nknu.core import models
+
+    def refuse(*_args, **_kwargs):
+        raise models.ModelUnavailable("unit tests never load real models")
+
+    mp = request.getfixturevalue("monkeypatch")
+    for name in ("load_embedder", "load_reranker", "shared_embedder", "shared_reranker"):
+        mp.setattr(models, name, refuse)
+    yield
 
 
 @pytest.fixture(autouse=True)
