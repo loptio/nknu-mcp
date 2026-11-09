@@ -66,7 +66,8 @@ def test_four_columns_are_added_at_the_end_and_the_others_stay_where_they_were(t
     arch = make_archive(tmp_path / "archive")
     _got, out, rows, _readme = _export(arch, tmp_path)
     assert export.COLUMNS[:len(OLD_COLUMNS)] == OLD_COLUMNS
-    assert export.COLUMNS[len(OLD_COLUMNS):] == ("按钮编号", "最后修改时间", "日期来源", "来源")
+    # item 22's two came after them (test_export_item22_1109)
+    assert export.COLUMNS[len(OLD_COLUMNS):len(OLD_COLUMNS) + 4] == ("按钮编号", "最后修改时间", "日期来源", "来源")
     with open(out / "manifest.csv", encoding="utf-8-sig") as fh:
         assert tuple(fh.readline().rstrip("\r\n").split(",")) == export.COLUMNS
     data = _manifest(out)

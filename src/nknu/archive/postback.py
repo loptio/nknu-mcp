@@ -2366,6 +2366,26 @@ class Chains:
         return seen, edges
 
 
+def later_get_pages(entries: Iterable[Mapping]) -> set[int]:
+    """The pages a GET-paged list numbers 2 or more, from page_res entries (the export's 页别, blueprint item 22, part
+    3; lists.md §3.4 item 1): the GET pager links (role pager, how get) to a row (res_id), their words read as get_walk
+    reads them (norm, the brackets around a number left out): a row is a later page when the links to it show numbers,
+    every one of them 2 or more (none 1), or, showing none, a next page's word (links.NEXT_WORDS). One page at a time,
+    with no walk: on round one's archive (11-09) it named exactly the pages get_walk numbers 2 or more, of all 2,969
+    list pages the exports wrote (1,658 later pages, 165 first pages, 1,146 with no GET pager link). 【Claude 的执行办法】"""
+    texts: dict[int, list[str]] = defaultdict(list)
+    for e in entries:
+        if e.get("role") == "pager" and e.get("how") == "get" and e.get("res_id") is not None:
+            texts[e["res_id"]].append(norm(e.get("text")).strip("[]() "))
+    out: set[int] = set()
+    for rid, said in texts.items():
+        nums = [int(t) for t in said if t.isdecimal()]
+        nexts = any(w in t.lower() for t in said if not t.isdecimal() for w in links.NEXT_WORDS)
+        if (nums and 1 not in nums and min(nums) >= 2) or (not nums and nexts):
+            out.add(rid)
+    return out
+
+
 # a button the platform file says to press that no press covers (PageRead.unplanned): nobody presses it, so the page
 # waits for a person 【Claude 的执行办法】
 UNPRESSED = "unhandled:unpressed"

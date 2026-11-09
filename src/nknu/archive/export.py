@@ -48,6 +48,18 @@ each is done is 【Claude 的执行办法】):
 - what an export is made of (manifest.json's 导出依据: export_basis), and --skip-same, which writes nothing when the
   site's current export is made of the same things (the service's 没有变动);
 - --reuse: the attachments and pictures a previous export of the site holds, hard-linked instead of read again (Reuse).
+
+Blueprint item 22, parts 2 and 3 (the owner 11-09 「照这个做」 to the content session's proposal, relayed by it; the
+crawler session's decisions on the read-only survey research/crawler_lab_2026-11-04/item22_1109/lists.md; how each is
+done is 【Claude 的执行办法】 where neither says):
+- 列表上的日期 for every page a list row links, not only a platform's detail pages (Writer._list_dates; the order of
+  Writer._dates stays), from the rows of other sites' lists too: Snap.foreign_items, foreign_lists, foreign_presses
+  (sso.nknu.edu.tw/services's 11,186 activity pages are linked from 25 unit sites' 书表 lists only, lists.md §2.3),
+  read as the site's own lists are (_read_rows: Writer._foreign_rows), never written as rows of the site, and in
+  存档内容 (snapshot_digest: the site is exported again when such a list changes);
+- two columns at the end: 页别 (LIST_FIRST, LIST_PAGER or '': Writer._list_kinds) and 列表上的类别 (list_category: the
+  categories the rows that link the page state);
+- a page row that shares its file with an earlier row takes that row's dates (Writer._write; lists.md §4).
 """
 
 from __future__ import annotations
@@ -88,11 +100,16 @@ FOLDERS = {PAGE: "pages", FILE: "files", IMAGE: "images", DATA: "data"}
 # position: a column is only ever added at the end
 COLUMNS = ("序号", "类型", "网址", "最后落地网址", "本地档案", "标题", "网页上写的日期", "日期原文", "完整度", "缺什么", "结果",
            "原因", "分类", "原因代码", "抓取时间", "大小", "sha256", "格式", "链到它的网页", "链接文字", "怎么来的", "备注",
-           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源")
+           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源", "页别", "列表上的类别")
 # 日期来源: which rule found a page's 网页上写的日期 (Writer._dates, in this order): the platform's date field (own_date),
-# the date the notice's row states on its list (Writer.list_dates; P75: the notices a WebIdx row's press brought have
-# their list's address, which no detail path names), the first labelled date in the page's words
+# the date a list row that links the page states (Writer.list_dates; P75: the notices a WebIdx row's press brought have
+# their list's address, which no detail path names; blueprint item 22: any page a row links, the row of this site's
+# list or of another site's), the first labelled date in the page's words
 OWN_FIELD, LIST_ROW, PAGE_WORDS = "详细页的日期栏", "列表上的日期", "网页上的日期字眼"
+# 页别 (blueprint item 22, part 3; the names the content session proposed, the crawler session's rule, lists.md §3.1):
+# a list's first page (its platform reads a list grid there), and a page its pager brought or a GET-paged list's later
+# page; '' for every other page (a table of content with a pager, a page no platform reads a list grid on, a detail)
+LIST_FIRST, LIST_PAGER = "列表", "列表翻页"
 # 来源 of a row whose file is the 10-24 archive's copy (--old-copies, item ⑦: a gap row with a good copy there; a
 # redirect sharing that file too); '' is this round's archive
 ORIGIN_OLD = "10-24 旧存档"
@@ -401,6 +418,8 @@ class Item:
     # not decode (own decode): judged again as the page it is once the export reads it whole (Writer._read_whole)
     own: str = ""  # a page's result the views judge it by: its own, or a redirect's landing page's
     linked: bool = False  # its file is a hard link to the previous export's (--reuse)
+    list_kind: str = ""  # 页别: LIST_FIRST, LIST_PAGER or '' (Writer._list_kinds; blueprint item 22, part 3)
+    list_category: str = ""  # 列表上的类别: list_category() of the rows that link it (Writer._list_dates; part 2)
 
     def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
         """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
@@ -415,7 +434,8 @@ class Item:
                 "格式": self.sniff, "链到它的网页": _joined((page_url(p) for p in self.pages), cap, "页"),
                 "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
                 "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref, "按钮编号": self.row_key,
-                "最后修改时间": self.modified, "日期来源": self.date_from, "来源": self.origin}
+                "最后修改时间": self.modified, "日期来源": self.date_from, "来源": self.origin,
+                "页别": self.list_kind, "列表上的类别": self.list_category}
 
     def result_words(self) -> str:
         """结果: the result in words; a gone with a reason of its own (a file sent to the school's home page, 11-03)
@@ -663,6 +683,13 @@ class Snap:
     press_to: dict[int, int]  # a press: the url row its answer named (action.location)
     ready: Ready | None = None  # whether the site could be exported, and its data time (资料截至)
     ready_error: str | None = None  # why ready is None
+    # other sites' lists whose rows link the site's pages (blueprint item 22, part 2; lists.md §2.3): the item entries
+    # of their list pages that name a row of the site (page_id, res_key, res_id), those list pages (url_result rows by
+    # id) and their pager presses (action_result rows by id). Read for the rows' dates and categories, never rows of
+    # the export
+    foreign_items: list[dict] = field(default_factory=list)
+    foreign_lists: dict[int, dict] = field(default_factory=dict)
+    foreign_presses: dict[int, dict] = field(default_factory=dict)
 
 
 def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
@@ -765,11 +792,33 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
             site_ready.state = status.state if status is not None else site_ready.state
         except sqlite3.OperationalError as exc:
             ready_error = f"{type(exc).__name__}: {exc}"
+        foreign_items, foreign_lists, foreign_presses = _foreign(conn, site)
     finally:
         conn.execute("COMMIT")
     return Snap(dict(plan) if plan is not None else None, rows, page_ids, pc, pres, raw_res, actions, walks, drive,
                 drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to,
-                site_ready, ready_error)
+                site_ready, ready_error, foreign_items, foreign_lists, foreign_presses)
+
+
+def _foreign(conn: sqlite3.Connection, site: str) -> tuple[list[dict], dict[int, dict], dict[int, dict]]:
+    """The other sites' lists whose rows link the site's rows, in the caller's transaction (blueprint item 22, part 2,
+    across sites; the survey's query, lists.md §2.8 item 2, 0.1 to 0.7 seconds on round one's archive): the item
+    entries of list pages another site owns (or none) that name a row of this site, in their key's order; those list
+    pages' url_result rows; the pager presses of their chains (action_result rows: a row on a page the pager brought
+    has its entry on the list page too, postback.Chains._plan)."""
+    items = [dict(r) for r in conn.execute(
+        """SELECT p.page_id, p.res_key, p.res_id FROM page_res p JOIN url l ON l.id = p.page_id
+           WHERE p.role = 'item' AND p.res_key LIKE 'item:%' AND p.res_id IN (SELECT id FROM url WHERE owner_site = ?)
+             AND coalesce(l.owner_site, '') != ? ORDER BY p.page_id, p.res_key""", (site, site))]
+    lists = _rows_by_id(conn, {r["page_id"] for r in items})
+    presses: dict[int, dict] = {}
+    ids = sorted(lists)
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for a in conn.execute(f"SELECT * FROM action_result WHERE kind = 'pager' AND list_id IN "
+                              f"({','.join('?' * len(part))})", part):
+            presses[a["id"]] = dict(a)
+    return items, lists, presses
 
 
 # ---------------------------------------------------------------- the items
@@ -845,6 +894,22 @@ def _last_part(url: str) -> str:
 
 def _worst(results) -> str:
     return min(results, key=lambda x: (_BUCKET_RANK.get(monitor.bucket(x), -1), x))
+
+
+def best_presses(actions: Iterable[dict]) -> list[dict]:
+    """The press that stands for each (list, kind, row key) of these presses (design §7.5 step 9: a newer press of a
+    row stands for the older ones), one each: of that key's presses in (epoch, id) order, the first done one, else the
+    latest one not superseded, else the latest. In the order each key's first press comes in that order, which is no
+    order of the chosen ones: the callers sort them. Builder._presses lists them; Writer._foreign_rows reads the pager
+    pages of other sites' lists by them (blueprint item 22)."""
+    best: dict[tuple, dict] = {}
+    for a in sorted(actions, key=lambda a: (a["epoch"], a["id"])):
+        key = (a["list_id"], a["kind"], a["row_key"])
+        old = best.get(key)
+        if old is None or old["state"] != "done" and (a["state"] == "done" or a["state"] != "superseded"
+                                                        or old["state"] == "superseded"):
+            best[key] = a
+    return list(best.values())
 
 
 class Builder:
@@ -1056,14 +1121,8 @@ class Builder:
 
     # -- what the list pages' buttons brought (design §7.5): a newer press of a row stands for the older ones
     def _presses(self) -> None:
-        best: dict[tuple, dict] = {}
-        for a in sorted(self.s.actions.values(), key=lambda a: (a["epoch"], a["id"])):
-            key = (a["list_id"], a["kind"], a["row_key"])
-            old = best.get(key)
-            if old is None or old["state"] != "done" and (a["state"] == "done" or a["state"] != "superseded"
-                                                            or old["state"] == "superseded"):
-                best[key] = a
-        for a in sorted(best.values(), key=lambda a: (a["list_id"], a["kind"] != "pager", a["step"], a["id"])):
+        for a in sorted(best_presses(self.s.actions.values()),
+                        key=lambda a: (a["list_id"], a["kind"] != "pager", a["step"], a["id"])):
             if a["state"] == "superseded" or a["result"] == "redirect":
                 continue  # a redirect's target is the url row of its Location, listed as a resource
             if a["kind"] == "click" and a["result"] == "ok":
@@ -1627,6 +1686,57 @@ def list_date(rows: Iterable[tuple[int, postback.Row]]) -> tuple[str, str, str] 
                       + ("取多数的" if len(tied) == 1 else "几个日期一样多，取最早的"))
 
 
+def list_category(rows: Iterable[tuple[int, postback.Row]]) -> tuple[str, str] | None:
+    """列表上的类别 (blueprint item 22, part 2; the rule of lists.md §2.5, the crawler session's): the categories the
+    list rows that point to one page state (Row.category: what the platform's category cell holds; c.nknu's lists
+    name none), each row once ((its list, its key), as list_date counts them), each category once in the spelling first
+    seen (two compared as postback.norm reads them), in the order seen, joined by 「 | 」, as (that, a note for 备注):
+    the note '' when there is one, else it names them all and counts the rows that state one (the note's words:
+    【Claude 的执行办法】). None when no row states a category. On round one's archive 6 notices of sso.nknu.edu.tw/news
+    have two: their own site's lists state one, a list of news.nknu.edu.tw or of a unit site (web/619, web/49) another,
+    each in its own site's words; Writer._list_dates gives the page's own site's rows first, so its category comes first
+    (the replay review of 11-09; lists.md §2.5 had counted none)."""
+    seen: set[tuple[int, str]] = set()
+    cats: dict[str, str] = {}
+    stated = 0
+    for lid, row in rows:
+        if (lid, row.key) in seen:
+            continue
+        seen.add((lid, row.key))
+        key = postback.norm(row.category)
+        if not key:
+            continue
+        stated += 1
+        cats.setdefault(key, row.category)
+    if not cats:
+        return None
+    said = list(cats.values())
+    if len(said) == 1:
+        return said[0], ""
+    return " | ".join(said), f"列表上有 {stated} 行指到它，写的类别不一样：{'、'.join(said)}，都列出"
+
+
+def _read_rows(lst: dict, page_url: str, text: str, step: int | None) -> postback.PageRead | None:
+    """The rows of a list page or of a page its pager brought, read as the crawler read them for their presses
+    (postback.read_page with the list's site and the list's address, which every row key is of) with the platform of
+    the list's site, else of the page's own address (图资处's WebIdx lists: lis's own profile has no rows): the first
+    reading that finds the list grid (PageRead.rowset; its content says whether the grid is a table of content), None
+    when none does. page_url: a list page's own address, the address a pager press's answer was archived at. An error
+    of the reading is the caller's to say. Writer._rows_of reads the site's own lists by it, Writer._foreign_rows other
+    sites' lists that link its pages (blueprint item 22, part 2; lists.md §2.8 item 5)."""
+    owner = lst.get("owner_site") or scope.site_key(lst["url"])
+    tried: set[str] = set()
+    for prof in (profiles.profile_for_site(owner), profiles.profile_for(page_url)):
+        if prof is None or prof.name in tried:
+            continue
+        tried.add(prof.name)
+        pr = postback.read_page(prof, page_url, text, site=owner, list_url=lst["url"],
+                                page=links.PageLinks(page_url), step=step)
+        if pr.rowset is not None:
+            return pr
+    return None
+
+
 class Writer:
     def __init__(self, root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap,
                  reuse: Reuse | None = None, old: OldCopies | None = None):
@@ -1642,6 +1752,13 @@ class Writer:
         self.list_dates: dict[str, tuple[str, str]] = {}
         self.list_notes: dict[str, str] = {}  # rows that disagree on a notice's date: what 备注 says
         self.list_rows: list[tuple[int, str, tuple[postback.Row, ...]]] = []  # (list id, the page's address, rows)
+        # 页别 (blueprint item 22, part 3): each list page's and pager page's reading as written (_read_rows: its list
+        # grid and whether that is a table of content), by item key; None when no platform reads a list grid there
+        self.reads: dict[str, postback.PageRead | None] = {}
+        # other sites' list pages and pager pages read for their rows (_foreign_rows), by kind (列表页, 翻页), and
+        # those that could not be read, by why: the README and the command say them
+        self.foreign_got: Counter = Counter()
+        self.foreign_missed: Counter = Counter()
         # what each page written states of its date: its date field's (own_date), else the first labelled date in
         # its words (None when its field has one: never needed then)
         self.found: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]] = {}
@@ -1694,6 +1811,40 @@ class Writer:
                 base = self.titles.get(it.list_id)
                 if base:
                     it.title = f"{base}（第 {it.step} 页）"
+        self._list_kinds()
+
+    def _list_kinds(self) -> None:
+        """页别 of each page row (blueprint item 22, part 3: the owner 11-09 「照这个做」 to the content session's
+        proposal; the crawler session's rule on lists.md §3.1), once every file is written (reads):
+        - LIST_FIRST: a page of the site the crawler calls a list (page_role list) whose reading as written finds the
+          platform's list grid (reads: _read_rows) that is no table of content, that is no later page of a GET-paged
+          list (postback.later_get_pages), and that is no platform's detail page (profiles.detail_of none, or neither
+          its title area nor its text area on the page, NO_AREA: then it is the list it shows);
+        - LIST_PAGER: a page a pager press brought (kind pager) unless its own reading, or with none its list's, is a
+          table of content (a press with neither reading is a pager's still: the crawler pressed it as one, 【Claude 的
+          执行办法】); and such a list page a GET-paged list numbers 2 or more;
+        - '': every other row. A table of content with a pager (成教所's honor roll: its words are only there) and a
+          page no platform reads a list grid on (电机系's: the crawler calls it a list by its GET pager links alone; its
+          words may be only there) stay blank, as does a list a redirect stands for and one whose file another row
+          wrote (neither is read: _rows_of, _write)."""
+        later = postback.later_get_pages(self.s.raw_res)
+        for it in self.items.values():
+            if it.type != PAGE:
+                continue
+            if it.kind == "pager":
+                pr = self.reads.get(it.key)
+                if pr is None and it.list_id is not None:
+                    pr = self.reads.get(f"u{it.list_id}")
+                if pr is None or not pr.content:
+                    it.list_kind = LIST_PAGER
+            elif it.page_role == "list" and it.key[:1] == "u" and it.key[1:].isdigit():
+                pr = self.reads.get(it.key)
+                if pr is None or pr.content:
+                    continue
+                if int(it.key[1:]) in later:
+                    it.list_kind = LIST_PAGER
+                elif profiles.detail_of(it.url) is None or it.empty_area == NO_AREA:
+                    it.list_kind = LIST_FIRST
 
     def _read_whole(self) -> None:
         """Item ⑧ (11-08, asked by the content session): a page the crawler could not decode (结果 编码有问题, 要人看)
@@ -1735,6 +1886,14 @@ class Writer:
         if first is not None:
             it.path, it.shared = first.path, True
             it.modified = it.modified or first.modified
+            if it.type == PAGE and it.page_role != "list" and it.kind != "pager":
+                # what the page states of its date is the same page's (blueprint item 22, the crawler session's
+                # decision 5 on lists.md §4: such rows had no date at all, 105 of them on 18 sites, as uk's link items
+                # to one page; _old_copy does the same), and its own list rows still come before its words (_dates).
+                # A file a list's row wrote has nothing kept of it (a list states no date of its own): the row has its
+                # own list rows' date alone, never that page's words (the rules review of 11-09). Never a list's row
+                # 【Claude 的执行办法】
+                self.found[it.key] = self.found.get(first.key, (None, None))
             it.notes.append("和清单里另一行是同一个档")
             return
         if self._link(it):
@@ -1902,37 +2061,106 @@ class Writer:
 
     # -- the pages' dates: the platform's field, the notice's list row, the page's words
     def _rows_of(self, it: Item, url: str, text: str) -> None:
-        """The rows of a list page or of a page its pager brought (list_rows), read as the crawler read them for their
-        presses (postback.read_page with the list's site and the list's address, which every row key is of) with the
-        platform of the list's site, else of the page's own address (图资处's WebIdx lists: lis's own profile has no
-        rows). A list a redirect stands for is not read: its file is the page it lands on."""
+        """The rows of a list page or of a page its pager brought (list_rows), read as the crawler read them
+        (_read_rows), and the reading kept for 页别 (reads). A list a redirect stands for is not read: its file is the
+        page it lands on."""
         lst = self.s.rows.get(it.list_id) if it.list_id is not None else None
         if lst is None or it.landing is not None:
             return
         page_url = url if it.kind == "pager" else lst["url"]
-        owner = lst.get("owner_site") or scope.site_key(lst["url"])
-        tried: set[str] = set()
-        for prof in (profiles.profile_for_site(owner), profiles.profile_for(page_url)):
-            if prof is None or prof.name in tried:
+        try:
+            pr = _read_rows(lst, page_url, text, it.step)
+        except Exception as exc:  # noqa: BLE001 - its rows go unread, said in 备注; never an export stopped by it
+            it.notes.append(f"读这一页列表上的行出错（{type(exc).__name__}），列表上写的日期、类别没用上")
+            self.reads[it.key] = None
+            return
+        self.reads[it.key] = pr
+        if pr is not None:
+            self.list_rows.append((it.list_id, page_url, pr.rows))
+
+    def _foreign_rows(self) -> None:
+        """The rows of other sites' lists that link this site's pages (blueprint item 22, part 2, across sites; the
+        crawler session's decision 2 on lists.md §2.3): each of their list pages the site's own export of them would
+        read (a page that came back with its body, page_role list) and each page their pager brought that it would
+        write (best_presses: done, its answer a page in the WARC), read with the same platform reading as this site's
+        own lists (_read_rows), their rows added to list_rows. Nothing of them is written or listed as a row of this
+        site; a page that cannot be read is counted (foreign_missed, said in the README) and passed over, never an
+        export stopped by it: one whose record cannot be read or is not the one recorded, one no list grid is read on,
+        and one that came to no page this round although its own site's export lists it (a list page, a pager press
+        brought nothing: failed, still queued; the contract review of 11-09 found these passed over uncounted). A
+        press a newer one stands for, or one answered with a redirect, is no page of its list's there either
+        (Builder._presses) and is not counted. Which of their pages are read (those the other site's own export reads),
+        and the counting: 【Claude 的执行办法】"""
+        s = self.s
+        for lid in sorted(s.foreign_lists):
+            lst = s.foreign_lists[lid]
+            if lst.get("page_role") != "list" or lst.get("kind") != "page" or _expected_file(lst):
+                continue  # no list page in its own site's export either: no rows are read on it there
+            if lst["result"] in BODY_RESULTS and _has_body(lst):
+                self._foreign_page(lst, lst, None, "列表页")
+            else:
+                self.foreign_missed[_unread_words(lst["result"])] += 1
+        pressed = []
+        for a in best_presses(s.foreign_presses.values()):
+            if a["kind"] != "pager" or a["state"] == "superseded" or a["result"] == "redirect":
                 continue
-            tried.add(prof.name)
-            try:
-                pr = postback.read_page(prof, page_url, text, site=owner, list_url=lst["url"],
-                                        page=links.PageLinks(page_url), step=it.step)
-            except Exception as exc:  # noqa: BLE001 - its rows go unread, said in 备注; never an export stopped by it
-                it.notes.append(f"读这一页列表上的行出错（{type(exc).__name__}），列表上写的日期没用上")
-                return
-            if pr.rowset is not None:
-                self.list_rows.append((it.list_id, page_url, pr.rows))
-                return
+            if (a["result"] in BODY_RESULTS and a["status"] == 200 and a["warc"] and a["warc_offset"] is not None
+                    and a["sniff"] == "html"):
+                pressed.append(a)
+            else:
+                self.foreign_missed[_unread_words(a["result"])] += 1
+        for a in sorted(pressed, key=lambda a: (a["list_id"], a["step"], a["id"])):
+            lst = s.foreign_lists.get(a["list_id"])
+            if lst is not None:
+                self._foreign_page(lst, a, a["step"], "翻页")
+
+    def _foreign_page(self, lst: dict, rec: dict, step: int | None, what: str) -> None:
+        """One page of another site's list (rec: its url_result row, or its pager press's action_result row), read
+        from the WARC as the export reads the pages it writes (_write, _page: the sha256 the archive records, the
+        crawler's decoding, else redecode), its rows read by _read_rows: a list page at the list's address, a pager's
+        answer at the address it was archived at (as _rows_of reads the site's own)."""
+        try:
+            url, _status, headers, body = postback.read_response(self.root, rec["warc"], rec["warc_offset"])
+        except (OSError, ValueError):
+            self.foreign_missed["存档里读不回来"] += 1
+            return
+        if rec.get("sha256") and hashlib.sha256(body).hexdigest() != rec["sha256"]:
+            self.foreign_missed["存档内容和纪录的 sha256 对不上"] += 1
+            return
+        ctype = headers.get("content-type") or rec.get("ctype")
+        try:
+            text = decode_body(body, ctype)
+        except DecodeError:
+            text = redecode(body, ctype)[0]
+        page_url = url if step is not None else lst["url"]
+        try:
+            pr = _read_rows(lst, page_url, text, step)
+        except Exception:  # noqa: BLE001 - counted, said in the README; never an export stopped by it
+            self.foreign_missed["读列表上的行出错"] += 1
+            return
+        if pr is None:
+            self.foreign_missed["读不出列表格子"] += 1
+            return
+        self.foreign_got[what] += 1
+        self.list_rows.append((lst["id"], page_url, pr.rows))
 
     def _list_dates(self) -> None:
-        """list_dates: the date the site's list rows state for each notice written (list_date), the rows that point to
-        it being: for a notice a row's press brought, its row (its list, Row.key = the press's row_key, as the crawler
-        keyed it); for a notice got by GET (a page its platform calls a detail: profiles.detail_of), the row its
-        page_res item entry names (its list and key) and every row whose plain link, joined to the address of the page
-        it is on as the crawler joins it (scope.canonical), is the notice's 网址. A page that is no row of a list has
-        none."""
+        """list_dates: the date the list rows state for each page written (list_date), and 列表上的类别 of each page
+        (list_category: Item.list_category, a note when the rows disagree), the rows that point to it being: for a
+        notice a row's press brought, its row (its list, Row.key = the press's row_key, as the crawler keyed it); for a
+        page got by GET (any page, blueprint item 22, part 2: not only one its platform calls a detail, as c.nknu's
+        activity and forum pages are not), the row its page_res item entry names (its list and key) and every row whose
+        plain link, joined to the address of the page it is on as the crawler joins it (scope.canonical), is the page's
+        网址. The item entry is the crawler's own record of which page a row links (Chains._plan: the link as the crawler
+        read it), the plain link the export's own reading of it: on round one's archive both name the same rows (the
+        rules review of 11-09), and either alone matches. The rows are those of the site's own lists and of other sites'
+        lists that link its pages (_foreign_rows, their item entries Snap.foreign_items), the site's own first (the
+        page's own site's category comes first in 列表上的类别), each in one order whatever order the archive hands them in
+        (the item entries by their lists' url row ids: page_res is read with no order of its own, the contract review of
+        11-09). A page that is no row of a list has none; a list's own page and a page its pager brought have none (each
+        of their rows is another page's). The category is set on a row with no file too (it is the list row's, whatever
+        became of the page), its date only on a page written (_dates) 【Claude 的执行办法】."""
+        self._foreign_rows()
         by_key: dict[tuple[int, str], list[tuple[int, postback.Row]]] = defaultdict(list)
         by_href: dict[str, list[tuple[int, postback.Row]]] = defaultdict(list)
         for lid, base, rows in self.list_rows:
@@ -1943,18 +2171,22 @@ class Writer:
         if not by_key:
             return
         entries: dict[int, list[tuple[int, str]]] = defaultdict(list)
-        for r in self.s.raw_res:
-            if r["role"] == "item" and r["res_id"] is not None and (r["res_key"] or "").startswith("item:"):
-                entries[r["res_id"]].append((r["page_id"], r["res_key"][len("item:"):]))
+        own = sorted((r["page_id"], r["res_key"], r["res_id"]) for r in self.s.raw_res
+                     if r["role"] == "item" and r["res_id"] is not None and (r["res_key"] or "").startswith("item:"))
+        for page_id, res_key, res_id in own:
+            entries[res_id].append((page_id, res_key[len("item:"):]))
+        for r in self.s.foreign_items:  # item entries every one of them, naming a row of this site, in that order
+            entries[r["res_id"]].append((r["page_id"], r["res_key"][len("item:"):]))
         for it in self.items.values():
             if it.type != PAGE or it.page_role == "list" or it.kind == "pager":
                 continue
             if it.kind == "detail":
                 rows = (by_key.get((it.list_id, it.row_key))
                         or by_key.get((it.list_id, _PRESS_N.sub("", it.row_key)), []))
-            elif it.key[:1] == "u" and it.key[1:].isdigit() and profiles.detail_of(it.url) is not None:
+            elif it.key[:1] == "u" and it.key[1:].isdigit():
                 rows = [x for lid, k in entries.get(int(it.key[1:]), ()) for x in by_key.get((lid, k), ())]
                 rows += by_href.get(it.url, [])
+                rows.sort(key=lambda x: x[0] in self.s.foreign_lists)  # stable: the site's own lists' rows first
             else:
                 continue
             got = list_date(rows)
@@ -1963,6 +2195,11 @@ class Writer:
                 self.list_dates[it.key] = (day, raw)
                 if note:
                     self.list_notes[it.key] = note
+            cat = list_category(rows)
+            if cat is not None:
+                it.list_category, note = cat
+                if note:
+                    it.notes.append(note)
 
     def _take_list_date(self, it: Item) -> None:
         (it.date, it.date_raw), it.date_from = self.list_dates[it.key], LIST_ROW
@@ -1972,7 +2209,8 @@ class Writer:
     def _dates(self) -> None:
         """网页上写的日期 of each page written (日期来源 says which): its platform's date field, else the date its row
         states on its list (P75: SSO WebIdx's notices a row's press brought have their list's address, which no
-        detail path names), else the first labelled date in its words (its content area, then all of it)."""
+        detail path names; blueprint item 22: any page a list row links, of this site's lists or another's), else the
+        first labelled date in its words (its content area, then all of it)."""
         self._list_dates()
         for key, (own, words) in self.found.items():
             it = self.items[key]
@@ -2078,20 +2316,24 @@ def _canon(x):
 def snapshot_digest(snap: Snap) -> str:
     """存档内容 of 导出依据: the sha256 (its first 16 hex digits) of everything the export read of the site (Snap): its
     rows as the views judge them, its pages' resources and lists, its presses and walks, its Drive items, where its
-    redirects land, its state as the dashboard says it and whether it can be exported. What changes an export with no
-    fetch changes it too: a person's mark (nknu archive review), a rejudge, a hand edit of the archive (11-08's
-    album pictures), another judgement by a newer program (review 11-08)."""
+    redirects land, its state as the dashboard says it and whether it can be exported, and the other sites' lists that
+    link its pages (their item entries, list pages and pager presses: blueprint item 22, the crawler session's
+    decision 2: the site is exported again when one of them changes). What changes an export with no fetch changes it
+    too: a person's mark (nknu archive review), a rejudge, a hand edit of the archive (11-08's album pictures), another
+    judgement by a newer program (review 11-08)."""
     st = snap.status
     parts = {"plan": snap.plan, "rows": snap.rows, "pc": snap.pc, "actions": snap.actions, "walks": snap.walks,
              "drive": snap.drive, "drive_of_content": snap.drive_of_content, "landing": snap.landing,
              "orphans": snap.orphans, "press_to": snap.press_to, "videos": snap.videos,
              "other_site_items": snap.other_site_items, "page_ids": snap.page_ids,
              "status": [st.state, st.why, st.warnings] if st is not None else snap.status_error,
-             "ready": snap.ready.as_dict() if snap.ready is not None else snap.ready_error}
+             "ready": snap.ready.as_dict() if snap.ready is not None else snap.ready_error,
+             "foreign_lists": snap.foreign_lists, "foreign_presses": snap.foreign_presses}
     h = hashlib.sha256()
     for name in sorted(parts):
         h.update(f"{name}\0{json.dumps(_canon(parts[name]), sort_keys=True, ensure_ascii=False)}\0".encode())
-    for name, rows in (("pres", snap.pres), ("raw_res", snap.raw_res)):  # in no order of their own
+    # in no order of their own
+    for name, rows in (("pres", snap.pres), ("raw_res", snap.raw_res), ("foreign_items", snap.foreign_items)):
         h.update(f"{name}\0".encode())
         for line in sorted(json.dumps(_canon(r), sort_keys=True, ensure_ascii=False) for r in rows):
             h.update(line.encode() + b"\n")
@@ -2157,7 +2399,7 @@ def export_site(root: Path, site: str, out: Path, *, now: float | None = None, r
         writer = Writer(root, out, site, items, snap, old, copies)
         writer.run()
         result = _finish(root, out, site, items, snap, builder, pid, now, old, copies, writer.old_skipped, basis,
-                         writer.old_not_needed)
+                         writer.old_not_needed, (writer.foreign_got, writer.foreign_missed))
     except BaseException as exc:
         (out / "导出没有完成.txt").write_text(f"导出到一半出错了，这个资料夹不完整，请删掉重导：{type(exc).__name__}: {exc}\n",
                                            encoding="utf-8")
@@ -2168,7 +2410,7 @@ def export_site(root: Path, site: str, out: Path, *, now: float | None = None, r
 def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap, builder: Builder, pid,
             now: float, old: Reuse | None = None, copies: OldCopies | None = None,
             skipped: Counter | None = None, basis: dict[str, str] | None = None,
-            not_needed: Counter | None = None) -> Result:
+            not_needed: Counter | None = None, foreign: tuple[Counter, Counter] | None = None) -> Result:
     rank = {t: i for i, t in enumerate(TYPES)}
     ordered = sorted(items.values(), key=lambda i: (rank[i.type], not i.path, i.path or "~", i.order))
     urls = {uid: r["url"] for uid, r in snap.rows.items()}
@@ -2211,7 +2453,7 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
             "栏位": list(COLUMNS), "项目": [it.row(n, page_url) for n, it in enumerate(ordered, start=1)]}
     (out / "manifest.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     readme = _readme(root, site, name, now, snap, state_words, pid, ordered, counts, missing_items, builder, items,
-                     left, old, copies, skipped, not_needed)
+                     left, old, copies, skipped, not_needed, foreign)
     (out / "README.md").write_text(readme, encoding="utf-8")
     running = f"；爬虫正在跑（pid {pid}），清单里还有 {left.words()}" if pid is not None else ""
     by_bucket = Counter(it.bucket for it in missing_items)
@@ -2230,6 +2472,8 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
                      f"上一次导出 {old.folder} 没有用上：{old.why}，附件和图片都从存档读")
     filled = [it for it in ordered if it.filled]
     lines += _old_lines(copies, filled, skipped or Counter(), not_needed or Counter())
+    if (said := _foreign_words(foreign)):
+        lines.append(said)
     lines.append(f"先看 {out / 'README.md'}；清单 manifest.csv，没抓到的 missing.csv")
     return Result(out, site, name, state, state_words, pid is not None, left.urls, left.presses, counts,
                   missing_by, lines, left.other, ready, linked, len(filled))
@@ -2251,6 +2495,32 @@ def _old_lines(copies: OldCopies | None, filled: list[Item], skipped: Counter, n
         out.append(f"10-24 旧存档也有副本、这一轮的结果却不在要补的范围的 {sum(not_needed.values())} 行，照这一轮的（这一轮的结果："
                    + "、".join(f"{words} {n}" for words, n in not_needed.most_common()) + "）")
     return out
+
+
+def _unread_words(result: str | None) -> str:
+    """Why a page of another site's list was not read for its rows (Writer._foreign_rows), for the README: what it came
+    to this round as the dashboard says it (outcome.RESULT_LABEL; the other site's own export says the same in 结果),
+    or, when it came back with a page, that the archive holds no page of it to read (a status other than 200, an answer
+    that is no web page) 【Claude 的执行办法】."""
+    if result in BODY_RESULTS:
+        return "存档里没有它的网页"
+    return f"这一轮的结果是「{outcome.RESULT_LABEL.get(result or '', result or '')}」"
+
+
+def _foreign_words(foreign: tuple[Counter, Counter] | None) -> str:
+    """What the README and the command say of the other sites' lists read for the site's pages (Writer._foreign_rows,
+    blueprint item 22, part 2): how many of their pages were read, by kind, and how many could not be, by why; '' when
+    no other site's list links the site. 【Claude 的执行办法】"""
+    got, missed = foreign if foreign is not None else (Counter(), Counter())
+    if not got and not missed:
+        return ""
+    said = (f"这个网站的网页也有别的网站的列表指到（例如单位网站的书表指到 SSO 的活动页）：读了那些列表 {sum(got.values())} 页"
+            + (f"（{'、'.join(f'{k} {n}' for k, n in got.items())}）" if got else "")
+            + "，它们的行写的日期、类别照「日期怎么来的」第 2 条用上；那些列表是别的网站的，不列进这份清单")
+    if missed:
+        said += (f"；另有 {sum(missed.values())} 页读不出（{'、'.join(f'{k} {n}' for k, n in missed.most_common())}），"
+                 "那几页上的行没用上")
+    return said
 
 
 def _by_category(items: list[Item]) -> str:
@@ -2335,7 +2605,7 @@ def _judged(items: list[Item], verb: str) -> str:
 def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_words: str, pid, ordered: list[Item],
             counts: dict, missing_items: list[Item], builder: Builder, items: dict[str, Item], left: Left,
             old: Reuse | None = None, copies: OldCopies | None = None, skipped: Counter | None = None,
-            not_needed: Counter | None = None) -> str:
+            not_needed: Counter | None = None, foreign: tuple[Counter, Counter] | None = None) -> str:
     st = snap.status
     why = list(getattr(st, "why", []) or []) if st is not None else [f"网站状态算不出来：{snap.status_error}"]
     warnings = list(getattr(st, "warnings", []) or []) if st is not None else []
@@ -2484,6 +2754,11 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
                    "导出里）。")
     else:
         out.append("这个网站没有列表的翻页纪录（列表页的完整度栏会写「列表没核对」）。")
+    kinds = Counter(i.list_kind for i in ordered if i.list_kind)
+    if kinds:
+        out += ["", (f"「页别」栏标了「{LIST_FIRST}」{kinds[LIST_FIRST]} 行、「{LIST_PAGER}」{kinds[LIST_PAGER]} 行（列表的"
+                     "第一页；翻页按钮翻出来的页和用网址翻页的列表的第 2 页以后）。有翻页的内容表格（荣誉榜这类）、平台设定"
+                     "读不出列表格子、只靠网址翻页的网页不标：它们的内容可能只在那几页上。")]
     if empty:
         out += ["", "## 空的公告页", "",
                 (f"这 {len(empty)} 页是平台的公告页，网页上公告的标题栏和内文栏却找不到或是空的：多半是学校删掉的公告，"
@@ -2507,6 +2782,7 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
             "云端硬盘的档名或网址最后一段，中文照留，去掉档名不能用的字元。"), "",
             "## 清单栏位", ""]
     out += [f"- **{k}**：{v}" for k, v in COLUMN_HELP.items()]
+    foreign_said = _foreign_words(foreign)
     out += ["", "## 日期怎么来的", "",
             ("「网页上写的日期」是**程序找的**，依序取第一个找到的："), "",
             ("1. **公告页上平台自己的日期栏**：c.nknu 公告页上「公告日期」那一栏、SSO 公告中心的「公告時間」（写的是开始到"
@@ -2515,10 +2791,11 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
              "WordPress（视设系、美术系）的日期栏只写日和月，年份从文章网址里的 /年/月/日/ 来，两个对得上才用。日期栏多半"
              "只写日期、没有标签：它上一层（或再上一层）有写同一天的标签（例如「公告日期：」「公告時間：」），「日期原文」就"
              "连标签一起记，否则只有日期栏里的字。"),
-            ("2. **公告在列表上那一行写的日期**：读不到日期栏（学校删掉的公告只剩模板），或公告是按列表上的按钮才出来的"
-             "（SSO 单位网站的消息，网址是列表网址加 #按钮=），就用列表上指到它的那一行的日期（列表的日期栏；c.nknu 的列表"
-             "没有日期栏，取那一行文字里第一个四位数年份的日期）。好几行指到同一则、写的日期又不一样，取多数的，一样多取"
-             "最早的，「备注」栏写明。"),
+            ("2. **列表上指到它的那一行写的日期**：读不到日期栏（学校删掉的公告只剩模板）、网页本来就没有日期栏（讨论区的"
+             "文章、活动花絮、相簿这类），或公告是按列表上的按钮才出来的（SSO 单位网站的消息，网址是列表网址加 #按钮=），"
+             "只要列表上有一行指到它，就用那一行的日期（列表的日期栏；c.nknu 的列表没有日期栏，取那一行文字里第一个四位数"
+             "年份的日期）。别的网站的列表指到它也算（例如单位网站的书表指到 SSO 的活动页）。好几行指到同一则、写的日期又"
+             "不一样，取多数的，一样多取最早的，「备注」栏写明。"),
             ("3. **网页文字里标签后面紧接的日期**。先找「发布、發佈、公告、更新、張貼、刊登」"
             "（后面可以接「日期」或「時間」，例如「更新時間」「公告日期」；英文 Posted、Published、Updated）这类标签，"
             "找不到才找单独的「日期」「Date」（活动页上「活動日期」写在「公告日期」前面时，取的是公告日期）；「最新公告」"
@@ -2527,6 +2804,9 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
             "找不到再找整页，取第一个。**可能不准**（例如抓到的是页尾的「网站更新日期」），所以「日期原文」栏附上它在网页上"
             "的原样，可以核对；找不到就空白。"), "",
             "列表页上有很多条、各有各的日期，所以列表页不填。附件、图片看「链到它的网页」那一页的日期。", "",
+            ("「列表上的类别」是第 2 条那一组行写的类别（平台设定读得到类别的列表才有），不管日期是哪一条找到的都填；"
+             "几行写的不一样就都列出，「备注」栏写明。"), "",
+            *([f"{foreign_said}。", ""] if foreign_said else []),
             (f"「日期来源」栏写日期是哪一条找到的：「{OWN_FIELD}」（第 1 条）、「{LIST_ROW}」（第 2 条）、「{PAGE_WORDS}」"
              "（第 3 条）；找不到日期就空白。跳转的网址用落地那一页的档：落地那一页的日期栏读得到就用它，否则用这个网址自己"
              "在列表上那一行的日期，再不然用落地那一页其他的日期。学术活动、校园活动、高教深耕活动的页面只写活动的日期，"
@@ -2587,8 +2867,15 @@ COLUMN_HELP = {
              "分类算出来的指纹，列表多了新的一行也不会变）；其他行空白"),
     "最后修改时间": ("学校服务器说的最后修改时间（Last-Modified），云端硬盘的档案是它的修改时间；台北时间，没有就空白。"
                "同一个网站很多档挤在同一段时间的，是服务器复制档案的时间，不是档案的日期（见下面「日期怎么来的」）"),
-    "日期来源": (f"「网页上写的日期」是怎么找到的：{OWN_FIELD}（公告页上平台的日期栏）、{LIST_ROW}（公告在列表上那一行"
-             f"写的日期）、{PAGE_WORDS}（网页文字里标签后面的日期）；没有日期就空白"),
+    "日期来源": (f"「网页上写的日期」是怎么找到的：{OWN_FIELD}（公告页上平台的日期栏）、{LIST_ROW}（指到这一页的列表那一行"
+             f"写的日期；别的网站的列表也算）、{PAGE_WORDS}（网页文字里标签后面的日期）；没有日期就空白"),
     "来源": (f"这一行的档从哪里来：空白是这一轮爬虫的存档；「{ORIGIN_OLD}」是这一轮没抓到能用的内容、导出时用 10-24 旧存档"
            "的正常副本补上的（结果、分类、原因还是这一轮的，备注写这一轮抓到什么）"),
+    "页别": (f"「{LIST_FIRST}」：平台设定读得到列表格子的网页（列表的第一页；网站首页上的公告列表也算，这种页也有自己的字）；"
+           f"「{LIST_PAGER}」：按翻页按钮出来的第 N 页（网址后面是 #第N页），和用网址翻页的列表的第 2 页以后；空白：其他网页，"
+           "也包括有翻页的内容表格（荣誉榜这类没有链接的表格，内容只在这几页上），和平台设定读不出列表格子、只靠网址翻页的"
+           "网页"),
+    "列表上的类别": ("指到这一页的列表那一行写的类别（平台设定读得到类别的列表才有：SSO 公告中心、SSO 单位网站的消息和书表、"
+               "cLv2 单位网站的公告；c.nknu 的列表没有设定类别栏，空白）；别的网站的列表指到它也算；几行写的不一样就都列出，"
+               "用 | 隔开，「备注」写明；没有就空白"),
 }
