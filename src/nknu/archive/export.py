@@ -60,6 +60,16 @@ done is 【Claude 的执行办法】 where neither says):
 - two columns at the end: 页别 (LIST_FIRST, LIST_PAGER or '': Writer._list_kinds) and 列表上的类别 (list_category: the
   categories the rows that link the page state);
 - a page row that shares its file with an earlier row takes that row's dates (Writer._write; lists.md §4).
+
+The school's answers of no data (the owner 11-09 「照这样做」 to the crawler session's question 「要在导出把开课课表的空回答
+标「学校回答没有资料」，再重导那一站吗？」, 【用户同意 Claude 的建议】; the words are the content session's, which leaves
+such rows out by them; how it is done is 【Claude 的执行办法】): a page whose platform's rule finds the school answering
+that it has no data for what was asked (profiles.school_no_data: the course tables' pop-up 「系所未提供相關資料」, by the
+page's own address, so in a unit site's export that lists one too) says the rule's words in 缺什么 (they begin with
+NO_DATA), its 结果, 分类 and 完整度 as the archive judged them; every row whose file is such a page says them too
+(Writer._no_data_rows), and the README names each such row. The review of 11-09: the words come last, after the
+empty-area words; the README's summary and the command say how many such rows there are, and they, the README's
+section and 缺什么's help quote the words as the cells hold them.
 """
 
 from __future__ import annotations
@@ -404,6 +414,9 @@ class Item:
     path: str = ""
     shared: bool = False  # its file is another row's (a redirect landing on an exported page)
     empty_area: str = ""  # a notice page whose platform's title and text areas are missing or empty: in words
+    # a page the school answered with no data for what was asked (profiles.school_no_data), and every row whose file
+    # is such a page: the rule, its words in 缺什么 (Writer._no_data; the owner 11-09 「照这样做」)
+    no_data: profiles.NoData | None = None
     owner: str = ""  # the site the row counts for (url.owner_site; a press: the site of its list)
     order: tuple = ()
     row_key: str = ""  # 按钮编号: the action row's row_key of an item a press brought (pager: p<step>)
@@ -1360,6 +1373,10 @@ def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") 
 
 NO_AREA = "找不到内文区（网页上没有公告的标题栏和内文栏，多半是学校删掉的公告只剩网站模板）"
 EMPTY_AREA = "内文区是空的（公告的标题栏和内文栏都没有内容，多半是学校删掉的公告）"
+# what every profiles.NoData's words begin with (the owner 11-09 「照这样做」; the content session's words: it leaves the
+# rows whose 缺什么 holds them out and counts them), and what 备注 says once of such a row (Writer._no_data)
+NO_DATA = "学校回答没有资料"
+NO_DATA_NOTE = "「学校回答没有资料」是程序看网页里学校的讯息标的；完整度、分类、结果照存档的判断，没有改"
 
 
 def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
@@ -1803,6 +1820,7 @@ class Writer:
                         it.level, it.lacks = to.level, to.lacks
                     it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间、最后修改时间都是落地那一页的）")
         self._read_whole()
+        self._no_data_rows()
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
                 it.bucket = "review"
@@ -1871,6 +1889,30 @@ class Writer:
                     and to.result == "ok" and it.path == to.path):
                 it.bucket, it.level, it.lacks = to.bucket, to.level, to.lacks
                 it.notes.append(note.replace("看板上的结果", "看板上落地那一页的结果"))
+
+    @staticmethod
+    def _no_data(it: Item, rule: profiles.NoData) -> None:
+        """A row whose file is a page the school answered with no data for what was asked (profiles.school_no_data;
+        the owner 11-09 「照这样做」 to the crawler session's question, the content session's words): the rule kept,
+        its words added to 缺什么 after what the row lacks besides as the empty-area words are (joined by 、, never
+        twice), 备注 saying once that the program marked it; its 结果, 分类 and 完整度 as the archive judged them."""
+        it.no_data = rule
+        if rule.words not in it.lacks:
+            it.lacks = "、".join(x for x in (it.lacks, rule.words) if x)
+        if NO_DATA_NOTE not in it.notes:
+            it.notes.append(NO_DATA_NOTE)
+
+    def _no_data_rows(self) -> None:
+        """Every row whose file is a page _page marked as the school's answer of no data says so too, once, after
+        every file is written and every 缺什么 judged (the mark is what the file says, as the dates a page states are:
+        lists.md §4; 【Claude 的执行办法】): a redirect that took that page's file (run: its 缺什么 the landing page's,
+        words and all, when the views judge it by no row of its own, as the empty-area words go; else its own), a row
+        that shares the file (_write, _old_copy: such a row takes none of the first row's 缺什么, nor the empty-area
+        words), and a page whose 缺什么 _read_whole wrote anew."""
+        by_file = {it.path: it.no_data for it in self.items.values() if it.no_data is not None and it.path}
+        for it in self.items.values():
+            if it.path in by_file:
+                self._no_data(it, by_file[it.path])
 
     def _put(self, it: Item, name: str, data: bytes) -> None:
         """A row's file, numbered in turn in its type's folder."""
@@ -2254,6 +2296,12 @@ class Writer:
                 it.empty_area = area
                 it.lacks = "、".join(x for x in (it.lacks, area) if x)
                 it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
+        # the school's answer of no data for what was asked (profiles.NoData; the owner 11-09 「照这样做」): by the
+        # page's own address, in its HTML as read, whatever row brought it (a GET, a menu's press, a pager's answer);
+        # after the empty-area words, so that its words come last (the review of 11-09)
+        no_data = profiles.school_no_data(url, text)
+        if no_data is not None:
+            self._no_data(it, no_data)
         if it.page_role == "list" or it.kind == "pager":
             self._rows_of(it, url, text)  # a list's rows each state their notice's date
         else:
@@ -2474,6 +2522,10 @@ def _finish(root: Path, out: Path, site: str, items: dict[str, Item], snap: Snap
     lines += _old_lines(copies, filled, skipped or Counter(), not_needed or Counter())
     if (said := _foreign_words(foreign)):
         lines.append(said)
+    no_data = [it for it in ordered if it.no_data is not None and it.path]
+    if no_data:  # the export service's log keeps these lines (the review of 11-09)
+        lines.append(f"学校回答没有资料的 {len(no_data)} 行：「缺什么」栏写着{_no_data_words(no_data)}，"
+                     "README「学校回答没有资料的网页」一节逐行列出")
     lines.append(f"先看 {out / 'README.md'}；清单 manifest.csv，没抓到的 missing.csv")
     return Result(out, site, name, state, state_words, pid is not None, left.urls, left.presses, counts,
                   missing_by, lines, left.other, ready, linked, len(filled))
@@ -2521,6 +2573,13 @@ def _foreign_words(foreign: tuple[Counter, Counter] | None) -> str:
         said += (f"；另有 {sum(missed.values())} 页读不出（{'、'.join(f'{k} {n}' for k, n in missed.most_common())}），"
                  "那几页上的行没用上")
     return said
+
+
+def _no_data_words(items: list[Item]) -> str:
+    """The words these rows marked as the school's answer of no data hold in 缺什么 (Writer._no_data), each once,
+    quoted as the cells hold them, for the README and the command (the review of 11-09: never the bare NO_DATA they
+    begin with, which no cell holds alone): 「学校回答没有资料（系所未提供相關資料）」."""
+    return "、".join(f"「{w}」" for w in dict.fromkeys(i.no_data.words for i in items if i.no_data is not None))
 
 
 def _by_category(items: list[Item]) -> str:
@@ -2640,6 +2699,7 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
     pressed = sum(1 for i in ordered if i.type == PAGE and i.path and i.kind in ("pager", "detail"))
     shared = sum(1 for i in ordered if i.shared)
     empty = [i for i in ordered if i.empty_area and i.path]
+    no_data = [i for i in ordered if i.no_data is not None and i.path]  # the owner 11-09 「照这样做」
     to_do = [i for i in ordered if i.path and i.bucket not in SETTLED]
     said = []
     if to_do:
@@ -2652,6 +2712,9 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         said.append(f"导出了档的网页里有 {len(empty)} 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的"
                     f"公告只剩网站模板）：照存档的判断，{_judged(empty, '是')}{where}；「缺什么」栏写着，下面"
                     "「空的公告页」一节逐页列出")
+    if no_data:  # said here as the empty notice pages are (the review of 11-09)
+        said.append(f"有 {len(no_data)} 行的网页上**学校回答没有资料**（「缺什么」栏写着{_no_data_words(no_data)}），"
+                    "结果、分类、完整度照存档的判断，没有改；下面「学校回答没有资料的网页」一节逐行列出")
     if pressed:
         said.append(f"网页里有 {pressed} 页是按按钮才出来的（列表的第 2 页以后、按了才出来的公告内文）")
     if shared:
@@ -2768,6 +2831,15 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         out += [f"| {i.url} | {i.title} | {i.empty_area.split('（', 1)[0]} | {i.how} |" for i in empty[:EMPTY_SHOWN]]
         if len(empty) > EMPTY_SHOWN:
             out.append(f"\n…另有 {len(empty) - EMPTY_SHOWN} 页，manifest.csv「缺什么」栏有「内文区」的就是。")
+    if no_data:
+        whys = "；".join(dict.fromkeys(i.no_data.why for i in no_data))
+        out += ["", "## 学校回答没有资料的网页", "",
+                (f"这 {len(no_data)} 行的网页上学校回答没有资料（{whys}）：网页照样导出了，「缺什么」栏写着"
+                 f"{_no_data_words(no_data)}，结果、分类、完整度照存档的判断，没有改；做内容的时候可以跳过。"), "",
+                "| 网址 | 怎么来的 |", "|---|---|"]
+        out += [f"| {i.url} | {i.how} |" for i in no_data[:EMPTY_SHOWN]]
+        if len(no_data) > EMPTY_SHOWN:
+            out.append(f"\n…另有 {len(no_data) - EMPTY_SHOWN} 行，manifest.csv「缺什么」栏有「{NO_DATA}」的就是。")
     out += ["", "## 资料夹里有什么", "",
             ("- `pages/`：每个网页一个档（.html）。列表按「下一页」按钮翻出来的第 N 页、按按钮才出来的公告内文也各自一个档；"
             "这种页没有自己的网址，清单的「网址」栏写列表网址加 `#第N页` 或 `#按钮=…`，「怎么来的」写是哪个列表、哪个按钮。"),
@@ -2848,7 +2920,9 @@ COLUMN_HELP = {
     "完整度": ("有档的网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他（附件、图片、"
             "没有档的网页……）：和「分类」一样（抓到了、连接失败、要登录……）"),
     "缺什么": ("网页缺的东西（缺附件、缺图片、连接失败、要人看、列表没翻完、学校那边已不存在或要登录的资源……），括号里是几个；"
-            "公告页的内文区找不到或是空的（多半是学校删掉的公告），也写在这里"),
+            "公告页的内文区找不到或是空的（多半是学校删掉的公告）、学校在网页上回答没有资料（写"
+            f"「{profiles.COURSE_NO_DATA.words}」：开课课表上学校跳出括号里那句，这个系所、这个学年度没有提供课表），"
+            "也写在这里"),
     "结果": "这一个网址或按钮本身的结果，和进度看板一样的说法",
     "原因": "结果的原因（连不上服务器、按规则不抓的是哪条规则、下一轮的哪一批……）",
     "分类": "抓到了 / 连接失败 / 要人看 / 待判定 / 下一轮 / 还在排队 / 要登录 / 学校那边已经不存在 / 规则不抓",

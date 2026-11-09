@@ -26,7 +26,10 @@ keys' pages and 图资处's are SSO WebIdx pages, gaps ② ③ of 11-08). A prof
   10-27, how 【Claude 的执行办法】); the
   browser check never counts it as a data address the round cannot read (known_data_api);
 - menus: a form whose page shows what its menus ask for, sent by its own submit button (Menu: the course tables, set
-  to the current academic year and each department in turn; gap ⑩ of 11-08, the owner 11-09 「现在补 115」).
+  to the current academic year and each department in turn; gap ⑩ of 11-08, the owner 11-09 「现在补 115」);
+- no_data: what the school's own page answers when it has no data for what was asked (NoData: the course tables'
+  pop-up 「系所未提供相關資料」), which the export says in 缺什么 (school_no_data; the owner 11-09 「照这样做」, the
+  content session's ask). The export's alone: the crawler never reads it.
 
 decision(site, res_key) is the one answer the crawler, rejudge and verify check 8 share (design §15; site: the page's
 own site key, the platform it is written on): for a button's
@@ -219,6 +222,21 @@ class Saying:
 
 
 @dataclass(frozen=True)
+class NoData:
+    """What a school page answers when it has no data for what was asked (the owner 11-09 「照这样做」 to the crawler
+    session's question 「要在导出把开课课表的空回答标「学校回答没有资料」，再重导那一站吗？」): paths searched in the
+    lowercase path of the page's own address; says searched in the page's HTML as archived, scripts included (the
+    school's message may be a pop-up call, which no reading of the page's text shows); words: what the export's 缺什么
+    says (the content session's words, which it leaves the rows out by); why: in words, for people. The export's
+    alone (school_no_data): unlike a Saying, the crawler never reads it, and nothing of the crawl changes by it."""
+
+    paths: str
+    says: str
+    words: str
+    why: str
+
+
+@dataclass(frozen=True)
 class DataApi:
     """A data address a platform's pages ask by script (design §23 C1): read by the crawler itself, once per site, a
     POST written exactly as the page's script writes it (url, headers, body: JSON.stringify of the script's object
@@ -311,6 +329,7 @@ class Profile:
     pending_r7: tuple[str, ...] = ()  # function names R7 reads in the school's .js before deciding
     data_apis: tuple[DataApi, ...] = ()  # read by the crawler once per site (design §23 C1)
     menus: tuple[Menu, ...] = ()  # forms sent once per option of a menu (gap ⑩ of 11-08)
+    no_data: tuple[NoData, ...] = ()  # the school's answers of no data, read by the export alone (owner 11-09)
 
     def covers(self, site: str) -> bool:
         return _re(self.sites).fullmatch(site or "") is not None
@@ -719,9 +738,26 @@ COURSE_TABLE = Menu("course_table", r"/dataopen2search/opencoursetablepure\.aspx
                     submit="ctl00$phMain$uOK", year="ctl00$phMain$uYear", each="ctl00$phMain$uDepartment",
                     why="开课课表：网页预设显示旧学年度（113），选当学年度、逐个系所选项按「顯示資料」才是现在的课表"
                         "（缺口 ⑩；用户 11-09「现在补 115」）")
+# a course table the school answers with no data (the owner 11-09 「照这样做」 to the crawler session's question
+# 「要在导出把开课课表的空回答标「学校回答没有资料」，再重导那一站吗？」, 【用户同意 Claude 的建议】; the words are the
+# content session's, which leaves such rows out by them and counts them, never by address: that would leave out the
+# real tables once the school publishes the year, and 16 rows of real notices on 5 SSO unit sites have the same
+# 「#按钮=115學年度」 in their addresses). The school's message is a pop-up, a script call just before </form> (<script
+# type="text/javascript"> //<![CDATA[ showNoty('系所未提供相關資料.');//]]> </script>), which no reading of the page's
+# text shows. Read only on the lab's exports of 11-09: 138 of dataopen2search's 167 course-table pages carry it, the
+# 124 answers of the 11-09 presses for year 115 (every one an empty form) and 14 GET pages whose default year 113 has
+# no data for the department shown; the 29 that show courses carry none, nor do the 2 lost-and-found pages, and no
+# other showNoty message occurs on these pages. 9 SSO unit sites' exports list such a page (each lists one course
+# table dataopen2search owns), so it goes by the page's own address (school_no_data), never by the site exported. When
+# the school publishes the data the message goes, and so does the mark. How it is read (the call in the HTML, the
+# path), and that the export alone reads it (school_says, which changes the crawl, is not it): 【Claude 的执行办法】
+COURSE_NO_DATA = NoData(r"/dataopen2search/opencoursetablepure\.aspx$", r"showNoty\s*\(\s*['\"]系所未提供相關資料",
+                        "学校回答没有资料（系所未提供相關資料）",
+                        "开课课表：学校在网页上跳出「系所未提供相關資料」，这个系所、这个学年度学校没有提供课表，学校补上"
+                        "资料以后讯息就不见了，也就不再标")
 DATAOPEN = Profile(
     name="dataopen2search", platform="资料开放查询（ASP.NET：遗失物招领、开课课表）",
-    sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,),
+    sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,), no_data=(COURSE_NO_DATA,),
     # the submit button a menu rule presses (postback.read_page; no __doPostBack, so no page lists it as a postback):
     # decision() says press for its key, so that a menu its page could not send (postback:ctl*$phMain$uOK|@menu,
     # written unpressed, 要人看) reads as unpressed in verify check 8 and `retry unpressed`, never as a stale writing
@@ -983,9 +1019,9 @@ def decision_why(site: str | None, res_key: str, text: str | None = None) -> tup
 
 def check_profiles() -> list[str]:
     """What is wrong in the profiles themselves (a test keeps this empty): a writing that ignores a click, a key
-    pattern that does not compile (a menu's paths too), a detail's date_path without its groups y, m and d, two
-    profiles that claim one site of the round-1 list, a menu whose form is none of its profile's forms (§7.5 step 10:
-    no other form is ever sent; gap ⑩ of 11-08)."""
+    pattern that does not compile (a menu's paths too, a no-data rule's paths and says), a detail's date_path without
+    its groups y, m and d, two profiles that claim one site of the round-1 list, a menu whose form is none of its
+    profile's forms (§7.5 step 10: no other form is ever sent; gap ⑩ of 11-08)."""
     out = []
     for p in PROFILES:
         for w in p.writings:
@@ -993,7 +1029,7 @@ def check_profiles() -> list[str]:
                 out.append(f"{p.name}: {w.key} ignores a click")
         for pattern in (p.sites, *(b.target for b in p.buttons), *(w.key for w in p.writings),
                         *(d.paths for d in p.details), *(d.date_path for d in p.details if d.date_path),
-                        *(m.paths for m in p.menus)):
+                        *(m.paths for m in p.menus), *(x for n in p.no_data for x in (n.paths, n.says))):
             try:
                 re.compile(pattern)
             except re.error as exc:
@@ -1188,6 +1224,19 @@ def school_says(url: str, html: str | None) -> Saying | None:
             if re.search(s.words, text):
                 return s
     return None
+
+
+def school_no_data(url: str, html: str | None) -> NoData | None:
+    """The rule by which a school page answers it has no data for what was asked (NoData: the course tables' pop-up
+    「系所未提供相關資料」; the owner 11-09 「照这样做」), or None: by the platform of the page's own address (profile_for,
+    as school_says goes: a unit site's export lists the course tables dataopen2search owns), its path (a press's
+    answer has its list's address; a fragment is no path) and its HTML as archived, scripts included. The export's
+    alone (export.Writer._page): the crawler never asks it."""
+    p = profile_for(url)
+    if p is None or not p.no_data or not html:
+        return None
+    path = _path(url)
+    return next((n for n in p.no_data if re.search(n.paths, path) and re.search(n.says, html)), None)
 
 
 # design §23.9 A1 ③ (second review 10-27, 【Claude 的执行办法】): a short answer (FILE_SHORT_BYTES at most, as text)
