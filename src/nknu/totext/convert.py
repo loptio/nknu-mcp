@@ -15,9 +15,9 @@ the caller's: convert_and_save, the run loop's step for one file (and for each a
 failed result, so the run goes on, except a SetupError (a tool that cannot load), which stops the run with the file
 still pending.
 
-store() writes a result into the cache: text.md, Docling's document (docling.json.gz), the per-line OCR (ocr.json)
-and result.json, the record the accounting reads (the Converted fields but text, doc_json and ocr, plus the route,
-the counts, the seconds and the tools)."""
+store() writes a result into the cache: text.md, Docling's document (docling.json.gz), the per-line OCR (ocr.json),
+a page's whole reading (cache.FULL, full.md: blueprint item 22) and result.json, the record the accounting reads (the
+Converted fields but text, doc_json, ocr and full, plus the route, the counts, the seconds and the tools)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from xml.parsers.expat import ExpatError
 from nknu.totext import archives, docling_convert, libreoffice, ocr, pagetext
 from nknu.totext.accounting import join_notes, made_otherwise, member_crash_reason
 from nknu.totext.archives import ArchiveError, Member
-from nknu.totext.cache import PIPELINE_VERSION, Cache, sha256_file
+from nknu.totext.cache import FULL, PIPELINE_VERSION, Cache, sha256_file
 from nknu.totext.docling_convert import DOCLING_ARTIFACTS, DoclingConverter, DoclingOut
 from nknu.totext.libreoffice import ConvertError
 from nknu.totext.ocr import LOW_SCORE, OcrEngine, OcrLine
@@ -52,7 +52,7 @@ ANALYSIS_FAILED = "无法分析页面，没做整页 OCR"
 NESTED_ARCHIVE = "压缩档里的压缩档，没有再解开"
 EMPTY_ARCHIVE = "压缩档里没有档案"
 TOOL_PACKAGES = ("docling", "docling-core", "docling-parse", "rapidocr", "onnxruntime", "pypdfium2")
-_NOT_IN_RESULT = ("text", "doc_json", "ocr", "docling_ocr")  # text.md and the extras hold these
+_NOT_IN_RESULT = ("text", "doc_json", "ocr", "docling_ocr", "full")  # text.md and the extras hold these
 
 
 @dataclass
@@ -68,7 +68,7 @@ class Converted:
     failed_pages: list[int] = field(default_factory=list)  # pages whose OCR raised
     ocr: list[dict] = field(default_factory=list)  # per line our OCR read {"page", "text", "score", "box"}
     fixes: list[str] = field(default_factory=list)  # bom_prefix:N, pdf_prefix:N, docx_numbering:N, …
-    page: dict | None = None  # page route: {"title", "album", "images"}
+    page: dict | None = None  # page route: {"title", "album", "images", "links"} (links: PageText.links, of full)
     members: list[dict] = field(default_factory=list)  # archive route, one per member: {"index", "path", "sha256",
     #   "route", "kind", "pdf_offset", "size", "status", "reason", "note"}; sha256 and route '' when not extracted
     doc_json: dict | None = None  # DoclingDocument.export_to_dict()
@@ -80,6 +80,7 @@ class Converted:
     ocr_short_lines: int = 0  # lines of that OCR'd text with at most ocr.SHORT_LINE_CHARS characters (noise gauge)
     docling_ocr: dict[int, list[str]] = field(default_factory=dict)  # per PDF page, the lines Docling's OCR read on
     #   the pages that keep Docling's text (docling_ocr.json): which text came from a picture, for later stages
+    full: str = ""  # page route: the whole body's reading (PageText.full; cache.FULL, blueprint item 22)
 
 
 class SetupError(RuntimeError):
@@ -258,8 +259,8 @@ def _page(path: Path, route: Route) -> Converted:
         got = pagetext.page_text(path.read_bytes(), route.url)  # read by where it was read (plan 2026-11-08 T2)
     except pagetext.PageDecodeError as e:
         return failed("page", str(e))
-    meta = {"title": got.title, "album": got.album, "images": list(got.images)}
-    return _finish(Converted("page", "ok", "", got.text, page=meta))
+    meta = {"title": got.title, "album": got.album, "images": list(got.images), "links": list(got.links)}
+    return _finish(Converted("page", "ok", "", got.text, page=meta, full=got.full))
 
 
 def _ocr_rows(page: int, lines: list[OcrLine]) -> list[dict]:
@@ -469,6 +470,8 @@ def result_of(conv: Converted, route: Route, *, seconds: float, tools: dict, key
     if conv.docling_ocr:
         extras["docling_ocr.json"] = json.dumps({str(n): lines for n, lines in conv.docling_ocr.items()},
                                                 ensure_ascii=False).encode("utf-8")
+    if conv.full:
+        extras[FULL] = conv.full.encode("utf-8")
     return result, conv.text, extras
 
 

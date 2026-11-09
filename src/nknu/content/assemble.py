@@ -17,13 +17,17 @@ rule found that date, documents._stated), 最后修改时间 (modified: the serv
 each '' when the export (one made before 3c33a79) has no such column; an archive member carries its archive's row's.
 Owner 11-09 (blueprint item 15, 「照建议定」): area_mark, which of corpus.AREA_MARKS the row's 缺什么 holds (the export
 found the notice page's own areas empty, or not on it), which documents.deleted_notice reads; '' without one.
+Blueprint item 22 (owner 11-09, 「照这个做」): a kept page whose reading gave much less than its own words is read
+again from its whole reading without the site's template and menus, and marked under_read (_Assembly.under_read,
+read_again: True, False when judged and kept as read, None when it could not be judged); never a home page, a c.nknu
+list or a page whose areas the export marked.
 A page's kind is pagetext.page_kind of its 网址 and the list grid the exported page shows where it was read
 (pagetext.list_grid of 最后落地网址, else 网址; plan 2026-11-08 progress notes): an SSO or cLv2 list is
 list:<profile> and left out, its content pages stay page:<profile>. The 10-29 fallback is 教务处's corpus: it is read
 only for 教务处's export (FALLBACK_SITE), never for another site's, whose old serial ids name other files.
 
 Records ({id, key, kind, url, file, title, text, linktext, linked, source, totext_status, site, fetched, page_date,
-page_date_raw, date_source, modified, origin, area_mark}, in manifest order):
+page_date_raw, date_source, modified, origin, area_mark}, a page's also under_read, in manifest order):
 - a page: kind as above; title its album name, #lbl_Title or 标题; its to-text text with
   each [[img:src]] line replaced by the OCR text of the exported image the src names, or removed. The src is joined
   to the page's address (最后落地网址 or 网址, or its <base href>) and spelt as the crawler spells addresses
@@ -71,21 +75,23 @@ import json
 import re
 import sys
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import scope
+from nknu.archive import profiles, scope
 from nknu.archive.links import _base as link_base  # the crawler's <base href> rule, as links.page_links uses it
 from nknu.content import build, ids
-from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, PAGES_SEP
-from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class
+from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, PAGES_SEP, TEMPLATE_PAGES
+from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class, site_root
 from nknu.content.links import PageLink, match_key, page_links
 from nknu.totext.accounting import Account, account
-from nknu.totext.cache import Cache, write_atomic
+from nknu.totext.cache import FULL, Cache, write_atomic
 from nknu.totext.normalize import normalize
 from nknu.totext.ocr import FEW_CHARS
 from nknu.totext.pagetext import IMG_LINE, PageDecodeError, list_grid, page_kind
@@ -112,6 +118,28 @@ DATA_CALENDAR = "行事历：建库直接读成行事历事件（corpus.load_cal
 DATA_DRIVE_LIST = "云端硬盘资料夹的清单：不读，资料夹里的每个档在导出里各有自己的一行（附件、图片）"
 DATA_UNREAD = "建库不读这种结构化资料：内容没有进资料库"
 _DRIVE_LIST = re.compile("云端硬盘资料夹.*的清单")  # export._data_title's title (and file name) of a folder's listing
+# blueprint item 22 (owner 11-09, 「照这个做」): when and how a page is read again whole (read_again). OWN_CHARS and
+# READ_SHARE are the 11-09 sweep's, which found the pages a content area misses; TEMPLATE_SHARE was measured on every
+# page of the 111 exports (research/pipeline_2026-11-02/reading_gaps_1109/cut_1109d.log): at 0.3 a site's second
+# template (news.nknu.edu.tw's notice system on 24-26% of its files) passed for its pages' own words and 99 correctly
+# read notices were re-read into chrome, at 0.05 sparse alumni pages stop being re-read 【Claude】
+OWN_CHARS = 200  # a page's own words come to at least this many non-space characters
+READ_SHARE = 0.3  # and what its reading gave to less than this share of them
+TEMPLATE_SHARE = 0.1  # a line on this share of a group's files, TEMPLATE_PAGES (corpus) at least, is template
+MENU_RUN = 3  # this many link lines in a row (template, blank and image lines between them aside) are a menu
+
+
+class Whole(NamedTuple):
+    """A page file's whole reading (cache.FULL, normalized as its text is), for read_again."""
+    lines: list[str]
+    links: frozenset[int]  # its lines that are one link's words alone (pagetext.PageText.links)
+    group: str  # the files judged together: the platform profile and site key of where it was read
+
+
+class Again(NamedTuple):
+    """read_again's answer for one page."""
+    judged: bool  # its group holds TEMPLATE_PAGES files or more: its template could be told from its own words
+    text: str | None  # its text read again whole; None when it stays as read
 
 
 def data_reason(row: dict) -> str:
@@ -162,6 +190,8 @@ class AssembleReport:
     markers_unmatched: int = 0  # [[img:…]] lines naming no exported image: removed
     normalized: dict = field(default_factory=lambda: {"compat": 0, "mismapped": 0, "spaced": 0, "wraps": 0})
     data_rows: dict = field(default_factory=dict)  # 资料 rows, no records: 序号 -> data_reason (read by the build or not)
+    under_read: int = 0  # pages read again whole: their reading gave much less than their own words (item 22)
+    under_read_unjudged: int = 0  # pages read_again could not judge: too few files of their template, an older result
 
 
 def _chars(text: str) -> int:
@@ -391,6 +421,8 @@ class _Assembly:
         self.attachments: list[_Attachment] = []
         self.read: set[str] = set()  # 序号 of the pages whose content area the to-text run read (their text is known)
         self.keys = ids.manifest_keys(list(rows.values()))  # 序号 -> the row's key (plan 2026-11-08 T1)
+        # (page record, its file's sha256, its link lines, its Whole.group) of each page to-text read (item 22)
+        self.whole: list[tuple[dict, str, object, str]] = []
 
     def ident(self, row: int) -> tuple[str, str]:
         """(id, key) of a row's record."""
@@ -437,9 +469,16 @@ class _Assembly:
             self.read.add(str(row.get("序号")))
         meta = result.get("page") or {}
         rid, key = self.ident(a.row)
-        return {"id": rid, "key": key, "kind": old_kind or self.pages.kind(row), "url": row.get("网址") or "",
-                "file": a.file, "title": meta.get("album") or meta.get("title") or row.get("标题") or "", "text": text,
-                "linktext": "", "linked": "", "source": source, "totext_status": a.status, **self.from_row(row)}
+        record = {"id": rid, "key": key, "kind": old_kind or self.pages.kind(row), "url": row.get("网址") or "",
+                  "file": a.file, "title": meta.get("album") or meta.get("title") or row.get("标题") or "",
+                  "text": text, "linktext": "", "linked": "", "source": source, "totext_status": a.status,
+                  **self.from_row(row), "under_read": None}
+        if source == "totext":
+            where = _where(row)
+            profile = profiles.profile_for(where)
+            group = f"{profile.name if profile is not None else ''}|{scope.site_key(where)}"
+            self.whole.append((record, a.sha256, meta.get("links"), group))
+        return record
 
     def _record(self, ident: tuple[str, str], kind: str, url: str, file: str, title: str, text: str, row: dict,
                 source: str, status: str) -> dict:
@@ -515,6 +554,33 @@ class _Assembly:
         return [record]
 
     # ------------------------------------------------------------ passes after every row
+
+    def under_read(self) -> None:
+        """Blueprint item 22 (owner 11-09, 「照这个做」): each page to-text read takes read_again's answer: under_read
+        True with its text read again whole, False when it stays as read, None (and as read) when it could not be
+        judged; a result of an older page rule has no link lines and is not judged. A page may be read again unless
+        the export marked its areas (item 15 decides on the page rule's own reading), it is its site's home page
+        (site_root) or a c.nknu list (default.aspx, download.aspx, laws.aspx: teasers and menus of what is elsewhere)
+        【Claude, 11-09 review】; those still count toward the template."""
+        wholes: dict[str, Whole] = {}
+        for _record, sha, links, group in self.whole:
+            if sha not in wholes and isinstance(links, list) and (text := self.cache.extra(sha, FULL)):
+                wholes[sha] = Whole(normalize(text, pdf=False)[0].split("\n"), frozenset(links), group)
+        pages = [(sha, record["text"], record["kind"], self._may_read_again(record))
+                 for record, sha, _links, _group in self.whole]
+        for (record, *_), again in zip(self.whole, read_again(wholes, pages), strict=True):
+            if not again.judged:
+                self.report.under_read_unjudged += 1
+                continue
+            record["under_read"] = again.text is not None
+            if again.text is not None:
+                record["text"] = again.text
+                self.report.under_read += 1
+
+    def _may_read_again(self, record: dict) -> bool:
+        url = record["url"]
+        listed = profiles.CNKNU.covers(scope.site_key(url)) and profiles.page_kind(url) == "list"
+        return not record["area_mark"] and not site_root(url, self.site) and not listed
 
     def inline(self, pages: list[tuple[dict, dict]]) -> None:
         """Each [[img:src]] line of a page's text becomes the OCR text of the image it names, or goes."""
@@ -633,6 +699,86 @@ def _siblings(x: _Attachment, cx: str, ax: str, y: _Attachment, cy: str, ay: str
     return x.stem.casefold() == y.stem.casefold() or bool(_FORMAT_WORD.fullmatch(ax) and _FORMAT_WORD.fullmatch(ay))
 
 
+def read_again(wholes: Mapping[str, Whole], pages: Sequence[tuple[str, str, str, bool]]) -> list[Again]:
+    """Blueprint item 22 (owner 11-09, 「照这个做」: 「对上的区块几乎没字、整页却有很多字，就改读整页（去掉选单、页首、
+    页尾），并记下来」), for one export: each page's answer (Again). pages: (its key in wholes, its read text, its kind,
+    whether it may be read again); wholes: per file, its whole reading (Whole: pagetext.PageText.full, the body with
+    its chrome) and its group. A group of fewer than TEMPLATE_PAGES files cannot tell its template from a page's own
+    words: its pages are not judged. In a group, a line on TEMPLATE_SHARE of its files is template: the site's
+    header, menus, footer. A page's own words are its other lines but link lines (a menu's items: 教务处's groups
+    show their side menus only on their own pages) and images. A kept page (a notice or a page, documents.kind_class)
+    that may be read again is read again when its own words come to OWN_CHARS and its read text gave under
+    READ_SHARE of them (_reread) 【Claude: the template from the site's pages and the link lines, after the 11-09
+    sweep and measures (research/pipeline_2026-11-02/reading_gaps_1109/); a short notice and an image-only page
+    measure like a missed one on their page alone, 4,341 pages of the 111 exports (fallback_1109d.log)】."""
+    groups: dict[str, list[str]] = defaultdict(list)
+    for key, whole in wholes.items():
+        groups[whole.group].append(key)
+    seen: dict[str, Counter[str]] = {}
+    cuts: dict[str, float] = {}
+    for group, keys in groups.items():
+        if len(keys) >= TEMPLATE_PAGES:
+            seen[group] = Counter(line for key in keys for line in set(wholes[key].lines) if line)
+            cuts[group] = max(TEMPLATE_PAGES, TEMPLATE_SHARE * len(keys))
+    out: list[Again] = []
+    for key, text, kind, may in pages:
+        whole = wholes.get(key)
+        if whole is None or whole.group not in seen:
+            out.append(Again(False, None))
+        elif not may or kind_class(kind) not in ("notice", "page"):
+            out.append(Again(True, None))
+        else:
+            out.append(Again(True, _reread(whole, text, seen[whole.group], cuts[whole.group])))
+    return out
+
+
+def _reread(whole: Whole, text: str, seen: Counter[str], cut: float) -> str | None:
+    """A page's text read again from its whole reading (read_again), or None when it stays as read. Kept, in the
+    page's order, one blank line at most in a row: the page's own lines; each line the reading gave, as many times as
+    it gave it, where it stands nearest the page's own lines (a template line the area holds, 「所友」, is a menu item
+    too: only the area's copy comes back); a link line, but in a run of MENU_RUN or more (template, blank and image
+    lines between them aside: a menu, which goes with the images inside it); an image only between the first and the
+    last of those kept lines (not in the chrome before or after them). Template lines go 【Claude, 11-09 review】."""
+    lines, links = whole.lines, whole.links
+    template = [bool(line) and seen[line] >= cut for line in lines]
+    image = [bool(IMG_LINE.fullmatch(line)) for line in lines]
+    link = [n in links and not template[n] and not image[n] for n in range(len(lines))]
+    own = [bool(line) and not (template[n] or link[n] or image[n]) for n, line in enumerate(lines)]
+    words = sum(_chars(line) for n, line in enumerate(lines) if own[n])
+    if words < OWN_CHARS or _chars(text) >= READ_SHARE * words:
+        return None
+    anchors = [n for n in range(len(lines)) if own[n]]
+    keep = set(anchors)
+    for line, times in Counter(x for x in text.split("\n") if x).items():
+        spots = sorted((n for n, x in enumerate(lines) if x == line and not own[n]),
+                       key=lambda n: min(abs(n - a) for a in anchors))
+        keep.update(spots[:times])
+    first, last = min(keep), max(keep)
+    menu: set[int] = set()
+    run: list[int] = []
+    for n in range(len(lines) + 1):
+        if n < len(lines) and n not in keep and (link[n] or template[n] or image[n] or not lines[n]):
+            if link[n]:
+                run.append(n)
+            continue
+        if len(run) >= MENU_RUN:
+            menu.update(range(run[0], run[-1] + 1))
+        run = []
+    kept: list[str] = []
+    for n, line in enumerate(lines):
+        if not line:
+            ok = bool(kept and kept[-1])
+        elif n in keep:
+            ok = True
+        elif template[n] or n in menu:
+            ok = False
+        else:  # a link line alone, or an image
+            ok = link[n] or first <= n <= last
+        if ok:
+            kept.append(line)
+    return "\n".join(kept).strip("\n")
+
+
 def _load_fallback(path: Path | None) -> dict[str, dict]:
     if path is None:
         return {}
@@ -682,6 +828,7 @@ def assemble(export_dir: Path, totext_dir: Path, out: Path, *, fallback: Path | 
             slots += work.attachment(a, row, members.get(a.row, []))
         elif kind == "资料":
             work.report.data_rows[str(a.row)] = data_reason(row)
+    work.under_read()  # before inline: the image lines it brings back are read like the others
     work.inline(pages)
     work.siblings()
     kept = [att.record for att in work.attachments if not att.dropped]
@@ -738,7 +885,7 @@ def main(argv: list[str] | None = None) -> int:
           f"图片文件 {report.image_docs}（只在选单出现的图片 {report.images_menu_only}，建库时不算文件）；"
           f"格式合并 {report.format_merged}、按钮下载 {report.button_downloads}、"
           f"只在选单 {report.nav_only}；没转完 {len(report.pending)}、{fallback}；"
-          f"编号可能会变的按钮行 {report.unstable_ids}；结构化资料 {len(report.data_rows)} 份不成文件（其中建库不读的 "
+          f"编号可能会变的按钮行 {report.unstable_ids}；读到的字远少于整页、改读整页 {report.under_read}；结构化资料 {len(report.data_rows)} 份不成文件（其中建库不读的 "
           f"{sum(r == DATA_UNREAD for r in report.data_rows.values())} 份，原因见报告 data_rows）；报告 {path}")
     return 0
 

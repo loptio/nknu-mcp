@@ -412,7 +412,7 @@ def test_a_list_grid_counts_where_it_is_read_with_rows_or_its_words_for_none():
 # ---------------------------------------------------------------- PAGE_VERSION
 
 def test_page_version_names_the_rule_and_follows_the_profiles():
-    assert re.fullmatch(r"pages-3:[0-9a-f]{10}", PAGE_VERSION)  # pages-3: the T2 review's chrome
+    assert re.fullmatch(r"pages-4:[0-9a-f]{10}", PAGE_VERSION)  # pages-3: the T2 review's chrome; pages-4: item 22
     assert pagetext.page_version(profiles.PROFILES) == PAGE_VERSION
     for change in ({"content_css": "#elsewhere"}, {"download_paths": "/files/"}, {"detail_paths": "/x\\.aspx$"},
                    {"sites": "sso\\.nknu\\.edu\\.tw/site/\\d+|sso\\.nknu\\.edu\\.tw/new"}):

@@ -194,7 +194,8 @@ def test_page_route(tmp_path):
     c = convert_file(path, Route("page", "html", url=NOTICE), Tools(), tmp_path / "w")  # T2: read by its URL
     assert (c.route, c.status, c.reason) == ("page", "ok", "")
     assert c.text == "停修公告\n停修申請\n[[img:a.jpg]]"
-    assert c.page == {"title": "停修公告", "album": "", "images": ["a.jpg"]}
+    assert c.page == {"title": "停修公告", "album": "", "images": ["a.jpg"], "links": []}  # links: item 22, 11-09
+    assert c.full == c.text  # the whole body's reading: no chrome here to keep
 
 
 def test_page_that_is_not_utf8_is_failed(tmp_path):

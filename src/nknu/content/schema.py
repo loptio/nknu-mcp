@@ -29,14 +29,18 @@ pipeline-5 (owner 11-08 10:16, N11): chunk_fts.unit_tokens, the unit words in a 
 pipeline-6 (owner 11-09, blueprint item 15, 「照建议定」): sites.deleted_notices, how many of the site's notices the
 school deleted (only the template left) the build left out (documents.deleted_notice); a database before it has no
 such column, and the per-site report shows nothing for it.
+
+pipeline-7 (owner 11-09, blueprint item 22, 「照这个做」): sites.under_read, how many of the site's documents were read
+again whole, their content area having given much less than their own words (assemble's under_read); a database
+before it has no such column, and the per-site report shows nothing for it.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-# pipeline-6 (owner 11-09, blueprint item 15): sites.deleted_notices
-SCHEMA_VERSION = "pipeline-6"
+# pipeline-6 (owner 11-09, blueprint item 15): sites.deleted_notices; pipeline-7 (item 22): sites.under_read
+SCHEMA_VERSION = "pipeline-7"
 # docs.doc_type: journal | exam | minutes | '' (build.doc_type, spec 2026-11-01 「排序 v2」); build.tier_of makes all
 # three background in docs.tier, which search ranks after the primary documents (addendum M2; plan 2026-11-08 T1)
 JOURNAL = "journal"  # 學報: issues, tables of contents, abstracts, papers; since 11-09 (owner, blueprint item 17)
@@ -90,8 +94,10 @@ CREATE TABLE sites (                 -- one row per export's site (plan 2026-11-
     missing_files  INTEGER,
     docs           INTEGER,          -- documents whose docs.site it is (events included)
     export         TEXT,             -- the export folder the build read
-    deleted_notices INTEGER          -- the school's deleted notices the build left out: documents.deleted_notice,
+    deleted_notices INTEGER,         -- the school's deleted notices the build left out: documents.deleted_notice,
                                      -- owner 11-09 (blueprint item 15)
+    under_read     INTEGER           -- documents read again whole: their content area gave much less than their own
+                                     -- words (assemble's under_read), owner 11-09 (blueprint item 22)
 );
 
 CREATE TABLE doc_alias (             -- an id the build left out under another document (plan 2026-11-08 T1)

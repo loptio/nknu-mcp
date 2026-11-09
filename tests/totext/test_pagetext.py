@@ -146,7 +146,7 @@ def test_title_fields():
             '<div id="lbl_Contents">內文</div>')
     t = page_text(html.encode(), ALBUM)
     assert (t.title, t.album) == ("115學年度 停修公告", "活動 相簿")
-    assert page_text(b"<p>x</p>", NOTICE) == PageText("", (), "", "")
+    assert page_text(b"<p>x</p>", NOTICE) == PageText("", (), "", "", "x")  # full: the whole body (item 22)
 
 
 def test_line_breaks_and_blank_lines():

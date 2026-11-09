@@ -43,6 +43,10 @@ CALENDAR_FILES = ("data/*行事历*.json", "data/*行事曆*.json")  # an export
 # areas are on the page and empty, or not on it (owner 11-09, blueprint item 15; Record.area_mark,
 # documents.deleted_notice)
 AREA_EMPTY, AREA_MISSING = "内文区是空的", "找不到内文区"
+# blueprint item 22 (owner 11-09, 「照这个做」): a page's template is told from its own words only among at least this
+# many files of its group (nknu.content.assemble.read_again); the build warns of a corpus none of whose pages was
+# judged though it holds this many 【Claude】
+TEMPLATE_PAGES = 5
 AREA_MARKS = (AREA_EMPTY, AREA_MISSING)
 # c.nknu's notice templates, by their page kind (pagetext.page_kind): newsdetail (教务处), and newsview (总务处, 体育室
 # and 师培处, per the site probe; plan 2026-11-08 T3)
@@ -89,6 +93,11 @@ class Record:
     # empty (AREA_EMPTY) or missing (AREA_MISSING), documents.deleted_notice reads it; '' without, and in an export or a
     # corpus made before
     area_mark: str = ""
+    # blueprint item 22 (owner 11-09, 「照这个做」): True for a page read again whole, its reading having given much less
+    # than its own words (assemble's under_read), False for a page judged and kept as read, None when not judged (too
+    # few files of its template, an older result, any record but a page, a corpus assembled before); the build counts
+    # the True ones per site (sites.under_read)
+    under_read: bool | None = None
     # plan 2026-11-08 T4: the export folder the build read it with (its file, and a notice's header fields, are read
     # there); set by the build for each input, never written to corpus.json ('' when read alone)
     export: str = ""
@@ -111,6 +120,7 @@ def load_corpus(path: Path) -> list[Record]:
             site=r.get("site") or "", fetched=r.get("fetched") or "", page_date=r.get("page_date") or "",
             page_date_raw=r.get("page_date_raw") or "", date_source=r.get("date_source") or "",
             modified=r.get("modified") or "", origin=r.get("origin") or "", area_mark=r.get("area_mark") or "",
+            under_read=None if r.get("under_read") is None else bool(r.get("under_read")),
         )
         for r in rows
     ]

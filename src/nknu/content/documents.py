@@ -203,7 +203,9 @@ def _stated(r: Record) -> tuple[date, str, str] | None:
     and, for all of them: a plausible date (corpus.plausible) no later than the day the page was fetched (a later one
     is a day the page names ahead, a deadline: 「榜單公告115年12月30日」 【Claude】); and not on a c.nknu list page
     (default.aspx, download.aspx, laws.aspx: the profile's list paths), whose date is one of its rows' (教务处's home
-    pages show their first notice's, 「公告 2026.10.21」) 【Claude】."""
+    pages show their first notice's, 「公告 2026.10.21」) 【Claude】, nor on a site's root address (site_root: the home
+    page there, on any platform, shows its first notice's too; blueprint item 22, owner 11-09 「照这个做」: 13 sites'
+    roots took it on 11-09; the rule's form 【Claude】)."""
     raw = " ".join(r.page_date_raw.split())
     source = _TRUSTED.get(r.date_source)
     if source is None:
@@ -220,7 +222,23 @@ def _stated(r: Record) -> tuple[date, str, str] | None:
         return None
     if profiles.CNKNU.covers(scope.site_key(r.url)) and profiles.page_kind(r.url) == "list":
         return None
+    if site_root(r.url, r.site):
+        return None
     return day, raw, source
+
+
+def site_root(url: str, site: str) -> bool:
+    """Whether url is the root address of site (a site key): https://c.nknu.edu.tw/tcsl, …/tcsl/,
+    https://clcts.nknu.edu.tw/ (the site's home page; its fragment aside, a pager row #第2页 too), its host compared
+    as scope.site_key reads it (no port). Never with a query: /?p=news&id=1 is a page a site serves at its root path
+    (the round-2 sites gauss, ite, ord; 11-09 review). A short link or another site's page in the export is none (its
+    address is not the site key) 【Claude】."""
+    try:
+        parts = urlsplit(url.partition("#")[0])
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    return bool(site) and not parts.query and (host + parts.path).rstrip("/").lower() == site.lower()
 
 
 def _class(r: Record) -> str | None:

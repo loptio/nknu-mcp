@@ -8,7 +8,13 @@ body are read without their chrome (_chrome: header, nav, footer and aside, the 
 ARIA roles; T2 review: WebIdx's area holds its breadcrumb nav), an area root itself whatever it is; a whole body keeps
 everything. Block elements and <br> break lines; text runs are whitespace-squashed; at most one
 blank line in a row. An image is a line of its own, [[img:src]], where it sits, so the image's OCR text can later
-stand in its place.
+stand in its place. A drop-down <select> reads as the one option it shows, in its line (blueprint item 22, owner
+11-09 「照这个做」: the course tables' 学年 menu reads 113, not every year it offers); a list box (multiple, or a size
+over 1) shows its options, one line each.
+
+Every page is also read whole, its chrome kept (PageText.full), with the lines that are the words of one link on the
+page marked (PageText.links: a menu's items): assemble reads a page again from them when what its reading gave holds
+much less than the page's own words (blueprint item 22; content.assemble's under_read).
 
 Tables: a data table is one line per row, | c1 | c2 |, each cell squashed to one line (images inside go on the lines
 after the table); a first row holding <th> is followed by | --- | … |. A layout table is read like any other block,
@@ -73,6 +79,8 @@ OTHER, OFFSITE = "其他", "外站"  # page_kind prefixes: a c.nknu-template add
 PRESS, PAGER = "按钮=", "第"  # the export's fragment of a row a press brought: #按钮=<row> (detail), #第N页 (pager)
 ROUND1_LIST = "archive_round1.json"  # the crawler's site list, in the configuration directory (read only)
 _URL_JUNK = re.compile(r"[\t\n\r]")  # browsers drop these from a URL (WHATWG URL)
+_SIZE = re.compile(r"[\t\n\f\r ]*\+?([0-9]+)")  # a select's size: HTML's rules for parsing non-negative integers
+_SELECT_PARTS = frozenset({"option", "optgroup", "hr"})  # what a select holds when it is closed
 
 # How page_roots reads a page when the content area of its profile does not match: nothing (a profiled detail page),
 # the whole body (a download path, a static folder), the body without its chrome. page_reading names them.
@@ -82,8 +90,9 @@ _READ_WORDS = {NOTHING: "不读", WHOLE: "整页读", BODY: "读去掉页首、�
 # The page rule's own version (plan 2026-11-08 T2): bumped by hand on every change to how a page is read (page_roots,
 # _chrome, _STATIC_DIRS, the walk). PAGE_VERSION adds what the rule takes from the crawler's platform profiles.
 # pages-3 (T2 review): chrome is left out below a content area too, and it takes in the ARIA roles; a content area
-# matched by two selectors is read once.
-PAGE_RULE = "pages-3"
+# matched by two selectors is read once. pages-4 (blueprint item 22, owner 11-09): a drop-down reads as the option it
+# shows; every page's whole reading and its link lines (PageText.full, links).
+PAGE_RULE = "pages-4"
 
 
 @dataclass(frozen=True)
@@ -92,6 +101,8 @@ class PageText:
     images: tuple[str, ...]  # each [[img:src]] marker's src, in text order
     title: str  # #lbl_Title, one line
     album: str  # #lbl_AlbumName, one line
+    full: str = ""  # the whole body read with its chrome, whatever the page's reading (blueprint item 22)
+    links: tuple[int, ...] = ()  # the lines of full (0-based) that are the words of one link on the page
 
 
 class PageDecodeError(ValueError):
@@ -345,6 +356,39 @@ def _is_layout(table: LexborNode) -> bool:
     return max(len([c for c in row.iter() if c.tag in CELL_TAGS]) for row in rows) <= 1
 
 
+def _disabled(option: LexborNode) -> bool:
+    """An option HTML calls disabled: its own disabled attribute, or its optgroup's."""
+    group = option.parent
+    return "disabled" in option.attributes or (group is not None and group.tag == "optgroup"
+                                               and "disabled" in group.attributes)
+
+
+def _shown(select: LexborNode) -> str | None:
+    """The words a drop-down <select> shows (blueprint item 22, owner 11-09 「照这个做」), by HTML's selectedness: the
+    last option with the selected attribute, else the first option not disabled (nor in a disabled optgroup), else the
+    first; an option's label attribute, else its text; '' with no option. None, read as before (every option a line
+    of its own), for a list box (multiple, or a size over 1 by HTML's rules for non-negative integers: 「3px」 is 3)
+    and for a select that holds more than options, optgroups and hr, or an option holding an element: lexbor nests
+    what follows an unclosed select inside it (to the next cell end, input or select), and reading one option of it
+    would drop that (11-09 review) 【Claude】."""
+    attrs = select.attributes
+    if "multiple" in attrs:
+        return None
+    if (size := _SIZE.match(attrs.get("size") or "")) and int(size.group(1)) > 1:
+        return None
+    for node in select.css("*"):  # the select itself, then its descendants
+        if node.mem_id == select.mem_id:
+            continue
+        if node.tag not in _SELECT_PARTS or (node.tag == "option" and any(True for _ in node.iter())):
+            return None
+    options = select.css("option")
+    if not options:
+        return ""
+    chosen = [o for o in options if "selected" in o.attributes]
+    pick = chosen[-1] if chosen else next((o for o in options if not _disabled(o)), options[0])
+    return " ".join(((pick.attributes.get("label") or "").strip() or pick.text(deep=True) or "").split())
+
+
 def _cell_text(cell: LexborNode, images: list[str], skip: Collection[int] = frozenset()) -> str:
     """Everything in a cell (nested tables too) as one squashed line, but the elements of skip (mem_ids: the chrome a
     reading leaves out; a cell of it reads '', so its row keeps its columns); its images go to images, in order."""
@@ -360,6 +404,9 @@ def _cell_text(cell: LexborNode, images: list[str], skip: Collection[int] = froz
             if src := _src(node):
                 images.append(src)
         elif node.is_element_node and node.tag not in DROP_TAGS and node.mem_id not in skip:
+            if node.tag == "select" and (shown := _shown(node)) is not None:
+                parts.append(f" {shown} ")
+                continue
             if node.tag in BLOCK_TAGS:  # a space on the way in and on the way out: 「<p>甲</p><p>乙</p>」 is 甲 乙
                 parts.append(" ")
                 stack.append((node, True))
@@ -401,6 +448,9 @@ def _walk(root: LexborNode, out: _Lines, skip: Collection[int] = frozenset()) ->
             out.text(node.text(deep=False) or "")
             continue
         if not node.is_element_node or tag in DROP_TAGS or node.mem_id in skip:
+            continue
+        if tag == "select" and (shown := _shown(node)) is not None:
+            out.text(f" {shown} ")  # in its line, as it shows: 「學年度： 113 學期： 1」
             continue
         if tag == "br":
             out.br()
@@ -513,11 +563,17 @@ def _one_line(node: LexborNode | None) -> str:
     return " ".join(line for line in out.result() if line and not IMG_LINE.fullmatch(line))
 
 
+def _link_words(tree: LexborHTMLParser) -> set[str]:
+    """The words of each link on the page (<a>), squashed as a line is: a line that is one of them is a link line."""
+    return {words for a in tree.css("a") if (words := " ".join((a.text(deep=True) or "").split()))}
+
+
 def page_text(html: bytes, url: str) -> PageText:
     """The page's text, its images and its title fields (#lbl_Title, #lbl_AlbumName, read as before T2). url: where the
     page was read (最后落地网址 when it was redirected, else 网址), which says what its text is read from (page_roots; an
     area or a body is walked whole with its chrome skipped, the same nodes page_roots gives, without breaking lines
-    between them)."""
+    between them). full: the whole body walked with nothing skipped but what DROP_TAGS drops, and links its lines
+    that are the words of one link on the page (blueprint item 22: assemble's under_read reads them)."""
     try:
         source = html.decode("utf-8-sig")
     except UnicodeDecodeError as e:
@@ -535,5 +591,11 @@ def page_text(html: bytes, url: str) -> PageText:
         _walk(root, out, skip)
         out.block()
     lines = out.result()
+    whole = _Lines()
+    if tree.body is not None:
+        _walk(tree.body, whole)
+    full = whole.result()
+    words = _link_words(tree)
     return PageText("\n".join(lines), tuple(out.images), _one_line(tree.css_first("#lbl_Title")),
-                    _one_line(tree.css_first("#lbl_AlbumName")))
+                    _one_line(tree.css_first("#lbl_AlbumName")), "\n".join(full),
+                    tuple(n for n, line in enumerate(full) if line in words))

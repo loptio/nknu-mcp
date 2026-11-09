@@ -1,7 +1,7 @@
 """The to-text cache (plan 2026-11-02 T3b): one folder per content hash, <root>/<sha[:2]>/<sha>/, so a file that sits
 in the export under several names converts once and a rerun converts only what has no result yet. In a folder:
-text.md (the text), extras such as docling.json.gz and ocr.json, and result.json (status, reason, counts), written
-last; a result counts only at the current PIPELINE_VERSION, and a page's only when the current page rule read it
+text.md (the text), extras such as docling.json.gz, ocr.json and a page's full.md (FULL: its whole reading,
+blueprint item 22), and result.json (status, reason, counts), written last; a result counts only at the current PIPELINE_VERSION, and a page's only when the current page rule read it
 (pagetext.PAGE_VERSION ends its page_kind, plan 2026-11-08 T2: pages, and only pages, are read again when the page
 rule changes; every PDF and OCR result stays). A 'started' marker stands while a file converts: left with no result,
 the process crashed or the watchdog ended it on that file (the marker's text then says why), and a run does not try
@@ -21,6 +21,7 @@ from nknu.totext.pagetext import read_now
 PIPELINE_VERSION = "totext-2"  # bumped on every change to what a conversion produces (OCR settings and rules, the
 #                                 routes): totext-2 = T4's OCR, T5's archives and the phase-1 review's fixes
 RESULT, TEXT, STARTED = "result.json", "text.md", "started"
+FULL = "full.md"  # a page's whole reading (pagetext.PageText.full; blueprint item 22, owner 11-09)
 _SHA = re.compile(r"[0-9a-f]{64}")
 _EXTRA = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -107,7 +108,11 @@ class Cache:
 
     def text(self, sha: str) -> str:
         """text.md; '' when there is none."""
+        return self.extra(sha, TEXT)
+
+    def extra(self, sha: str, name: str) -> str:
+        """The text file name of the folder (text.md, FULL); '' when there is none."""
         try:
-            return (self.dir(sha) / TEXT).read_text(encoding="utf-8")
+            return (self.dir(sha) / name).read_text(encoding="utf-8")
         except FileNotFoundError:
             return ""

@@ -255,8 +255,9 @@ def test_meta_pipeline(built):
     # changed 11-03 on purpose: the series tables went (addendum L), so the schema is pipeline-2 (was pipeline-1); and
     # on 11-08 (plan 2026-11-08 T1): doc_alias and docs.tier came, so it is pipeline-3; and (plan 2026-11-08 T4) the
     # sites table, docs.site and docs.unit_line, so it is pipeline-4; and (owner 11-08 10:16, N11) chunk_fts.unit_tokens,
-    # so it is pipeline-5; and (owner 11-09, blueprint item 15) sites.deleted_notices, so it is pipeline-6
-    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-6"
+    # so it is pipeline-5; and (owner 11-09, blueprint item 15) sites.deleted_notices, so it is pipeline-6; and (owner
+    # 11-09, blueprint item 22) sites.under_read, so it is pipeline-7
+    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-7"
     assert meta["id_scheme"] == "serial"  # this corpus's ids are its own (no keys): not the stable ids of assemble
     assert meta["text_pipeline"] == ""  # the 10-29 corpus: no record says where its text came from
     tables = tables_of(conn)

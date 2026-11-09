@@ -115,7 +115,7 @@ from urllib.parse import unquote, urlsplit
 
 from nknu.content import ids, sites
 from nknu.content.chunks import Chunk, make_chunks, split_sections
-from nknu.content.corpus import Event, Record, export_info, load_calendar, load_corpus, read_metas
+from nknu.content.corpus import TEMPLATE_PAGES, Event, Record, export_info, load_calendar, load_corpus, read_metas
 from nknu.content.dates import (
     FIELD_SOURCE,
     INHERITED_SOURCE,
@@ -838,7 +838,7 @@ def _scope_warnings(report: dict, total: int) -> list[str]:
 
 
 SITE_COLUMNS = ("site", "name", "unit", "data_as_of", "missing_pages", "missing_files", "docs", "export",
-                "deleted_notices")
+                "deleted_notices", "under_read")
 
 
 def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, scope: _UnitScope | None = None,
@@ -925,11 +925,13 @@ def _read_input(n: int, corpus: Path, export: Path) -> _Input:
 
 
 def _site_rows(inputs: list[_Input], docs: list[Document], warnings: list[str],
-               deleted: Mapping[str, int] | None = None) -> list[dict]:
+               deleted: Mapping[str, int] | None = None, under: Mapping[str, int] | None = None) -> list[dict]:
     """The sites table (plan 2026-11-08 T4), one row per site in the inputs' order: the export's name, the site
-    table's unit, its 资料截至, missing pages and files, the documents whose site it is, its folder and the school's
+    table's unit, its 资料截至, missing pages and files, the documents whose site it is, its folder, the school's
     deleted notices the build left out (deleted: site -> count, documents.deleted_notice; owner 11-09, blueprint item
-    15: 「在每站报告里记个数」; 0 when none). Two exports of
+    15: 「在每站报告里记个数」; 0 when none) and its documents read again whole (under: site -> count, assemble's
+    under_read; owner 11-09, blueprint item 22: 「每站报告加『读到的字远少于整页』的页数」; None for a site not in it,
+    none of whose pages assemble could judge). Two exports of
     one site (an old and a new one) are one row: the one with the newer 资料截至 (the first on a tie) gives the date,
     the counts and the folder 【Claude】, and a warning names them all."""
     by_site: dict[str, list[tuple[int, _Input]]] = {}
@@ -946,7 +948,7 @@ def _site_rows(inputs: list[_Input], docs: list[Document], warnings: list[str],
         out.append({"site": site, "name": best.info["name"], "unit": sites.unit_of_site(site),
                     "data_as_of": best.info["data_as_of"], "missing_pages": best.info["missing_pages"],
                     "missing_files": best.info["missing_files"], "docs": per_site[site], "export": str(best.export),
-                    "deleted_notices": (deleted or {}).get(site, 0)})
+                    "deleted_notices": (deleted or {}).get(site, 0), "under_read": (under or {}).get(site)})
     return out
 
 
@@ -993,6 +995,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有 area_mark，是 11-09 以前拼的：导出里 "
                             f"{inp.info['area_marked']} 行标了「内文区」，学校删掉的公告这次没拿掉，每站数也是 0；"
                             "先用 python -m nknu.content.assemble 重拼")
+        # owner 11-09, blueprint item 22: a corpus assembled before it judged no page (under_read None throughout)
+        pages = [r for r in inp.records if r.source == "totext" and kind_class(r.kind) in ("notice", "page")]
+        if len(pages) >= TEMPLATE_PAGES and all(r.under_read is None for r in pages):
+            warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有一页判断过正文读漏：多半是 11-09 以前拼的，读漏的"
+                            "网页这次没改读整页，每站报告这一栏写「—」；先用 python -m nknu.content.assemble 重拼")
     if len(read) > 1 and (serial := [n for n, inp in enumerate(read, start=1) if not all(r.key for r in inp.records)]):
         raise BuildError(f"第 {'、'.join(map(str, serial))} 份输入的 corpus 是流水号编号（没有 key：10-29 的，或 11-08 "
                          "以前拼的），它的 p1 和别的导出的 p1 是两回事，只能单独建库；先用 python -m nknu.content.assemble 重拼")
@@ -1027,7 +1034,12 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                         # owner 11-08 10:16 (b): documents whose unit line names units they apply to, by how many
                         "unit_line_applies": {"docs": sum(named.values()), "by_count": dict(sorted(named.items()))}}
         warnings += _scope_warnings(scope.report, len(docs))
-    site_rows = _site_rows(read, docs, warnings, deleted)
+    # the documents kept whose page assemble read again whole, per site (owner 11-09, blueprint item 22); a site none
+    # of whose pages assemble could judge has no count (sites.under_read NULL, the report's —)
+    whole = {"d" + r.id for r in records if r.under_read}
+    judged = {r.site or first.info["site"] for r in records if r.under_read is not None}
+    again = Counter(d.site for d in docs if d.doc_id in whole)
+    site_rows = _site_rows(read, docs, warnings, deleted, {site: again.get(site, 0) for site in judged})
 
     attachments = [d for d in docs if d.kind_class == "attachment"]
     tiers = Counter(tier_of(r.doc.doc_id, r.dtype) for r in rows)
@@ -1198,6 +1210,8 @@ def main(argv: list[str] | None = None) -> int:
     words = "" if report.passage["unit_words"] else "；没加单位词（--no-unit-words）"
     gone = sum(s.get("deleted_notices", 0) for s in report.sites)  # owner 11-09, blueprint item 15
     words += f"；学校删掉的公告 {gone}（不收，每站数见 sites）" if gone else ""
+    whole = sum(s.get("under_read") or 0 for s in report.sites)  # owner 11-09, blueprint item 22
+    words += f"；读到的字远少于整页、改读整页 {whole} 份（每站数见 sites）" if whole else ""
     print(f"{args.out}：{docs['total']} 份文件、{report.counts['chunks']} 小段；"
           f"网站 {len(report.sites)} 个（各站资料截至和缺漏见报告 sites）；"
           f"无日期 {report.no_date}、无文字 {report.no_text}；学报（含旧校刊、校讯） {types[JOURNAL]}、考题 {types[EXAM]}、"

@@ -16,7 +16,7 @@ import pytest
 
 from nknu.totext import run as run_module
 from nknu.totext.accounting import Account, account, inputs
-from nknu.totext.cache import PIPELINE_VERSION, Cache, sha256_file
+from nknu.totext.cache import FULL, PIPELINE_VERSION, Cache, sha256_file
 from nknu.totext.convert import Tools
 from nknu.totext.docling_convert import DoclingOut
 from nknu.totext.ocr import OcrLine
@@ -277,7 +277,8 @@ def test_static_page_keeps_its_image(tmp_path):
     result = cache.done(sha)
     # plan 2026-11-08 T2: a page's result names how it was read and the page rule's version after its kind
     assert result["page_kind"] == f"静态:spaper|cnknu:whole|{PAGE_VERSION}"
-    assert result["page"] == {"title": "", "album": "", "images": ["p1.jpg"]}
+    assert result["page"] == {"title": "", "album": "", "images": ["p1.jpg"], "links": []}
+    assert cache.extra(sha, FULL) == "[[img:p1.jpg]]"  # the whole reading beside it (blueprint item 22)
     [only] = account(export, cache)
     assert (only.status, only.chars) == ("ok", 0)  # its text is the image's, after OCR (T4) and assemble (T7a)
 
