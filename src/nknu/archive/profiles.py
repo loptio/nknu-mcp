@@ -24,7 +24,9 @@ keys' pages and 图资处's are SSO WebIdx pages, gaps ② ③ of 11-08). A prof
 - data_apis: a data address the platform's pages ask by script, which the crawler reads itself once per site with the
   request the page's own script sends (DataApi: cLv2's timeline, design §23 C: reading it in round 1 【用户同意 Claude 的建议】
   10-27, how 【Claude 的执行办法】); the
-  browser check never counts it as a data address the round cannot read (known_data_api).
+  browser check never counts it as a data address the round cannot read (known_data_api);
+- menus: a form whose page shows what its menus ask for, sent by its own submit button (Menu: the course tables, set
+  to the current academic year and each department in turn; gap ⑩ of 11-08, the owner 11-09 「现在补 115」).
 
 decision(site, res_key) is the one answer the crawler, rejudge and verify check 8 share (design §15; site: the page's
 own site key, the platform it is written on): for a button's
@@ -44,6 +46,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -66,6 +69,9 @@ GONE_RECHECK = "gone_page:recheck"  # url.reason while the second look waits
 # button's key: it calls no __doPostBack, the browser sends its form with name.x and name.y (postback.target_for; gap ⑪
 # of 11-08) 【Claude 的执行办法】
 IMAGE_ARG = "@image"
+# the argument of a menu's press (Menu; gap ⑩ of 11-08, the owner 11-09 「现在补 115」): MENU_ARG + "?" + the menus'
+# values, urlencoded (menu_argument); MENU_ARG alone is the key of a menu its page could not send (要人看)
+MENU_ARG = "@menu"
 _CTL = re.compile(r"(?i)ctl\d+")
 
 
@@ -242,6 +248,51 @@ class DataRead:
 
 
 @dataclass(frozen=True)
+class Menu:
+    """A form whose page shows what its menus ask for, sent by its own submit button (gap ⑩ of 11-08; the owner 11-09
+    「现在补 115」): the course tables open on an old academic year, and the current year's table of a department is
+    what the page shows once its year menu is set to the current academic year, that department chosen, and 「顯示資料」
+    pressed (postback.read_page: one press per department, postback.Chains.target_for: the form as a browser sends
+    it). name: the rule's name (the presses' row set and their rows' category); paths: a regular expression searched in
+    the lowercase path; form: the id of the form, one of its profile's forms; submit: the name of its submit button;
+    year: the name of the select set to the current academic year (academic_year); each: the name of the select whose
+    every enabled option is sent once; why: in words, for people."""
+
+    name: str
+    paths: str
+    form: str
+    submit: str
+    year: str
+    each: str
+    why: str
+
+
+def academic_year(day: date) -> int:
+    """The ROC academic year a day is in, starting on 1 August (day.year - 1911 from August, day.year - 1912 before; a
+    Taiwanese school year runs from 1 August to 31 July) 【Claude】."""
+    return day.year - (1911 if day.month >= 8 else 1912)
+
+
+def menu_argument(m: Menu, year: int, value: str) -> str:
+    """A menu press's argument (MENU_ARG): its year select set to `year`, its each select to `value`, urlencoded."""
+    return MENU_ARG + "?" + urlencode([(m.year, str(year)), (m.each, value)])
+
+
+def menu_choice(argument: str | None) -> tuple[tuple[str, str], ...] | None:
+    """The (select name, value) pairs a menu press's argument asks for, in order; None for any other press's."""
+    if not argument or not argument.startswith(MENU_ARG + "?"):
+        return None
+    return tuple(parse_qsl(argument[len(MENU_ARG) + 1:], keep_blank_values=True))
+
+
+def menu_year(m: Menu, argument: str | None) -> int | None:
+    """The academic year a press of menu m asked for (its year select's value in its argument), or None: no menu
+    press, or a value that is no number."""
+    value = dict(menu_choice(argument) or ()).get(m.year, "")
+    return int(value) if value.isdigit() else None
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     platform: str
@@ -259,6 +310,7 @@ class Profile:
     download_paths: str = ""
     pending_r7: tuple[str, ...] = ()  # function names R7 reads in the school's .js before deciding
     data_apis: tuple[DataApi, ...] = ()  # read by the crawler once per site (design §23 C1)
+    menus: tuple[Menu, ...] = ()  # forms sent once per option of a menu (gap ⑩ of 11-08)
 
     def covers(self, site: str) -> bool:
         return _re(self.sites).fullmatch(site or "") is not None
@@ -638,8 +690,38 @@ ID = Profile(name="id", platform="工设系（自建）", sites=r"id\.nknu\.edu\
                              text="#article .blog_content, section.block_area", title=".title_block h1",
                              date=".title_block li"),))
 
+# 资料开放查询 (sso.nknu.edu.tw/dataopen2search; gap ⑩ of 11-08: what the crawler session read 11-09 on round one's 43
+# course tables in the lab's archive, read only), on SSO's master page (form uForm, a __VIEWSTATE, no
+# __EVENTVALIDATION, no __doPostBack anywhere): a course table
+# (opencoursetablepure.aspx?unit=<code>) has a year menu (ctl00$phMain$uYear, 116 down to 100, 113 selected: the page
+# opens on an old year), a department menu (ctl00$phMain$uDepartment, one to five options, value = text, in optgroups
+# such as 進修-碩士班), the 師培 radios (否 checked) and a submit button 「顯示資料」 (ctl00$phMain$uOK); neither menu posts
+# back by itself. The year and department shown are what the courses (fieldset legends 系必修, 系選修 …) are of; a
+# course's click opens its history by script (js_bind, 要人看: the course query system is round two's, the owner
+# 11-08). The owner 11-09 「现在补 115」: each department's table of the current academic year. 師培 stays as the page
+# has it (否; 是 is an open question for the owner). The lost-and-found page (lostandfound.aspx) is read as before:
+# no menu rule names it, its buttons stay undecided (要人看; its one select is the language menu ctl00$uTopBar$ddlLanguage,
+# which the writing below does not name). What to fetch is the owner's (「现在补 115」); how is 【Claude 的执行办法】
+COURSE_TABLE = Menu("course_table", r"/dataopen2search/opencoursetablepure\.aspx$", form="uForm",
+                    submit="ctl00$phMain$uOK", year="ctl00$phMain$uYear", each="ctl00$phMain$uDepartment",
+                    why="开课课表：网页预设显示旧学年度（113），选当学年度、逐个系所选项按「顯示資料」才是现在的课表"
+                        "（缺口 ⑩；用户 11-09「现在补 115」）")
+DATAOPEN = Profile(
+    name="dataopen2search", platform="资料开放查询（ASP.NET：遗失物招领、开课课表）",
+    sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,),
+    # the submit button a menu rule presses (postback.read_page; no __doPostBack, so no page lists it as a postback):
+    # decision() says press for its key, so that a menu its page could not send (postback:ctl*$phMain$uOK|@menu,
+    # written unpressed, 要人看) reads as unpressed in verify check 8 and `retry unpressed`, never as a stale writing
+    # 【Claude 的执行办法】
+    buttons=(Button(r"ctl\d+\$phMain\$uOK", "press", "开课课表的「顯示資料」：平台规则 course_table 选好学年度和系所后按"
+                    "（缺口 ⑩；用户 11-09「现在补 115」）", role="detail", argument=re.escape(MENU_ARG) + r"(?:\?.*)?"),),
+    writings=(Writing(r"select:ctl00\$phMain\$u(?:Year|Department)", "ignore",
+                      "开课课表的学年度、系所选单：平台规则 course_table 逐个系所按「顯示資料」（pb:detail 那几行），选单本身"
+                      "不用再按"),),
+)
+
 PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, SSO_OSA, SSO_REGULATIONS, SSO_SOFTWARE, CNKNU, OIA, EE, LIS, ELEC, ENGLISH,
-            CLCTS, WORDPRESS, GEO, ID)
+            CLCTS, WORDPRESS, GEO, ID, DATAOPEN)
 
 
 def profile_for_site(site: str | None) -> Profile | None:
@@ -888,15 +970,17 @@ def decision_why(site: str | None, res_key: str, text: str | None = None) -> tup
 
 def check_profiles() -> list[str]:
     """What is wrong in the profiles themselves (a test keeps this empty): a writing that ignores a click, a key
-    pattern that does not compile, a detail's date_path without its groups y, m and d, two profiles that claim one
-    site of the round-1 list."""
+    pattern that does not compile (a menu's paths too), a detail's date_path without its groups y, m and d, two
+    profiles that claim one site of the round-1 list, a menu whose form is none of its profile's forms (§7.5 step 10:
+    no other form is ever sent; gap ⑩ of 11-08)."""
     out = []
     for p in PROFILES:
         for w in p.writings:
             if w.key.startswith("click:") and w.decision == "ignore":
                 out.append(f"{p.name}: {w.key} ignores a click")
         for pattern in (p.sites, *(b.target for b in p.buttons), *(w.key for w in p.writings),
-                        *(d.paths for d in p.details), *(d.date_path for d in p.details if d.date_path)):
+                        *(d.paths for d in p.details), *(d.date_path for d in p.details if d.date_path),
+                        *(m.paths for m in p.menus)):
             try:
                 re.compile(pattern)
             except re.error as exc:
@@ -904,6 +988,9 @@ def check_profiles() -> list[str]:
         for d in p.details:
             if d.date_path and not {"y", "m", "d"} <= set(_group_names(d.date_path)):
                 out.append(f"{p.name}: {d.date_path}: a date_path names its groups y, m and d")
+        for m in p.menus:
+            if m.form not in p.forms:
+                out.append(f"{p.name}: menu {m.name}: its form {m.form} is none of the profile's forms {p.forms}")
     return out
 
 

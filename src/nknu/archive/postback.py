@@ -14,7 +14,11 @@ The chain of one list (§7.5):
 2. target_for() reads that very page back from the WARC and builds the form from it (webforms.postback, the form
    that holds the button: form_for_control): the form state and the row number ctlNN always come from one page. An
    ASP.NET ImageButton (<input type="image">, argument IMAGE_ARG: the software icons, gap ⑪ of 11-08) calls no
-   __doPostBack: its press is the form that holds it (image_form) with the click's coordinates, name.x and name.y.
+   __doPostBack: its press is the form that holds it (image_form) with the click's coordinates, name.x and name.y. A
+   menu rule's press (profiles.Menu, argument MENU_ARG?<the values>: the course tables, gap ⑩ of 11-08, the owner
+   11-09 「现在补 115」) is its form with the year menu set to today's academic year and one option of the other menu,
+   sent by the form's own submit button (menu_form, menu_post), one press per option; its answer must show what was
+   asked (menu_mismatch), and an option only an answer offers is pressed from that answer's form state.
 3. A row's buttons go before the next page (the queue's order: next_action). A detail's title must begin with its
    row's (cut) title, or the press is mismatch and the chain starts again from its GET once; a detail with nothing
    in it but its title is thin (empty_answer, §10.1 nonempty); the next page's answer must show the page asked for,
@@ -36,8 +40,8 @@ The chain of one list (§7.5):
    (retry_walks) walk the lists that ended so again from their GET. `nknu archive retry download` (retry_downloads,
    §23 A3) puts the downloads that came to no file or failed back, never one a redirect sent to its file
    (file_redirects adopts that): their list's next GET presses only them (REDO_KEY). `nknu archive retry unpressed`
-   (retry_unpressed) puts back the pages whose buttons today's platform file presses and nobody pressed: their next
-   GET plans them with its own form state.
+   (retry_unpressed) puts back the pages whose buttons today's platform file presses and nobody pressed, and the
+   pages whose menu was not sent for this academic year: their next GET plans them with its own form state.
 5. listwalk.ended_by says how the walk ended (§7.5 step 7): last_page, no_rows_ok, walking, mismatch:unknown_button
    (a button or a GET pager link the profile does not know: never last_page then), mismatch:no_next, mismatch:page,
    mismatch:empty, mismatch:clv2, mismatch:total, max_pages, post_failed. A list grid that holds nothing that leads
@@ -67,8 +71,10 @@ import zlib
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit
+from zoneinfo import ZoneInfo
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 from warcio.archiveiterator import ArchiveIterator
@@ -99,6 +105,9 @@ _FORM_NAME = re.compile(r'form\[(?:id|name)="([^"]+)"\]')
 _SIMPLE_ID = re.compile(r"[A-Za-z_][\w:.-]*")  # a form's id or name a CSS selector may name as written
 IMAGE_ARG = profiles.IMAGE_ARG  # an ImageButton's argument (<input type="image">: no __doPostBack, gap ⑪ of 11-08)
 _IMAGE_XY = ("1", "1")  # the click's coordinates an ImageButton's press sends (name.x, name.y): any point of the image
+MENU_ARG = profiles.MENU_ARG  # a menu's press: its form sent by its submit button (profiles.Menu, gap ⑩ of 11-08)
+MENU_KEY = "menu:"  # `retry unpressed`: the key a page counts for a menu not sent for this academic year (+ its name)
+TAIPEI = ZoneInfo("Asia/Taipei")  # the day a menu's academic year is of (CLAUDE.md: dates by Asia/Taipei)
 
 
 # ---------------------------------------------------------------- reading one page (no database)
@@ -241,6 +250,181 @@ def image_form(html: str, name: str) -> tuple[str | None, str]:
     return None, "no_form"
 
 
+# ---------------------------------------------------------------- a menu's form (profiles.Menu, gap ⑩ of 11-08)
+
+def _named(node: LexborNode, tag: str, name: str, typ: str | None = None) -> bool:
+    """Whether node is a <tag> named `name` (of input type typ, when given) that is not disabled: a disabled control is
+    never sent, so it counts as missing 【Claude 的执行办法】."""
+    a = node.attributes
+    return (node.tag == tag and (a.get("name") or "") == name and "disabled" not in a
+            and (typ is None or (a.get("type") or "").strip().lower() == typ))
+
+
+def _in_form(form: LexborNode | None, tag: str, name: str, typ: str | None = None) -> LexborNode | None:
+    return next((n for n in form.css(tag) if _named(n, tag, name, typ)), None) if form is not None else None
+
+
+def _the_form(tree: LexborHTMLParser, form_id: str) -> LexborNode | None:
+    """The form of that id, when the page holds exactly one."""
+    forms = [f for f in tree.css("form") if (f.attributes.get("id") or "") == form_id]
+    return forms[0] if len(forms) == 1 else None
+
+
+def _offered(select: LexborNode) -> list[LexborNode]:
+    """A select's options a browser may send, in the page's order: none disabled or in a disabled optgroup, as
+    webforms reads them for form_state (the press and the form state agree on what is offered)."""
+    return [o for o in select.css("option") if not webforms._disabled(o)]
+
+
+def _menu_presses(m: profiles.Menu, tree: LexborHTMLParser, *, site: str, scope_of: str,
+                  year: int) -> tuple[list[Press], str]:
+    """The presses of one menu rule on a page (gap ⑩ of 11-08; the owner 11-09 「现在补 115」): the form of id m.form,
+    alone on the page, must hold the year select, the each select and the submit button (none of them disabled), and
+    the year select must offer `year`; then one press of the submit button per option of the each select a browser
+    may send (offered: in the page's order; its value webforms' reading, the value attribute else the text, white space
+    collapsed; a value written twice is one press). A press is a detail (its answer a page of that year and option)
+    whose argument names both values (profiles.menu_argument); its row key is the list's (scope_of: the page the menu
+    was first read on, never a detail's key: the same option is one row whichever page or answer shows it) from the
+    year and the value exactly as sent (quoted: row_key's NFKC and white space never make two options one row, the
+    second never pressed; review of 11-09), its rule's name the category; its text the year, the option's optgroup
+    label and its text. Returns the presses and the submit button's text (its value, "" when it is nowhere): with no
+    press, the menu is written unpressed under that text (要人看). An each select with no option to send counts as
+    missing 【Claude 的执行办法】."""
+    form = _the_form(tree, m.form)
+    years, each = _in_form(form, "select", m.year), _in_form(form, "select", m.each)
+    submit = _in_form(form, "input", m.submit, "submit")
+    button = submit if submit is not None else next(
+        (n for n in tree.css("input") if _named(n, "input", m.submit, "submit")), None)
+    text = clean(button.attributes.get("value") or "") if button is not None else ""
+    if years is None or each is None or submit is None or \
+            str(year) not in {webforms._option_value(o) for o in _offered(years)}:
+        return [], text
+    out: list[Press] = []
+    seen: set[str] = set()
+    for o in _offered(each):
+        value = webforms._option_value(o)
+        if value in seen:
+            continue
+        seen.add(value)
+        up = o.parent
+        group = (up.attributes.get("label") or "") if up is not None and up.tag == "optgroup" else ""
+        out.append(Press("detail", m.submit, profiles.menu_argument(m, year, value),
+                         row_key(site, scope_of, f"{year} {quote(value, safe='')}", category=m.name),
+                         clean(f"{year}學年度 {group} {o.text() or ''}"), 1, m.form, m.name))
+    return out, text
+
+
+def menu_form(html: str, form_id: str, submit: str) -> tuple[str | None, str]:
+    """The form a menu's press sends (gap ⑩ of 11-08): a CSS selector of the form of id form_id and "", or None and why
+    not, as image_form says it: control_missing (the page holds no such submit button), no_form (no form of that id,
+    alone on the page, holds it)."""
+    tree = LexborHTMLParser(html or "")
+    buttons = [n for n in tree.css("input") if _named(n, "input", submit, "submit")]
+    if not buttons:
+        return None, "control_missing"
+    form = _the_form(tree, form_id) if _SIMPLE_ID.fullmatch(form_id or "") else None
+    if form is None or not any(_ancestor(b, {form.mem_id}) is not None for b in buttons):
+        return None, "no_form"
+    return f'form[id="{form_id}"]', ""
+
+
+def menu_post(html: str, css: str, fields: Iterable[tuple[str, str]], choice: Iterable[tuple[str, str]],
+              submit: str) -> tuple[list[tuple[str, str]], str | None]:
+    """What a browser sends for a menu's press (gap ⑩ of 11-08): the form's fields as webforms.form_state read them
+    (fields; css: the form), each value chosen in place of its select's entry, then the submit button that sent the
+    form, its name and value (the HTML Standard's entry list holds its submitter; no __EVENTTARGET, which no
+    __doPostBack sets). Returns them and None, or the name of a select none of whose options the page offers is the
+    value chosen (target_for: mismatch option_missing:<name>, nothing sent). A select with no entry (a list box with
+    nothing selected) gets the value chosen at the end 【Claude 的执行办法】."""
+    tree = LexborHTMLParser(html or "")
+    form = tree.css_first(css)
+    out = list(fields)
+    for name, value in choice:
+        select = _in_form(form, "select", name)
+        if select is None or value not in {webforms._option_value(o) for o in _offered(select)}:
+            return out, name
+        at = [i for i, (k, _v) in enumerate(out) if k == name]
+        if not at:
+            out.append((name, value))
+            continue
+        out = [(name, value) if i == at[0] else x for i, x in enumerate(out) if i == at[0] or i not in at]
+    button = _in_form(form, "input", submit, "submit")
+    return [*out, (submit, (button.attributes.get("value") or "") if button is not None else "")], None
+
+
+def menu_mismatch(html: str, url: str, form_id: str, choice: Iterable[tuple[str, str]]) -> str | None:
+    """Why a menu press's answer is not what was asked (gap ⑩ of 11-08), in words (asked <values>, shows <values>), or
+    None: the answer's form of id form_id, read as a browser sends it (webforms.form_state), holds each value asked as
+    its select's entry. A course table shows the year and the department its courses are of; an answer the server
+    gave for another choice (the page's default year: the session lapsed, the year was not taken) shows that one,
+    never a title to check (title_ok)."""
+    asked = list(choice)
+    want = "/".join(v for _n, v in asked)
+    try:
+        if not _SIMPLE_ID.fullmatch(form_id or ""):
+            raise ValueError("no form")
+        _post, fields = webforms.form_state(html or "", url, f'form[id="{form_id}"]')
+    except ValueError:
+        return f"asked {want}, shows no form {form_id}"
+    shown: dict[str, str] = {}
+    for k, v in fields:
+        shown.setdefault(k, v)
+    if all(shown.get(n) == v for n, v in asked):
+        return None
+    return f"asked {want}, shows {'/'.join(shown.get(n, '?') for n, _v in asked)}"
+
+
+def this_year(t: float) -> int:
+    """The academic year (profiles.academic_year) of the day a time is in, in Asia/Taipei (CLAUDE.md: dates by
+    Asia/Taipei): the year a menu is sent with (gap ⑩ of 11-08, the owner 11-09 「现在补 115」)."""
+    return profiles.academic_year(datetime.fromtimestamp(t, TAIPEI).date())
+
+
+_LIVE = ("done", "pending", "active")  # a press done well, or one the run presses (or starts again from its GET)
+_TRIED = ("failed", "mismatch")  # a press that went and brought nothing it asked for (Chains._press: twice, a person's)
+
+
+def menus_not_sent(f: Frontier, year: int, only: str = "",
+                   args: Iterable[str] = ()) -> list[tuple[sqlite3.Row, profiles.Menu]]:
+    """The stored pages whose menu is not sent for `year` as far as a new GET of the page could still send it (gap ⑩
+    of 11-08, the owner 11-09 「现在补 115」), each with its menu rule: a page (kind page, done with a 200: one the school
+    answered otherwise holds no form to send, and would come back each time) whose own platform (by its address; the
+    sites first by url.site, as the crawler writes it) has a menu rule for its path, when no press of the rule for that
+    year was sent or waits (none done, pending, active, failed or mismatched: the course tables stored before the rule,
+    or last year's), or when an option's row has no press done, pending or active and one try that failed or
+    mismatched, which the new GET presses again (Chains._press). Judged option by option (review of 11-09): a row tried
+    twice is a person's (mismatch or failed, 要人看), and a row whose presses were all superseded was planned again by
+    the GET that superseded them, or that page no longer offers it: neither puts the page back (each `retry unpressed`
+    would fetch it again for nothing), and one option done hides no other that can still be pressed. only,
+    args: a filter on u.owner_site (`retry unpressed --sites`). Reads only (verify check 4 names the same pages); the
+    rows hold id, url and owner_site 【Claude 的执行办法】."""
+    sites = [s for (s,) in f.q("SELECT DISTINCT site FROM url WHERE kind = 'page' AND state = 'done'")
+             if (p := profiles.profile_for_site(s)) is not None and p.menus]
+    if not sites:
+        return []
+    out = []
+    for r in f.q(f"SELECT u.id, u.url, u.owner_site FROM url u WHERE u.kind = 'page' AND u.state = 'done' AND "
+                 f"u.status = 200 AND u.site IN ({','.join('?' * len(sites))}){only} ORDER BY u.id", (*sites, *args)):
+        prof = profiles.profile_for(r["url"])
+        try:
+            path = urlsplit(r["url"]).path.lower()
+        except ValueError:
+            continue
+        for m in (prof.menus if prof is not None else ()):
+            if not re.search(m.paths, path):
+                continue
+            rows: dict[str, list[str]] = defaultdict(list)  # the presses of this year by their option's row
+            for a in f.q("SELECT row_key, argument, state FROM action WHERE list_id=? AND kind='detail'", (r["id"],)):
+                if profiles.menu_year(m, a["argument"]) == year:
+                    rows[a["row_key"]].append(a["state"])
+            sent = any(s != "superseded" for states in rows.values() for s in states)
+            again = any(not set(states) & set(_LIVE) and sum(s in _TRIED for s in states) == 1
+                        for states in rows.values())
+            if not sent or again:
+                out.append((r, m))
+    return out
+
+
 def _label(node: LexborNode) -> str:
     a = node.attributes
     return clean((node.text() or "") if node.tag != "select" else "") or clean(a.get("value") or a.get("title") or "")
@@ -319,14 +503,18 @@ def _cell(el: LexborNode, css: str) -> str:
 
 def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list_url: str | None = None,
               parent_key: str | None = None, page: links.PageLinks | None = None,
-              step: int | None = None, walks: tuple[str, ...] = profiles.WALKS) -> PageRead:
+              step: int | None = None, walks: tuple[str, ...] = profiles.WALKS, year: int | None = None) -> PageRead:
     """Read one page of a profiled site: its list (the first row set whose grid is on the page and walks), every row
     set's row buttons to press, the next page's button. Its buttons are decided by `profile` (the platform the page
     is written on: profiles.rule_in), site is the site its rows count for (url.owner_site: their row keys).
     list_url: the chain's list (row keys are the list's, across its pages); parent_key: the row key of the detail this
     page is the answer of (its files' keys). page: the page's links.extract, when the caller has it (GET pager
     candidates are read from it). step: the page number this answer was asked for (the presses' step when the page
-    shows none). walks: only the row sets that walk so (a detail's answer: none, its files)."""
+    shows none). walks: only the row sets that walk so (a detail's answer: none, its files). year: the academic year
+    the profile's menu rules whose paths match the page are sent with (_menu_presses: one press per option, after the
+    rows' presses; the row keys the list's, list_url or url, never parent_key's), a menu its page cannot send written
+    unpressed (postback:<submit>|MENU_ARG, 要人看); None: no menu is pressed nor written (a reading that presses
+    nothing: rejudge, the export). Gap ⑩ of 11-08, the owner 11-09 「现在补 115」."""
     tree = LexborHTMLParser(html or "")
     try:
         path, query = urlsplit(url).path.lower(), urlsplit(url).query.lower()
@@ -343,6 +531,16 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
     for node, t, a in pbs:
         if (b := rules[(t, a, node.mem_id)]) is not None and b.decision == "press":
             said.setdefault(button_key(t, a), _label(node))
+    menu_presses: list[Press] = []
+    menus_left: list[tuple[str, str]] = []  # (submit, MENU_ARG) of a menu its page cannot send
+    for m in (profile.menus if year is not None else ()):
+        if not re.search(m.paths, path):
+            continue
+        got, label = _menu_presses(m, tree, site=site, scope_of=list_url or url, year=year)
+        menu_presses += got
+        if not got:
+            menus_left.append((m.submit, MENU_ARG))
+            said.setdefault(button_key(m.submit, MENU_ARG), label)
     texts = tuple(said.items())
     sets = [rs for rs in profile.rows if rs.walk in walks and (not rs.paths or re.search(rs.paths, path))
             and (not rs.query or re.search(rs.query, query)) and tree.css_first(rs.grid)]
@@ -361,12 +559,14 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
         covered |= by_get
         if rs is lst:
             rows = got_rows
+    presses += menu_presses
     covered |= {(p.target, p.argument) for p in presses}
     if pager is not None and pager.found:  # the walk steps through the pager: every page of it is reached
         covered |= {(t, a) for n, t, a in pbs if (b := rules[(t, a, n.mem_id)]) is not None and b.role == "pager"}
     unplanned_at = tuple(dict.fromkeys(
-        (t, a) for n, t, a in pbs
-        if (b := rules[(t, a, n.mem_id)]) is not None and b.decision == "press" and (t, a) not in covered))
+        [*((t, a) for n, t, a in pbs
+           if (b := rules[(t, a, n.mem_id)]) is not None and b.decision == "press" and (t, a) not in covered),
+         *menus_left]))
     unplanned = tuple(dict.fromkeys(button_key(t, a) for t, a in unplanned_at))
     if lst is None:
         return PageRead(profile.name, None, "none", presses=tuple(presses), unknown=unknown, unplanned=unplanned,
@@ -1034,6 +1234,11 @@ class Chains:
         self.clock = clock
         self.read = read or (lambda warc, offset: read_response(self.root, warc, offset))
 
+    def _year(self) -> int:
+        """The academic year of today (Asia/Taipei) by the chains' clock: the year a menu is sent with (gap ⑩ of 11-08,
+        the owner 11-09 「现在补 115」)."""
+        return this_year(self.clock())
+
     # ---- a page stored by GET
     def page_stored(self, row: sqlite3.Row, html: str, warc: str | None, warc_offset: int | None,
                     page: links.PageLinks | None = None) -> Stored:
@@ -1042,14 +1247,15 @@ class Chains:
         its rows item entries of page_res, its walk a listwalk row. A page with GET pager links (no profile, or a
         profile that walks by GET) gets its walk from get_walk(). The profile is the platform the page's own address
         is written on (profiles.profile_for, gaps ② ③ of 11-08); the site it counts for (url.owner_site) keys its
-        rows, its actions (action.site: a run's --sites) and its walk."""
+        rows, its actions (action.site: a run's --sites) and its walk. Its menus are sent with today's academic year
+        (gap ⑩ of 11-08)."""
         site = row["owner_site"] or scope.site_key(row["url"])
         prof = profiles.profile_for(row["url"])
         has_pagers = bool(page.pagers) if page is not None else row["page_role"] == "list"
         if prof is None:
             ended = self.get_walk(row["id"]) if has_pagers else None
             return Stored("list" if has_pagers else None, 0, ended)
-        pr = read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page)
+        pr = read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page, year=self._year())
         list_id = row["id"]
         if (warc is None or warc_offset is None) and (pr.presses or pr.next is not None):
             # nothing to build a form from: its buttons cannot be pressed, and its walk claims no end (a crawler bug)
@@ -1105,12 +1311,15 @@ class Chains:
 
     def _plan(self, list_id: int, epoch: int, pr: PageRead, list_row, warc: str, offset: int, *, pages: int,
               base: str | None = None, only: frozenset[tuple[str, str]] | None = None,
-              left: list[str] | None = None) -> tuple[int, str | None]:
+              left: list[str] | None = None, seen: set[int] | None = None) -> tuple[int, str | None]:
         """The presses of one page of the chain (§7.5 step 2), the page's rows as item entries, the next page when
         there is one. Returns (presses planned, the walk's end at this page, None while it goes on). only: the
         (kind, row_key) presses that may be planned anew (`retry download`, §23 A3: _redo_stored); every other press
         points at what its row has already, the next page is not pressed, and a button no press of any epoch covers
-        goes to left (its button key, for a person)."""
+        goes to left (its button key, for a person). seen: the done details of older epochs read again so far in
+        this planning (_detail_files), each read once: the answers of a menu's presses name one another (gap ⑩ of
+        11-08) 【Claude 的执行办法】."""
+        seen = set() if seen is None else seen
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
         host, queue = self._place(base or list_row["url"], list_row)
         entries = []
@@ -1152,15 +1361,22 @@ class Chains:
         if entries:
             self.f.add_page_res(list_id, entries)
         for aid in done_details:
-            n += self._detail_files(aid, list_id, epoch, list_row, redo=only is not None, left=left)
+            n += self._detail_files(aid, list_id, epoch, list_row, redo=only is not None, left=left, seen=seen)
         return n, ended if pr.walk in ("postback", "one_get") else None
 
     def _detail_files(self, action_id: int, list_id: int, epoch: int, list_row, *, redo: bool = False,
-                      left: list[str] | None = None) -> int:
+                      left: list[str] | None = None, seen: set[int] | None = None) -> int:
         """A detail pressed well in an older epoch is not pressed again; its own buttons (its files) are read again
         from its archived answer, so the list page still names them after its page_res was written anew (a done file
         stays done, one that failed once is pressed again). redo (`retry download`, §23 A3): nothing is pressed anew
-        from an archived answer (its form state is an old POST's: never sent again as it was), only named."""
+        from an archived answer (its form state is an old POST's: never sent again as it was), only named. A menu's
+        press is read again with the year it asked (its argument) and the list's row keys: an option its answer
+        offers that no press covers is planned from that answer (gap ⑩ of 11-08). seen: _plan's; each detail is
+        read again once in one planning."""
+        if seen is not None:
+            if action_id in seen:
+                return 0
+            seen.add(action_id)
         got = self.f.q("SELECT * FROM action WHERE id=?", (action_id,))
         if not got:
             return 0
@@ -1176,12 +1392,22 @@ class Chains:
         except (OSError, ValueError, StopIteration):
             return 0
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
+        year = self._asked_year(a, prof)
         pr = _without_pressed(read_page(prof, url, as_text(body, headers.get("content-type")), site=site,
-                                        parent_key=a["row_key"], step=a["step"], walks=("none",)), a)
+                                        list_url=list_row["url"] if year is not None else None,
+                                        parent_key=a["row_key"], step=a["step"], walks=("none",), year=year), a)
         n, _end = self._plan(list_id, epoch, pr, list_row, a["warc"], a["warc_offset"], pages=0, base=url,
-                             only=frozenset() if redo else None, left=left)
+                             only=frozenset() if redo else None, left=left, seen=seen)
         self._unpressed(list_id, pr.unplanned_at, pr.texts)
         return n
+
+    @staticmethod
+    def _asked_year(action, prof: profiles.Profile | None) -> int | None:
+        """The academic year a menu's press asked for (its rule: the action's row set; its year select's value in the
+        argument), or None for any other press (gap ⑩ of 11-08)."""
+        rowset = (action["profile"] or "").partition("/")[2]
+        m = next((x for x in (prof.menus if prof is not None else ()) if x.name == rowset), None)
+        return profiles.menu_year(m, action["argument"]) if m is not None else None
 
     def rebuild(self, list_id: int) -> int:
         """The list page's press entries again from the action table, no epoch opened and nothing pressed: for a
@@ -1354,7 +1580,9 @@ class Chains:
         """The POST for an action, built from the page it was planned on as archived (§7.5 step 3): the form that
         holds its button, that page's form state, its target and argument. None when the page no longer holds the
         button or no form fits, or the form posts to another host, or a file button's clicks rule no longer presses
-        it (rule_changed): the action is mismatch then, nothing is sent."""
+        it (rule_changed): the action is mismatch then, nothing is sent. A menu's press (argument MENU_ARG?…, gap ⑩
+        of 11-08): the form of its form_id with the menus set and its submit button (menu_form, menu_post), mismatch
+        option_missing:<select> when the page no longer offers a value it asks."""
         meta = {"action": action["id"], "kind": action["kind"], "list_id": action["list_id"]}
         if action["kind"] == "click":
             # the platform file asked again before the POST goes (§7.5 step 10): a press left pending from an earlier
@@ -1374,7 +1602,13 @@ class Chains:
             return None
         html = as_text(body, headers.get("content-type"))
         image = action["argument"] == IMAGE_ARG
-        if image:  # an ImageButton (gap ⑪ of 11-08): the form that holds it, as a browser sends it when it is clicked
+        choice = profiles.menu_choice(action["argument"])
+        if choice is not None:  # a menu's form (gap ⑩ of 11-08): the one of its id, sent by its own submit button
+            css, why = menu_form(html, action["form_id"] or "", action["target"])
+            if css is None:
+                self._end(action, "mismatch", why)
+                return None
+        elif image:  # an ImageButton (gap ⑪ of 11-08): the form that holds it, as a browser sends it when it is clicked
             css, why = image_form(html, action["target"])
             if css is None:
                 self._end(action, "mismatch", why)
@@ -1392,7 +1626,15 @@ class Chains:
         if prof is not None and prof.forms and (form is None or form.group(1) not in prof.forms):
             self._end(action, "mismatch", f"form_not_in_profile:{form.group(1) if form else css}")
             return None  # §7.5 step 10: a form the platform file does not name is never sent
-        if image:
+        if choice is not None:
+            # the form's own fields as archived, the menus set to the press's values (each one the page offers), then
+            # its submit button: the HTML Standard's entry list of a form a submit button sends (no __doPostBack)
+            post_url, fields = webforms.form_state(html, url, css)
+            fields, wrong = menu_post(html, css, fields, choice, action["target"])
+            if wrong is not None:
+                self._end(action, "mismatch", f"option_missing:{wrong}")
+                return None
+        elif image:
             # the form's own fields (its hidden __EVENTTARGET too, when it has one) and the click's coordinates, as the
             # HTML Standard's entry list has them for an image button (name.x, name.y; no __doPostBack, nothing else)
             post_url, fields = webforms.form_state(html, url, css)
@@ -1437,6 +1679,12 @@ class Chains:
             loc = scope.canonical(a.headers.get("location", ""), a.url)
             list_row = self._list_row(action) if action["kind"] == "detail" else None
             led = press_redirect(action["kind"], loc, a.url, list_row["url"] if list_row is not None else None)
+            if profiles.menu_choice(action["argument"]) is not None:
+                # a menu's press is judged by what its answer shows (menu_mismatch, gap ⑩ of 11-08): a redirect shows
+                # neither the year nor the option asked, wherever it leads (another page of the site, the table's own
+                # address with a query), so it is no detail's page: the press failed as below (review of 11-09: done,
+                # its menu counted as sent and the department's table missing, nothing saying so) 【Claude 的执行办法】
+                led = None
             if action["kind"] in ("download", "detail") and led is None:
                 # a row's press sent elsewhere (the session or its view state lapsed: SSO's home, a sign-in page)
                 # brought neither its file nor its detail (design §23.9 A2, 【Claude 的执行办法】; §23 A2 for the export
@@ -1512,24 +1760,50 @@ class Chains:
         return prof, rs
 
     def _detail_answer(self, action, a: _Answer, html: str, cols: dict, warc: str | None) -> Followup:
+        """The answer to a row's detail press: its title must be the row's (title_ok) and it is thin when it holds
+        nothing more (empty_answer); a menu's press (gap ⑩ of 11-08) is judged by what its form shows instead
+        (menu_mismatch: the year and the option asked, else mismatch, its reason menu: <asked, shown>, the chain
+        started again from its GET once as for a title), and never thin (no course shown is the school's answer for
+        that choice). Then the answer's
+        own buttons are planned (a menu's: the options it offers, with the year asked and the list's row keys; one
+        pressed or planned already is that row), never the one just pressed."""
         prof, rs = self._profile(action)
         out = Followup(action["list_id"])
-        if not title_ok(action["row_text"] or "", html, rs.detail_title if rs is not None else None,
-                        exclude=rs.grid if rs is not None else None):
+        choice = profiles.menu_choice(action["argument"])
+        if choice is not None:
+            wrong = menu_mismatch(html, a.url, action["form_id"] or "", choice)
+            if wrong is not None:
+                # what the answer showed, kept with the press (its reason: verify's and the dashboard's problem
+                # lines), not only in the restart's event: the second mismatch starts nothing again (review of 11-09;
+                # Followup.note is read by no caller) 【Claude 的执行办法】
+                out.note = f"menu: {wrong}"
+                self._end(action, "mismatch", out.note, **cols)
+                if self._may_restart(action["list_id"]):
+                    self.restart_chain(action["list_id"], f"menu mismatch on {action['row_key'][:12]}: {wrong}")
+                    out.restart = True
+                return out
+            self._end(action, "done", "", **cols)
+        elif not title_ok(action["row_text"] or "", html, rs.detail_title if rs is not None else None,
+                          exclude=rs.grid if rs is not None else None):
             self._end(action, "mismatch", "title", **cols)
             out.note = "title"
             if self._may_restart(action["list_id"]):
                 self.restart_chain(action["list_id"], f"title mismatch on {action['row_key'][:12]}")
                 out.restart = True
             return out
-        empty = empty_answer(action["row_text"] or "", html, rs)
-        self._end(action, "done", EMPTY_DETAIL if empty else "", **cols)  # empty: thin, 要人看 (§10.1 nonempty)
+        else:
+            empty = empty_answer(action["row_text"] or "", html, rs)
+            self._end(action, "done", EMPTY_DETAIL if empty else "", **cols)  # empty: thin, 要人看 (§10.1 nonempty)
         list_row = self._list_row(action)
         if prof is not None and list_row is not None:
             site = list_row["owner_site"] or scope.site_key(list_row["url"])
-            # a detail's own buttons only (its files; a software page's 安裝說明 folder), never the one just pressed
-            pr = _without_pressed(read_page(prof, a.url, html, site=site, parent_key=action["row_key"],
-                                            step=action["step"], walks=("none",)), action)
+            year = self._asked_year(action, prof) if choice is not None else None
+            # a detail's own buttons only (its files; a software page's 安裝說明 folder; a menu's other options), never
+            # the one just pressed
+            pr = _without_pressed(read_page(prof, a.url, html, site=site,
+                                            list_url=list_row["url"] if year is not None else None,
+                                            parent_key=action["row_key"], step=action["step"], walks=("none",),
+                                            year=year), action)
             if warc is not None and a.warc_offset is not None:
                 self._plan(action["list_id"], action["epoch"], pr, list_row, warc, a.warc_offset, pages=0, base=a.url)
                 self._unpressed(action["list_id"], pr.unplanned_at, pr.texts)
@@ -1858,8 +2132,12 @@ class Chains:
         (restart_chain: chain_restart, prio 0, its walk walking) and that GET plans the presses with its own form
         state, a button pressed well before never again (no old POST is sent again). A `retry download` waiting for
         the page is dropped (REDO_KEY): the new GET presses every button not pressed well before, those too. sites:
-        only the pages of these sites (url.owner_site). Returns (pages, button keys: postback:<control, ctlNN as
-        ctl*>, one key for a whole column of buttons)."""
+        only the pages of these sites (url.owner_site). A stored page whose menu is not sent for this academic year as
+        far as a new GET could still send it (menus_not_sent: never sent, or an option tried once and not brought) is
+        put back too, one key menu:<the rule's name> (gap ⑩ of 11-08, the owner 11-09 「现在补 115」: the course tables
+        stored before the rule, or last year's): its GET sends the menu with this year. Returns (pages, button keys:
+        postback:<control, ctlNN as ctl*>, one key for a whole column of buttons; menu:<name>, one for a page's
+        menu)."""
         only, args = "", []
         if sites is not None:
             sites = sorted(set(sites))
@@ -1870,6 +2148,9 @@ class Chains:
                           f"'postback:%' AND u.kind = 'page' AND u.state = 'done'{only}", args):
             if profiles.decision(r["site"] or scope.site_key(r["url"]), r["res_key"], r["text"]) == "press":
                 todo[r["page_id"]].add(r["res_key"])
+        for r, m in menus_not_sent(self.f, self._year(), only, args):
+            todo[r["id"]].discard(button_key(m.submit, MENU_ARG))  # the same menu, unpressed: one key
+            todo[r["id"]].add(f"{MENU_KEY}{m.name}")
         for page_id in sorted(todo):
             self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{page_id}",))
             self.restart_chain(page_id, f"retry unpressed: {len(todo[page_id])}")

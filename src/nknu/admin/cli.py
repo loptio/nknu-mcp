@@ -917,8 +917,8 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
                                                         "（电子系）放回再按；download：SSO 的下载按钮取回来不是档案或"
                                                         "失败的，重新 GET 列表、只按这些按钮；data：资料接口（cLv2 的"
                                                         "时间轴）读失败或读不懂的，用新的请求再读一次；unpressed：现在"
-                                                        "的平台档案说要按、却没人按过的按钮，它们所在的网页重新 GET、"
-                                                        "照现在的平台档案按"),
+                                                        "的平台档案说要按、却没人按过的按钮，和这一学年度的选单还没送完"
+                                                        "的网页（开课课表），它们所在的网页重新 GET、照现在的平台档案按"),
                   dir: str = typer.Option(None, "--dir"),
                   sites: str = typer.Option(None, "--sites", help="只给 unpressed 用：只放回这些网站的网页（网站键，逗号"
                                                                 "分隔）；默认全部")) -> None:
@@ -937,7 +937,11 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     下一次 archive run 用新的请求再读一次（只是读资料，不是回传；设计第 23.9 节 C1）。
     unpressed：已存好的网页上，现在的平台档案（照网页自己的网址认平台）说要按、却没人按过的按钮（记成「该按没按」或
     「平台档案没写决定」的），它们所在的网页放回待抓；下一次 archive run 重新 GET 这一页、用新的表单状态按（已经按好的不再按，
-    旧的 POST 不原样重送）。改了平台档案、rejudge 过以后用（11-08 缺口 ②③④）。--sites 只放回这些网站的网页。
+    旧的 POST 不原样重送）。改了平台档案、rejudge 过以后用（11-08 缺口 ②③④）。平台档案有选单规则的网页（开课课表：学年度
+    选当学年度、逐个系所按「顯示資料」，11-08 缺口 ⑩、用户 11-09「现在补 115」），这一学年度的选单还没送完的也放回：还没
+    送过（没有已按好、待按、正在按或按过没按成的），或者有系所选项只按过一次、没按成（按过两次都没按成的留给人看，不再放回），
+    一页算一种（menu:<规则名>）；下一次 archive run 重新 GET、照当学年度按还没按好的系所。verify 第 4 项列出同样的网页。
+    --sites 只放回这些网站的网页。
     和 retry 的其他原因一样，没有「只列出、不改」的模式：放回只是把网页改回待抓，下一次 archive run 才发请求；
     印出放回了几页、几种按钮。"""
     from nknu.archive.frontier import RETRY_MIN_PREFIX, Frontier
@@ -974,8 +978,8 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
                        "列表、只按这些按钮）")
             elif reason.strip() == "unpressed":
                 pages, keys = chains.retry_unpressed(site_keys)
-                msg = (f"放回重按：{pages} 个网页、{keys} 种该按没按的按钮（网页放回待抓，下一次 archive run 重新 GET、"
-                       "照现在的平台档案按；一种按钮可能是一整栏）")
+                msg = (f"放回重按：{pages} 个网页、{keys} 种该按没按的按钮或这一学年度还没送完的选单（网页放回待抓，下一次 "
+                       "archive run 重新 GET、照现在的平台档案按；一种按钮可能是一整栏，一个选单一页算一种）")
             elif reason.strip() == "data":
                 n = chains.retry_data()
                 msg = f"放回再读：{n} 个网站的资料接口（cLv2 时间轴；下一次 archive run 用新的请求再读一次）"

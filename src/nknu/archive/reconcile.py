@@ -1716,7 +1716,11 @@ class _RejudgeChains(postback.Chains):
     """A stored list read again (rejudge): its press entries come back from the action table (rebuild), its rows'
     item entries from it and from the pages its presses brought, and the buttons to press that no press of any epoch
     covers are unpressed (要人看); no epoch is opened and nothing is planned. A GET-walked list's walk is worked out
-    again as page_stored does."""
+    again as page_stored does. A menu (profiles.Menu, gap ⑩ of 11-08) is read with today's academic year as the
+    crawler reads it, so that a menu its page cannot send stays unpressed (要人看; review of 11-09: read with no year,
+    a rejudge dropped that mark): its options' presses are not named one by one (a menu not sent for this year is
+    `retry unpressed`'s and verify check 4's, postback.menus_not_sent), and a menu's done answer is read with the year
+    it asked and the list's row keys, as Chains._detail_files reads it 【Claude 的执行办法】."""
 
     def page_stored(self, row, html: str, warc: str | None, warc_offset: int | None,
                     page: links.PageLinks | None = None) -> postback.Stored:
@@ -1727,12 +1731,13 @@ class _RejudgeChains(postback.Chains):
         if prof is None:
             return postback.Stored("list" if has_pagers else None, 0,
                                    self.get_walk(list_id) if has_pagers else None)
-        pr = postback.read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page)
+        pr = postback.read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page, year=self._year())
         self.f.add_page_res(list_id, self._items(pr, row["url"]))
         self.rebuild(list_id)
         have = {(a[0], a[1]) for a in self.f.q("SELECT kind, row_key FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
                                                 (list_id,))}
-        wanted = [*pr.presses, *([pr.next] if pr.next is not None and pr.walk == "postback" else [])]
+        wanted = [p for p in (*pr.presses, *([pr.next] if pr.next is not None and pr.walk == "postback" else []))
+                  if profiles.menu_choice(p.argument) is None]
         unplanned = [*pr.unplanned, *(postback.button_key(p.target, p.argument) for p in wanted
                                       if (p.kind, p.row_key) not in have)]
         for a in self.f.q("SELECT * FROM action WHERE list_id=? AND kind IN ('pager', 'detail') AND state='done' AND "
@@ -1747,8 +1752,10 @@ class _RejudgeChains(postback.Chains):
                 self.f.add_page_res(list_id, self._items(got, url))
             else:
                 a_prof, _rs = self._profile(a)
-                got = postback.read_page(a_prof or prof, url, text, site=site, parent_key=a["row_key"],
-                                         step=a["step"], walks=("none",))
+                year = self._asked_year(a, a_prof or prof)  # a menu's answer: the year it asked (else None)
+                got = postback.read_page(a_prof or prof, url, text, site=site,
+                                         list_url=row["url"] if year is not None else None, parent_key=a["row_key"],
+                                         step=a["step"], walks=("none",), year=year)
             self._unpressed(list_id, got.unplanned_at, got.texts)
         ended = None
         if pr.walk in ("postback", "one_get"):

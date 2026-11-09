@@ -1536,7 +1536,7 @@ def _issues(f: Frontier, fx: Facts, work: dict[str, dict]) -> dict[str, list[Iss
             if r.via is not None:
                 url_ids.add(r.via)
     urls = _rows_by_id(f, "url", "id, url, reason, status, page_type", url_ids)
-    acts = _rows_by_id(f, "action", "id, list_id, kind, target, argument, reason, status", act_ids)
+    acts = _rows_by_id(f, "action", "id, list_id, kind, target, argument, reason, status, row_text", act_ids)
     lists = _rows_by_id(f, "url", "id, url", {a["list_id"] for a in acts.values()})
     type_keys = sorted({urls[i]["page_type"] for i in page_ids if i in urls and urls[i]["page_type"]})
     type_why = {}
@@ -1577,6 +1577,10 @@ def _issues(f: Frontier, fx: Facts, work: dict[str, dict]) -> dict[str, list[Iss
                 a = acts[int(r.res[1:])]
                 page = lists.get(a["list_id"])
                 arg = f"|{a['argument']}" if a["argument"] else ""
+                if (choice := profiles.menu_choice(a["argument"])) is not None:
+                    # a menu's press (gap ⑩ of 11-08): what it chose in words, not its urlencoded argument (review
+                    # of 11-09) 【Claude 的执行办法】
+                    arg = f"（选单「{a['row_text'] or '/'.join(v for _n, v in choice)}」）"
                 got.append(Issue(bucket(r.result), "press", r.res, page["url"] if page else f"#{a['list_id']}",
                                  r.result, f"按钮 {a['kind']} {a['target']}{arg}：{label}", a["reason"], a["status"],
                                  w["res_pages"][r.res]))
@@ -1758,6 +1762,8 @@ def class_all_words(item: Mapping[str, Any]) -> str:
 
 
 def _c4(ctx: _Ctx, c: Check) -> None:
+    from nknu.archive.postback import menus_not_sent, this_year
+
     rows = ctx.f.q("""SELECT lw.list_id, lw.ended_by, lw.ok, lw.pages, lw.rows, lw.claimed, lw.note, u.url, u.owner_site
                       FROM listwalk lw JOIN url u ON u.id = lw.list_id WHERE u.tier IN (0, 1)
                       ORDER BY u.owner_site, u.url""")
@@ -1779,8 +1785,20 @@ def _c4(ctx: _Ctx, c: Check) -> None:
     for item in class_all_missing(ctx.f):  # design §23 F2
         n["class_all"] += 1
         c.add(FAIL, class_all_words(item))
+    # a menu (profiles.Menu: the course tables, gap ⑩ of 11-08, the owner 11-09 「现在补 115」) not sent for this
+    # academic year is a list whose options are not walked: its pages are what `retry unpressed` puts back (review of
+    # 11-09: nothing else said so, a new academic year's tables missing silently from each 1 August) 【Claude 的执行办法】
+    year = this_year(ctx.now if ctx.now is not None else time.time())
+    menus: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for r, m in menus_not_sent(ctx.f, year):
+        menus[(r["owner_site"] or "", m.name)].append(r["url"])
+    for (site, name), urls in sorted(menus.items()):
+        n["menu"] += len(urls)
+        c.add(FAIL, f"{site}：平台规则 {name} 的选单这一学年度（{year}）还没送完的网页 {len(urls)} 个（还没送过，或有选项只"
+                    f"按过一次、没按成；例如 {urls[0]}）：nknu archive retry unpressed --sites {site}，再 archive run")
     c.detail = (f"列表 {len(rows)} 个：翻到底 {n['ok']}，还在翻 {n['walking']}，没翻完 {n['bad']}（SSO 公告中心各类加总对不上的记 "
-                f"mismatch:total）；分类选单记 ignore 却没有「全部」列表翻到底的网站 {n['class_all']} 个")
+                f"mismatch:total）；分类选单记 ignore 却没有「全部」列表翻到底的网站 {n['class_all']} 个；这一学年度"
+                f"（{year}）的选单还没送完的网页 {n['menu']} 个")
 
 
 def _c5(ctx: _Ctx, c: Check) -> None:

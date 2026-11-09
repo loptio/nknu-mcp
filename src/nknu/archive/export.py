@@ -1093,6 +1093,9 @@ class Builder:
                      "data": f"网页用程式读的资料接口 {a['target']}（{a['row_text'] or ''}）",
                      "click": f"下载按钮「{a['row_text'] or ''}」（回传，取档案网址）"}
             it.how = words.get(kind, kind)
+            if kind == "detail" and profiles.menu_choice(a.get("argument")) is not None:
+                # a menu's form sent with one choice (profiles.Menu: the course tables, gap ⑩ of 11-08)
+                it.how = f"网页 {lst['url']} 的选单选「{a['row_text'] or ''}」后按送出（回传）"
             if kind == "detail":
                 it.title = a["row_text"] or ""
             elif kind == "pager":
