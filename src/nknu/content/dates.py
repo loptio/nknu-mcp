@@ -39,7 +39,13 @@ IDENTITY_ORDER = ("published", "inherited", "server")
 # archive.export spells them (OWN_FIELD, LIST_ROW, PAGE_WORDS); content keeps its own copy, as ids.PRESS_MARK does.
 # '' on a row with no date, and on every row of an export made before 3c33a79 (sub-step 4, spec 2026-11-08 §四)
 OWN_FIELD = "详细页的日期栏"  # the platform's own date field on a notice or detail page
-LIST_ROW = "列表上的日期"  # the date the notice's row states on its list (P75, SSO WebIdx)
+# the date the row of a list linking the page states: a notice's row on its list (P75, SSO WebIdx) and, since the
+# crawler's 53cf31b (blueprint item 22, part 2), the row of any list, this site's or another site's, that links any
+# page (sso.nknu.edu.tw/services's 11,186 activity pages take the dates of the 25 unit sites' 書表 lists linking them; a
+# c.nknu row, with no date column, gives its first western date). Trusted for every page and notice as before
+# 【Claude】: 12,287 pages and 13 notices newly dated, none losing or changing its date (documents._stated has the
+# evidence)
+LIST_ROW = "列表上的日期"
 PAGE_WORDS = "网页上的日期字眼"  # a labelled date in the page's words
 # the sources of a published date: a notice's own date field, c.nknu's header field (#lbl_AddTime, newsview's
 # #DataFormView_AddTimeLabel) or, since sub-step 4, any platform's date field the export read on a detail page (日期来源

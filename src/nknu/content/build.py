@@ -17,9 +17,10 @@ manifest's 网页上写的日期, read after a label of putting the page up or c
 as its own date only, and an attachment inherits such a notice's date with that source (_facts); the export's site
 gives the unit of a record or event that names no site of its own (a corpus assembled before T3). Sub-step 4 (spec
 2026-11-08 §四), from the step-3 export's columns: a date the platform's own field gave (公告頁日期欄, whatever page
-it is on: documents._class) or a notice's list row (列表上的日期) needs no label (§二 2), and an attachment's server
-time is its export row's 最后修改时间 (documents.Document.server_date, §二 3), else server_dates.json's as before (an
-export made before 3c33a79 has no such column).
+it is on: documents._class) or the row of a list linking the page (列表上的日期: a notice's row on its list; since the
+crawler's 53cf31b, blueprint item 22, the row of any list linking any page) needs no label (§二 2), and an
+attachment's server time is its export row's 最后修改时间 (documents.Document.server_date, §二 3), else
+server_dates.json's as before (an export made before 3c33a79 has no such column).
 
 Terms (period_ay, period_sem): the first one a title names. A calendar event, whose title seldom names one, always has
 one: its title's, else its first day's (terms.event_term; fix round 2, 11-01).
@@ -28,7 +29,7 @@ Copies (review 11-01): a page or attachment at several addresses with the same t
 when it has no text) is kept once; the others are counted as left out (<kind>(副本)) and listed with their id,
 address, date and parent in meta under copies:<kept id>, which respond shows as `copies`. An attachment's title here
 is its file name (a title from a page may differ between the addresses); the kept one takes the others' references
-and keeps their titles findable in its linktext.
+and list categories (blueprint item 22) and keeps their titles findable in its linktext.
 
 Ids (plan 2026-11-08 T1): a document's id is 'd' + its record's id, which assemble derives from the record's identity
 (nknu.content.ids; meta id_scheme). The build stops (BuildError 「编号撞了」) when one id stands for two keys or one key
@@ -83,9 +84,20 @@ the other names of the section it names: build.publisher_of), and since 11-08 10
 programs its scope applies to (適用：…); they go into every chunk's unit_tokens (title_tokens until 11-08 10:16), and
 docs.unit_line (單位：<unit>（<short names>） <組別>) is the second line of every passage (nknu.content.embed.passage,
 PASSAGE_VERSION 2), so the vector cache misses once for every chunk (BuildReport.passage). The school's own words are
-left out: it is every unit's root (unit_words). The report lists the site table's units the tree gives no short name
-(scope.site_units_no_alias). --no-unit-words leaves the whole patch out (meta unit_words "off"), passages as version
-1's: built twice from one set of inputs, the two databases measure the patch alone (T4 review; Review Focus 5).
+left out: it is every unit's root (unit_words). Blueprint item 22 (owner 11-09, 「照这个做」): the crawler carries the
+categories of the list rows linking a page (列表上的类别: documents.Document.categories, with those the other records
+of its identity and its copies state: documents._joined, _take_over); they join the unit line as 類別：… after 適用,
+so the keyword index's unit_tokens and the reranker read them, not the vectors, like the rest of the line 【Claude:
+the place】. 12,898 kept records of the 11-09 exports have one, 1,883 of them in neither their title nor their text
+(research/pipeline_2026-11-02/reading_gaps_1109/lists_1109g.log); by site, of the exports' 12,920 rows with one
+(reexport_1109g.log there): sso.nknu.edu.tw/services 10,966 (專題演講或個人展演, 社團活動, 研討會 …),
+sso.nknu.edu.tw/news 814, lis 625, the 17 SSO unit sites 500 in all (web/39 134, web/49 107, web/593 78, web/44 41,
+web/578 40, …), news.nknu.edu.tw 9, c.nknu.edu.tw/aca 5, sso.nknu.edu.tw/stu 1. The report counts the documents
+whose line names them (scope.unit_line_categories); a corpus assembled before these columns, beside an export that has
+them, is warned of (build_sites: its pager pages stay and its lines name no category). The report lists the site
+table's units the tree gives no short name (scope.site_units_no_alias). --no-unit-words leaves the whole patch out
+(meta unit_words "off"), the units it applies to and the categories too, passages as version 1's: built twice from
+one set of inputs, the two databases measure the whole patch, these parts together (T4 review; Review Focus 5).
 
     python -m nknu.content.build [--corpus research/pipeline_2026-11-02/corpus.json] [--export …] [--out …]
         [--site-list research/site_probe_2026-10-23/data.json] [--units config/units.yaml] [--no-unit-words]
@@ -195,16 +207,25 @@ _OLD_MEMBER = re.compile(r"da\d+m\d+")
 INPUT_SEP = "::"  # --input CORPUS::EXPORT (plan 2026-11-08 T4)
 UNIT_LABEL = "單位："  # the unit line's label (plan 2026-11-08 T4's format); a passage's words, never an index token
 APPLIES_LABEL = "適用："  # its second label (owner 11-08 10:16 (b)): the units the document's scope narrows to
+# its third label (blueprint item 22, owner 11-09 「照这个做」; the place 【Claude】): the categories the list rows
+# linking the document's page state (documents.Document.categories)
+CATEGORY_LABEL = "類別："
 APPLIES_KINDS = ("学院", "系所", "学程")  # units.KINDS a document's applies_to puts on its unit line (unit_words)
 OFFICE_KIND, SECTION_KIND = "行政单位", "行政组别"  # the unit tree's kinds of an office and of its sections (office_of)
 # BuildReport.passage (plan 2026-11-08 T4: 「Note that in the build report」): what changed in this PASSAGE_VERSION
+# (the 適用 part since owner 11-08 10:16 (b), the 類別 part since blueprint item 22, owner 11-09 「照这个做」)
 PASSAGE_NOTE = ("passage 第 2 版（计划 2026-11-08 T4，用户 11-08 04:08 要的单位补丁）：重排读的 passage 第二行多了单位行"
-                "「單位：<单位>（<简称>） <组别>」（单位是全校、又没有组别的文件没有这一行），关键词索引也有这些词；"
+                "「單位：<单位>（<简称>） <组别>」，后面接「適用：<文件适用的学院、系所、学程>」（11-08 起）和"
+                "「類別：<指到这一页的列表那一行写的类别>」（蓝图第 22 件，11-09 起）；单位是全校、又没有组别的文件没有"
+                "「單位：」这一段，三段都没有的文件没有这一行（所以全校的文件可能只有「適用：…」或「類別：…」，"
+                "像 sso.nknu.edu.tw/services 的活动页），关键词索引也有这些词；"
                 "向量默认不放单位行（11-08 实验室电脑量过：放进向量，点名组别的问题会把同组别的文件都拉近），所以向量快取照常能用；"
                 "加 --unit-words-in-vectors 才放进向量，那时第 1 版的向量快取对不上，第一次 --embed 每个小段都要重算")
-# the same with --no-unit-words (plan 2026-11-08 T4 review: the patch measured alone, Review Focus 5)
-PASSAGE_NOTE_OFF = ("这次没加单位词（--no-unit-words，用来单独量单位补丁）：没有单位行，关键词索引（unit_tokens）里也没有单位名、组别、简称，"
-                    "passage 和第 1 版一样，所以第 1 版的向量快取照样命中；和同样输入、加了单位词的库比，差的就只是单位补丁")
+# the same with --no-unit-words (plan 2026-11-08 T4 review: the patch measured alone, Review Focus 5; its 適用 and 類別
+# parts go with it, so the two builds measure them together)
+PASSAGE_NOTE_OFF = ("这次没加单位词（--no-unit-words，用来量单位补丁）：没有单位行，关键词索引（unit_tokens）里也没有单位名、组别、简称、"
+                    "适用单位和列表类别，passage 和第 1 版一样，所以第 1 版的向量快取照样命中；和同样输入、加了单位词的库比，"
+                    "差的是整个单位补丁（单位名、组别、简称、适用单位、列表类别一起，分不开）")
 
 
 class BuildError(ValueError):
@@ -242,7 +263,8 @@ class UnitWords:
     """A document's unit words (plan 2026-11-08 T4, the owner's unit patch): its unit's name and short names, its 組別
     as written and the other names of the section the 組別 names; for a unit that is a section of an office, the
     office's name and short names first (T4 review); then each college, department or program its scope applies to
-    that these do not name already, with its short names (owner 11-08 10:16 (b)). Empty parts are left out."""
+    that these do not name already, with its short names (owner 11-08 10:16 (b)); then the categories of the list rows
+    linking its page that none of these names (blueprint item 22, owner 11-09 「照这个做」). Empty parts are left out."""
 
     name: str = ""
     aliases: tuple[str, ...] = ()
@@ -251,6 +273,7 @@ class UnitWords:
     office: str = ""
     office_aliases: tuple[str, ...] = ()
     applies: tuple[tuple[str, tuple[str, ...]], ...] = ()  # (name, short names) per unit, in the tree's order
+    categories: tuple[str, ...] = ()  # documents.Document.categories, in their order (item 22)
 
     def _parts(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
         return (self.office, self.office_aliases), (self.name, self.aliases), (self.group, self.group_aliases)
@@ -258,16 +281,20 @@ class UnitWords:
     @property
     def line(self) -> str:
         """單位：[<office>（<its short names>） ]<unit>（<short names joined by 、>） <組別>（<its other names>）, the
-        plan's format, then 適用：<unit>（<short names>） ... for the units it applies to; '' when empty."""
+        plan's format, then 適用：<unit>（<short names>） ... for the units it applies to, then 類別：<category>、...
+        for its list rows' categories (blueprint item 22); '' when empty."""
         def said(parts: Sequence[tuple[str, tuple[str, ...]]]) -> str:
             return " ".join(w + (f"（{'、'.join(more)}）" if more else "") for w, more in parts if w)
-        own, applies = said(self._parts()), said(self.applies)
-        return " ".join(([UNIT_LABEL + own] if own else []) + ([APPLIES_LABEL + applies] if applies else []))
+        own, applies, categories = said(self._parts()), said(self.applies), "、".join(self.categories)
+        return " ".join(([UNIT_LABEL + own] if own else []) + ([APPLIES_LABEL + applies] if applies else [])
+                        + ([CATEGORY_LABEL + categories] if categories else []))
 
     @property
     def words(self) -> tuple[str, ...]:
-        """Each name once, in the line's order: what unit_tokens gets, a word at a time (no bigram across two)."""
-        return tuple(dict.fromkeys(w for name, more in (*self._parts(), *self.applies) for w in (name, *more) if w))
+        """Each name once, in the line's order (the categories last): what unit_tokens gets, a word at a time (no bigram
+        across two)."""
+        names = (w for name, more in (*self._parts(), *self.applies) for w in (name, *more))
+        return tuple(dict.fromkeys(w for w in (*names, *self.categories) if w))
 
 
 @dataclass
@@ -490,12 +517,14 @@ def _inherited(r: _Row) -> date | None:
 
 
 def _take_over(keep: Document, other: Document) -> None:
-    """keep stands for other from now on: other's references join keep's, and other's title stays findable in keep's
-    linktext."""
+    """keep stands for other from now on: other's references join keep's, other's title stays findable in keep's
+    linktext, and other's list categories join keep's, each once after keep's own (blueprint item 22, review 11-09:
+    the unit line, written after this, would otherwise lose a category only a copy's list row states)."""
     known = {ref for ref, _, _ in keep.refs}
     keep.refs += tuple(ref for ref in other.refs if ref[0] not in known and ref[0] != keep.doc_id)
     if other.title != keep.title and other.title not in keep.linktext.split(LINK_SEP):
         keep.linktext = LINK_SEP.join(p for p in (keep.linktext, other.title) if p)
+    keep.categories += tuple(c for c in other.categories if c not in keep.categories)
 
 
 def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None],
@@ -503,8 +532,8 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None],
     """Keep one document of each copy group (review 11-01: copies took half the places in the top ten): the one on the
     latest dated notice (the school still posts the file then), else the latest identity date, else the first in
     corpus order. The others are counted in excluded as <kind>(副本) and returned, newest first, under the kept id;
-    the kept one takes their references (_take_over); a document hanging on a dropped page hangs on the kept one
-    (same title and text), and a reference to a dropped page points at the kept one."""
+    the kept one takes their references and list categories (_take_over); a document hanging on a dropped page hangs
+    on the kept one (same title and text), and a reference to a dropped page points at the kept one."""
     order = {r.doc.doc_id: i for i, r in enumerate(rows)}
     kept_of: dict[str, str] = {}
     copies: dict[str, list[_Row]] = {}
@@ -601,9 +630,10 @@ def _write_index(conn: sqlite3.Connection, rows: list[_Row]) -> tuple[int, int]:
     chunk, after its table header when it has one (T7a: a row far down a table still finds the column names). Both
     carry the term tokens (term115s1 ...); an event's title column also carries its own term's, which its title seldom
     writes (fix round 2, 11-01: 「下學期 選課」 finds next term's 選課). unit_tokens: the unit words (plan 2026-11-08 T4:
-    the unit's name and short names, the 組別, the units it applies to; unit_words), a word at a time; in title_tokens
-    until 11-08 10:16, a column of their own since (N11: search weighs them apart, RankConfig.unit_weight, and counts
-    a query word only they have as part found, RankConfig.unit_cover)."""
+    the unit's name and short names, the 組別, the units it applies to, the list rows' categories since blueprint item
+    22; unit_words), a word at a time; in title_tokens until 11-08 10:16, a column of their own since (N11: search
+    weighs them apart, RankConfig.unit_weight, and counts a query word only they have as part found,
+    RankConfig.unit_cover)."""
     n_sec = chunk_id = 0
     chunk_rows, fts_rows = [], []
 
@@ -690,12 +720,16 @@ def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None
     tree's order) that are a college, a department or a program (APPLIES_KINDS) and that those words do not name, each
     with its short names (owner 11-08 10:16 (b): 「如果一份文件的 doc_scope 把 applies_to 缩小到了具体的学院/系所/学程
     （非全校），请把该适用单位的全称和简称也加进它的 unit_words / passage 里」, so the 323 pages of a 教務處 file for one
-    department find 「某系 + 某事」 in every chunk). The school is no such unit; an office or a center is left out too."""
+    department find 「某系 + 某事」 in every chunk). The school is no such unit; an office or a center is left out too.
+    Then the document's categories (Document.categories: the list rows linking its page; blueprint item 22, owner
+    11-09 「照这个做」) that these words do not name already."""
     own = _own_unit_words(d, units, school)
     tree = units or {}
     more = tuple((tree[u].name, tree[u].aliases) for u in applies
                  if u in tree and tree[u].kind in APPLIES_KINDS and tree[u].name not in own.words)
-    return dataclasses.replace(own, applies=more) if more else own
+    words = dataclasses.replace(own, applies=more) if more else own
+    categories = tuple(c for c in d.categories if c not in words.words)
+    return dataclasses.replace(words, categories=categories) if categories else words
 
 
 def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None) -> UnitWords:
@@ -995,6 +1029,12 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有 area_mark，是 11-09 以前拼的：导出里 "
                             f"{inp.info['area_marked']} 行标了「内文区」，学校删掉的公告这次没拿掉，每站数也是 0；"
                             "先用 python -m nknu.content.assemble 重拼")
+        # blueprint item 22, the crawler's 53cf31b: a corpus assembled before content read 页别 and 列表上的类别 has
+        # neither on any record (review 11-09); every 网页 row with a file is a record of a corpus assembled since
+        if inp.info.get("list_marked") and not any(r.list_kind or r.list_category for r in inp.records):
+            warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有页别和列表上的类别，是会读这两栏以前的程序拼的："
+                            f"导出里 {inp.info['list_marked']} 行网页标了「列表翻页」或写了列表上的类别，列表翻页的网页"
+                            "这次没拿掉，单位行也没写列表类别；先用 python -m nknu.content.assemble 重拼")
         # owner 11-09, blueprint item 22: a corpus assembled before it judged no page (under_read None throughout)
         pages = [r for r in inp.records if r.source == "totext" and kind_class(r.kind) in ("notice", "page")]
         if len(pages) >= TEMPLATE_PAGES and all(r.under_read is None for r in pages):
@@ -1032,7 +1072,9 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                         "units_config": str(units_config), "units_config_sha256": _sha256(Path(units_config)),
                         **scope.report, "site_units_no_alias": site_units_without_alias(units),
                         # owner 11-08 10:16 (b): documents whose unit line names units they apply to, by how many
-                        "unit_line_applies": {"docs": sum(named.values()), "by_count": dict(sorted(named.items()))}}
+                        "unit_line_applies": {"docs": sum(named.values()), "by_count": dict(sorted(named.items()))},
+                        # blueprint item 22 (owner 11-09): documents whose unit line names their list rows' categories
+                        "unit_line_categories": {"docs": sum(bool(r.unit.categories) for r in rows)}}
         warnings += _scope_warnings(scope.report, len(docs))
     # the documents kept whose page assemble read again whole, per site (owner 11-09, blueprint item 22); a site none
     # of whose pages assemble could judge has no count (sites.under_read NULL, the report's —)
@@ -1165,8 +1207,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--unit-words-in-vectors", action="store_true",
                     help="单位行也放进向量（默认只放进关键词索引和重排读的文字：11-08 实验室电脑量过，放进向量会让同组别的文件都靠近点名组别的问题）")
     ap.add_argument("--no-unit-words", action="store_true",
-                    help="不加单位词（单位行，和关键词索引 unit_tokens 里的单位名、组别、简称）：passage 和第 1 版一样，"
-                         "用来单独量单位补丁（计划 2026-11-08 T4 审查）；平时不要用")
+                    help="不加单位词（单位行，和关键词索引 unit_tokens 里的单位名、组别、简称、适用单位、列表类别）："
+                         "passage 和第 1 版一样，用来量整个单位补丁（这几样一起，分不开；计划 2026-11-08 T4 审查）；"
+                         "平时不要用")
     args = ap.parse_args(argv)
     pairs = _pairs(args)
     if isinstance(pairs, str):
@@ -1207,6 +1250,8 @@ def main(argv: list[str] | None = None) -> int:
     scoped += f"；网站的单位没有简称的 {len(bare)} 个（报告 scope.site_units_no_alias）" if bare else ""
     applied = report.scope.get("unit_line_applies", {}).get("docs")
     scoped += f"；单位行写了适用单位的 {applied} 份" if applied else ""
+    categorized = report.scope.get("unit_line_categories", {}).get("docs")  # blueprint item 22 (owner 11-09)
+    scoped += f"；单位行写了列表类别的 {categorized} 份" if categorized else ""
     words = "" if report.passage["unit_words"] else "；没加单位词（--no-unit-words）"
     gone = sum(s.get("deleted_notices", 0) for s in report.sites)  # owner 11-09, blueprint item 15
     words += f"；学校删掉的公告 {gone}（不收，每站数见 sites）" if gone else ""

@@ -12,6 +12,22 @@ as (重复), and the build writes each site's count to sites.deleted_notices. AR
 text areas on the page, and empty) always; AREA_MISSING (neither area on the page) only with no text read either,
 since a template the export's profile does not know yet looks the same (review 11-09) 【Claude】.
 
+A list's pager pages (blueprint item 22, part 3; owner 11-09 12:27, 「照这个做」, to the item's proposal that the
+content side leave them out by the crawler's mark once it marks the lists): a page the export marks 列表翻页
+(Record.list_kind LIST_PAGER, the crawler's 53cf31b: a page a list's pager brought, …#第N页, or a GET-paged list's
+page 2 on) is no document whatever its kind (_class), counted as <kind>(列表翻页) when its kind alone would keep it, else under its kind as before. The content
+side's check of 11-09 evening, of what is only on them (research/pipeline_2026-11-02/reading_gaps_1109/lists_1109g.log
+to lists_1109j.log): the 1,580 such pages the build kept hold 15,391 list rows by the crawler's reading, each linking a
+page the export holds and the build keeps with its text (but 17 notices the school deleted), with the row's title on
+that page and its date that page's day, and 30,129 of their 31,582 table cells and lines are on the linked pages; the
+1,453 left are on none of them (tecs's per-row categories, 7 labels of the c.nknu grid's category column, which the
+crawler does not read yet; iu's card summaries, case.aspx, 336; tecs's activity-list fields, 86; pager widgets).
+Leaving those out with the pages is 【Claude】: the check ran after the owner's 「照这个做」, which did not weigh them.
+The other 4,991 marked pages were left out by their kind already. A page marked 列表 (LIST_FIRST: a list's first page,
+a home page, a teacher's file grid; 450 kept) stays a page: it holds words of its own
+(research/crawler_lab_2026-11-04/item22_1109/lists.md §3.3 item 7), and none of the 450 is dated (the export gives a
+list page no row's date, and _stated takes none on a site's root or a c.nknu list path: lists_1109g.log).
+
 Every platform (plan 2026-11-08 T3; kind_class): a notice is a page of c.nknu's notice templates (newsdetail, newsview)
 or a detail page of any profiled platform (detail:<profile>, a press-made one too); a list read from its page
 (list:<profile>, pagetext.list_grid) and a list's pager row (…#翻页) are left out like c.nknu's lists. A document's unit
@@ -22,11 +38,12 @@ putting the page up or changing it (公告、發佈、更新 …, never a bare �
 
 Sub-step 4 (spec 2026-11-08 §四), the step-3 export's columns ('' in an export made before 3c33a79, which then dates
 and classes everything as above): a date the export read in the platform's own date field (日期来源 详细页的日期栏,
-source 公告頁日期欄) or on the notice's row of its list (列表上的日期, source 列表上的日期) needs no label, the
-crawler's platform rule having chosen the field (spec §二 2); and a page it read such a field on is a notice (_class:
-a detail page whose address no detail path names, GEO, ID, WordPress profiles: 2,253 pages on 11-09) 【Claude】. Every
-document carries the server's time of its file (最后修改时间, Document.server_date, spec §二 3), which the build dates
-only an attachment by.
+source 公告頁日期欄) or on the row of a list linking the page (列表上的日期, source 列表上的日期: a notice's row on its
+list; since the crawler's 53cf31b, blueprint item 22 part 2, the row of any list, this site's or another site's, that
+links any page: _stated) needs no label, the crawler's platform rule having chosen the field (spec §二 2); and a page
+it read the platform's date field on is a notice (_class: a detail page whose address no detail path names, GEO, ID,
+WordPress profiles: 2,253 pages on 11-09) 【Claude】. Every document carries the server's time of its file (最后修改时间,
+Document.server_date, spec §二 3), which the build dates only an attachment by.
 
 An attachment hangs on the latest-dated page linking to it (a notice's date; undated notices, then pages, after;
 corpus order on ties) and takes that page's date (addendum 2026-11-02 B; 11-01: with several pages, the latest). The
@@ -62,7 +79,18 @@ from urllib.parse import parse_qs, urlsplit
 
 from nknu.archive import profiles, scope
 from nknu.content import ids, sites
-from nknu.content.corpus import AREA_EMPTY, AREA_MARKS, NOTICE_KINDS, Event, PageMeta, Record, plausible, taipei_day
+from nknu.content.corpus import (
+    AREA_EMPTY,
+    AREA_MARKS,
+    CATEGORY_SEP,
+    LIST_PAGER,
+    NOTICE_KINDS,
+    Event,
+    PageMeta,
+    Record,
+    plausible,
+    taipei_day,
+)
 from nknu.content.dates import FIELD_SOURCE, LIST_ROW, LIST_SOURCE, OWN_FIELD, PAGE_SOURCE, kept_range
 from nknu.core.timeutil import TAIPEI
 
@@ -90,6 +118,7 @@ CALENDAR_SINCE = date(2023, 1, 1)
 BEFORE = f"({CALENDAR_SINCE.year}年以前)"  # excluded-count suffix: an event before CALENDAR_SINCE (a 1 January)
 FORMAT = "(其他格式)"  # excluded-count suffix: a format sibling assemble folded into another record (addendum B)
 DELETED = "(学校删掉)"  # excluded-count suffix: a notice the school deleted, only the template left (deleted_notice)
+PAGER_SUFFIX = "(列表翻页)"  # excluded-count suffix: a page marked 列表翻页 its kind alone would keep (_class; item 22)
 UNKNOWN_ZONE = "unknown"  # a linking page whose link to the file was not found (a button), or the 10-29 corpus
 ZONE_ORDER = {"attachments": 0, "content": 1, UNKNOWN_ZONE: 2, "nav": 3}  # the zone a page's reference is shown with
 
@@ -152,6 +181,11 @@ class Document:
     formats: tuple[dict, ...] = ()  # format siblings assemble folded into it (shown as its copies)
     duplicates: tuple[str, ...] = ()  # doc_ids of the notices left out as (重复) of it (the build's doc_alias)
     site: str = ""  # the site key of the export its record or event came from (plan 2026-11-08 T4: docs.site)
+    # blueprint item 22 (owner 11-09, 「照这个做」), the crawler's 53cf31b: the categories the list rows linking its page
+    # state (_categories of Record.list_category, with those of the other records of its identity: _joined; and of its
+    # copies: build._take_over), which build.UnitWords puts on its unit line; () for a record without them (an
+    # attachment, a link) and for an event
+    categories: tuple[str, ...] = ()
 
 
 def clean_text(s: str) -> str:
@@ -171,6 +205,12 @@ def _link_text(s: str) -> str:
     else changes."""
     parts = (_FILE_SIZE.sub("", p) for p in _one_line(s).split(LINK_SEP))
     return LINK_SEP.join(p for p in parts if p)
+
+
+def _categories(value: str) -> tuple[str, ...]:
+    """Document.categories of a record's 列表上的类别 (Record.list_category): split at CATEGORY_SEP, each on one line,
+    blank ones dropped, each once in its first place."""
+    return tuple(dict.fromkeys(c for c in map(_one_line, value.split(CATEGORY_SEP)) if c))
 
 
 def kind_class(kind: str) -> str | None:
@@ -195,11 +235,20 @@ def _stated(r: Record) -> tuple[date, str, str] | None:
     """(the date the export read on the record's page, 网页上写的日期, with the words it read it from, 日期原文, and the
     source it is shown with) when that is the page's own date (plan 2026-11-08 T3), else None, rather none than a
     wrong one:
-    - read in the platform's own date field (日期来源 OWN_FIELD: source FIELD_SOURCE) or on the notice's row of its
-      list (LIST_ROW: LIST_SOURCE), whatever its words (the bare 「2024-05-31」 of a date field): the crawler's platform
-      rule chose it (sub-step 4, spec 2026-11-08 §二 2); any other date (PAGE_WORDS, or '' from an export made before
-      3c33a79) only after a label of putting the page up or changing it (_OWN_LABEL: 「更新時間： 2025.9.17」, never
-      「日期113.4.24」 cut from 「校慶日期113.4.24」) 【Claude】, source PAGE_SOURCE;
+    - read in the platform's own date field (日期来源 OWN_FIELD: source FIELD_SOURCE) or on the row of a list linking
+      the page (LIST_ROW: LIST_SOURCE), whatever its words (the bare 「2024-05-31」 of a date field): the crawler's
+      platform rule chose it (sub-step 4, spec 2026-11-08 §二 2). Since the crawler's 53cf31b (blueprint item 22, part
+      2) LIST_ROW is the row of any list, this site's or another site's, that links any page, not only a notice's row
+      on its list (sso.nknu.edu.tw/services's 11,186 activity pages take the dates of the 25 unit sites' 書表 lists
+      linking them; a c.nknu row, with no date column, gives its first western date); it stays trusted for every page
+      and notice as before 【Claude】: between the exports before and after 53cf31b, 12,287 pages and 13 notices are
+      newly dated and none loses or changes its date (research/pipeline_2026-11-02/reading_gaps_1109/lists_1109g.log);
+      where a page had a date of its words too, 1,367 of 1,408 agree to the day and the 31 more than 7 days off are
+      nearly all album pages the build leaves out (research/crawler_lab_2026-11-04/item22_1109/lists.md §2.2); two
+      pages that are no notice take another site's notice date (sso.nknu.edu.tw/web/596's default.aspx u18326,
+      sso.nknu.edu.tw/stu's 18weekssyllabusforenro.aspx), accepted. Any other date (PAGE_WORDS, or '' from an export
+      made before 3c33a79) only after a label of putting the page up or changing it (_OWN_LABEL: 「更新時間：
+      2025.9.17」, never 「日期113.4.24」 cut from 「校慶日期113.4.24」) 【Claude】, source PAGE_SOURCE;
     and, for all of them: a plausible date (corpus.plausible) no later than the day the page was fetched (a later one
     is a day the page names ahead, a deadline: 「榜單公告115年12月30日」 【Claude】); and not on a c.nknu list page
     (default.aspx, download.aspx, laws.aspx: the profile's list paths), whose date is one of its rows' (教务处's home
@@ -242,17 +291,22 @@ def site_root(url: str, site: str) -> bool:
 
 
 def _class(r: Record) -> str | None:
-    """A record's document class: kind_class of its kind, except that a page the export read the platform's own date
-    field on (日期来源 OWN_FIELD) is a notice: a detail page whose address no detail path names (GEO, ID, WordPress
-    profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec 2026-11-08 §四) 【Claude】. Its kind_raw stays.
-    One helper for both places that ask (the notices kept at one address, and the documents), so they never disagree."""
+    """A record's document class: None for a page the crawler marks 列表翻页 (Record.list_kind LIST_PAGER, whatever its
+    kind: blueprint item 22, part 3, the module docstring); else kind_class of its kind, except that a page the export
+    read the platform's own date field on (日期来源 OWN_FIELD) is a notice: a detail page whose address no detail path
+    names (GEO, ID, WordPress profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec 2026-11-08 §四)
+    【Claude】. Its kind_raw stays. One helper for both places that ask (the notices kept at one address, and the
+    documents), so they never disagree."""
+    if r.list_kind == LIST_PAGER:
+        return None
     cls = kind_class(r.kind)
     return "notice" if cls == "page" and r.date_source == OWN_FIELD else cls
 
 
 def deleted_notice(r: Record) -> bool:
     """A notice the school deleted (owner 11-09, blueprint item 15, 「照建议定」), by the export's mark on its page
-    (Record.area_mark), whatever its class (a record the build leaves out by its kind aside):
+    (Record.area_mark), whatever its class (a record the build leaves out by its kind or by the 列表翻页 mark aside:
+    _class; blueprint item 22, so sites.deleted_notices never counts a list's pager page):
     - AREA_EMPTY: the platform's own title and text areas are on the page and hold nothing (no words, picture, link,
       frame or file): one, whatever the content side read there (a platform read as a whole body gives its menus:
       电机系's 3 of 11-09, page:elec, whose bodies hold 887 to 891 characters of menu);
@@ -303,10 +357,15 @@ def _link_key(url: str) -> str:
 def _joined(keep: Record, others: list[Record]) -> Record:
     """keep with what the other records of its identity say of it: their pages (a page some record links from its text
     or attachment area is a text reference, else a menu one), the best zone of each page (ZONE_ORDER), the first
-    context and row each page gives, their link texts and their formats."""
+    context and row each page gives, their link texts and their formats; and the categories of their list rows
+    (list_category: keep's own first, then each other one once; blueprint item 22, review 11-09: without this, 66 ids
+    of the 11-09 exports lost every category, 57 SSO news notices whose news.nknu.edu.tw mirror, fetched later, is
+    kept while the list at sso.nknu.edu.tw/news gave the category, and 9 records whose &amp; spelling, the one a list
+    links, gives way to the plain one: research/pipeline_2026-11-02/reading_gaps_1109/review_1109k/lab_cat_loss.out)."""
     linked, nav = list(keep.linked), list(keep.nav_linked)
     zones, contexts, rows = dict(keep.zones), dict(keep.contexts), dict(keep.rows)
     texts, formats = [t for t in keep.linktext.split(LINK_SEP) if t], list(keep.formats)
+    categories = list(_categories(keep.list_category))
     for other in others:
         for u in other.linked:
             if u not in linked:
@@ -322,9 +381,10 @@ def _joined(keep: Record, others: list[Record]) -> Record:
                 mine.setdefault(u, value)
         texts += [t for t in other.linktext.split(LINK_SEP) if t and t not in texts]
         formats += [f for f in other.formats if f.get("id") not in {g.get("id") for g in formats}]
+        categories += [c for c in _categories(other.list_category) if c not in categories]
     return dataclasses.replace(keep, linked=tuple(linked), nav_linked=tuple(u for u in nav if u not in linked),
                                zones=zones, contexts=contexts, rows=rows, linktext=LINK_SEP.join(texts),
-                               formats=tuple(formats))
+                               formats=tuple(formats), list_category=CATEGORY_SEP.join(categories))
 
 
 def fetched_at(stamp: str) -> float:
@@ -414,11 +474,13 @@ def _context_title(named: list[tuple[date | None, str]]) -> str:
 def build_documents(records: list[Record], metas: dict[str, PageMeta], events: list[Event],
                     site: str = "") -> tuple[list[Document], dict[str, int]]:
     """Documents in corpus order, then events; and the count of left-out records by kind. records: one per id
-    (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A notice the school
-    deleted (deleted_notice) is left out and counted as <kind>(学校删掉). Of the other notices at one address
-    (_link_key: one site and nid), the first written without &amp; is kept; the others are (重复) and their doc_ids go
-    into its duplicates. site: the export's site key, for a record or an event that names none of its own
-    (a corpus assembled before plan 2026-11-08 T3, an event made by hand); with neither, the unit is the school's."""
+    (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A page the crawler
+    marks 列表翻页 (_class) is left out and counted as <kind>(列表翻页) when its kind alone would keep it, else under its
+    kind (blueprint item 22). A notice the school deleted (deleted_notice) is left out and counted as <kind>(学校删掉).
+    Of the other notices at one address (_link_key: one site and nid), the first written without &amp; is kept; the
+    others are (重复) and their doc_ids go into its duplicates. Each document kept from a record carries its categories
+    (Document.categories). site: the export's site key, for a record or an event that names none of its own (a corpus
+    assembled before plan 2026-11-08 T3, an event made by hand); with neither, the unit is the school's."""
     excluded: Counter[str] = Counter()
     keep: dict[str, str] = {}  # link key -> the notice kept: the first one whose URL is written without &amp;
     # a notice the school deleted is never the one kept for its address (owner 11-09, blueprint item 15)
@@ -435,8 +497,8 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         key = _link_key(r.url)
         linkable.setdefault(key, []).append(r)
         cls = _class(r)
-        if cls is None:
-            excluded[r.kind] += 1
+        if cls is None:  # one the 列表翻页 mark alone leaves out (its kind would keep it) is counted apart (item 22)
+            excluded[r.kind + PAGER_SUFFIX if kind_class(r.kind) is not None else r.kind] += 1
             continue
         if deleted_notice(r):  # before the duplicate check: a shell is counted as deleted, never as (重复)
             excluded[r.kind + DELETED] += 1
@@ -464,7 +526,7 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
                      page_date_source=page_source, server_date=_server_day(r), source=r.source, formats=r.formats,
-                     site=r.site or site)
+                     site=r.site or site, categories=_categories(r.list_category))
         docs.append(d)
         doc_of[r.id] = d
         for f in r.formats:

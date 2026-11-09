@@ -20,14 +20,19 @@ found the notice page's own areas empty, or not on it), which documents.deleted_
 Blueprint item 22 (owner 11-09, 「照这个做」): a kept page whose reading gave much less than its own words is read
 again from its whole reading without the site's template and menus, and marked under_read (_Assembly.under_read,
 read_again: True, False when judged and kept as read, None when it could not be judged); never a home page, a c.nknu
-list or a page whose areas the export marked.
+list, a page whose areas the export marked or one it marks 列表翻页. Its parts 2 and 3 (the crawler's 53cf31b): every
+record carries its row's 页别 (list_kind: corpus.LIST_FIRST, LIST_PAGER) and 列表上的类别 (list_category: the categories
+of the list rows linking the page, joined by corpus.CATEGORY_SEP), each '' in an export made before 53cf31b; a page
+marked LIST_PAGER is left out by the build (documents._class), so an image only such pages show is no kept page's
+(inline).
 A page's kind is pagetext.page_kind of its 网址 and the list grid the exported page shows where it was read
 (pagetext.list_grid of 最后落地网址, else 网址; plan 2026-11-08 progress notes): an SSO or cLv2 list is
 list:<profile> and left out, its content pages stay page:<profile>. The 10-29 fallback is 教务处's corpus: it is read
 only for 教务处's export (FALLBACK_SITE), never for another site's, whose old serial ids name other files.
 
 Records ({id, key, kind, url, file, title, text, linktext, linked, source, totext_status, site, fetched, page_date,
-page_date_raw, date_source, modified, origin, area_mark}, a page's also under_read, in manifest order):
+page_date_raw, date_source, modified, origin, area_mark, list_kind, list_category}, a page's also under_read, in
+manifest order):
 - a page: kind as above; title its album name, #lbl_Title or 标题; its to-text text with
   each [[img:src]] line replaced by the OCR text of the exported image the src names, or removed. The src is joined
   to the page's address (最后落地网址 or 网址, or its <base href>) and spelt as the crawler spells addresses
@@ -36,11 +41,11 @@ page_date_raw, date_source, modified, origin, area_mark}, a page's also under_re
   extracted gives way to its members (keyed by the archive's key and their paths), url <archive url>#<quoted path>,
   titled by their file names, with the archive's file, link text and pages.
 - an image with at least IMAGE_DOC_CHARS characters of OCR text that no kept page (a kind documents.kind_class does not
-  leave out) shows: kind 附件:图片; its pages as an attachment's (below), and a page whose text shows
-  it is a content page of it, while a page that neither shows nor links it in its read content area carries it
-  outside that area (a header banner, a menu): nav. When every reference is nav and each of those pages holds an
-  <img> of it (a unit banner), its kind is documents.MENU_IMAGE, which the build leaves out and counts (I4); a
-  photo a page album links or a file of a folder the page links (no <img> of it there) stays 附件:图片.
+  leave out, and not marked 列表翻页: blueprint item 22) shows: kind 附件:图片; its pages as an attachment's (below), and
+  a page whose text shows it is a content page of it, while a page that neither shows nor links it in its read content
+  area carries it outside that area (a header banner, a menu): nav. When every reference is nav and each of those
+  pages holds an <img> of it (a unit banner), its kind is documents.MENU_IMAGE, which the build leaves out and counts
+  (I4); a photo a page album links or a file of a folder the page links (no <img> of it there) stays 附件:图片.
 - 资料 rows (data/: structured data) take no record; the report's data_rows gives each its reason (data_reason): the
   calendar the build reads itself, a Drive folder's listing not needed (its files are rows of their own), else unread.
 Every text is normalized (nknu.totext.normalize; pdf=True for every PDF text, archive members included: G3; every
@@ -87,7 +92,7 @@ from selectolax.lexbor import LexborHTMLParser
 from nknu.archive import profiles, scope
 from nknu.archive.links import _base as link_base  # the crawler's <base href> rule, as links.page_links uses it
 from nknu.content import build, ids
-from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, PAGES_SEP, TEMPLATE_PAGES
+from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, LIST_PAGER, PAGES_SEP, TEMPLATE_PAGES
 from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class, site_root
 from nknu.content.links import PageLink, match_key, page_links
 from nknu.totext.accounting import Account, account
@@ -433,11 +438,13 @@ class _Assembly:
         date the export read on the page, with its words; since sub-step 4 (spec 2026-11-08 §四) the rule that found
         that date (日期来源), the archived answer's Last-Modified (最后修改时间) and 来源, '' in an export without
         them (an archive member: its archive's row's); since 11-09 (owner, blueprint item 15) area_mark, the one of
-        AREA_MARKS its 缺什么 holds (alone or joined to other reasons by 、), else ''."""
+        AREA_MARKS its 缺什么 holds (alone or joined to other reasons by 、), else ''; and (blueprint item 22, the
+        crawler's 53cf31b) list_kind, its 页别, and list_category, its 列表上的类别, '' in an export without them."""
         return {"site": self.site, "fetched": row.get("抓取时间") or "", "page_date": row.get("网页上写的日期") or "",
                 "page_date_raw": row.get("日期原文") or "", "date_source": row.get("日期来源") or "",
                 "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or "",
-                "area_mark": next((m for m in AREA_MARKS if m in (row.get("缺什么") or "")), "")}
+                "area_mark": next((m for m in AREA_MARKS if m in (row.get("缺什么") or "")), ""),
+                "list_kind": row.get("页别") or "", "list_category": row.get("列表上的类别") or ""}
 
     # ------------------------------------------------------------ texts
 
@@ -561,7 +568,9 @@ class _Assembly:
         judged; a result of an older page rule has no link lines and is not judged. A page may be read again unless
         the export marked its areas (item 15 decides on the page rule's own reading), it is its site's home page
         (site_root) or a c.nknu list (default.aspx, download.aspx, laws.aspx: teasers and menus of what is elsewhere)
-        【Claude, 11-09 review】; those still count toward the template."""
+        【Claude, 11-09 review】, or the crawler marks it 列表翻页 (LIST_PAGER: the build leaves it out, documents._class;
+        item 22, part 3), so a page the build leaves out is never read again nor counted in under_read; those still
+        count toward the template."""
         wholes: dict[str, Whole] = {}
         for _record, sha, links, group in self.whole:
             if sha not in wholes and isinstance(links, list) and (text := self.cache.extra(sha, FULL)):
@@ -580,15 +589,20 @@ class _Assembly:
     def _may_read_again(self, record: dict) -> bool:
         url = record["url"]
         listed = profiles.CNKNU.covers(scope.site_key(url)) and profiles.page_kind(url) == "list"
-        return not record["area_mark"] and not site_root(url, self.site) and not listed
+        return (not record["area_mark"] and record["list_kind"] != LIST_PAGER and not site_root(url, self.site)
+                and not listed)
 
     def inline(self, pages: list[tuple[dict, dict]]) -> None:
-        """Each [[img:src]] line of a page's text becomes the OCR text of the image it names, or goes."""
+        """Each [[img:src]] line of a page's text becomes the OCR text of the image it names, or goes. A page the build
+        leaves out (a list kind; one the crawler marks 列表翻页, blueprint item 22) keeps no image: an image only such
+        pages show is no kept page's, and image_record makes it a record of its own when its OCR text reaches
+        IMAGE_DOC_CHARS (else it is counted in images_no_text)."""
         for record, row in pages:
             if "[[img:" not in record["text"]:
                 continue
             base = self.pages.base(row)
-            kept_page = kind_class(record["kind"]) is not None  # a list page of any platform is left out (T3)
+            # a list page of any platform is left out (T3), and so is a page the crawler marks 列表翻页 (item 22)
+            kept_page = kind_class(record["kind"]) is not None and record["list_kind"] != LIST_PAGER
             lines = []
             for line in record["text"].split("\n"):
                 m = IMG_LINE.fullmatch(line)

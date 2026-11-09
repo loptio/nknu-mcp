@@ -48,6 +48,11 @@ AREA_EMPTY, AREA_MISSING = "内文区是空的", "找不到内文区"
 # judged though it holds this many 【Claude】
 TEMPLATE_PAGES = 5
 AREA_MARKS = (AREA_EMPTY, AREA_MISSING)
+# archive.export's 页别 values (blueprint item 22, part 3; the crawler's 53cf31b), content's own copy as AREA_EMPTY copies
+# the export's words: a list's first page (LIST_FIRST) and a page a list's pager brought (LIST_PAGER: …#第N页, or a
+# GET-paged list's page 2 on); '' on every other row (Record.list_kind; documents._class leaves a LIST_PAGER page out)
+LIST_FIRST, LIST_PAGER = "列表", "列表翻页"
+CATEGORY_SEP = " | "  # archive.export's joiner of 列表上的类别 (its list_category): Record.list_category
 # c.nknu's notice templates, by their page kind (pagetext.page_kind): newsdetail (教务处), and newsview (总务处, 体育室
 # and 师培处, per the site probe; plan 2026-11-08 T3)
 NOTICE_KINDS = ("newsdetail", "newsview")
@@ -98,6 +103,11 @@ class Record:
     # few files of its template, an older result, any record but a page, a corpus assembled before); the build counts
     # the True ones per site (sites.under_read)
     under_read: bool | None = None
+    # blueprint item 22 (owner 11-09, 「照这个做」), the crawler's 53cf31b export: the row's 页别 (LIST_FIRST, LIST_PAGER:
+    # documents._class leaves a LIST_PAGER page out) and 列表上的类别 (the categories the list rows linking the page state,
+    # joined by CATEGORY_SEP: documents.Document.categories); '' without them, and in an export or a corpus made before
+    list_kind: str = ""
+    list_category: str = ""
     # plan 2026-11-08 T4: the export folder the build read it with (its file, and a notice's header fields, are read
     # there); set by the build for each input, never written to corpus.json ('' when read alone)
     export: str = ""
@@ -121,6 +131,7 @@ def load_corpus(path: Path) -> list[Record]:
             page_date_raw=r.get("page_date_raw") or "", date_source=r.get("date_source") or "",
             modified=r.get("modified") or "", origin=r.get("origin") or "", area_mark=r.get("area_mark") or "",
             under_read=None if r.get("under_read") is None else bool(r.get("under_read")),
+            list_kind=r.get("list_kind") or "", list_category=r.get("list_category") or "",
         )
         for r in rows
     ]
@@ -269,13 +280,18 @@ def taipei_day(stamp: str) -> date | None:
 
 
 def export_info(export_dir: Path) -> dict:
-    """{'site', 'name' (Traditional Chinese), 'data_as_of', 'missing_pages', 'missing_files', 'area_marked'}:
+    """{'site', 'name' (Traditional Chinese), 'data_as_of', 'missing_pages', 'missing_files', 'area_marked',
+    'list_marked'}:
     data_as_of is the site's crawl day, the latest 抓取时间 (Asia/Taipei day) among the 网页 rows with a 本地档案;
     without one, among all rows with a 本地档案; else the export day. An export re-reads an older crawl (T7a), and a crawl learns what
     the site holds through its pages: files fetched one by one later (the 4 off-site attachments of 11-02, nknu
     archive run --only) do not re-read the site, so they do not move the date (phase-2 review). The counts are the
     pages and attachments listed in missing.csv; area_marked the rows whose 缺什么 holds one of AREA_MARKS (owner 11-09,
-    blueprint item 15: a corpus assembled before 11-09 carries no area_mark, which the build then warns of)."""
+    blueprint item 15: a corpus assembled before 11-09 carries no area_mark, which the build then warns of);
+    list_marked the 网页 rows with a 本地档案 (each a page record of the corpus) marked LIST_PAGER (页别) or stating a
+    列表上的类别 (blueprint item 22, the crawler's 53cf31b, review 11-09: a corpus assembled before content read them
+    carries neither, which the build then warns of; the export sets a category on a row with no file too); 0 for an
+    export made before 53cf31b."""
     m = _manifest(str(Path(export_dir).resolve()))
     fetched = [(it.get("类型") == "网页", d) for it in m.get("项目", [])
                if it.get("本地档案") and (d := taipei_day(it.get("抓取时间") or ""))]
@@ -291,4 +307,7 @@ def export_info(export_dir: Path) -> dict:
                 files += row.get("类型") == "附件"
     return {"site": m.get("网站") or "", "name": _s2t.convert(m.get("名称") or ""), "data_as_of": data_as_of,
             "missing_pages": pages, "missing_files": files,
-            "area_marked": sum(any(a in (it.get("缺什么") or "") for a in AREA_MARKS) for it in m.get("项目", []))}
+            "area_marked": sum(any(a in (it.get("缺什么") or "") for a in AREA_MARKS) for it in m.get("项目", [])),
+            "list_marked": sum(it.get("类型") == "网页" and bool(it.get("本地档案"))
+                               and (it.get("页别") == LIST_PAGER or bool((it.get("列表上的类别") or "").strip()))
+                               for it in m.get("项目", []))}
