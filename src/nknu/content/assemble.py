@@ -16,15 +16,18 @@ pages and notices by. Sub-step 4 (spec 2026-11-08 §四): also the step-3 export
 rule found that date, documents._stated), 最后修改时间 (modified: the server's time of a file, §二 3) and 来源 (origin),
 each '' when the export (one made before 3c33a79) has no such column; an archive member carries its archive's row's.
 Owner 11-09 (blueprint item 15, 「照建议定」): area_mark, which of corpus.AREA_MARKS the row's 缺什么 holds (the export
-found the notice page's own areas empty, or not on it), which documents.deleted_notice reads; '' without one.
+found the notice page's own areas empty, or not on it), which documents.deleted_notice reads; since the crawler's
+fa81f41, corpus.NO_DATA: the school answered the page with no data, which documents._class leaves out (the owner 11-09
+「照这样做」: documents' module docstring); an image only such pages show is no kept page's (inline), and the no-data
+mark comes first when a row holds an area mark too (corpus.ROW_MARKS) 【Claude】; '' without one.
 Blueprint item 22 (owner 11-09, 「照这个做」): a kept page whose reading gave much less than its own words is read
 again from its whole reading without the site's template and menus, and marked under_read (_Assembly.under_read,
 read_again: True, False when judged and kept as read, None when it could not be judged); never a home page, a c.nknu
-list, a page whose areas the export marked or one it marks 列表翻页. Its parts 2 and 3 (the crawler's 53cf31b): every
-record carries its row's 页别 (list_kind: corpus.LIST_FIRST, LIST_PAGER) and 列表上的类别 (list_category: the categories
-of the list rows linking the page, joined by corpus.CATEGORY_SEP), each '' in an export made before 53cf31b; a page
-marked LIST_PAGER is left out by the build (documents._class), so an image only such pages show is no kept page's
-(inline).
+list, a page whose 缺什么 holds a mark (area_mark: its areas, or the school's answer of no data) or one the export
+marks 列表翻页. Its parts 2 and 3 (the crawler's 53cf31b): every record carries its row's 页别 (list_kind:
+corpus.LIST_FIRST, LIST_PAGER) and 列表上的类别 (list_category: the categories of the list rows linking the page,
+joined by corpus.CATEGORY_SEP), each '' in an export made before 53cf31b; a page marked LIST_PAGER is left out by the
+build (documents._class), so an image only such pages show is no kept page's (inline).
 A page's kind is pagetext.page_kind of its 网址 and the list grid the exported page shows where it was read
 (pagetext.list_grid of 最后落地网址, else 网址; plan 2026-11-08 progress notes): an SSO or cLv2 list is
 list:<profile> and left out, its content pages stay page:<profile>. The 10-29 fallback is 教务处's corpus: it is read
@@ -41,11 +44,12 @@ manifest order):
   extracted gives way to its members (keyed by the archive's key and their paths), url <archive url>#<quoted path>,
   titled by their file names, with the archive's file, link text and pages.
 - an image with at least IMAGE_DOC_CHARS characters of OCR text that no kept page (a kind documents.kind_class does not
-  leave out, and not marked 列表翻页: blueprint item 22) shows: kind 附件:图片; its pages as an attachment's (below), and
-  a page whose text shows it is a content page of it, while a page that neither shows nor links it in its read content
-  area carries it outside that area (a header banner, a menu): nav. When every reference is nav and each of those
-  pages holds an <img> of it (a unit banner), its kind is documents.MENU_IMAGE, which the build leaves out and counts
-  (I4); a photo a page album links or a file of a folder the page links (no <img> of it there) stays 附件:图片.
+  leave out, not marked 列表翻页, blueprint item 22, nor answered with no data, corpus.NO_DATA) shows: kind 附件:图片;
+  its pages as an attachment's (below), and a page whose text shows it is a content page of it, while a page that
+  neither shows nor links it in its read content area carries it outside that area (a header banner, a menu): nav.
+  When every reference is nav and each of those pages holds an <img> of it (a unit banner), its kind is
+  documents.MENU_IMAGE, which the build leaves out and counts (I4); a photo a page album links or a file of a folder
+  the page links (no <img> of it there) stays 附件:图片.
 - 资料 rows (data/: structured data) take no record; the report's data_rows gives each its reason (data_reason): the
   calendar the build reads itself, a Drive folder's listing not needed (its files are rows of their own), else unread.
 Every text is normalized (nknu.totext.normalize; pdf=True for every PDF text, archive members included: G3; every
@@ -92,7 +96,7 @@ from selectolax.lexbor import LexborHTMLParser
 from nknu.archive import profiles, scope
 from nknu.archive.links import _base as link_base  # the crawler's <base href> rule, as links.page_links uses it
 from nknu.content import build, ids
-from nknu.content.corpus import AREA_MARKS, CALENDAR_FILES, LIST_PAGER, PAGES_SEP, TEMPLATE_PAGES
+from nknu.content.corpus import CALENDAR_FILES, LIST_PAGER, NO_DATA, PAGES_SEP, ROW_MARKS, TEMPLATE_PAGES
 from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class, site_root
 from nknu.content.links import PageLink, match_key, page_links
 from nknu.totext.accounting import Account, account
@@ -437,13 +441,14 @@ class _Assembly:
         """What every record carries from its manifest row (plan 2026-11-08 T3): the export's site, 抓取时间 and the
         date the export read on the page, with its words; since sub-step 4 (spec 2026-11-08 §四) the rule that found
         that date (日期来源), the archived answer's Last-Modified (最后修改时间) and 来源, '' in an export without
-        them (an archive member: its archive's row's); since 11-09 (owner, blueprint item 15) area_mark, the one of
-        AREA_MARKS its 缺什么 holds (alone or joined to other reasons by 、), else ''; and (blueprint item 22, the
-        crawler's 53cf31b) list_kind, its 页别, and list_category, its 列表上的类别, '' in an export without them."""
+        them (an archive member: its archive's row's); since 11-09 (owner, blueprint item 15) area_mark, the first of
+        corpus.ROW_MARKS its 缺什么 holds (alone or joined to other reasons by 、: AREA_MARKS, and since the crawler's
+        fa81f41 NO_DATA), else ''; and (blueprint item 22, the crawler's 53cf31b) list_kind, its 页别, and
+        list_category, its 列表上的类别, '' in an export without them."""
         return {"site": self.site, "fetched": row.get("抓取时间") or "", "page_date": row.get("网页上写的日期") or "",
                 "page_date_raw": row.get("日期原文") or "", "date_source": row.get("日期来源") or "",
                 "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or "",
-                "area_mark": next((m for m in AREA_MARKS if m in (row.get("缺什么") or "")), ""),
+                "area_mark": next((m for m in ROW_MARKS if m in (row.get("缺什么") or "")), ""),
                 "list_kind": row.get("页别") or "", "list_category": row.get("列表上的类别") or ""}
 
     # ------------------------------------------------------------ texts
@@ -566,11 +571,12 @@ class _Assembly:
         """Blueprint item 22 (owner 11-09, 「照这个做」): each page to-text read takes read_again's answer: under_read
         True with its text read again whole, False when it stays as read, None (and as read) when it could not be
         judged; a result of an older page rule has no link lines and is not judged. A page may be read again unless
-        the export marked its areas (item 15 decides on the page rule's own reading), it is its site's home page
-        (site_root) or a c.nknu list (default.aspx, download.aspx, laws.aspx: teasers and menus of what is elsewhere)
-        【Claude, 11-09 review】, or the crawler marks it 列表翻页 (LIST_PAGER: the build leaves it out, documents._class;
-        item 22, part 3), so a page the build leaves out is never read again nor counted in under_read; those still
-        count toward the template."""
+        its 缺什么 holds a mark (area_mark: the export marked its areas, and item 15 decides on the page rule's own
+        reading; or the school answered it with no data, corpus.NO_DATA, which the build leaves out, documents._class;
+        the crawler's fa81f41), it is its site's home page (site_root) or a c.nknu list (default.aspx, download.aspx,
+        laws.aspx: teasers and menus of what is elsewhere) 【Claude, 11-09 review】, or the crawler marks it 列表翻页
+        (LIST_PAGER: the build leaves it out, documents._class; item 22, part 3), so a page the build leaves out is
+        never read again nor counted in under_read; those still count toward the template."""
         wholes: dict[str, Whole] = {}
         for _record, sha, links, group in self.whole:
             if sha not in wholes and isinstance(links, list) and (text := self.cache.extra(sha, FULL)):
@@ -594,15 +600,18 @@ class _Assembly:
 
     def inline(self, pages: list[tuple[dict, dict]]) -> None:
         """Each [[img:src]] line of a page's text becomes the OCR text of the image it names, or goes. A page the build
-        leaves out (a list kind; one the crawler marks 列表翻页, blueprint item 22) keeps no image: an image only such
-        pages show is no kept page's, and image_record makes it a record of its own when its OCR text reaches
-        IMAGE_DOC_CHARS (else it is counted in images_no_text)."""
+        leaves out (a list kind; one the crawler marks 列表翻页, blueprint item 22; one the school answered with no
+        data, NO_DATA, as such a page 【Claude】) keeps no image: an image only such pages show is no kept page's, and
+        image_record makes it a record of its own when its OCR text reaches IMAGE_DOC_CHARS (else it is counted in
+        images_no_text)."""
         for record, row in pages:
             if "[[img:" not in record["text"]:
                 continue
             base = self.pages.base(row)
-            # a list page of any platform is left out (T3), and so is a page the crawler marks 列表翻页 (item 22)
-            kept_page = kind_class(record["kind"]) is not None and record["list_kind"] != LIST_PAGER
+            # a list page of any platform is left out (T3), and so is a page the crawler marks 列表翻页 (item 22) or
+            # one the school answered with no data (NO_DATA, the crawler's fa81f41)
+            kept_page = (kind_class(record["kind"]) is not None and record["list_kind"] != LIST_PAGER
+                         and record["area_mark"] != NO_DATA)
             lines = []
             for line in record["text"].split("\n"):
                 m = IMG_LINE.fullmatch(line)

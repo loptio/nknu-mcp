@@ -53,6 +53,20 @@ AREA_MARKS = (AREA_EMPTY, AREA_MISSING)
 # GET-paged list's page 2 on); '' on every other row (Record.list_kind; documents._class leaves a LIST_PAGER page out)
 LIST_FIRST, LIST_PAGER = "列表", "列表翻页"
 CATEGORY_SEP = " | "  # archive.export's joiner of 列表上的类别 (its list_category): Record.list_category
+# archive.export's NO_DATA (the crawler's fa81f41), content's own copy as AREA_EMPTY copies the export's words: the
+# school answered the page with no data (the course tables' pop-up 「系所未提供相關資料」, which the to-text step cannot
+# read: such a page reads as an empty form), written 「学校回答没有资料（系所未提供相關資料）」 in 缺什么, alone or after
+# other reasons, so read as a substring. The owner 11-09 「照这样做」 (in the crawler session) to the content session's
+# proposal (documents' module docstring quotes it): documents._class leaves such a page out and the build counts it,
+# never by its address, since the real tables would go too once the school publishes the year, and 16 real notices
+# on 5 SSO unit sites carry the same 「#按钮=115學年度」
+# (research/crawler_lab_2026-11-04/item22_1109/peer_notes.md 第六、七则). Record.area_mark holds it 【Claude】
+NO_DATA = "学校回答没有资料"
+# the 缺什么 marks a record's area_mark holds: the first of them, in this order, that the row's 缺什么 holds, so the
+# school's answer of no data comes first when a row has an area mark too: a page so marked is never kept, while
+# 找不到内文区 first would keep one with text (deleted_notice); no row had both on 11-09, the course tables' platform
+# naming no notice areas 【Claude】
+ROW_MARKS = (NO_DATA, *AREA_MARKS)
 # c.nknu's notice templates, by their page kind (pagetext.page_kind): newsdetail (教务处), and newsview (总务处, 体育室
 # and 师培处, per the site probe; plan 2026-11-08 T3)
 NOTICE_KINDS = ("newsdetail", "newsview")
@@ -95,8 +109,9 @@ class Record:
     modified: str = ""
     origin: str = ""
     # owner 11-09 (blueprint item 15, 「照建议定」): which of AREA_MARKS the row's 缺什么 holds, the notice's own areas
-    # empty (AREA_EMPTY) or missing (AREA_MISSING), documents.deleted_notice reads it; '' without, and in an export or a
-    # corpus made before
+    # empty (AREA_EMPTY) or missing (AREA_MISSING), documents.deleted_notice reads it; since the crawler's fa81f41 also
+    # NO_DATA, the school answered the page with no data (documents._class leaves it out); '' without, and in an
+    # export or a corpus made before
     area_mark: str = ""
     # blueprint item 22 (owner 11-09, 「照这个做」): True for a page read again whole, its reading having given much less
     # than its own words (assemble's under_read), False for a page judged and kept as read, None when not judged (too
@@ -281,7 +296,7 @@ def taipei_day(stamp: str) -> date | None:
 
 def export_info(export_dir: Path) -> dict:
     """{'site', 'name' (Traditional Chinese), 'data_as_of', 'missing_pages', 'missing_files', 'area_marked',
-    'list_marked'}:
+    'list_marked', 'no_data_marked'}:
     data_as_of is the site's crawl day, the latest 抓取时间 (Asia/Taipei day) among the 网页 rows with a 本地档案;
     without one, among all rows with a 本地档案; else the export day. An export re-reads an older crawl (T7a), and a crawl learns what
     the site holds through its pages: files fetched one by one later (the 4 off-site attachments of 11-02, nknu
@@ -291,7 +306,8 @@ def export_info(export_dir: Path) -> dict:
     list_marked the 网页 rows with a 本地档案 (each a page record of the corpus) marked LIST_PAGER (页别) or stating a
     列表上的类别 (blueprint item 22, the crawler's 53cf31b, review 11-09: a corpus assembled before content read them
     carries neither, which the build then warns of; the export sets a category on a row with no file too); 0 for an
-    export made before 53cf31b."""
+    export made before 53cf31b; no_data_marked the 网页 rows with a 本地档案 whose 缺什么 holds NO_DATA (the crawler's
+    fa81f41: a corpus assembled before content read it carries no such area_mark, which the build then warns of)."""
     m = _manifest(str(Path(export_dir).resolve()))
     fetched = [(it.get("类型") == "网页", d) for it in m.get("项目", [])
                if it.get("本地档案") and (d := taipei_day(it.get("抓取时间") or ""))]
@@ -310,4 +326,6 @@ def export_info(export_dir: Path) -> dict:
             "area_marked": sum(any(a in (it.get("缺什么") or "") for a in AREA_MARKS) for it in m.get("项目", [])),
             "list_marked": sum(it.get("类型") == "网页" and bool(it.get("本地档案"))
                                and (it.get("页别") == LIST_PAGER or bool((it.get("列表上的类别") or "").strip()))
-                               for it in m.get("项目", []))}
+                               for it in m.get("项目", [])),
+            "no_data_marked": sum(it.get("类型") == "网页" and bool(it.get("本地档案")) and NO_DATA in (it.get("缺什么") or "")
+                                  for it in m.get("项目", []))}

@@ -192,6 +192,7 @@ def test_export_info(tmp_path):
         "site": "c.nknu.edu.tw/aca", "name": "教務處", "data_as_of": "2026-10-27",
         "missing_pages": 1, "missing_files": 2, "area_marked": 0,  # owner 11-09, blueprint item 15
         "list_marked": 0,  # blueprint item 22 (review 11-09): an export made before 53cf31b marks no list page
+        "no_data_marked": 0,  # the crawler's fa81f41: an export made before it marks no answer of no data
     }
 
 

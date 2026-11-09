@@ -28,6 +28,22 @@ a home page, a teacher's file grid; 450 kept) stays a page: it holds words of it
 (research/crawler_lab_2026-11-04/item22_1109/lists.md §3.3 item 7), and none of the 450 is dated (the export gives a
 list page no row's date, and _stated takes none on a site's root or a c.nknu list path: lists_1109g.log).
 
+The school's answers of no data (the crawler's fa81f41): the course tables (sso.nknu.edu.tw/dataopen2search's
+opencoursetablepure.aspx) answer 「系所未提供相關資料」 in a pop-up the to-text step cannot read, so the 124 answers of
+115學年度 read as empty forms of 71 to 86 characters (research/pipeline_2026-11-02/reading_gaps_1109/lists_1109g.log
+§D); 14 default pages, of 113, say it too, and the 9 of them unit sites list read 72 to 84 (after_1109f.log; the
+other 5 were not measured). The export marks such a page 「学校回答没有资料」 in 缺什么 (corpus.NO_DATA) in every export
+listing it (147 rows of 10 exports on 11-09: nodata_1109l.log). The owner 11-09 「照这样做」, in the crawler session,
+to the content session's proposal as research/project_audit_2026-10-25/owner_own_words.md records it
+(2026-11-09T12:12:12.218Z: 「…不按网址拿掉，导出在「缺什么」标「学校回答没有资料（系所未提供相關資料）」，内容 session
+照标记不收、记个数」): such a page is no document (_class) and is counted, never by its address, since the real tables
+would go too once the school publishes the year, and 16 real notices on 5 SSO unit sites carry the same
+「#按钮=115學年度」 (research/crawler_lab_2026-11-04/item22_1109/peer_notes.md 第六、七则). How the content side does it
+is 【Claude】: Record.area_mark holds the mark, before an area mark when a row has both (corpus.ROW_MARKS: a page so
+marked is never kept; no row had both on 11-09, the course tables' platform naming no notice areas); the count is <kind>(学校回答没有资料) when its kind alone
+would keep the page, one marked 列表翻页 too counted so (_left_out_as); and an image only such pages show is no kept
+page's (assemble.inline), as on a list's pager page.
+
 Every platform (plan 2026-11-08 T3; kind_class): a notice is a page of c.nknu's notice templates (newsdetail, newsview)
 or a detail page of any profiled platform (detail:<profile>, a press-made one too); a list read from its page
 (list:<profile>, pagetext.list_grid) and a list's pager row (…#翻页) are left out like c.nknu's lists. A document's unit
@@ -84,6 +100,7 @@ from nknu.content.corpus import (
     AREA_MARKS,
     CATEGORY_SEP,
     LIST_PAGER,
+    NO_DATA,
     NOTICE_KINDS,
     Event,
     PageMeta,
@@ -119,6 +136,9 @@ BEFORE = f"({CALENDAR_SINCE.year}年以前)"  # excluded-count suffix: an event 
 FORMAT = "(其他格式)"  # excluded-count suffix: a format sibling assemble folded into another record (addendum B)
 DELETED = "(学校删掉)"  # excluded-count suffix: a notice the school deleted, only the template left (deleted_notice)
 PAGER_SUFFIX = "(列表翻页)"  # excluded-count suffix: a page marked 列表翻页 its kind alone would keep (_class; item 22)
+# excluded-count suffix: a page the school answered with no data (corpus.NO_DATA, the crawler's fa81f41) its kind alone
+# would keep (_class); the key, and that it goes before PAGER_SUFFIX (_left_out_as), are 【Claude】
+NO_DATA_SUFFIX = "(学校回答没有资料)"
 UNKNOWN_ZONE = "unknown"  # a linking page whose link to the file was not found (a button), or the 10-29 corpus
 ZONE_ORDER = {"attachments": 0, "content": 1, UNKNOWN_ZONE: 2, "nav": 3}  # the zone a page's reference is shown with
 
@@ -292,21 +312,34 @@ def site_root(url: str, site: str) -> bool:
 
 def _class(r: Record) -> str | None:
     """A record's document class: None for a page the crawler marks 列表翻页 (Record.list_kind LIST_PAGER, whatever its
-    kind: blueprint item 22, part 3, the module docstring); else kind_class of its kind, except that a page the export
-    read the platform's own date field on (日期来源 OWN_FIELD) is a notice: a detail page whose address no detail path
-    names (GEO, ID, WordPress profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec 2026-11-08 §四)
-    【Claude】. Its kind_raw stays. One helper for both places that ask (the notices kept at one address, and the
-    documents), so they never disagree."""
-    if r.list_kind == LIST_PAGER:
+    kind: blueprint item 22, part 3, the module docstring) and for one the school answered with no data
+    (Record.area_mark NO_DATA, the crawler's fa81f41: the module docstring); else kind_class of its kind, except that a
+    page the export read the platform's own date field on (日期来源 OWN_FIELD) is a notice: a detail page whose address
+    no detail path names (GEO, ID, WordPress profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec
+    2026-11-08 §四) 【Claude】. Its kind_raw stays. One helper for both places that ask (the notices kept at one
+    address, and the documents), so they never disagree."""
+    if r.list_kind == LIST_PAGER or r.area_mark == NO_DATA:
         return None
     cls = kind_class(r.kind)
     return "notice" if cls == "page" and r.date_source == OWN_FIELD else cls
 
 
+def _left_out_as(r: Record) -> str:
+    """The key build_documents counts a record _class leaves out under: <kind>(学校回答没有资料) for a page the school
+    answered with no data (NO_DATA_SUFFIX), a list's pager page with that mark too 【Claude】, and <kind>(列表翻页) for
+    any other list's pager page (PAGER_SUFFIX), when its kind alone would keep it; else its kind, as before."""
+    if kind_class(r.kind) is None:
+        return r.kind
+    if r.area_mark == NO_DATA:
+        return r.kind + NO_DATA_SUFFIX
+    return r.kind + PAGER_SUFFIX if r.list_kind == LIST_PAGER else r.kind
+
+
 def deleted_notice(r: Record) -> bool:
     """A notice the school deleted (owner 11-09, blueprint item 15, 「照建议定」), by the export's mark on its page
-    (Record.area_mark), whatever its class (a record the build leaves out by its kind or by the 列表翻页 mark aside:
-    _class; blueprint item 22, so sites.deleted_notices never counts a list's pager page):
+    (Record.area_mark), whatever its class (a record the build leaves out by its kind, by the 列表翻页 mark or as the
+    school's answer of no data aside: _class; blueprint item 22, so sites.deleted_notices never counts a list's pager
+    page):
     - AREA_EMPTY: the platform's own title and text areas are on the page and hold nothing (no words, picture, link,
       frame or file): one, whatever the content side read there (a platform read as a whole body gives its menus:
       电机系's 3 of 11-09, page:elec, whose bodies hold 887 to 891 characters of menu);
@@ -475,8 +508,10 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
                     site: str = "") -> tuple[list[Document], dict[str, int]]:
     """Documents in corpus order, then events; and the count of left-out records by kind. records: one per id
     (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A page the crawler
-    marks 列表翻页 (_class) is left out and counted as <kind>(列表翻页) when its kind alone would keep it, else under its
-    kind (blueprint item 22). A notice the school deleted (deleted_notice) is left out and counted as <kind>(学校删掉).
+    marks 列表翻页 (blueprint item 22) and one the school answered with no data (Record.area_mark NO_DATA, the
+    crawler's fa81f41) are left out (_class) and counted as <kind>(列表翻页) and <kind>(学校回答没有资料) when the kind
+    alone would keep them, one marked both as the latter (_left_out_as), else under the kind. A notice the school
+    deleted (deleted_notice) is left out and counted as <kind>(学校删掉).
     Of the other notices at one address (_link_key: one site and nid), the first written without &amp; is kept; the
     others are (重复) and their doc_ids go into its duplicates. Each document kept from a record carries its categories
     (Document.categories). site: the export's site key, for a record or an event that names none of its own (a corpus
@@ -497,8 +532,8 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         key = _link_key(r.url)
         linkable.setdefault(key, []).append(r)
         cls = _class(r)
-        if cls is None:  # one the 列表翻页 mark alone leaves out (its kind would keep it) is counted apart (item 22)
-            excluded[r.kind + PAGER_SUFFIX if kind_class(r.kind) is not None else r.kind] += 1
+        if cls is None:  # one a mark alone leaves out (its kind would keep it) is counted apart (_left_out_as)
+            excluded[_left_out_as(r)] += 1
             continue
         if deleted_notice(r):  # before the duplicate check: a shell is counted as deleted, never as (重复)
             excluded[r.kind + DELETED] += 1

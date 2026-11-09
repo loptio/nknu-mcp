@@ -127,7 +127,16 @@ from urllib.parse import unquote, urlsplit
 
 from nknu.content import ids, sites
 from nknu.content.chunks import Chunk, make_chunks, split_sections
-from nknu.content.corpus import TEMPLATE_PAGES, Event, Record, export_info, load_calendar, load_corpus, read_metas
+from nknu.content.corpus import (
+    NO_DATA,
+    TEMPLATE_PAGES,
+    Event,
+    Record,
+    export_info,
+    load_calendar,
+    load_corpus,
+    read_metas,
+)
 from nknu.content.dates import (
     FIELD_SOURCE,
     INHERITED_SOURCE,
@@ -1035,6 +1044,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有页别和列表上的类别，是会读这两栏以前的程序拼的："
                             f"导出里 {inp.info['list_marked']} 行网页标了「列表翻页」或写了列表上的类别，列表翻页的网页"
                             "这次没拿掉，单位行也没写列表类别；先用 python -m nknu.content.assemble 重拼")
+        # the crawler's fa81f41: a corpus assembled before content read the export's 「学校回答没有资料」 has no such mark
+        if inp.info.get("no_data_marked") and not any(r.area_mark == NO_DATA for r in inp.records):
+            warnings.append(f"第 {n} 份输入的 corpus（{inp.corpus}）没有「学校回答没有资料」的标记，是会读这个标记以前的程序拼的："
+                            f"导出里 {inp.info['no_data_marked']} 行网页标了，这些空网页这次没拿掉；"
+                            "先用 python -m nknu.content.assemble 重拼")
         # owner 11-09, blueprint item 22: a corpus assembled before it judged no page (under_read None throughout)
         pages = [r for r in inp.records if r.source == "totext" and kind_class(r.kind) in ("notice", "page")]
         if len(pages) >= TEMPLATE_PAGES and all(r.under_read is None for r in pages):
