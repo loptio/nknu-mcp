@@ -569,10 +569,23 @@ CNKNU = Profile(
     sites=r"c\.nknu\.edu\.tw(?:/[^/]+)?|(?:tecs|spe|sea|cprc|hrkm|arts|giast|ksped)\.nknu\.edu\.tw",
     # tecs's newsview writes its notice's areas without the DataFormView wrapper and prefix (#TitleLabel,
     # #ContentsLabel, #FileLinkLabel; the newsview Detail above): without them its 155 notices of round one match no
-    # area, and the content stage reads a profiled detail page that matches none as empty (review 11-08)
+    # area, and the content stage reads a profiled detail page that matches none as empty (review 11-08).
+    # The last six: blueprint item 22, part 1 (the owner 11-09 「照这个做」, relayed by the content session: three page
+    # types whose words sit outside the area above, so that the content stage read almost nothing of them). The
+    # selectors 【Claude 的执行办法】, measured 11-09 on round one's 28,496 c.nknu pages and button answers, read only
+    # (research/crawler_lab_2026-11-04/item22_1109/areas.md; each matches only the pages named here): tg's 所友名錄
+    # detail (student_detail.aspx, 1,976 pages) holds its record in table.EditArea (a teacher's page of the old
+    # template has it inside #DataFormView, read already; on tecs it holds an event's name, time and place on
+    # activeorder.aspx, 26 pages, read too, and the form of activecancel.aspx, 2 pages, now read alone in place of its
+    # whole page (mostly menus): both accepted); a teacher's page of the new template (teachercorner.aspx, 295 pages on
+    # 13 sites) holds its fields, photo and own HTML in .FocusMain, the template's main box on every page, so only the
+    # one holding a teacher's field (lbl_Tea*); a forum thread (forumsview.aspx, 655 pages) its question in the four
+    # lbl_Po* spans, its replies in #MasterGrid (#lbl_Dept, the site's heading there, is an id 2,158 other pages and
+    # button answers carry)
     content_css=("#lbl_Title, #lbl_Contact, #lbl_PageSub, #lbl_Contents, #lbl_FileLink, #DataFormView, #MasterGrid, "
                  "#MainContent, .news_content, #lbl_ADJHtml, #lbl_CaseShow, #lbl_YoutubeHtml, .Page_Contact, "
-                 "#TitleLabel, #ContentsLabel, #FileLinkLabel"),
+                 "#TitleLabel, #ContentsLabel, #FileLinkLabel, table.EditArea, "
+                 ".FocusMain:has([id^='lbl_Tea']), #lbl_PoTitle, #lbl_PoName, #lbl_PoTime, #lbl_PoText"),
     list_paths=r"/(?:newslist|album|download|laws)\.aspx$|/default\.aspx$",
     detail_paths=r"/(?:newsview|newsdetail|album_images)\.aspx$", download_paths=r"/uploadfile/|/files/",
     rows=(Rows("MasterGrid", grid="#MasterGrid", row="tr", walk="postback",
