@@ -465,9 +465,12 @@ def _topic(rest: str, tokens: list[str], units: list[tuple[int, int]], others: l
 
 
 def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]],
-                 rank: RankConfig | None = None) -> KeywordPool:
+                 rank: RankConfig | None = None, explain: dict | None = None) -> KeywordPool:
     """Steps 1 and 2: the FTS match and each document's score, added up exactly as search_docs always has (the float
-    sums decide ties that the stable sorts and the 11-01 offline numbers rely on)."""
+    sums decide ties that the stable sorts and the 11-01 offline numbers rely on).
+    explain (plan 2026-11-15 T1, the inspection tools: nknu.ops.explain): a dict that is given gets 'keyword': the
+    tokens searched, the topic words, whether the date part applies, the best bm25, and each document's parts as they
+    were added (coverage, bm25, bm25_norm, period, cohort, date or None, score). Without it nothing changes."""
     q = query[:MAX_QUERY_CHARS]
     rank = rank if rank is not None else RankConfig()
     named = query_terms(q, today)
@@ -491,6 +494,8 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
     else:
         rows = conn.execute(_FTS, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens), PER_DOC, POOL_DOCS)).fetchall()
     if not rows:
+        if explain is not None:
+            explain["keyword"] = {"tokens": tokens, "topic": topic, "recent": recent, "best_bm25": 0.0, "docs": {}}
         return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, {}, [], 0, rank.tier, topic)
 
     docs = _candidates(conn, rows, rank.copy_dates)
@@ -501,19 +506,27 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
     if rank.tier:
         mark_background(conn, docs)
     best = min((d.bm25 for d in docs.values() if d.chunks), default=0.0)
+    noted: dict[str, dict] = {}
     for d in docs.values():
         d.coverage = _coverage(words or canon, d.tokens, alias_sets, d.unit_tokens, rank.unit_cover)
         bm25_norm = min(1.0, max(0.0, d.bm25 / best)) if best < 0 else 0.0
-        d.score = (W_COVERAGE * d.coverage + W_BM25 * bm25_norm + W_PERIOD * _period_match(named.terms, d.ay, d.sem)
-                   + W_COHORT * (d.doc_id in applies))
-        if recent:
-            d.score += _date_part(rank, d, ends.get(d.doc_id), today)
+        period, cohort = _period_match(named.terms, d.ay, d.sem), d.doc_id in applies
+        d.score = (W_COVERAGE * d.coverage + W_BM25 * bm25_norm + W_PERIOD * period
+                   + W_COHORT * cohort)
+        dated = _date_part(rank, d, ends.get(d.doc_id), today) if recent else None
+        if dated is not None:
+            d.score += dated
+        if explain is not None:
+            noted[d.doc_id] = {"coverage": d.coverage, "bm25": d.bm25, "bm25_norm": bm25_norm, "period": period,
+                               "cohort": cohort, "date": dated, "score": d.score}
+    if explain is not None:
+        explain["keyword"] = {"tokens": tokens, "topic": topic, "recent": recent, "best_bm25": best, "docs": noted}
     return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, docs, sort_docs(docs.values()), len(rows),
                        rank.tier, topic)
 
 
 def adjustments(conn: sqlite3.Connection, docs: dict[str, _Doc], pool: KeywordPool, rank: RankConfig,
-                today: date, *, recency: bool = True) -> dict[str, float]:
+                today: date, *, recency: bool = True, parts: dict | None = None) -> dict[str, float]:
     """doc_id -> the part of its score that is not keyword relevance: W_PERIOD*period_match + W_COHORT*cohort_match
     and the ranking-v2 date part when pool.recent (hybrid adds it to the reranker's relevance). recency=False leaves
     the date part out (plan 2026-11-14 T6: hybrid then multiplies by how valid the document still is, so the date
@@ -522,7 +535,9 @@ def adjustments(conn: sqlite3.Connection, docs: dict[str, _Doc], pool: KeywordPo
     only the vectors found with doc_rows' default, having no RankConfig to pass it, and this is the first place that
     reads their dates and the one hybrid hands the RankConfig, before it sorts the reranked head (sort_docs). So with
     the setting off the date part and that sort's tie read each document's own date, as before, whoever read the
-    rows 【Claude: hybrid.py was not to be edited; passing copy_dates to its doc_rows call would do the same】."""
+    rows 【Claude: hybrid.py was not to be edited; passing copy_dates to its doc_rows call would do the same】.
+    parts (plan 2026-11-15 T1, the inspection tools): a dict that is given gets each document's three addends as they
+    were added: 'period', 'cohort' and 'date' (None when the date part is left out). Without it nothing changes."""
     if not rank.copy_dates:
         for d in docs.values():
             d.rank_date = None
@@ -533,9 +548,13 @@ def adjustments(conn: sqlite3.Connection, docs: dict[str, _Doc], pool: KeywordPo
     ends = _event_ends(conn, ids) if dated and ids else {}
     out: dict[str, float] = {}
     for d in docs.values():
-        a = W_PERIOD * _period_match(pool.terms, d.ay, d.sem) + W_COHORT * (d.doc_id in applies)
-        if dated:
-            a += _date_part(rank, d, ends.get(d.doc_id), today)
+        period, cohort = W_PERIOD * _period_match(pool.terms, d.ay, d.sem), W_COHORT * (d.doc_id in applies)
+        a = period + cohort
+        day = _date_part(rank, d, ends.get(d.doc_id), today) if dated else None
+        if day is not None:
+            a += day
+        if parts is not None:
+            parts[d.doc_id] = {"period": period, "cohort": cohort, "date": day}
         out[d.doc_id] = a
     return out
 

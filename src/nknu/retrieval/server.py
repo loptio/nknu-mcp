@@ -15,7 +15,7 @@ server never reads the database to pick them, and each answer's coverage line sa
 tool texts they read): which sites and how fresh is the answers' (coverage, data_as_of).
 
     python -m nknu.retrieval.server [--db research/pipeline_2026-11-02/aca.db] [--no-dense] [--no-rerank]
-                                    [--http [--port 8766]]
+                                    [--http [--host 127.0.0.1] [--port 8766]]
 """
 
 from __future__ import annotations
@@ -215,7 +215,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", type=Path, default=DEFAULT_DB,
                     help="内容资料库（默认 research/pipeline_2026-11-02/aca.db）")
     add_model_flags(ap)
-    ap.add_argument("--http", action="store_true", help="改用 streamable HTTP，只绑 127.0.0.1（默认 stdio）")
+    ap.add_argument("--http", action="store_true", help="改用 streamable HTTP，默认只绑 127.0.0.1（默认 stdio）")
+    # plan 2026-11-15 T6: in the lab's Docker container the server listens on every address of the container and Docker
+    # forwards only the lab PC's own 127.0.0.1 to it (as the archive viewer does). The guard below is strict wherever
+    # it listens: a request is answered only when its Host is 127.0.0.1, localhost, [::1] or the address the
+    # connection itself came in on (FastMCP adds that one: fastmcp/server/http.py, _allowed_hosts_for_scope), so a
+    # page of another site that reaches the port under a name of its own gets none. Who can connect at all is the
+    # caller's to limit (Docker's 127.0.0.1 publish): 0.0.0.0 outside a container answers the LAN by its address
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="HTTP 模式听的位址：默认 127.0.0.1，只有本机连得到；实验室的 Docker 容器里用 0.0.0.0，由 Docker 只从"
+                         "主机自己的 127.0.0.1 转进来。不管听哪里，别的网站借浏览器用它自己的名字连进来一律不回答；"
+                         "在容器外面用 0.0.0.0 会让同一个网路的机器连得到，不要这样用")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"HTTP 端口（默认 {DEFAULT_PORT}）")
     args = ap.parse_args(argv)
     if not args.db.is_file():
@@ -223,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     mcp = create_mcp(args.db, config=config_from(args))
     if args.http:
-        mcp.run(transport="http", host="127.0.0.1", port=args.port, path="/mcp", stateless_http=True,
+        mcp.run(transport="http", host=args.host, port=args.port, path="/mcp", stateless_http=True,
                 json_response=True, host_origin_protection=True, show_banner=False)
     else:
         mcp.run(transport="stdio", show_banner=False)

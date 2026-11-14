@@ -1477,3 +1477,10 @@ def _rehearsal_check(rehearsal, expect, root) -> None:
     failed = [r for r in got if not r.ok]
     typer.echo(f"共 {len(got)} 条：PASS {len(got) - len(failed)}、FAIL {len(failed)}")
     raise typer.Exit(2 if failed else 0)
+
+
+# The inspection tools' two commands, nknu search and nknu trace (plan 2026-11-15 T4; the owner, 11-15: 「可以，开工」).
+# The code is nknu.ops.cli; only the registration is here, and what is heavy loads inside the commands
+from nknu.ops.cli import register as _register_ops
+
+_register_ops(app)

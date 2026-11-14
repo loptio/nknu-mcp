@@ -72,7 +72,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 
 from nknu.content.embed import chunk_passages
@@ -434,11 +434,12 @@ def _usable_index(conn: sqlite3.Connection, embedder, index) -> vectors.VectorIn
 
 
 def _dense(text: str, config: HybridConfig, embedder, index: vectors.VectorIndex,
-           tier: bool) -> list[tuple[int, float]]:
+           tier: bool, explain: dict | None = None) -> list[tuple[int, float]]:
     """Step 4: (chunk_id, cosine), the primary documents' chunks then the background ones' (tier), each pool's
     documents by their nearest chunk, from index (_usable_index checked it); an index without its documents gives the
     dense_candidates nearest chunks as before 11-08. [] when dense_candidates is 0 or anything fails (a rerank then
-    reads the keyword candidates alone)."""
+    reads the keyword candidates alone); a failure is written into explain as 'dense_error' (plan 2026-11-15 T1,
+    review: an empty vector pool must not read as 「the vectors found nothing」)."""
     if config.dense_candidates <= 0:
         return []
     try:
@@ -453,9 +454,13 @@ def _dense(text: str, config: HybridConfig, embedder, index: vectors.VectorIndex
                 + index.top_docs(q, PER_DOC, config.dense_candidates, index.background, sims=sims))
     except models.ModelUnavailable as exc:  # expected while a model is missing: one line, not a traceback per query
         log.warning("向量模型不能用，这次不用向量：%s", exc)
+        if explain is not None:
+            explain["dense_error"] = f"向量模型不能用：{exc}"
         return []
-    except Exception:
+    except Exception as exc:
         log.exception("向量检索失败：这次不用向量（这次失败不代表查无资料）")
+        if explain is not None:
+            explain["dense_error"] = f"向量检索失败：{type(exc).__name__}: {exc}"
         return []
 
 
@@ -490,11 +495,13 @@ def _picks(keyword: list[int], dense: list[int], n: int) -> list[int]:
 def _rerank(conn: sqlite3.Connection, text: str, head: list[str], docs: dict[str, _Doc], dense_of: dict[str, list[int]],
             pool: KeywordPool, rank: RankConfig, today: date, config: HybridConfig, bonus: dict[str, float],
             reranker, *, first: dict[str, float] | None = None,
-            off: set[str] | frozenset[str] = frozenset()) -> float | None:
+            off: set[str] | frozenset[str] = frozenset(), explain: dict | None = None) -> float | None:
     """Step 6: scores the head and only then writes each head document's score and chunk order. Returns the best raw
     score, or None when the reranker could not be used (the documents are left as they were). first: first_share of
     the heads, read when config.w_first is set; off: off_audience of the candidates, multiplied by config.scope_factor
-    (plan 2026-11-14 T8, T7; T6's validity is read here, for the head only)."""
+    (plan 2026-11-14 T8, T7; T6's validity is read here, for the head only). explain (plan 2026-11-15 T1): a dict
+    that is given gets 'rerank', each head document's parts as they entered its score, or 'rerank_error'."""
+    parts: dict[str, dict] | None = {} if explain is not None else None
     try:
         scorer = reranker if reranker is not None else models.shared_reranker()
         picks = {d: _picks(_keyword_chunks(docs[d]), dense_of.get(d, []), config.chunks_per_doc) for d in head}
@@ -502,6 +509,8 @@ def _rerank(conn: sqlite3.Connection, text: str, head: list[str], docs: dict[str
         pairs = [(d, c) for d, cs in picks.items() for c in cs if c in texts]
         if not pairs:
             log.warning("前 %d 笔没有能给重排模型读的小段：这次不重排", len(head))
+            if explain is not None:
+                explain["rerank_error"] = f"前 {len(head)} 笔没有能给重排模型读的小段"
             return None
         scores = [float(s) for s in scorer.score(text, [texts[c] for _, c in pairs])]
         if len(scores) != len(pairs):
@@ -515,13 +524,18 @@ def _rerank(conn: sqlite3.Connection, text: str, head: list[str], docs: dict[str
         # ranking v2's date bonus out, so it is not counted twice
         valid = _valid(conn, head, pool, today, config)
         adj = adjustments(conn, {d: docs[d] for d in head}, pool, rank, today,
-                          recency=valid is None or config.valid_keeps_recency)
+                          recency=valid is None or config.valid_keeps_recency, parts=parts)
     except models.ModelUnavailable as exc:
         log.warning("重排模型不能用，这次用关键词和向量的排序：%s", exc)
+        if explain is not None:
+            explain["rerank_error"] = f"重排模型不能用：{exc}"
         return None
-    except Exception:
+    except Exception as exc:
         log.exception("重排失败：这次用关键词和向量的排序（这次失败不代表查无资料）")
+        if explain is not None:
+            explain["rerank_error"] = f"重排失败：{type(exc).__name__}: {exc}"
         return None
+    noted: dict[str, dict] = {}
     for d in head:
         doc = docs[d]
         r = rel.get(d, 0.0)
@@ -536,19 +550,38 @@ def _rerank(conn: sqlite3.Connection, text: str, head: list[str], docs: dict[str
         if d in off:  # T7
             score *= config.scope_factor
         doc.score = score + bonus.get(d, 0.0)  # with the three off: w_rerank * norm + adj + bonus, as before
+        if explain is not None and parts is not None:
+            noted[d] = {"rel": r, "norm": norm, "adj": adj[d], "parts": parts.get(d),
+                        "first": first.get(d, 0.0) if config.w_first and first else None,
+                        "valid": valid.get(d, 1.0) if valid else None, "off": d in off, "bonus": bonus.get(d, 0.0),
+                        "score": doc.score, "chunks": {c: of_chunk[c] for c in picks[d] if c in of_chunk}}
+    if explain is not None:
+        explain["rerank"] = {"best": best, "valid_applies": valid is not None, "docs": noted}
     return best
 
 
 def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]], limit: int = TOP_N,
                   rank: RankConfig | None = None, config: HybridConfig | None = None, embedder=None, reranker=None,
-                  index: vectors.VectorIndex | None = None) -> SearchResult:
+                  index: vectors.VectorIndex | None = None, explain: dict | None = None) -> SearchResult:
     """The module docstring's steps. embedder, reranker and index stand in for the process's shared ones (tests,
     offline runs). In step 3's cases no model, shared or given, is asked for; past them, the embedder encodes the
-    query when there is a usable index, and the reranker scores the head when there is one."""
+    query when there is a usable index, and the reranker scores the head when there is one.
+    explain (plan 2026-11-15 T1, the inspection tools: nknu.ops.explain): a dict that is given is filled with what
+    each step found: 'keyword' (keyword_pool), 'mode' (empty: nothing to search for; keyword: step 3; hybrid),
+    'ranking', 'text' (what the models read), 'kw_order' and 'kw_scores' (the keyword order and scores after the
+    audience factor and the unit bonus), 'off', 'bonus', 'dense' ([chunk, similarity]), 'dense_docs', 'background',
+    'tiers' and 'heads' (primary, background: the fused orders and the reranked heads), 'rerank' (_rerank; None when
+    none ran), 'final' (every document in the final order), 'config' and 'rank'; and, only when it happened,
+    'dense_error' (_dense) and 'rerank_error' (_rerank): why a model's part is missing. Without it nothing changes:
+    the tests of tests/ops/test_recorder.py compare the two to the bit."""
     config = config if config is not None else HybridConfig()
     rank = rank if rank is not None else RankConfig()
     limit = max(limit, 0)
-    pool = keyword_pool(conn, query, today=today, aliases=aliases, rank=rank)
+    pool = keyword_pool(conn, query, today=today, aliases=aliases, rank=rank, explain=explain)
+    if explain is not None:
+        explain.update(mode="empty", ranking="keyword", text=None, kw_order=[], kw_scores={}, off=[], bonus={},
+                       dense=[], dense_docs={}, background=[], tiers=[[], []], heads=[[], []], rerank=None, final=[],
+                       config=asdict(config), rank=asdict(rank))
     if not pool.tokens:
         return SearchResult(pool.query, pool.understood, [], 0)
     named = _named(conn, pool.query, config)
@@ -557,12 +590,19 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
     rerank_only = has_vecs and config.rerank and not config.dense
     if index is None and not rerank_only:  # step 3
         found = list(pool.docs)
-        ordered = _keyword_order(pool, _bonus(conn, found, named, config), _off(conn, pool.query, found, config),
-                                 config.scope_factor)
-        return SearchResult(pool.query, pool.understood, top_hits(by_tier(ordered), limit), pool.rows)
+        bonus = _bonus(conn, found, named, config)
+        off = _off(conn, pool.query, found, config)
+        by_keyword = _keyword_order(pool, bonus, off, config.scope_factor)
+        ordered = by_tier(by_keyword)
+        if explain is not None:
+            explain.update(mode="keyword", kw_order=[d.doc_id for d in by_keyword],
+                           kw_scores={d: doc.score for d, doc in pool.docs.items()}, off=sorted(off),
+                           bonus=dict(bonus), background=sorted(d for d, doc in pool.docs.items() if doc.background),
+                           final=[d.doc_id for d in ordered])
+        return SearchResult(pool.query, pool.understood, top_hits(ordered, limit), pool.rows)
 
     text = school_spelling(pool.query, today)  # the one text bge-m3 and the reranker read
-    dense = _dense(text, config, embedder, index, pool.tier) if index is not None else []
+    dense = _dense(text, config, embedder, index, pool.tier, explain) if index is not None else []
     dense_of = _by_doc(conn, dense)
     only_dense = doc_rows(conn, [d for d in dense_of if d not in pool.docs])
     if pool.tier:
@@ -578,10 +618,17 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
     tiers = tuple(_fused([d for d in kw_ids if docs[d].background == back],
                          [d for d in dense_of if docs[d].background == back], config.rrf_k) for back in (False, True))
     heads = (tiers[0][: max(config.rerank_docs, 0)], tiers[1][: max(config.rerank_background, 0)])
+    if explain is not None:  # before the rerank writes the head's scores over the keyword ones
+        explain.update(mode="hybrid", text=text, kw_order=list(kw_ids),
+                       kw_scores={d: pool.docs[d].score for d in kw_ids}, off=sorted(off), bonus=dict(bonus),
+                       dense=[[int(c), float(s)] for c, s in dense],
+                       dense_docs={d: [int(c) for c in cs] for d, cs in dense_of.items()},
+                       background=sorted(d for d, doc in docs.items() if doc.background),
+                       tiers=[list(t) for t in tiers], heads=[list(h) for h in heads])
     best = None
     if config.rerank and (heads[0] or heads[1]):
         best = _rerank(conn, text, heads[0] + heads[1], docs, dense_of, pool, rank, today, config, bonus, reranker,
-                       first=first_share(heads) if config.w_first else None, off=off)
+                       first=first_share(heads) if config.w_first else None, off=off, explain=explain)
     reranked = best is not None
     parts: list[list[_Doc]] = []
     for ids, head in zip(tiers, heads, strict=True):
@@ -590,5 +637,9 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
             if dense_of.get(d):
                 docs[d].ranked = list(dict.fromkeys(_keyword_chunks(docs[d]) + dense_of[d]))
         parts.append((sort_docs(docs[d] for d in head) if reranked else []) + [docs[d] for d in rest])
-    return SearchResult(pool.query, pool.understood, top_hits(tiered(*parts), limit), pool.rows + len(dense),
-                        ranking="hybrid" if dense_of or reranked else "keyword", best_rerank=best)
+    ordered = tiered(*parts)
+    ranking = "hybrid" if dense_of or reranked else "keyword"
+    if explain is not None:
+        explain.update(final=[d.doc_id for d in ordered], ranking=ranking)
+    return SearchResult(pool.query, pool.understood, top_hits(ordered, limit), pool.rows + len(dense),
+                        ranking=ranking, best_rerank=best)

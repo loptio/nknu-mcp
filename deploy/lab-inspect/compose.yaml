@@ -1,0 +1,98 @@
+# 内部检视工具（plan 2026-11-15 T7；设计 docs/superpowers/specs/2026-11-15-inspect-tools-design.md 第三节）。
+# 在实验室电脑上，这个档放在 C:\nknu-transfer\inspect\compose.yaml。三个服务都只读，只从这台电脑自己的 127.0.0.1
+# 连得到；从 Mac 看要开 SSH 隧道（scripts/inspect-tunnel.sh）。给用户的步骤在同一个资料夹的 README.md。
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d            三个都开
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml ps               看状态
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart          换库、换程序以后
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml logs --tail 50 ops
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml down             全关（磁碟区不会动）
+# 程序和 Datasette 的设定装在磁碟区 nknu-work 的 /work/inspect-code（自己的一份，install.sh 装的：/work/src 抄一份、
+# 再盖上检视工具自己的档）。这样送检视工具的程序不会换掉建库用的 /work/src。换程序：pack.sh 打包、scp、install.sh、
+# restart（步骤在 README.md）。库被建库程序换掉以后，Datasette 还开着旧档（检视台和 MCP 服务每次都重新开库），
+# 所以换库以后也 restart 一次。
+# 写 $$ 才是一个 $：compose 会把 ${VAR} 换成呼叫者的环境变数。
+name: nknu-inspect
+
+x-ours: &ours   # 跑我们自己程序的两个服务：映像 nknu-pipeline（建库那个），程序在 /work/inspect-code/src
+  image: nknu-pipeline
+  working_dir: /work
+  environment:
+    TZ: Asia/Taipei
+    PYTHONDONTWRITEBYTECODE: "1"         # /work 是只读的
+    PYTHONPATH: /work/inspect-code/src   # 检视工具自己那份程序（映像预设的是建库用的 /work/src）
+    NKNU_CONFIG_DIR: /work/config        # 单位表、网站对单位表这些设定照旧读建库用的那份
+  volumes:
+    - nknu-work:/work:ro
+    - nknu-models:/models:ro
+  init: true
+  shm_size: "2gb"
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+
+services:
+  # 翻库里的表。官方映像，版本固定。-i 是只读而且不上锁；有哪个库就开哪个（对照库被删了也照样开得起来）。
+  # 不让整个库被下载（allow_download off），不自动猜分类栏（suggest_facets off：大表上很慢）。
+  datasette:
+    image: datasetteproject/datasette:0.65.5
+    volumes:
+      - nknu-work:/work:ro
+    command:
+      - sh
+      - -c
+      - >-
+        set --;
+        for f in aca.db aca1115.db; do
+        if [ -f "/work/research/pipeline_2026-11-02/$$f" ]; then
+        set -- "$$@" -i "/work/research/pipeline_2026-11-02/$$f"; fi;
+        done;
+        exec datasette "$$@" -h 0.0.0.0 -p 8001
+        --metadata /work/inspect-code/deploy/lab-inspect/datasette/metadata.yaml
+        --plugins-dir /work/inspect-code/deploy/lab-inspect/datasette/plugins
+        --setting sql_time_limit_ms 5000
+        --setting allow_download off
+        --setting suggest_facets off
+        --setting truncate_cells_html 300
+        --setting default_page_size 50
+        --setting max_returned_rows 2000
+    ports:
+      - "127.0.0.1:8001:8001"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # MCP 服务：和以后给学生的 AI 用的是同一支程序、同一个库。MCP Inspector 连这里。
+  mcp:
+    <<: *ours
+    command: ["python", "-m", "nknu.retrieval.server", "--db", "research/pipeline_2026-11-02/aca.db",
+              "--http", "--host", "0.0.0.0", "--port", "8766"]
+    ports:
+      - "127.0.0.1:8766:8766"
+
+  # 检视台：搜索试验台和逐份追踪两页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
+  ops:
+    <<: *ours
+    command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
+              "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
+              "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json"]
+    ports:
+      - "127.0.0.1:8878:8878"
+
+volumes:
+  nknu-work:
+    external: true
+  nknu-models:
+    external: true

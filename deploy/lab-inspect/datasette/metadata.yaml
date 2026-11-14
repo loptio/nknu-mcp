@@ -1,0 +1,201 @@
+# Datasette 的说明档（plan 2026-11-15 T7；设计 2026-11-15 第二节第 1 样）：每张表、主要栏位是什么意思，和几条现成的查询。
+# 栏位的意思照 src/nknu/content/schema.py 的注释写；tests/ops/test_deploy_files.py 会核对这里写到的表和栏位库里都有、
+# 每条查询都跑得动。库的结构改了，这份要跟着改。
+title: 高师大校园资讯：内容库（只读）
+description_html: >-
+  这是建库程序做出来的资料库，学生的 AI 搜到的东西都从这里来。只能看，不能改。
+  <b>aca</b> 是正式库（全部网站），<b>aca1115</b> 是只放教务处的对照库。
+  先看 <b>docs</b>（一份文件一行）和 <b>sites</b>（一个网站一行）；左边「Queries」里有几条现成的查询。
+
+databases:
+  aca:
+    description: 正式库：第一轮全部网站。MCP 服务读的就是这个档。
+    tables: &tables
+      docs:
+        description: 一份文件一行：一则公告、一个网页、一个附件、一个行事历事件，或一个校外链接。
+        label_column: title
+        facets: [kind_class, tier, site]
+        columns:
+          doc_id: 文件编号。d 开头是网页、公告、附件；e 开头是行事历事件
+          kind_class: 种类：notice 公告、page 网页、attachment 附件、event 行事历、link 校外链接
+          kind_raw: 爬虫判的网页种类（原样）
+          title: 标题
+          url: 网址
+          unit: 这个网站属于哪个单位
+          grp: 组别（公告上写的发布组别）
+          parent_id: 附件挂在哪一份文件底下（最新一则链到它的公告或网页）
+          parent_title: 那一份的标题
+          linktext: 别的网页是用什么字链到它的
+          has_text: 有没有读到文字（0＝扫描档或读不到，只能靠标题找）
+          text: 全文（转文字以后的样子）
+          chars: 字数
+          period_ay: 标题写的学年度
+          period_sem: 标题写的学期（1 或 2）
+          ident_date: 这份文件的日期（搜索结果显示的那个）
+          ident_kind: 那个日期是哪一种（published 公告日期、inherited 跟所属公告、server 服务器档案时间……）
+          doc_type: 背景资料的种类：journal 学报校刊、exam 考题、minutes 会议纪录；空白＝都不是
+          text_source: 文字哪里来的：totext 这次转的、fallback-1029 旧的粗转、none 没有
+          tier: primary 主料，background 背景（排在主料后面）
+          site: 来自哪个网站（sites 表的 site）
+          unit_line: 给模型读的「單位：…」那一行
+          date_line: 行事历事件的学期和日期那一行（只给重排模型读）
+          expires: 会不会过期（1＝会：公告、标了学期或学年的文件、事件；0＝不会：规章、表单、常设网页、没日期的）
+          valid_ay: 它属于哪个学年（算「还有效」用）
+          rank_date: 排序用的日期：它和并进它的副本里最新的那个
+          rank_undated: 1＝并进它的副本里有没日期的
+      sites:
+        description: 一个网站一行：从哪份导出建的、资料截到哪一天、有几份文件。
+        label_column: name
+        columns:
+          site: 网站的代号
+          name: 网站名称
+          unit: 属于哪个单位
+          data_as_of: 资料截至哪一天（爬到的那天）
+          missing_pages: 导出清单里没抓到的网页数
+          missing_files: 导出清单里没抓到的档案数
+          docs: 这个网站进库的文件数
+          export: 建库读的是哪个导出资料夹
+          deleted_notices: 学校删掉、只剩空壳的公告数（不收）
+          under_read: 正文区读到的字太少、改读整页的网页数
+      doc_alias:
+        description: 没有自己成为一份文件、并进别的文件的编号（同一个内容在别的网址、别的格式、重复的纪录）。
+        columns:
+          alias: 被并掉的编号
+          doc_id: 留下来的那一份
+          why: 为什么并：copy 另一个网址的同一份、format 同一份的另一种格式、duplicate 重复的纪录
+      dates:
+        description: 每份文件读到的每一个日期，和它是从哪里读来的。
+        columns:
+          doc_id: 文件编号
+          kind: 哪一种日期：published、inherited、server、period_start、period_end、event_start、event_end
+          date: 日期
+          raw: 原文怎么写的
+          source: 从哪里读到的（公告頁日期欄、網頁上寫的日期、所屬公告、伺服器檔案時間、正文期間、行事曆）
+      applies_to:
+        description: 文件写明适用于哪个入学年度（「X 學年度起入學」这类）。
+        columns:
+          doc_id: 文件编号
+          unit: 单位
+          cohort_from: 这个学年度起入学的都适用
+          cohort_exact: 只有这个学年度入学的适用
+          raw: 原文
+      sections:
+        description: 一份文件切成的节（按标题切）。start、end 是它在 docs.text 里的位置。
+        columns:
+          doc_id: 文件编号
+          sec_id: 第几节
+          heading: 这一节的标题
+          start: 开头的位置
+          end: 结尾的位置
+      chunks:
+        description: 一份文件切成的小段，搜索是一小段一小段找的。start、end 是它在 docs.text 里的位置。
+        columns:
+          chunk_id: 小段编号
+          doc_id: 文件编号
+          sec_id: 在第几节
+          start: 开头的位置
+          end: 结尾的位置
+          head_start: 这一段在表格里时，表头的开头位置
+          head_end: 表头的结尾位置
+      doc_refs:
+        description: 哪些网页链到哪个附件，链接放在网页的哪一区、叫它什么。
+        columns:
+          doc_id: 附件的编号
+          ref_id: 链到它的网页的编号
+          zone: 链接在哪一区：content 正文、attachments 附件区、nav 选单、unknown 找不到（按钮按出来的）
+          context: 那个网页叫它什么
+      units:
+        description: 单位树：学校、处室和组、学院和系所、中心、学程。
+        label_column: name
+        columns:
+          unit_id: 单位的代号（就是它的名字）
+          name: 名称
+          kind: 种类：学校、行政单位、行政组别、学院、系所、中心、学程
+          parent_id: 上一层单位
+          campus: 校区（和平、燕巢；空白＝两边都有或不知道）
+      unit_aliases:
+        description: 每个单位认得的各种叫法（全名和简称）。
+        columns:
+          alias: 叫法
+          unit_id: 哪个单位
+      doc_scope:
+        description: 每份文件和单位的关系：谁发的、适用于谁、提到了谁。
+        columns:
+          doc_id: 文件编号
+          relation: 关系：publisher 谁发的、applies_to 适用于谁、mentions 提到谁
+          unit_id: 哪个单位
+          campus: 文件写的校区
+          level: 文件写的学制（學士、碩士、博士、進修）
+          cohort_from: 这个学年度起入学的适用
+      meta:
+        description: 这个库是怎么建出来的：什么时候建、读了哪些导出、每一类各留了几份没收。值多半是 JSON。
+      chunk_fts:
+        description: 关键词索引：每一小段切成的两字词。title_tokens 标题的、body_tokens 内文的、unit_tokens 单位名的。
+      chunk_vecs:
+        hidden: true
+      chunk_fts_data:
+        hidden: true
+      chunk_fts_idx:
+        hidden: true
+      chunk_fts_content:
+        hidden: true
+      chunk_fts_docsize:
+        hidden: true
+      chunk_fts_config:
+        hidden: true
+    queries: &queries
+      doc:
+        title: 一份文件的全部栏位
+        description: 填文件编号（例：du 开头的那一串）。
+        sql: select * from docs where doc_id = :doc_id
+      doc_dates:
+        title: 一份文件读到的每个日期和来源
+        sql: select kind, date, raw, source from dates where doc_id = :doc_id order by kind, date
+      doc_chunks:
+        title: 一份文件切成的每一小段
+        sql: |-
+          select c.chunk_id, c.sec_id, s.heading, c.end - c.start as chars,
+                 substr(d.text, c.start + 1, c.end - c.start) as text
+          from chunks c
+          join docs d on d.doc_id = c.doc_id
+          left join sections s on s.doc_id = c.doc_id and s.sec_id = c.sec_id
+          where c.doc_id = :doc_id
+          order by c.chunk_id
+      doc_scope_rows:
+        title: 一份文件和单位的关系（谁发的、适用于谁）
+        sql: select relation, unit_id, campus, level, cohort_from from doc_scope where doc_id = :doc_id order by relation
+      copies_of:
+        title: 并进这一份的副本
+        sql: select alias, why from doc_alias where doc_id = :doc_id order by why, alias
+      merged_into:
+        title: 这个编号并进了哪一份
+        sql: select a.doc_id, a.why, d.title, d.url from doc_alias a join docs d on d.doc_id = a.doc_id where a.alias = :alias
+      find_title:
+        title: 标题里有这几个字的文件
+        sql: |-
+          select doc_id, kind_class, tier, site, ident_date, title, url from docs
+          where title like '%' || :words || '%'
+          order by ident_date desc limit 200
+      site_kinds:
+        title: 一个网站各类文件有几份、多少字
+        description: 填网站的代号（sites 表的 site，例：c.nknu.edu.tw/aca）。
+        sql: |-
+          select kind_class, tier, count(*) as docs, sum(chars) as chars,
+                 sum(ident_date is null) as undated, sum(has_text = 0) as no_text
+          from docs where site = :site
+          group by kind_class, tier order by docs desc
+      site_undated:
+        title: 一个网站里没有日期的公告、网页、附件
+        sql: |-
+          select doc_id, kind_class, title, url from docs
+          where site = :site and ident_date is null and kind_class in ('notice', 'page', 'attachment')
+          order by kind_class, title limit 500
+      sites_overview:
+        title: 每个网站一行的总览
+        sql: |-
+          select site, name, unit, data_as_of, docs, missing_pages, missing_files, deleted_notices, under_read
+          from sites order by docs desc
+  aca1115:
+    description: 对照库：只放教务处，同一份程序建的。程序改了以后拿它比分数。
+    tables: *tables
+    queries: *queries
