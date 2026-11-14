@@ -180,7 +180,10 @@ class Detail:
     the date alone, as most platforms write it, its label, when there is one, in the field's parent or the element
     above), '' when the platform has none; date_path: a regular expression searched in the lowercase path, with
     groups y, m and d, for a platform whose date field shows the day and the month only and whose address holds the
-    whole date (WordPress: 「30 6 月」 and /2026/06/30/<name>/), '' for none."""
+    whole date (WordPress: 「30 6 月」 and /2026/06/30/<name>/), '' for none; unit: the CSS of the platform's own field
+    of the unit that posted the notice (the SSO 公告中心's 「公告單位：」), '' when the platform has none: the export's
+    alone (export.own_unit, its column 公告单位; the owner 11-15 「这 5 件全部照你的设计做。」, the content session's item
+    5: a notice the platform and a unit's site both carry could not be told whose it was), the crawler never reads it."""
 
     paths: str
     text: str
@@ -190,6 +193,7 @@ class Detail:
     probe: str = ""
     date: str = ""
     date_path: str = ""
+    unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,7 @@ class PageTitle:
     「可以，开工」; the ask is the direction paper's item 4, docs/superpowers/specs/2026-11-13-direction.md: 「先取网页上
     现成的栏位：services 活动的名称、讨论区每则提问的标题、所友的名字」): sites, a regular expression matched in full
     against the site key of the page's own address (as Profile.sites is); paths searched in the lowercase path of that
-    address; title, the CSS selector of the cell; why: in words, for people. The export's alone (page_title_rule, which
+    address; title, the CSS selector of the cell; why: in words, for people. The export's alone (page_title_rules, which
     export.page_title reads for the manifest's 标题): no Profile holds one, so the crawl, the platform profiles and the
     content stage's page version (a digest of PROFILES) are as they were. A Detail names a title too, but it makes the
     page a notice page as well (its empty areas flagged by the crawler and said in the export's 缺什么), and
@@ -394,8 +398,14 @@ SEARCH_WHY = "站内搜索的 GET 表单：搜索结果页不抓（§7.8 全校�
 # ---------------------------------------------------------------- the profiles
 
 _SSO_ATTACHMENT = r"/news/attachedfile\.aspx$"
+# A unit's list with no row says 「搜尋結果：共0筆」 (53 pages of news.nknu.edu.tw's lastNewsList_Dept.aspx in round
+# one, each the list's first page, which the content stage keeps as a list): one of the 同类 the owner kept 11-15. A
+# list with rows says its count there (共3筆, 共10筆), which the words do not match
+NEWS_NO_ROWS = NoData(r"/lastnewslist(?:_dept)?\.aspx$", r"搜尋結果：共0筆", "学校回答没有资料（搜尋結果：共0筆）",
+                      "公告平台的单位公告列表：写着「搜尋結果：共0筆」，这个单位、这个分类一则公告都没有")
 SSO_NEWS = Profile(
     name="sso_news", platform="SSO 公告中心", sites=r"sso\.nknu\.edu\.tw/news|news\.nknu\.edu\.tw", forms=("uForm",),
+    no_data=(NEWS_NO_ROWS,),
     content_css=("#gvFull, #lbResult, #ctl00_phMain_lbSubject, #ctl00_phMain_lbContent, #ctl00_phMain_lbFileLink"),
     list_paths=r"/(?:subjectlist|lastnewslist(?:_dept)?)\.aspx$", detail_paths=r"/lastnews\.aspx$",
     download_paths=_SSO_ATTACHMENT,
@@ -408,7 +418,9 @@ SSO_NEWS = Profile(
     # 401 pages, the rows of subjectlist.aspx?cat=Lights) is the same template
     details=(Detail(r"/l(?:ast|ight)news\.aspx", text="#ctl00_phMain_lbContent", files="#ctl00_phMain_lbFileLink a",
                     title="#ctl00_phMain_lbSubject", id_param="UNID", probe="0" * 40,
-                    date="#ctl00_phMain_lbStartEndDate"),),
+                    # 公告單位：<span id="ctl00_phMain_lbUnitName">: on all 2,004 notice pages of round one's two
+                    # exports, with words on 1,953 (68 and 63 units; read only on the lab 11-15)
+                    date="#ctl00_phMain_lbStartEndDate", unit="#ctl00_phMain_lbUnitName"),),
     buttons=(
         Button(r"gvFull", "press", "GridView 翻页：回传 gvFull / Page$N（§7.4）", role="pager", argument=r"Page\$\d+"),
         Button(r"ctl\d+", "never", "SubjectList.aspx、lastNewsList.aspx 上的「查詢」：关键字搜索（§7.4、§7.5 第 10 点，"
@@ -602,8 +614,23 @@ _CNKNU_DETAILS = (
            files="#DataFormView_FileLinkLabel a, #FileLinkLabel a", title="#DataFormView_TitleLabel, #TitleLabel",
            id_param="Nid", probe="999999999", date="#DataFormView_AddTimeLabel, #AddTimeLabel"),
 )
+# What the template answers when it has nothing (the owner 11-15 「这 5 件全部照你的设计做。」, the content session's item
+# 3; measured read only on the lab's exports 11-15, research/crawler_lab_2026-11-04/fixes_1115/). 师培处 sends the
+# address of a notice it deleted (302) to tecs.nknu.edu.tw/nodata.html, whose whole body is 「很抱歉，找不到您所查詢的
+# 頁面」 (14 characters; 130 such addresses, 101 of them Common Crawl's and 18 the old archive's, and one row each in
+# 幼教系's and 学务处's exports); the export listed each with the page's file and the content stage read the sentence as
+# a document. The server's own 「404: File not found」 (a page of 182 bytes, that title and those words; 79 pages: 67
+# under one broken folder of 成教所 whose pages link each other, 10 notice addresses of 华语所, 2 more) is the same
+# kind, found by the look and kept by the owner (「你顺带加的「同类」四条错误页标记…全部保留一起做」). By the path and
+# the page's HTML, never by a row's address: a redirect that takes the page's file says it too (export.Writer.
+# _no_data_rows). The words begin as the course tables' do, which the content stage leaves rows out by (its 9ada6b6).
+# How they are read: 【Claude 的执行办法】
+CNKNU_NOT_FOUND = NoData(r"/nodata\.html$", r"找不到您所查詢的頁面", "学校回答没有资料（找不到您所查詢的頁面）",
+                         "c.nknu 模板的 nodata.html：整页只有「很抱歉，找不到您所查詢的頁面」，学校把删掉的公告的网址转到这里")
+CNKNU_FNF = NoData(r"", r"<title>404: File not found</title>", "学校回答没有资料（404: File not found）",
+                   "c.nknu 的服务器回的「404: File not found」：整页只有这一句，这个网址学校那边没有东西")
 CNKNU = Profile(
-    name="cnknu", platform="c.nknu 模板", forms=("form1",),
+    name="cnknu", platform="c.nknu 模板", forms=("form1",), no_data=(CNKNU_NOT_FOUND, CNKNU_FNF),
     sites=r"c\.nknu\.edu\.tw(?:/[^/]+)?|(?:tecs|spe|sea|cprc|hrkm|arts|giast|ksped)\.nknu\.edu\.tw",
     # tecs's newsview writes its notice's areas without the DataFormView wrapper and prefix (#TitleLabel,
     # #ContentsLabel, #FileLinkLabel; the newsview Detail above): without them its 155 notices of round one match no
@@ -698,7 +725,29 @@ LIS = Profile(
                       "Joomla 列表的表头排序（换排序栏位后送出 adminForm）：只换排序，行还是同一批（§7.8；Joomla 核心函数）"),),
     pending_r7=("initSort",),
 )
-ELEC = Profile(name="elec", platform="电机系（自建）", sites=r"elec\.nknu\.edu\.tw",
+# The English mirror's notices (/en/news_ii.html) mostly hold nothing: of round one's 587, 574 have an empty title
+# and an empty text, 92 of those a download block (the block is there only when the notice has attachments) and 482
+# nothing at all, which the content stage read as documents of a date and a view count. The 482 alone are marked (a
+# page that lists attachments has something of its own); the Chinese pages' empty areas are the detail rule's to say
+# (3 of round one). One of the 同类 the owner kept 11-15; by the page's HTML, the cells as the site writes them
+# 【Claude 的执行办法】
+ELEC_EMPTY_EN = NoData(r"^/en/news_ii\.html$",
+                       r'<p id="ne_title">\s*</p>(?![\s\S]*id="ne_download")[\s\S]*?<div id="ne_c"[^>]*>\s*</div>',
+                       "学校回答没有资料（英文版這一則沒有內容）",
+                       "电机系英文版的公告：标题格、内文格都是空的，也没有附件，学校没有填这一则的英文版")
+# The content area (the owner 11-15 「这 5 件全部照你的设计做。」, the content session's item 2: 「电机系 621 页的正文区是
+# 从选单开始读的」): every page of the site but its home page has the right column #right (1,667 of the 1,768 page
+# files of round one's export; 45 rows are or land on the home page in either language, the other 56 are other hosts'
+# pages the export lists), its first child the path line (p#path: 「首頁 / 系所公告 / …」) and after it the page's own
+# blocks (#ne_content, #la_content, #fr_content, #st_content, #ab_content …; no page keeps words in the column outside
+# its child elements, 11-15); the column held 7% of a page's words (median), the menus of #top, .mobile and #left
+# the rest, which the content stage read first for want of an area. The column's children but the path line
+# 【Claude 的执行办法】. The content stage's page version changes by it (every page is read again there); the
+# crawler reads it too (the zones of a page's links, the empty-area sign: an English notice with no title and no text
+# still holds its date in the area, so the sign is not raised), from the day its own code is this one: the lab's
+# crawler is 87f770b still and judges nothing again now (a rejudge would queue addresses; with the next crawl's swap)
+ELEC = Profile(name="elec", platform="电机系（自建）", sites=r"elec\.nknu\.edu\.tw", no_data=(ELEC_EMPTY_EN,),
+               content_css="#right > :not(#path)",
                # 系所公告: the first <p id="ne_list_d"> holds the date (2026/09/14), a second the views (觀看次數:655);
                # 612 of 616 (one says 0000/00/00, three the school emptied). The Chinese pages only: the English
                # mirror (/en/) holds no text of its own on 481 of 587, which the empty check would call empty
@@ -715,7 +764,12 @@ ENGLISH = Profile(
     # 首页最新消息的分类签 <a href="javascript:" data-id="N">（key js_link:）：R7 读了外部 .js 才定（§7.8）
     pending_r7=("js_link:",),
 )
+# 语文教学中心 answers an address it no longer has with /404.php (15 rows are sent there by a 301, 5 are that address
+# itself; 20 rows of round one), the site's template under the title 「404 ｜ …」: one of the 同类 the owner kept 11-15
+CLCTS_404 = NoData(r"^/404\.php$", r"<title>404 ｜", "学校回答没有资料（404）",
+                   "语文教学中心的 404.php：网站模板加上标题「404 ｜ …」，这个网址学校那边没有东西")
 CLCTS = Profile(name="clcts", platform="华语中心（自建）", sites=r"clcts\.nknu\.edu\.tw", pending_r7=("papago",),
+                no_data=(CLCTS_404,),
                 # 最新消息: <span class="list-date">2026.10.22</span> between the type badges and the title (60 of 60)
                 details=(Detail(r"^/news_page\.php\?id=", text=".page_contain", title=".page_contain h1",
                                 date="span.list-date"),))
@@ -777,6 +831,16 @@ COURSE_NO_DATA = NoData(r"/dataopen2search/opencoursetablepure\.aspx$", r"showNo
 DATAOPEN = Profile(
     name="dataopen2search", platform="资料开放查询（ASP.NET：遗失物招领、开课课表）",
     sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,), no_data=(COURSE_NO_DATA,),
+    # a teacher's vita page (vita.aspx; the owner 11-15 「这 5 件全部照你的设计做。」, the content session's item 3: the 47
+    # of round one it took for error pages): the teacher's card #ctl00_phMain_divVita (name, mail, the panels of the tab
+    # shown) and, beside it, the report control, whose two messages (about 1,100 characters, under an h2 each) are hidden
+    # by style and were read as the page's words. The card alone; a course table and the lost-and-found page have no
+    # such card, and the content stage reads them as before, their body 【Claude 的执行办法】. The crawler's own reading
+    # of those pages does change once its code is this one (the lab's is 87f770b still): a profile that names an area
+    # makes every link outside it a menu's (links._Zones: chrome, where it was unknown) and a decoration-named picture
+    # there no longer the page's to fetch; to judge again with the next crawl's swap. The page's other tabs come by a
+    # press (about 21 a page, unpressed) and 563 more such pages are round two's
+    content_css="#ctl00_phMain_divVita",
     # the submit button a menu rule presses (postback.read_page; no __doPostBack, so no page lists it as a postback):
     # decision() says press for its key, so that a menu its page could not send (postback:ctl*$phMain$uOK|@menu,
     # written unpressed, 要人看) reads as unpressed in verify check 8 and `retry unpressed`, never as a stale writing
@@ -804,6 +868,22 @@ PAGE_TITLES: tuple[PageTitle, ...] = (
     PageTitle(r"sso\.nknu\.edu\.tw/services", r"^/services/(?:academicactivities|campusactivities)/actdetail\.aspx$",
               "[id$='_ActivityContent_lbSubject']",
               "SSO 共用模块的学术活动、校园活动详情页：标题是「活動名稱」那一格（11,449 页，其中 3 页那一格是空的）"),
+    # the owner 11-15 「这 5 件全部照你的设计做」 (docs/superpowers/specs/2026-11-15-export-fixes-design.md, the content
+    # session's items 1, 3 and 4; measured read only on the lab's exports 11-15). 心得發表 and 學生園地 are one template
+    # (the h2 names the section on every entry). A vita page has no heading of its own: its first h2 is that of a
+    # message the report control keeps hidden by style (「Report Viewer Configuration Error」, which the export took
+    # for the title of all 47; the page is no error page). 地理系's logo is the h1 of every page: a member's page has
+    # the name in .teaminfo (a list's rows have .name cells too, under .info), every page its own name in
+    # .page-header, which the second rule reads where the first finds nothing 【Claude 的执行办法; the second rule is
+    # mine, kept by the owner: 「地理系第四条标题规则，全部保留一起做」】
+    PageTitle(CNKNU.sites, r"/(?:experience|club)_view\.aspx$", "#DataFormView_TitleLabel",
+              "c.nknu 模板的「心得發表」「學生園地」那一则：标题是「心得標題」那一格（成教所 1,030 页和 21 页，每页都有字）"),
+    PageTitle(r"sso\.nknu\.edu\.tw/dataopen2search", r"^/dataopen2search/vita\.aspx$", "#ctl00_phMain_uName",
+              "资料开放查询的教师履历页：标题是姓名那一格（第一轮 47 页，每页都有字）；旧读法取到的是报表控件藏着的错误讯息的小标题"),
+    PageTitle(r"geo\.nknu\.edu\.tw", r"^/index\.php$", ".teaminfo .name",
+              "地理系的成员页：标题是姓名那一格（48 页，每页一个）"),
+    PageTitle(r"geo\.nknu\.edu\.tw", r"^/index\.php$", ".page-header",
+              "地理系其余的页：标题是页名那一格（列表页 180 页里 175 页有字）；成员页先读上一条的姓名"),
 )
 
 
@@ -1286,8 +1366,15 @@ def page_title_rule(url: str) -> PageTitle | None:
     """The rule naming the cell that holds a page's own title (PageTitle; the owner 11-14 「先补标题栏」), or None: by
     the site key and the path of the page's own address, as profile_for goes (a redirect's landing page, a page
     another site's export lists). The export's alone (export.page_title): the crawler never asks it."""
+    return next(iter(page_title_rules(url)), None)
+
+
+def page_title_rules(url: str) -> tuple[PageTitle, ...]:
+    """Every rule naming a cell for a page's own title, in the table's order (the owner 11-15: 地理系's member pages
+    hold the name in one cell and every page of the site its own name in another; the export takes the first cell
+    that holds words): by the site key and the path of the page's own address, as page_title_rule says."""
     site, path = scope.site_key(url), _path(url)
-    return next((t for t in PAGE_TITLES if _re(t.sites).fullmatch(site) and re.search(t.paths, path)), None)
+    return tuple(t for t in PAGE_TITLES if _re(t.sites).fullmatch(site) and re.search(t.paths, path))
 
 
 # design §23.9 A1 ③ (second review 10-27, 【Claude 的执行办法】): a short answer (FILE_SHORT_BYTES at most, as text)

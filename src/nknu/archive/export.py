@@ -110,7 +110,7 @@ FOLDERS = {PAGE: "pages", FILE: "files", IMAGE: "images", DATA: "data"}
 # position: a column is only ever added at the end
 COLUMNS = ("序号", "类型", "网址", "最后落地网址", "本地档案", "标题", "网页上写的日期", "日期原文", "完整度", "缺什么", "结果",
            "原因", "分类", "原因代码", "抓取时间", "大小", "sha256", "格式", "链到它的网页", "链接文字", "怎么来的", "备注",
-           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源", "页别", "列表上的类别")
+           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源", "页别", "列表上的类别", "公告单位")
 # 日期来源: which rule found a page's 网页上写的日期 (Writer._dates, in this order): the platform's date field (own_date),
 # the date a list row that links the page states (Writer.list_dates; P75: the notices a WebIdx row's press brought have
 # their list's address, which no detail path names; blueprint item 22: any page a row links, the row of this site's
@@ -433,6 +433,7 @@ class Item:
     linked: bool = False  # its file is a hard link to the previous export's (--reuse)
     list_kind: str = ""  # 页别: LIST_FIRST, LIST_PAGER or '' (Writer._list_kinds; blueprint item 22, part 3)
     list_category: str = ""  # 列表上的类别: list_category() of the rows that link it (Writer._list_dates; part 2)
+    unit: str = ""  # 公告单位: own_unit() of the page the row's file is (Writer._page, _unit_rows; the owner 11-15)
 
     def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
         """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
@@ -448,7 +449,7 @@ class Item:
                 "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
                 "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref, "按钮编号": self.row_key,
                 "最后修改时间": self.modified, "日期来源": self.date_from, "来源": self.origin,
-                "页别": self.list_kind, "列表上的类别": self.list_category}
+                "页别": self.list_kind, "列表上的类别": self.list_category, "公告单位": self.unit}
 
     def result_words(self) -> str:
         """结果: the result in words; a gone with a reason of its own (a file sent to the school's home page, 11-03)
@@ -1353,11 +1354,12 @@ def _profile(url: str, site: str) -> profiles.Profile | None:
 
 
 def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") -> str:
-    """The page's own title: its platform's detail title (profiles.Detail.title), else the cell a title rule names for
-    its kind of page (profiles.PageTitle, by the page's own address: an activity's name, a forum question's title, an
-    alumnus's name; the owner 11-14 「先补标题栏」), else its first h1, else its first h2, else <title>. c.nknu's
-    <title> is the unit's name on every page, so the headings come first; a cell with no words leaves the reading
-    to them (3 of round one's 11,449 activity pages)."""
+    """The page's own title: its platform's detail title (profiles.Detail.title), else the first cell with words of
+    those the title rules name for its kind of page, in their order (profiles.PageTitle, by the page's own address: an
+    activity's name, a forum question's title, an alumnus's name, the owner 11-14 「先补标题栏」; an entry's title, a
+    teacher's name, 地理系's member and page names, the owner 11-15), else its first h1, else its first h2, else
+    <title>. c.nknu's <title> is the unit's name on every page, so the headings come first; a cell with no words
+    leaves the reading to them (3 of round one's 11,449 activity pages)."""
     prof = _profile(url, site)
     parts = urlsplit(url)
     where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
@@ -1367,8 +1369,7 @@ def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") 
                 got = _first_text(tree, d.title)
                 if got:
                     return got
-    rule = profiles.page_title_rule(url)
-    if rule is not None:
+    for rule in profiles.page_title_rules(url):
         got = _first_text(tree, rule.title)
         if got:
             return got
@@ -1415,6 +1416,21 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
     if d.files and any((n.attributes.get("href") or "").strip() not in ("", "#") for n in tree.css(d.files)):
         return ""
     return EMPTY_AREA
+
+
+def own_unit(tree: LexborHTMLParser, url: str, site: str) -> str:
+    """The unit that posted a notice, as its platform's detail page states it in its own field (profiles.Detail.unit;
+    the platform by the page's address first: _profile): the field's words on one line, '' for a site no profile
+    describes, a page that is not such a detail, a platform that names no such field, and a field with no words. The
+    owner 11-15 「这 5 件全部照你的设计做。」 (the content session's item 5: 「公告平台上的公告是谁发的（发布单位栏）：
+    目前内容那边读不出来」): the SSO 公告中心's 「公告單位：」, its words as the page has them (a unit's full name there:
+    「教務處註冊組」), which the content stage maps to its own unit tree."""
+    prof = _profile(url, site)
+    if prof is None:
+        return ""
+    parts = urlsplit(url)
+    where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
+    return next((_first_text(tree, d.unit) for d in prof.details if d.unit and re.search(d.paths, where)), "")
 
 
 def own_date(tree: LexborHTMLParser, url: str, site: str) -> tuple[str, str] | None:
@@ -1829,6 +1845,7 @@ class Writer:
                     it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间、最后修改时间都是落地那一页的）")
         self._read_whole()
         self._no_data_rows()
+        self._unit_rows()
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
                 it.bucket = "review"
@@ -1921,6 +1938,17 @@ class Writer:
         for it in self.items.values():
             if it.path in by_file:
                 self._no_data(it, by_file[it.path])
+
+    def _unit_rows(self) -> None:
+        """Every row whose file is a notice page that states its posting unit states it too (公告单位 is what the file
+        says, as the school's answer of no data is: _no_data_rows): a redirect to a notice that is a row of the same
+        export, and a row that shares another row's file (a second address sent to one notice). A redirect that
+        reads its landing page itself (the first address of another site sent to the platform's notice: 85 rows of
+        11 sites' exports in round one land on such a notice) has the unit from _page already 【Claude 的执行办法】."""
+        by_file = {it.path: it.unit for it in self.items.values() if it.unit and it.path}
+        for it in self.items.values():
+            if not it.unit and it.path in by_file:
+                it.unit = by_file[it.path]
 
     def _put(self, it: Item, name: str, data: bytes) -> None:
         """A row's file, numbered in turn in its type's folder."""
@@ -2304,6 +2332,8 @@ class Writer:
                 it.empty_area = area
                 it.lacks = "、".join(x for x in (it.lacks, area) if x)
                 it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
+        if it.kind != "pager":
+            it.unit = own_unit(tree, url, self.site)  # 公告单位: the platform's own field, by the page's own address
         # the school's answer of no data for what was asked (profiles.NoData; the owner 11-09 「照这样做」): by the
         # page's own address, in its HTML as read, whatever row brought it (a GET, a menu's press, a pager's answer);
         # after the empty-area words, so that its words come last (the review of 11-09)
@@ -2922,16 +2952,17 @@ COLUMN_HELP = {
     "最后落地网址": ("跳转以后真正拿到内容的网址（没有跳转就空白）；用 10-24 旧存档的副本补上的行，是副本的网址（和「网址」一样"
                "就空白），这一轮跳到哪里写在「备注」"),
     "本地档案": "导出资料夹里的档案；空白就是没抓到",
-    "标题": ("网页：平台的标题栏（公告的标题、活动的名称、讨论区提问的主题、所友的姓名），否则第一个 h1、h2，再不然 <title>；"
-           "附件和图片：档名；按钮按出来的公告：列表上的标题"),
+    "标题": ("网页：平台的标题栏（公告的标题、活动的名称、讨论区提问的主题、所友的姓名、心得的标题、教师履历页和系所成员页的"
+           "姓名、地理系网页的页名），否则第一个 h1、h2，再不然 <title>；附件和图片：档名；按钮按出来的公告：列表上的标题"),
     "网页上写的日期": "程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」",
     "日期原文": "找到的日期在网页上的原样（含标签），用来核对",
     "完整度": ("有档的网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他（附件、图片、"
             "没有档的网页……）：和「分类」一样（抓到了、连接失败、要登录……）"),
     "缺什么": ("网页缺的东西（缺附件、缺图片、连接失败、要人看、列表没翻完、学校那边已不存在或要登录的资源……），括号里是几个；"
-            "公告页的内文区找不到或是空的（多半是学校删掉的公告）、学校在网页上回答没有资料（写"
-            f"「{profiles.COURSE_NO_DATA.words}」：开课课表上学校跳出括号里那句，这个系所、这个学年度没有提供课表），"
-            "也写在这里"),
+            "公告页的内文区找不到或是空的（多半是学校删掉的公告）、学校在网页上回答没有资料（写「学校回答没有资料（…）」，"
+            f"括号里是学校那一句或是什么情形，例如「{profiles.COURSE_NO_DATA.words}」是开课课表上学校跳出那句、这个系所这个"
+            "学年度没有提供课表；别的还有找不到这一页、404、列表一则都没有、英文版没有内容，README「学校回答没有资料的网页」"
+            "一节逐行写明），也写在这里"),
     "结果": "这一个网址或按钮本身的结果，和进度看板一样的说法",
     "原因": "结果的原因（连不上服务器、按规则不抓的是哪条规则、下一轮的哪一批……）",
     "分类": "抓到了 / 连接失败 / 要人看 / 待判定 / 下一轮 / 还在排队 / 要登录 / 学校那边已经不存在 / 规则不抓",
@@ -2961,4 +2992,6 @@ COLUMN_HELP = {
     "列表上的类别": ("指到这一页的列表那一行写的类别（平台设定读得到类别的列表才有：SSO 公告中心、SSO 单位网站的消息和书表、"
                "cLv2 单位网站的公告；c.nknu 的列表没有设定类别栏，空白）；别的网站的列表指到它也算；几行写的不一样就都列出，"
                "用 | 隔开，「备注」写明；没有就空白"),
+    "公告单位": ("公告页上平台的「公告單位」那一格的原文（平台设定写了这一格的公告页才有：SSO 公告中心和新闻网的公告、校园亮点）；"
+             "转到这种公告页的行、和它共用同一个档的行一样有；那一格没有字、别的网页、附件和图片都空白"),
 }

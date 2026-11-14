@@ -166,7 +166,10 @@ def test_the_profile_claims_the_site_and_check_profiles_stays_empty():
     assert profiles.profile_for(PAGE) is profiles.DATAOPEN and profiles.profile_for(LOST) is profiles.DATAOPEN
     assert profiles.profile_for_site(SITE) is profiles.DATAOPEN and profiles.PROFILES[-1] is profiles.DATAOPEN
     assert profiles.DATAOPEN.menus == (profiles.COURSE_TABLE,) and "uForm" in profiles.DATAOPEN.forms
-    assert profiles.page_kind(PAGE) is None and profiles.content_css(PAGE) is None  # read as before
+    # the area the profile names since 11-15 is the vita page's card, which no course table has: the content stage
+    # reads a course table as before, its body (test_export_fixes_1115); the crawler's link zones of it change with
+    # its next code (chrome where they were unknown: profiles' comment)
+    assert profiles.page_kind(PAGE) is None and profiles.content_css(PAGE) == "#ctl00_phMain_divVita"
     assert profiles.COURSE_TABLE.why.strip()
 
 

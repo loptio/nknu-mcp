@@ -90,16 +90,17 @@ def _items(arch, list_id: int, prof: profiles.Profile, url: str, html: str, site
 def test_the_two_new_columns_are_the_last_two_with_their_help(tmp_path):
     arch = make_archive(tmp_path / "archive")
     _got, out, _rows, readme = _export(arch, tmp_path)
-    assert export.COLUMNS[-2:] == NEW_COLUMNS and export.COLUMNS[-3] == "来源"  # appended: the old ones stay put
-    assert list(export.COLUMN_HELP)[-2:] == list(NEW_COLUMNS)
+    # appended: the old ones stay put; 11-15's 公告单位 came after them (test_export_fixes_1115), so they are 28 and 29
+    assert export.COLUMNS[27:29] == NEW_COLUMNS and export.COLUMNS[26] == "来源"
+    assert list(export.COLUMN_HELP)[27:29] == list(NEW_COLUMNS)
     assert "列表翻页" in export.COLUMN_HELP["页别"] and "内容表格" in export.COLUMN_HELP["页别"]
     assert "|" in export.COLUMN_HELP["列表上的类别"]
     # 列表上的日期 is any row's that links the page, of this site's lists or another's (the review of 11-09)
     assert "公告在列表上" not in export.COLUMN_HELP["日期来源"] and "别的网站" in export.COLUMN_HELP["日期来源"]
     with open(out / "manifest.csv", encoding="utf-8-sig") as fh:
-        assert tuple(fh.readline().rstrip("\r\n").split(","))[-2:] == NEW_COLUMNS
+        assert tuple(fh.readline().rstrip("\r\n").split(","))[27:29] == NEW_COLUMNS
     data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
-    assert data["栏位"][-2:] == list(NEW_COLUMNS) and all(list(r)[-2:] == list(NEW_COLUMNS) for r in data["项目"])
+    assert data["栏位"][27:29] == list(NEW_COLUMNS) and all(list(r)[27:29] == list(NEW_COLUMNS) for r in data["项目"])
     assert "**页别**" in readme and "**列表上的类别**" in readme
     # the site's own list, whose item entries name its own notices, is no other site's (_foreign): no line of
     # _foreign_words (its text, not the README's general words on 列表上的日期)
