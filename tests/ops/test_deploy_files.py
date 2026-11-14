@@ -261,8 +261,8 @@ def test_install_refuses_a_damaged_pack(tmp_path):
 
 
 def _git(repo, *args):
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
-           "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t"}
     subprocess.run(["git", "-C", str(repo), *args], env=env, check=True, capture_output=True)
 
 
