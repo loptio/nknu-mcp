@@ -251,9 +251,13 @@ def test_the_build_gives_the_new_titles_after_the_copies_are_merged(built):
     assert by_url(conn, "expires, valid_ay")[CHAIR + "f/643-79-8.odt"] == (1, 113)
     titles = dict(report.titles)
     examples = titles.pop("examples")
-    assert titles == {"on": True, "same_min": 20, "max_chars": 80,
+    # labels and label (11-15, tests/content/test_file_titles_1115.py): off unless asked, and no file here is titled
+    # by a page's label
+    assert titles == {"on": True, "labels": False, "same_min": 20, "max_chars": 80,
                       "shared": {"titles": 1, "documents": 20, "retitled": 20, "kept": 0, "why": {}},
                       "file": {"documents": 3, "retitled": 2, "kept": 1, "why": {"image": 1}},
+                      "label": {"titles": 0, "documents": 0, "retitled": 0, "kept": 0, "why": {}, "by_site": {},
+                                "examples": []},
                       "by_site": {CHAIR_SITE: {"shared": {"retitled": 20, "kept": 0}, "file": {"retitled": 2, "kept": 1}}},
                       "changed": {"period": 21, "typed": {MINUTES: 1}, "untyped": {}}}
     assert len(examples["shared"]) == 20 and [e["old"] for e in examples["file"]] == ["643-79-8.odt", "115-1a.pdf"]

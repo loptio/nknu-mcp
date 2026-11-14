@@ -61,6 +61,46 @@ the groups whose kept document is the site's and the site's documents merged awa
 documents before and after; the alumni pages made background. meta copy_rule, recurring_events and alumni_background
 say how the database was built.
 
+Platform twins (the owner, 11-14 23:55: 「请接着把"公告平台和单位网站各一份"的那 191 对合并做掉，再重建一次（约 25 分钟）并更新
+正式库。」; platform_twins, --no-platform-twins builds as before): a notice at a shared platform's address (sites: shared,
+the announcement system and SSO's common parts) and a notice of the same identity date on a unit's own site are one
+document when, page furniture, punctuation and list numbers aside, every line of one is found in the other
+(_platform_twins says what is left out and why). Each one in the other: the same notice, kept as copies of one text
+are (_merge_copies: an office's own site first). One wholly inside the other: the fuller one is kept, so no line the
+school wrote leaves the database; but the platform's notice inside a longer one on a college's, a department's or a
+programme's site is left alone (_merge_copies says why: such a page is often the department's own version). Two that
+each hold a line the other lacks (an edited sentence, another deadline) stay two documents: hiding one would hide a
+version that may be the right one. All of it is 【Claude】's reading of the owner's sentence; measured on the 111 sites
+of 11-14 (research/pipeline_2026-11-02/v6_1114/near/: twin_rule2_1115.txt, the 192 pairs alike by the measure of
+11-14, of which 38 each hold a line the other lacks; twin_check_1115.txt, this rule: 113 pairs the same, 77 one
+inside the other, 21 of those a teaching unit's longer version). A merged copy whose words differ from the kept
+document's says so in the copies' list (_copies_meta: wording_differs), and BuildReport.dedupe['twins'] counts the
+pairs, the groups and the documents they removed, the longer versions left alone and the same-titled pairs left apart.
+
+Stated publishing units (the owner, 11-15: 「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」; stated_units,
+--no-stated-units builds as before): the crawler's 2989f60 export carries, for the announcement platform's notice
+pages, the words of their 「公告單位：」 cell (公告单位: 2,040 rows of the 11-15 exports, 82 spellings). A notice whose
+page states a unit stands under that unit, with its section as its 組別, instead of the platform's placeholder or the
+unit of the export that brought it, and the platform's files hanging on it follow (_stated_units, before the copies
+are merged; units.name_unit places the words in the unit tree; words the tree does not name stay as written). The
+merge reads it twice (_merge_copies): of a copy group one of whose copies states the publisher, only that unit's
+copies stand for the group, its own site's before the platform's notice; and the platform's notice inside a longer one
+on a department's site is merged into it when the platform states that department as the publisher. How it is done is
+【Claude】's. BuildReport.publishers (meta publishers_json) counts the statements, those placed, the words left as
+written and the files that followed; meta stated_units says on or off.
+
+File titles (11-15, for the owner's 「请看一下附件标题取自链接文字还是档名的规则对不对，能修的话在这轮重建前一起修掉」;
+all of it 【Claude】): an attachment is titled by what a page linking it from its text calls it, its file name
+otherwise. The site map's names for the files of the menu it writes out no longer title them
+(nknu.content.assemble: MENU_PAGES). A merged copy's link names stay findable in the document kept for it, not only
+its title and file name (copy_names, --no-copy-names builds as before; _take_over, which says what was lost without
+it; BuildReport.dedupe['copies']['names_carried']).
+Label titles (label_titles, --label-titles; off unless asked): a title 20 or more attachments of one site take from
+their pages (「檔案連結」, 「公文」) is a label many files stand under, and with the switch it gives way to the file name
+when that has a Han character (documents.own_titles' TITLE_LABEL, run with the own titles below;
+BuildReport.titles['label'] counts such files either way). Measured on the 111 sites of 11-15: 894 files so retitled,
+and one of the 33 questions out of the top ten for it (documents.own_titles says which), so it waits for the owner.
+
 Plan 2026-11-14 T3, T4 and T6 (direction 2026-11-13 第 3、4、6 件), the first two each with a switch that builds as
 before:
 - A calendar event's date line (event_dates, --no-event-dates; _event_lines): docs.date_line holds the event's term
@@ -181,6 +221,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from nknu.archive.scope import site_key
 from nknu.content import ids, sites
 from nknu.content.chunks import Chunk, make_chunks, split_sections
 from nknu.content.corpus import (
@@ -208,6 +249,7 @@ from nknu.content.documents import (
     LINK_SEP,
     SERIES,
     TITLE_FILE,
+    TITLE_LABEL,
     TITLE_SHARED,
     Document,
     build_documents,
@@ -221,6 +263,7 @@ from nknu.content.documents import (
     own_titles,
 )
 from nknu.content.embed import PAGE_SIZE, PASSAGE_VERSION, EmbedStats, VecCache, embed_chunks
+from nknu.content.links import GENERIC
 from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, MINUTES, PRIMARY, create_schema
 from nknu.content.terms import (
     Term,
@@ -240,11 +283,12 @@ from nknu.content.units import (
     ancestors,
     doc_scope,
     load_units,
+    name_unit,
     reach,
     resolve,
 )
 from nknu.core import models
-from nknu.core.textnorm import norm_text, tokenize
+from nknu.core.textnorm import CJK, alias_norm, norm_text, tokenize
 from nknu.core.timeutil import TAIPEI, today_tpe
 from nknu.retrieval.aliases import load_aliases
 from nknu.settings import REPO_ROOT
@@ -275,6 +319,28 @@ COPIES_KEY = "copies:"  # meta key prefix: the kept document's id -> JSON list o
 COPY_TEXT, COPY_TITLE = "text", "title"
 COPY_RULES = (COPY_TEXT, COPY_TITLE)
 COPY_MIN_CHARS = 200
+# The owner, 11-14 23:55 (the module docstring's 「Platform twins」; _platform_twins). COPY_TWIN: the name, in
+# BuildReport.dedupe['copies']['by_rule'], of the copy groups a twin pair made or widened (no value of --copy-rule).
+# The numbers are 【Claude】's: TWIN_MIN_CHARS, how much of its own a notice must say before its lines alone make it
+# another's twin (under it two notices must share their title too: 「詳如附件」 is in many notices of one day);
+# TWIN_TITLE_MIN, how long a shared title must be to count (「公告」 is no title); a line is page furniture when at
+# least TWIN_TEMPLATE_MIN of a site's notices and one in TWIN_TEMPLATE_SHARE of them carry it (a menu, 「相關檔案」);
+# TWIN_APART_SHOWN, the same-titled pairs left apart that the report lists
+COPY_TWIN = "twin"
+TWIN_MIN_CHARS, TWIN_TITLE_MIN = 30, 8
+TWIN_TEMPLATE_MIN, TWIN_TEMPLATE_SHARE = 5, 50
+TWIN_APART_SHOWN = 20
+# on norm_text without whitespace: a line that is a file's name, with the size some sites write after it (an
+# attachment list; the files are documents of their own, hung on the notice kept)
+_TWIN_FILE = re.compile(r".+\.(?:pdf|docx?|xlsx?|pptx?|od[tsp]|rtf|txt|csv|zip|rar|7z|jpe?g|png|gif|bmp)(?:\([^()]*\))?")
+# a line that is one date and nothing else, with a weekday or a time at most: year, month, day (_twin_lines leaves it
+# out only when it is the notice's own date, which a unit's page prints beside the text and the platform's does not)
+_TWIN_DATE = re.compile(r"(\d{2,4})[/\-.年](\d{1,2})[/\-.月](\d{1,2})日?(?:\(?(?:星期|周)?[一二三四五六日]\)?)?"
+                        r"(?:(?:上午|下午)?\d{1,2}[:时]\d{2}(?::\d{2})?分?)?")
+# a line's list number, 「一、」「(二)」「3.」: one site writes it, another leaves it to an <ol>
+# (not before a number: 「3.5 公里」 and 「一、二年級」 keep theirs, so a changed figure still tells two notices apart)
+_TWIN_MARK = re.compile(rf"^[^{CJK}a-z0-9(]*(?:\((?:[一二三四五六七八九十]+|\d{{1,2}})\)"
+                        r"|[一二三四五六七八九十]+、(?![一二三四五六七八九十])|\d{1,2}[.、)](?!\d))")
 _SPACE = re.compile(r"\s+")  # every whitespace character (str.isspace's), as plan 2026-11-14 T1's scorer removes them
 DEDUPE_KEY = "dedupe_json"  # meta: BuildReport.dedupe as JSON
 LARGEST_GROUPS, TITLE_SHOWN = 10, 60  # the copy groups BuildReport.dedupe lists, and how much of a title 【Claude】
@@ -292,6 +358,7 @@ ALUMNI_KINDS = ("student_detail", "student")
 # A value of its own 【Claude】, so that a database says which of the two texts hold the line; nothing reads it back
 EVENT_DATES_RERANK = "rerank"
 TITLES_KEY = "titles_json"  # meta: BuildReport.titles as JSON (plan 2026-11-14 T4)
+PUBLISHERS_KEY = "publishers_json"  # meta: BuildReport.publishers as JSON (the owner, 11-15: _stated_units)
 VALIDITY_KEY = "validity_json"  # meta: BuildReport.validity as JSON (plan 2026-11-14 T6)
 # plan 2026-11-14 T6 (direction 2026-11-13 第 6 件: 「标题带『辦法』『要點』『規則』『須知』『申請書』这类固定字眼」; the plan's
 # list adds 準則、細則、章程、規程、申請表、表單; the main session's brief of 11-14 adds 規定 and 注意事項 【Claude】):
@@ -406,6 +473,13 @@ class BuildReport:
     # each document's year came from: title, date, event, copy, none) and 'year_named' (documents that expire by the
     # year their title names though it holds a fixed word or states a cohort: fixed_words, cohort)
     validity: dict = field(default_factory=dict)
+    # the owner, 11-15 (_stated_units): 'on'; 'stated', the documents whose page states its publishing unit (the
+    # export's 公告单位); 'placed', those of them the unit tree names; 'as_written', the statements it does not name
+    # (the words -> documents: their unit is those words); 'parts_as_written', the parts of a unit the tree lacks
+    # (the words -> documents: their 組別); 'changed', the stated documents whose unit or 組別 is another than the
+    # site table gave; 'files', the platform's files that follow the notice they hang on; 'units', the units named
+    # (unit -> documents)
+    publishers: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -657,7 +731,7 @@ def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date
     return out
 
 
-def _retitle(rows: list[_Row], on: bool) -> dict:
+def _retitle(rows: list[_Row], on: bool, labels: bool = False) -> dict:
     """BuildReport.titles (plan 2026-11-14 T4; direction 2026-11-13 第 4 件): documents.own_titles on the documents
     kept (rows: after _merge_copies, so the 20 that make a title no title are 20 documents of the database, and a
     copy's title, already in the kept one's link texts, counts no more), then, for each document it gave a new title,
@@ -668,11 +742,13 @@ def _retitle(rows: list[_Row], on: bool) -> dict:
     still counts whose title says nothing. 'changed' in the report: {'period': the documents whose new title set
     their term, 'typed': {doc type: documents their new title gave it}, 'untyped': {doc type: documents whose new
     title took it away (a file on a page of minutes whose own title is a rule)}}, the side of the new titles to look
-    at after a build: both move documents between the primary and the background ones."""
-    report = own_titles([r.doc for r in rows], sites.table().school, on=on)
+    at after a build: both move documents between the primary and the background ones. labels (11-15, the build's
+    label_titles): own_titles' TITLE_LABEL, a file whose page-given title is a label many files carry titled by its
+    file name again; what its title gives is read again as well."""
+    report = own_titles([r.doc for r in rows], sites.table().school, on=on, labels=labels)
     period, typed, untyped = 0, Counter(), Counter()
     for r in rows:
-        if not r.doc.title_from_text:
+        if not (r.doc.title_from_text or r.doc.title_was_label):
             continue
         term = _term(r.doc, None)
         ay, sem = (term.ay, term.sem) if term else (None, None)
@@ -959,28 +1035,255 @@ def _copy_groups(rows: list[_Row], digest: Callable[[str], str | None], rule: st
     return list(joined.values())
 
 
+@dataclass
+class _Twins:
+    """_platform_twins' pairs, each of a notice at a shared platform's address and one on a unit's own site, of one
+    identity date: same, (the platform's, the unit's), each one's every line found in the other; inside, (the lesser,
+    the fuller, whether the fuller is the platform's), the lesser's every line found in the fuller, which says more;
+    apart, (the platform's, the unit's) of one title neither of which holds the other."""
+    same: list[tuple[_Row, _Row]] = field(default_factory=list)
+    inside: list[tuple[_Row, _Row, bool]] = field(default_factory=list)
+    apart: list[tuple[_Row, _Row]] = field(default_factory=list)
+
+
+def _twin_lines(text: str, day: date | None) -> list[str]:
+    """What a notice says, line by line, as _platform_twins compares it 【Claude】: each line on norm_text without
+    whitespace, a list number at its start taken off (_TWIN_MARK), then letters, digits and Chinese characters only
+    (alias_norm: two sites punctuate one text differently). Left out: an empty line, a line that is a file's name
+    (_TWIN_FILE) and a line that is nothing but the notice's own date (_TWIN_DATE read as a day, a year under 1911
+    being the Republic's; any other date stays: a deadline on a line of its own is what the notice says)."""
+    out = []
+    for raw in text.splitlines():
+        line = "".join(norm_text(raw).split())
+        if not line or _TWIN_FILE.fullmatch(line):
+            continue
+        if day is not None and (m := _TWIN_DATE.fullmatch(line)):
+            y, mo, d = (int(g) for g in m.groups())
+            if (y + 1911 if y < 1911 else y, mo, d) == (day.year, day.month, day.day):
+                continue
+        if bare := alias_norm(_TWIN_MARK.sub("", line)):
+            out.append(bare)
+    return out
+
+
+def _platform_twins(rows: list[_Row]) -> _Twins:
+    """The notices that stand once on a shared platform and once on a unit's own site (the owner, 11-14 23:55: 「公告平台和单位
+    网站各一份」; the module docstring). Looked at: every pair of notices with words and one identity date, one at an
+    address of a shared platform (sites: shared, by the address itself, whichever export brought it), the other not.
+    Compared: their lines (_twin_lines) without page furniture, which is a line that many notices of either one's
+    site carry (TWIN_TEMPLATE_MIN, TWIN_TEMPLATE_SHARE: a menu, 「最新消息」, 「相關檔案」, counted over all the site's
+    notices) and either one's title (a page prints its title in its text, the other need not). A line is found in the
+    other notice when it is part of the other's lines joined, so one site's line broken in two on the other, lines in
+    another order and a line printed twice all compare equal, and nothing is a matter of degree: there is no
+    threshold of likeness, a changed word or figure keeps two notices apart.
+    - each one's lines all found in the other: the same notice (same);
+    - one's all found in the other, which has lines of its own: the other is the fuller copy (inside);
+    - else nothing; when they share their title (TWIN_TITLE_MIN) the pair is listed as apart, to be looked at.
+    The one whose lines must be found has to say at least TWIN_MIN_CHARS, or the two share their title: a notice of
+    「詳如附件」 alone is inside many of its day. No likeness to a page of another kind is looked for, and two units'
+    sites are no pair here (the near reposts between units, counted on 11-14, are not this step)."""
+    notices: list[tuple[_Row, str, bool, str, list[str]]] = []
+    carried: dict[str, Counter[str]] = {}
+    total: Counter[str] = Counter()
+    shared = sites.table().rows
+    for r in rows:
+        d = r.doc
+        if d.kind_class != "notice" or not d.has_text:
+            continue
+        site = site_key(d.url)
+        lines = _twin_lines(d.text, r.ident.date if r.ident else None)
+        carried.setdefault(site, Counter()).update(set(lines))
+        total[site] += 1
+        if r.ident is not None:
+            platform = (row := shared.get(site)) is not None and row.shared
+            notices.append((r, site, platform, alias_norm(d.title), lines))
+    furniture = {site: {ln for ln, n in seen.items() if n >= max(TWIN_TEMPLATE_MIN, total[site] // TWIN_TEMPLATE_SHARE)}
+                 for site, seen in carried.items()}
+    by_day: dict[date, tuple[list, list]] = {}
+    for n in notices:
+        by_day.setdefault(n[0].ident.date, ([], []))[0 if n[2] else 1].append(n)
+    out = _Twins()
+    for platform, own in by_day.values():
+        for p, p_site, _, p_title, p_lines in platform:
+            for u, u_site, _, u_title, u_lines in own:
+                skip = furniture[p_site] | furniture[u_site] | {p_title, u_title}
+                p_says, u_says = ([ln for ln in lines if ln not in skip] for lines in (p_lines, u_lines))
+                p_all, u_all = "".join(p_says), "".join(u_says)
+                p_in_u, u_in_p = all(ln in u_all for ln in p_says), all(ln in p_all for ln in u_says)
+                titled = p_title == u_title and len(p_title) >= TWIN_TITLE_MIN
+                if p_in_u and u_in_p:
+                    if titled or min(len(p_all), len(u_all)) >= TWIN_MIN_CHARS:
+                        out.same.append((p, u))
+                elif p_in_u or u_in_p:
+                    if titled or len(p_all if p_in_u else u_all) >= TWIN_MIN_CHARS:
+                        out.inside.append((p, u, False) if p_in_u else (u, p, True))
+                elif titled:
+                    out.apart.append((p, u))
+    return out
+
+
+def _join_twins(rows: list[_Row], groups: list[list[_Row]], twins: _Twins,
+                level: Callable[[_Row], int]) -> tuple[list[list[_Row]], set[str], dict]:
+    """groups (_copy_groups': documents of one text) with the platform twins joined in, and who may not be the one
+    kept. Returns (the groups, in the rows' order and by their first row; the doc ids of the lesser ones; the twins'
+    part of the report: 'linked', the doc ids of the pairs that joined two texts, 'groups', the groups such a pair
+    made or widened, 'removed', the documents they take away beyond what the groups of one text did).
+    - Documents of one text and the twins that are the same notice are one class (a notice the same as two others
+      makes all three one).
+    - A class wholly inside a fuller one hangs under it, so the two are one group whose kept document comes from the
+      fuller class and no line is lost. A class inside two that are no twins of each other (the platform's short
+      notice, two units' longer ones) hangs under one of them only, the one of the nearest owner (level; then the
+      rows' order), and the other stays a document: joining all three would drop what only one of the two says.
+      A pair that would close a ring is left out (it cannot come from real containment)."""
+    place = {id(r): i for i, r in enumerate(rows)}
+    root = list(range(len(rows)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    for group in groups:
+        first = find(place[id(group[0])])
+        for r in group[1:]:
+            root[find(place[id(r)])] = first
+    texts = [find(i) for i in range(len(rows))]  # the classes of one text, before any twin
+    linked: set[str] = set()
+    for p, u in twins.same:
+        a, b = place[id(p)], place[id(u)]
+        if find(a) != find(b):
+            root[find(a)] = find(b)
+            linked |= {p.doc.doc_id, u.doc.doc_id}
+    up: dict[int, int] = {}
+    for lesser, fuller, _ in sorted(twins.inside, key=lambda t: (level(t[1]), place[id(t[1])], place[id(t[0])])):
+        a, b = find(place[id(lesser)]), find(place[id(fuller)])
+        top = b
+        while top in up and top != a:
+            top = up[top]
+        if a == b or a in up or top == a:
+            continue
+        up[a] = b
+        linked |= {lesser.doc.doc_id, fuller.doc.doc_id}
+
+    def head(c: int) -> int:
+        while c in up:
+            c = up[c]
+        return c
+
+    members = {place[id(r)] for group in groups for r in group}
+    members |= {place[id(r)] for pair in (*twins.same, *twins.inside) for r in pair[:2]}
+    joined: dict[int, list[int]] = {}
+    for i in sorted(members):
+        joined.setdefault(head(find(i)), []).append(i)
+    out = [[rows[i] for i in group] for group in joined.values() if len(group) > 1]
+    lesser_ids = {rows[i].doc.doc_id for group in joined.values() for i in group if find(i) in up}
+    twinned = [group for group in joined.values() if any(rows[i].doc.doc_id in linked for i in group)]
+    return out, lesser_ids, {"linked": linked, "groups": len(twinned),
+                             "removed": sum(len({texts[i] for i in group}) - 1 for group in twinned)}
+
+
 def _inherited(r: _Row) -> date | None:
     return next((f.date for f in r.facts if f.kind == "inherited"), None)
 
 
-def _take_over(keep: Document, other: Document) -> None:
+def _take_over(keep: Document, other: Document, names: bool = True) -> int:
     """keep stands for other from now on: other's references join keep's, other's title stays findable in keep's
     linktext, and other's list categories join keep's, each once after keep's own (blueprint item 22, review 11-09:
     the unit line, written after this, would otherwise lose a category only a copy's list row states). Plan 2026-11-14
     T2: so does other's file name when a page gave it its title (file_title), since copies of one text need not share
     a file name any more; under the rule of before both have one file name, which keep's title or linktext holds
-    already, so nothing is added there 【Claude】."""
+    already, so nothing is added there 【Claude】.
+    names (11-15, the build's copy_names; 【Claude】): the names other's pages and menus link it by (its linktext, but
+    those that name nothing: links.GENERIC, 「pdf」, 「下載」) stay findable in keep's linktext too, after its title and
+    file name. Until then only the title and the file name were carried, so a name only a copy's menu gave was lost
+    with the copy: the tuition table 教务处's menu calls 「日間大學部學雜費【學費及雜費】各學系學生收費標準」 is kept
+    under 國際事務處's copy, and once 教务处's copy was titled 「大學部」 (the site map's names no longer title a
+    file: assemble.MENU_PAGES) the keyword index no longer found it for 學雜費: of the 33 questions Q35's answer went
+    from the 5th place to the 368th (research/pipeline_2026-11-02/fixes_1115/explain_Q35.txt). Returns how many
+    such names it added."""
     known = {ref for ref, _, _ in keep.refs}
     keep.refs += tuple(ref for ref in other.refs if ref[0] not in known and ref[0] != keep.doc_id)
     for name in (other.title, other.file_title):
         if name and name != keep.title and name not in keep.linktext.split(LINK_SEP):
             keep.linktext = LINK_SEP.join(p for p in (keep.linktext, name) if p)
+    added = 0
+    for name in (part.strip() for part in other.linktext.split(LINK_SEP)) if names else ():
+        if (name and name != keep.title and not GENERIC.fullmatch(name)
+                and name not in keep.linktext.split(LINK_SEP)):
+            keep.linktext = LINK_SEP.join(p for p in (keep.linktext, name) if p)
+            added += 1
     keep.categories += tuple(c for c in other.categories if c not in keep.categories)
     # main session 11-14, after the review: whose sites hold a copy (unit_scope: a department's document that other
     # departments keep too applies to them all)
     if other.unit and other.unit != keep.unit and other.unit not in keep.also_units:
         keep.also_units += (other.unit,)
     keep.also_units += tuple(u for u in other.also_units if u != keep.unit and u not in keep.also_units)
+    return added
+
+
+def _house(unit: str, units: Mapping[str, Unit]) -> str:
+    """The unit a document stands under, taken at its office when it is a section of one (a section's own site and its
+    office's are one house: 生活輔導組's and 學生事務處's), as written when the tree does not have it. What two copies
+    are compared by to say whether one unit holds both (_merge_copies) 【Claude】; a department and its college are
+    two houses: a college's site that shows its department's notice re-posts it."""
+    unit_id = resolve(unit, units)
+    if unit_id is None:
+        return " ".join(unit.split())
+    return office_of(unit_id, units) or unit_id
+
+
+def _stated_units(docs: list[Document], units: Mapping[str, Unit] | None, on: bool = True) -> dict:
+    """BuildReport.publishers (the owner, 11-15: 「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」; the
+    crawler's 2989f60 reads the cell 「公告單位：」 of the announcement platform's notice pages into the export's
+    公告单位). Until now a notice on the platform stood under the platform's placeholder unit (config/site_units.yaml:
+    秘書室, 「各则公告其实是各单位发的，发布单位要等爬虫 session 看公告页哪一栏写单位」) or under the unit of the export
+    that brought it; with the statement the page itself says who published it 【Claude: how】:
+    - a document whose page states a unit (Document.stated_unit) takes the unit units.name_unit reads in it: a
+      section of an office as that office with the section as its 組別, 「教務處和平教務組」 as 教务处's own notices
+      stand; any other unit as itself (「科技學院電子工程學系」: 電子工程學系), with what the tree lacks of the name as
+      its 組別 (「國際事務處國際合作組」: 國際事務處, 國際合作組); a statement that names no unit of the tree as
+      written (「副校長室」), which the unit line then shows as the page writes it. unit_stated is set on each;
+    - a file hanging on such a notice follows it, unit and 組別, when its own address is on no site of the site table
+      or on a shared platform (the platform's file service: its unit was the placeholder's too, sites.unit_for);
+    in place, before the copies are merged, so the merge, the unit line, the scope and the audience factor all read the
+    stated unit. on False (the build's stated_units off, --no-stated-units) or no unit tree: nothing changes and the
+    report still counts the statements."""
+    stated = [d for d in docs if d.stated_unit]
+    report: dict = {"on": bool(on and units is not None), "stated": len(stated), "placed": 0, "as_written": {},
+                    "parts_as_written": {}, "changed": 0, "files": 0, "units": {}}
+    if not report["on"] or units is None:
+        return report
+    as_written, parts, named = Counter(), Counter(), Counter()
+    placed: dict[str, Document] = {}
+    for d in stated:
+        was = (d.unit, d.grp)
+        unit_id, rest = name_unit(d.stated_unit, units)
+        if unit_id is None:
+            d.unit, d.grp = rest, ""
+            as_written[rest] += 1
+        else:
+            office = office_of(unit_id, units)
+            d.unit, d.grp = (office, units[unit_id].name) if office is not None and not rest else (unit_id, rest)
+            report["placed"] += 1
+            if rest:
+                parts[rest] += 1
+        d.unit_stated = True
+        named[d.unit] += 1
+        report["changed"] += (d.unit, d.grp) != was
+        placed[d.doc_id] = d
+    table = sites.table()
+    for d in docs:
+        notice = placed.get(d.parent_id or "")
+        if notice is None or d.kind_class != "attachment":
+            continue
+        row = table.rows.get(site_key(d.url))
+        if row is None or row.shared:
+            d.unit, d.grp, d.unit_stated = notice.unit, notice.grp, True
+            report["files"] += 1
+    report.update(as_written=dict(as_written.most_common()), parts_as_written=dict(parts.most_common()),
+                  units=dict(named.most_common()))
+    return report
 
 
 def _owner_level(d: Document, units: Mapping[str, Unit]) -> int:
@@ -990,8 +1293,10 @@ def _owner_level(d: Document, units: Mapping[str, Unit]) -> int:
     department's or a programme's (its own rule that the school's rule system or announcement platform also shows is
     its own); 2 any other: the school as a whole, an unknown unit, and a shared platform's own export, whose unit is
     a placeholder (documents.home_rank 2). The unit is the one the site table gives the copy's address
-    (Document.unit: sites.unit_for)."""
-    if home_rank(d.url, d.site) == 2:
+    (Document.unit: sites.unit_for); since 11-15 a document whose page states its publishing unit stands under that
+    unit wherever its address is (Document.unit_stated: _stated_units), so the platform's own notice is its
+    publisher's and no placeholder's."""
+    if home_rank(d.url, d.site) == 2 and not d.unit_stated:
         return 2
     unit_id = resolve(d.unit, units)
     if unit_id is None or units[unit_id].parent_id is None:
@@ -1000,12 +1305,28 @@ def _owner_level(d: Document, units: Mapping[str, Unit]) -> int:
 
 
 def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], excluded: dict[str, int],
-                  rule: str = COPY_TEXT, alumni: bool = True,
-                  units: Mapping[str, Unit] | None = None) -> tuple[list[_Row], dict[str, list[_Row]]]:
+                  rule: str = COPY_TEXT, alumni: bool = True, units: Mapping[str, Unit] | None = None,
+                  twins: bool = True, seen: dict | None = None,
+                  names: bool = True) -> tuple[list[_Row], dict[str, list[_Row]]]:
     """Keep one document of each copy group (review 11-01: copies took half the places in the top ten; _copy_groups
-    by rule). Which one:
+    by rule). twins (the owner, 11-14 23:55; build_sites' platform_twins): a notice on a shared platform and its twin on a
+    unit's own site are one group too (_platform_twins, _join_twins), kept as a group of the text rule is, but never
+    one of the lesser ones: when one copy says more, a fuller one stays. One kind of pair is left alone 【Claude】: the
+    platform's notice wholly inside a longer one on a teaching unit's site (_owner_level 1; units given). On the 111
+    sites of 11-14 those were 21 pairs, and the longer page was the department's own version as often as a copy: its
+    own procedure after the school's sentences, or its menu read as text (the pages of 電機系, whose content area
+    starts at the menu); kept, it would stand for the school's notice under the department's name, with the audience
+    factor of a department's own document. They stay two documents, counted as department_longer; since 11-15 not
+    when the platform's notice states that department as its publisher (Document.unit_stated: the longer page is then
+    its own fuller version, and the pair is merged as any other with one copy fuller). seen, when given,
+    takes the twins' counts (BuildReport.dedupe['twins']) and 'linked', the doc ids of the pairs that joined two
+    texts. Which one is kept:
     - a group the text rule made or widened (plan 2026-11-14 T2: one of its documents has a _by_text): first by
-      whose copy it is (units given: _owner_level; main session 11-14, after the review 【Claude】: the direction's
+      whose copy it is (units given: _owner_level, which since 11-15 reads the unit a platform notice's page states
+      instead of the platform's placeholder; then, the owner 11-15 「合并时拿它定原发单位」, among the copies of that
+      nearest kind of owner only those of the unit a copy's page states as the publisher, when one does:
+      Document.unit_stated, _house; that unit's own site, if it holds a copy, comes before the platform's notice by
+      the home rank below, and no other unit's copy of that kind stands for the group; main session 11-14, after the review 【Claude】: the direction's
       「显示最早的那份（原发单位）」 takes the earliest for the one who first published, and dates do not say that: an
       attachment's date is its notice's or the server's. On the 111 sites 251 texts that an office keeps on its own
       site were kept under a department whose copy carried an earlier date, among them the school's 《抵免學分要點》
@@ -1035,6 +1356,14 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], exclude
         if units is not None:
             nearest = min(_owner_level(r.doc, units) for r in front)
             front = [r for r in front if _owner_level(r.doc, units) == nearest]
+            # the owner, 11-15 (「合并时拿它定原发单位」): among the copies of that nearest kind of owner, one whose
+            # page states who published it settles whose text it is: only that unit's copies stand for the group,
+            # the platform's notice among them. After the kind of owner, not before it: the statement says who put
+            # that notice on the platform, and a department that posts an office's text there is no more its source
+            # than one that copies it to its own site (the office's own site still comes first, as since 11-14)
+            stated = {_house(r.doc.unit, units) for r in front if r.doc.unit_stated}
+            if stated:
+                front = [r for r in front if _house(r.doc.unit, units) in stated]
         first = min((r.ident.date for r in front if r.ident), default=None)
         tied = [r for r in front if (r.ident.date if r.ident else None) == first]
         home = min(home_rank(r.doc.url, r.doc.site) for r in tied)
@@ -1042,9 +1371,41 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], exclude
 
     kept_of: dict[str, str] = {}
     copies: dict[str, list[_Row]] = {}
-    for group in _copy_groups(rows, digest, rule):
+    carried: dict[str, int] = {}  # kept doc id -> the names of its copies' links it took over (_take_over)
+    groups = _copy_groups(rows, digest, rule)
+    lesser: set[str] = set()
+    linked: set[str] = set()
+    if twins:
+        found = _platform_twins(rows)
+
+        def level(r: _Row) -> int:
+            return _owner_level(r.doc, units) if units is not None else 0
+
+        def own(p: _Row, u: _Row) -> bool:
+            """The platform's notice p states the unit of u as its publisher: u's longer page is that unit's own
+            fuller version of its own notice (11-15), no other unit's version of the school's."""
+            return (units is not None and p.doc.unit_stated
+                    and _house(p.doc.unit, units) == _house(u.doc.unit, units))
+
+        # a teaching unit's longer version of a notice that is not stated to be its own
+        longer = [t for t in found.inside if not t[2] and level(t[1]) == 1 and not own(t[0], t[1])]
+        found.inside = [t for t in found.inside if t[2] or level(t[1]) != 1 or own(t[0], t[1])]
+        groups, lesser, joined = _join_twins(rows, groups, found, level)
+        linked = joined["linked"]
+        if seen is not None:
+            def shown(pairs: Sequence[tuple[_Row, _Row]]) -> list[dict]:
+                return [{"date": p.ident.date.isoformat(), "title": p.doc.title[:TITLE_SHOWN],
+                         "platform": p.doc.doc_id, "unit": u.doc.doc_id} for p, u in pairs[:TWIN_APART_SHOWN]]
+
+            seen.update(joined, same=len(found.same),
+                        fuller={"platform": sum(on_platform for _, _, on_platform in found.inside),
+                                "unit": sum(not on_platform for _, _, on_platform in found.inside)},
+                        department_longer=len(longer), department_longer_shown=shown([t[:2] for t in longer]),
+                        apart=len(found.apart), apart_shown=shown(found.apart))
+    for group in groups:
+        pool = [r for r in group if r.doc.doc_id not in lesser]
         by_text = rule == COPY_TEXT and any(_by_text(r.doc) is not None for r in group)
-        keep = earliest(group) if by_text else max(group, key=before)
+        keep = earliest(pool) if by_text or any(r.doc.doc_id in linked for r in group) else max(pool, key=before)
         others = sorted((r for r in group if r is not keep),
                         key=lambda r: (r.ident is None, -(r.ident.date.toordinal() if r.ident else 0),
                                        order[r.doc.doc_id]))
@@ -1052,7 +1413,8 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], exclude
         for r in others:
             kept_of[r.doc.doc_id] = keep.doc.doc_id
             excluded[r.doc.kind_raw + COPY] = excluded.get(r.doc.kind_raw + COPY, 0) + 1
-            _take_over(keep.doc, r.doc)
+            if added := _take_over(keep.doc, r.doc, names):
+                carried[keep.doc.doc_id] = carried.get(keep.doc.doc_id, 0) + added
     kept = [r for r in rows if r.doc.doc_id not in kept_of]
     for r in [*kept, *(c for cs in copies.values() for c in cs)]:
         r.doc.parent_id = kept_of.get(r.doc.parent_id or "", r.doc.parent_id)
@@ -1064,11 +1426,13 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], exclude
             if ref in present and ref != r.doc.doc_id and ref not in refs:
                 refs[ref] = (zone, context)
         r.doc.refs = tuple((ref, zone, context) for ref, (zone, context) in refs.items())
+    if seen is not None:
+        seen["names_carried"] = {"on": names, "documents": len(carried), "names": sum(carried.values())}
     return kept, copies
 
 
 def _copies_report(kept: list[_Row], copies: dict[str, list[_Row]], rule: str,
-                   site_order: Sequence[str] = ()) -> dict:
+                   site_order: Sequence[str] = (), linked: frozenset[str] | set[str] = frozenset()) -> dict:
     """BuildReport.dedupe['copies'] (plan 2026-11-14 T2: 「合了几组、少了几份、每个网站各留了几份、各被合掉几份」, and the
     direction's 「动手前先数 849 组的正本落在谁家」) of _merge_copies' result: the rule, COPY_MIN_CHARS, the groups
     merged and the documents they removed; the groups whose documents are of more than one site (cross_site); by_rule,
@@ -1077,15 +1441,19 @@ def _copies_report(kept: list[_Row], copies: dict[str, list[_Row]], rule: str,
     kept, the groups whose kept document is the site's, and merged, the site's documents merged away; largest, the
     LARGEST_GROUPS groups with the most copies (the kept id, its site, kind_class and title cut to TITLE_SHOWN, the
     copies, the sites and the different titles in the group), to look at after a build: a group of many titles is a
-    text many pages share, which the kept one's link texts then all name 【Claude】."""
+    text many pages share, which the kept one's link texts then all name 【Claude】. linked (the owner, 11-14 23:55:
+    _merge_copies' seen['linked']): a group holding one of these documents is one a platform twin made or widened,
+    counted under by_rule's COPY_TWIN whatever else is in it (dedupe['twins'] says how many documents the twins
+    themselves removed)."""
     by_id = {r.doc.doc_id: r for r in kept}
-    by_rule = {name: {"groups": 0, "removed": 0} for name in COPY_RULES}
+    by_rule = {name: {"groups": 0, "removed": 0} for name in (*COPY_RULES, COPY_TWIN)}
     by_kind: Counter[str] = Counter()
     sites_: dict[str, dict[str, int]] = {}
     cross = 0
     for kept_id, others in copies.items():
         group = [by_id[kept_id], *others]
-        made = COPY_TEXT if rule == COPY_TEXT and any(_by_text(r.doc) is not None for r in group) else COPY_TITLE
+        made = (COPY_TWIN if any(r.doc.doc_id in linked for r in group)
+                else COPY_TEXT if rule == COPY_TEXT and any(_by_text(r.doc) is not None for r in group) else COPY_TITLE)
         by_rule[made]["groups"] += 1
         by_rule[made]["removed"] += len(others)
         by_kind[group[0].doc.kind_class] += len(others)
@@ -1146,11 +1514,14 @@ def _rank_dates(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
 def _copies_meta(rows: list[_Row], copies: dict[str, list[_Row]]) -> dict[str, str]:
     """copies:<kept id> for every kept document with copies: the same document at other addresses (newest first),
     then the format siblings folded into it or into one of those (url and format; their page is the kept one's). Each
-    has its own id (plan 2026-11-08 T1: doc_alias reads it back to the kept one)."""
-    def entry(r: _Row) -> dict:
+    has its own id (plan 2026-11-08 T1: doc_alias reads it back to the kept one). A copy whose text, whitespace aside,
+    is not the kept document's says wording_differs (the owner, 11-14 23:55: only a platform twin can be one, _platform_twins;
+    every other copy is of one text): respond tells the reader that such a copy's lines are all in the kept one."""
+    def entry(r: _Row, keep: _Row) -> dict:
         out = {"id": r.doc.doc_id, "url": r.doc.url, "date": r.ident.date.isoformat() if r.ident else None,
                "date_kind": r.ident.kind if r.ident else None, "parent_id": r.doc.parent_id,
-               "parent_title": r.doc.parent_title}
+               "parent_title": r.doc.parent_title,
+               "wording_differs": r.doc.kind_class == "notice" and _bare(r.doc.text) != _bare(keep.doc.text)}
         return {k: v for k, v in out.items() if v}
 
     def formats(keep: Document, d: Document) -> list[dict]:
@@ -1161,7 +1532,8 @@ def _copies_meta(rows: list[_Row], copies: dict[str, list[_Row]]) -> dict[str, s
     out = {}
     for r in rows:
         others = copies.get(r.doc.doc_id, [])
-        listed = [entry(c) for c in others] + formats(r.doc, r.doc) + [f for c in others for f in formats(r.doc, c.doc)]
+        listed = ([entry(c, r) for c in others] + formats(r.doc, r.doc)
+                  + [f for c in others for f in formats(r.doc, c.doc)])
         if listed:
             out[COPIES_KEY + r.doc.doc_id] = json.dumps(listed, ensure_ascii=False)
     return out
@@ -1600,7 +1972,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                 embedder=None, site_list: Path | None = None, units_config: Path = UNITS,
                 unit_words: bool = True, unit_in_vectors: bool = False, copy_rule: str = COPY_TEXT,
                 merge_recurring: bool = True, alumni_background: bool = True, event_dates: bool = True,
-                own_titles: bool = True) -> BuildReport:
+                own_titles: bool = True, platform_twins: bool = True, stated_units: bool = True,
+                label_titles: bool = False, copy_names: bool = True) -> BuildReport:
     """One database from inputs, each (corpus.json, the export folder it was assembled from), in order (plan
     2026-11-08 T4; the module docstring). Read every input first (a broken one stops the build before anything is
     written), then write out + '.tmp' and move it over out. today (default: Asia/Taipei today) bounds the server dates
@@ -1621,7 +1994,15 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     event_dates (--no-event-dates: no calendar event gets its date line, every passage the reranker reads is the one
     of before; the vectors hold no such line either way) and
     own_titles (--no-own-titles: every document keeps the title it has). T6's docs.expires and docs.valid_ay are
-    always written (a new column each; nothing read them before). BuildError: a corpus with ids
+    always written (a new column each; nothing read them before). The owner, 11-14 23:55, likewise: platform_twins
+    (--no-platform-twins: a notice on the announcement platform and its twin on a unit's own site stay two documents
+    unless their texts are the same; the module docstring's 「Platform twins」). The owner, 11-15, likewise:
+    stated_units (--no-stated-units: a notice keeps the site table's unit whatever publishing unit its page states;
+    _stated_units) and copy_names (--no-copy-names: a merged copy's link names are not carried to the document kept
+    for it, only its title and file name as before; _take_over). label_titles is the other way round, off unless
+    asked (--label-titles: a file whose page-given name many files of the site carry is titled by its file name;
+    documents.own_titles' TITLE_LABEL; never without own_titles), the module docstring's 「Label titles」 says why.
+    BuildError: a corpus with ids
     of its own beside another input, a corpus with another export, an id of two keys or a key of two ids."""
     pairs = [(Path(c), Path(e)) for c, e in inputs]
     if not pairs:
@@ -1684,6 +2065,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     # the school's deleted notices build_documents leaves out, per site (owner 11-09, blueprint item 15)
     deleted = Counter(r.site or first.info["site"] for r in records if deleted_notice(r))
     docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"])
+    published = _stated_units(docs, units, stated_units)  # the owner, 11-15: before the copies are merged
     for kind, n in [*merged.items(), *repeated.items()]:
         excluded[kind] = excluded.get(kind, 0) + n
     if away := folded["instances"] - folded["series"]:  # the instances folded into their series' one document
@@ -1691,13 +2073,15 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     groups = load_aliases(aliases)
     server = _server_dates(server_dates, today or today_tpe(), warnings)
     by_event = {"e" + ev.id: ev for ev in events}
+    twinned: dict = {}  # the owner, 11-14 23:55: what the platform twins joined (_merge_copies' seen)
     rows, copies = _merge_copies(_rows(docs, by_event, server), _file_digest(first.export, records), excluded,
-                                 copy_rule, alumni_background, units)
+                                 copy_rule, alumni_background, units, platform_twins, twinned, copy_names)
     docs = [r.doc for r in rows]
     # plan 2026-11-14 T2's report first: it names the kept documents by the titles they were merged under
-    copied = _copies_report(rows, copies, copy_rule, [inp.info["site"] for inp in read])
+    copied = _copies_report(rows, copies, copy_rule, [inp.info["site"] for inp in read], twinned.get("linked", set()))
+    copied["names_carried"] = twinned.pop("names_carried")  # 11-15: the copies' link names the kept ones took over
     ranked = _rank_dates(rows, copies)  # plan 2026-11-14 T2, completed: the date each merged document ranks by
-    titled = _retitle(rows, own_titles)  # plan 2026-11-14 T4: before anything below reads a title
+    titled = _retitle(rows, own_titles, label_titles)  # plan 2026-11-14 T4: before anything below reads a title
     dated = _event_lines(rows, by_event, event_dates)  # plan 2026-11-14 T3
     valid = _validity(rows, copies)  # plan 2026-11-14 T6
     scope = unit_scope(docs, units) if units is not None else None
@@ -1736,7 +2120,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                       "removed": away, "other_titles": folded["other_titles"], "id_taken": folded["id_taken"],
                       "events_before": event_docs + away, "events_after": event_docs, "by_site": series_sites},
         "alumni": {"on": alumni_background,
-                   "background": sum(alumni_page(d.kind_raw) for d in docs) if alumni_background else 0}}
+                   "background": sum(alumni_page(d.kind_raw) for d in docs) if alumni_background else 0},
+        # the owner, 11-14 23:55 (_platform_twins): the pairs found (same; fuller, by whose copy says more), the copy groups
+        # they made or widened and the documents that took away, a teaching unit's longer versions left alone
+        # (department_longer) and the same-titled pairs left apart
+        "twins": {"on": platform_twins, **{k: v for k, v in twinned.items() if k != "linked"}}}
     whys = Counter(why for _, _, why in id_aliases)
     sources: dict[str, Counter] = {}
     for r in rows:
@@ -1774,6 +2162,13 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             # plan 2026-11-14 T2: how this database was built, and what that merged
             "copy_rule": copy_rule, "recurring_events": "on" if merge_recurring else "off",
             "alumni_background": "on" if alumni_background else "off",
+            "platform_twins": "on" if platform_twins else "off",  # the owner, 11-14 23:55
+            # the owner, 11-15: whether a notice stands under the publishing unit its page states, and whether a
+            # file's page-given label gave way to its file name
+            "stated_units": "on" if published["on"] else "off",
+            "label_titles": "on" if own_titles and label_titles else "off",
+            "copy_names": "on" if copy_names else "off",
+            PUBLISHERS_KEY: json.dumps(published, ensure_ascii=False),
             DEDUPE_KEY: json.dumps(dedupe, ensure_ascii=False),
             # plan 2026-11-14 T3, T4, T6: whether the events' passages carry their date line (docs.date_line holds
             # it: embed reads that column for the reranker's passages and never for the vectors, so the value is
@@ -1809,7 +2204,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                        passage={"version": PASSAGE_VERSION, "unit_words": unit_words,
                                 "unit_in_vectors": unit_words and unit_in_vectors,
                                 "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF},
-                       dedupe=dedupe, event_dates=dated, titles=titled, validity=valid)
+                       dedupe=dedupe, event_dates=dated, titles=titled, validity=valid, publishers=published)
 
 
 def _progress_to_stderr() -> Callable[[], None]:
@@ -1871,6 +2266,14 @@ def _dedupe_words(dedupe: dict) -> list[str]:
         out.append("所友名录没算背景（--no-alumni-background）")
     elif a["background"]:
         out.append(f"所友名录 {a['background']} 份算背景")
+    t = dedupe.get("twins") or {}  # the owner, 11-14 23:55 (_platform_twins); a report of before has none
+    if t and not t["on"]:
+        out.append("公告平台和单位网站各一份的公告没合并（--no-platform-twins）")
+    elif t.get("groups") or t.get("apart"):
+        out.append(f"公告平台和单位网站各一份的公告合了 {t['groups']} 组、少 {t['removed']} 份（内容相同的 {t['same']} 对，"
+                   f"一份多几行、留多的那份：单位网站的多 {t['fuller']['unit']} 对、平台的多 {t['fuller']['platform']} 对）；"
+                   f"没合的：系所网站上比平台长的版本 {t.get('department_longer', 0)} 对，"
+                   f"同一天、同标题但两份各有对方没有的字 {t['apart']} 对（报告 dedupe.twins 的两个 _shown）")
     return out
 
 
@@ -1888,13 +2291,26 @@ def _v6_words(report: BuildReport) -> list[str]:
     elif report.event_dates["events"]:
         out.append(f"行事历事件加日期行 {report.event_dates['events']} 份（只给重排读，不放进向量）")
     t = report.titles
-    shared, files = t[TITLE_SHARED], t[TITLE_FILE]
+    shared, files, labels = t[TITLE_SHARED], t[TITLE_FILE], t[TITLE_LABEL]
     if not t["on"]:
         out.append("没换标题（--no-own-titles）")
     elif shared["documents"] or files["documents"]:
         out.append(f"标题换成文件自己的 {shared['retitled'] + files['retitled']} 份（同名网页 {shared['documents']} 份里换 "
                    f"{shared['retitled']}、留 {shared['kept']}；档名没有汉字的附件 {files['documents']} 份里换 "
                    f"{files['retitled']}、留 {files['kept']}）")
+    if t["on"] and not t["labels"] and labels["documents"]:
+        out.append(f"网页给的叫法是很多档共用的附件 {labels['documents']} 份（{labels['titles']} 种叫法）照旧用那个叫法当标题"
+                   "（--label-titles 才改回档名）")
+    elif t["on"] and labels["documents"]:
+        out.append(f"网页给的叫法是很多档共用的附件 {labels['documents']} 份（{labels['titles']} 种叫法）里改回档名 "
+                   f"{labels['retitled']}、留 {labels['kept']}（档名没有汉字）")
+    pub = report.publishers
+    if pub and not pub["on"]:
+        out.append(f"没照网页写的公告单位定发布单位（--no-stated-units，或没有单位树；写了公告单位的 {pub['stated']} 份）")
+    elif pub and pub["stated"]:
+        loose = sum(pub["as_written"].values())
+        out.append(f"照网页写的公告单位定发布单位 {pub['stated']} 份（单位树上认得 {pub['placed']}、照原文写 {loose}；"
+                   f"单位或组别因此改了的 {pub['changed']} 份），跟着公告改的平台附件 {pub['files']} 份")
     v = report.validity
     kinds = "、".join(f"{word} {v['expires'][kind]}" for kind, word in KIND_WORDS.items() if v["expires"].get(kind))
     out.append(f"会过期的文件 {v['expires']['total']} 份" + (f"（{kinds}）" if kinds else ""))
@@ -1950,6 +2366,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-event-dates", action="store_true",
                     help="行事历事件给重排读的字不加「学期和日期」那一行，照旧只有标题（计划 2026-11-14 T3；用来对照）。"
                          "这一行只给重排读，向量本来就不放（11-14 量过：放进向量会把短标题冲淡），所以开不开向量都一样")
+    ap.add_argument("--no-platform-twins", action="store_true",
+                    help="公告平台和单位网站各一份的同一则公告不合成一份，照旧各算一份（用户 11-14 23:55 要合；用来对照）。合的条件："
+                         "同一天、去掉页面杂项、标点和项目编号后，一份的每一行都能在另一份里找到；一份多几行的留多的那份")
+    ap.add_argument("--no-stated-units", action="store_true",
+                    help="公告平台的公告不照网页上「公告單位」那一格定发布单位，照旧算网站对单位表写的单位（用户 11-15 要读"
+                         "导出的「公告单位」栏；用来对照）")
+    ap.add_argument("--label-titles", action="store_true",
+                    help="网页给附件的叫法是同一网站 20 份以上附件共用的（「檔案連結」「公文」）不当标题，档名有汉字的改回用档名"
+                         "（11-15 做的，默认不开：量过，111 站 894 份标题更具体，但 33 题里「學號」那题从第 4 掉到第 15 名，"
+                         "等用户定）")
+    ap.add_argument("--no-copy-names", action="store_true",
+                    help="合并副本时不把被合掉那份的各个链接叫法带到留下的那份，只带它的标题和档名，照 11-15 以前（用来对照）")
     ap.add_argument("--no-own-titles", action="store_true",
                     help="不把没用的标题（同一网站 20 页以上一模一样的、档名没有汉字的附件）换成文件自己正文的标题，"
                          "照旧用原来的标题（计划 2026-11-14 T4；用来对照）")
@@ -1972,7 +2400,9 @@ def main(argv: list[str] | None = None) -> int:
                              unit_words=not args.no_unit_words, unit_in_vectors=args.unit_words_in_vectors,
                              copy_rule=args.copy_rule, merge_recurring=not args.no_merge_recurring,
                              alumni_background=not args.no_alumni_background, event_dates=not args.no_event_dates,
-                             own_titles=not args.no_own_titles)
+                             own_titles=not args.no_own_titles, platform_twins=not args.no_platform_twins,
+                             stated_units=not args.no_stated_units, label_titles=args.label_titles,
+                             copy_names=not args.no_copy_names)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

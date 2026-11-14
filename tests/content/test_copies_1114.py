@@ -47,6 +47,10 @@ SPACED = LONG.replace("，", "，\n").replace("；", "； \u3000").replace("。"
 OTHER = ("學生宿舍寒假期間停止供應熱水的時段為每日上午九時至下午四時，請住宿同學提前安排盥洗時間；"
          "如有設備故障請至宿舍服務台登記報修。") * 4
 SHORT = "社團博覽會於操場舉行，歡迎參加。"
+# the owner, 11-14 23:55 (tests/content/test_twins_1115.py): by_rule counts the groups a platform twin made too
+NO_TWIN = {"groups": 0, "removed": 0}
+# 11-15 (tests/content/test_file_titles_1115.py): the copies' link names the kept documents took over
+NO_NAMES = {"on": True, "documents": 0, "names": 0}
 
 
 def rec(rid: str, kind: str, url: str, title: str, text: str, site: str = "", day: str = "",
@@ -337,10 +341,10 @@ def test_the_report_counts_the_groups_and_each_sites_share(copied):
     largest = counted.pop("largest")
     assert counted == {
         "rule": "text", "min_chars": 200, "groups": 3, "removed": 4, "cross_site": 2,
-        "by_rule": {"text": {"groups": 2, "removed": 3}, "title": {"groups": 1, "removed": 1}},
+        "by_rule": {"text": {"groups": 2, "removed": 3}, "title": {"groups": 1, "removed": 1}, "twin": NO_TWIN},
         "by_kind": {"notice": 2, "page": 1, "attachment": 1},
         "by_site": {ACA_SITE: {"kept": 3, "merged": 1}, TG_SITE: {"kept": 0, "merged": 2},
-                    NEWS_SITE: {"kept": 0, "merged": 1}}}
+                    NEWS_SITE: {"kept": 0, "merged": 1}}, "names_carried": NO_NAMES}
     assert list(counted["by_site"]) == [ACA_SITE, TG_SITE, NEWS_SITE]  # the inputs' order
     # the groups with the most copies first, to look at after a build
     assert largest[0] == {"kept": IDS["a_notice"], "site": ACA_SITE, "kind": "notice", "title": "暑假宿舍熱水公告",
@@ -370,8 +374,8 @@ def test_rule_title_builds_as_before_and_says_so(tmp_path, capsys):
     assert report.excluded == {"page" + build.COPY: 1}  # the two addresses of one short page, and nothing else
     assert {k: v for k, v in report.dedupe["copies"].items() if k != "largest"} == {
         "rule": "title", "min_chars": 200, "groups": 1, "removed": 1, "cross_site": 0,
-        "by_rule": {"text": {"groups": 0, "removed": 0}, "title": {"groups": 1, "removed": 1}},
-        "by_kind": {"page": 1}, "by_site": {ACA_SITE: {"kept": 1, "merged": 1}}}
+        "by_rule": {"text": {"groups": 0, "removed": 0}, "title": {"groups": 1, "removed": 1}, "twin": NO_TWIN},
+        "by_kind": {"page": 1}, "by_site": {ACA_SITE: {"kept": 1, "merged": 1}}, "names_carried": NO_NAMES}
     conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
     try:
         assert conn.execute("SELECT count(*) FROM docs").fetchone() == (7,)
@@ -418,4 +422,5 @@ def test_inputs_without_long_copies_build_the_same_under_both_rules(tmp_path):
 
     new, old = built(build.COPY_TEXT), built(build.COPY_TITLE)
     assert new == old and new[4] == tb.COPIES_EXCLUDED
-    assert new[5]["by_rule"] == {"text": {"groups": 0, "removed": 0}, "title": {"groups": 2, "removed": 2}}
+    assert new[5]["by_rule"] == {"text": {"groups": 0, "removed": 0}, "title": {"groups": 2, "removed": 2},
+                                 "twin": NO_TWIN}

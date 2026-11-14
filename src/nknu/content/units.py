@@ -322,6 +322,41 @@ def resolve(name: str | None, units: Mapping[str, Unit]) -> str | None:
     return _tables(tuple(units.items()))[1].get(_key(_clean(name)))
 
 
+def name_unit(name: str | None, units: Mapping[str, Unit]) -> tuple[str | None, str]:
+    """A unit's name as a page writes it, placed in the tree: (the unit id, what is left of the name as written);
+    (None, the name on one line) when it names no unit. For the announcement platform's 公告單位 (the crawler's
+    2989f60: the export's 公告单位), which runs the names down the tree together, 「教務處和平教務組」,
+    「科技學院電子工程學系」, at times after a heading of its own, 「其他教學研究中心通識教育中心」, and names parts
+    the tree does not have, 「國際事務處國際合作組」 (the 82 spellings of the 11-15 exports:
+    research/pipeline_2026-11-02/fixes_1115/publishers_1115.txt) 【Claude】. The first that holds, each on the name
+    without a trailing note in brackets (「校安中心(原軍訓室)」) and matched as resolve matches:
+    - the whole name is a unit's (a name or an alias): that unit, nothing left;
+    - it ends with a unit's name, the longest such, and what stands before reads as a unit's name too (it ends as one:
+      處, 學院, 中心 …, so 「副校長室」 is not 校長室); when that part is itself a unit of the tree it must be one the
+      unit is under: that unit, nothing left;
+    - it starts with a unit's name, the longest such: that unit, and the rest as written (a part of it the tree lacks:
+      what a notice's 組別 holds)."""
+    line = _clean(name or "")
+    if not line:
+        return None, ""
+    _, keys = _tables(tuple(units.items()))
+    key = _key(line)
+    if key in keys:
+        return keys[key], ""
+    for cut in range(1, len(key)):  # the longest ending first
+        unit_id = keys.get(key[cut:])
+        if unit_id is None or not _UNIT_END.search(key[:cut]):
+            continue
+        above = keys.get(key[:cut])
+        if above is None or above in ancestors(units, unit_id):
+            return unit_id, ""
+    compact = "".join(line.split())
+    for cut in range(len(compact) - 1, 0, -1):  # the longest beginning first
+        if (unit_id := keys.get(_key(compact[:cut]))) is not None:
+            return unit_id, compact[cut:]
+    return None, line
+
+
 # --- detection --------------------------------------------------------------------------------------------------------
 
 def _w(word: str) -> str:

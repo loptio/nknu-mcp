@@ -34,8 +34,9 @@ list:<profile> and left out, its content pages stay page:<profile>. The 10-29 fa
 only for 教务处's export (FALLBACK_SITE), never for another site's, whose old serial ids name other files.
 
 Records ({id, key, kind, url, file, title, text, linktext, linked, source, totext_status, site, fetched, page_date,
-page_date_raw, date_source, modified, origin, area_mark, list_kind, list_category}, a page's also under_read, in
-manifest order):
+page_date_raw, date_source, modified, origin, area_mark, list_kind, list_category, publisher}, a page's also
+under_read, in manifest order; publisher: the row's 公告单位, the publishing unit an announcement platform's notice
+page states, since the crawler's 2989f60, '' else):
 - a page: kind as above; title its album name, #lbl_Title or 标题; its to-text text with
   each [[img:src]] line replaced by the OCR text of the exported image the src names, or removed. The src is joined
   to the page's address (最后落地网址 or 网址, or its <base href>) and spelt as the crawler spells addresses
@@ -63,7 +64,7 @@ is refused and listed by that old id.
 Links (addendum B): the pages an attachment's row lists (链到它的网页) are read with links.page_links. linked keeps the
 pages that link it from their text or their attachment area (zones content, attachments) and those where no link to
 it is found (zone unknown: a button download, a page not exported); pages that link it only from a menu go to
-nav_linked. zones, contexts (what each page calls it) and rows (the table row, list item or paragraph it sits in) are
+nav_linked, and so does a site map (MENU_PAGES: the menu written out as a page), whatever part of it holds the link. zones, contexts (what each page calls it) and rows (the table row, list item or paragraph it sits in) are
 keyed by the page URLs as the row lists them. The build titles and dates an attachment by these pages.
 
 Format siblings (G2): links to attachments on one row of one page make one record only when the row is not '', their
@@ -86,7 +87,7 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
@@ -121,6 +122,13 @@ _EXTENSION = re.compile(r"[a-z0-9]{1,5}")
 _SEPARATOR = re.compile(r"[/\\]")  # an archive member's path separators
 CONTEXT_ZONES = {"content": 0, "attachments": 1}  # whose name a page's reference takes first: its text's, then its
 #                                                    attachment area's (often the uploaded file name)
+# Page kinds (pagetext.page_kind) whose links are a menu's wherever they stand on the page 【Claude, 11-15, for the
+# owner's 「请看一下附件标题取自链接文字还是档名的规则对不对」】: c.nknu's sitemap.aspx writes the site's menu out as a
+# list in its content area, so its links read as links from a page's text, and the build, which never names a file by
+# a menu, named 4 files of the 111 sites by it (教务处's 普通教室管理及使用要點1130607.pdf was 「7 , 普通教室借用申請單」,
+# the menu entry that opens it with the site map's numbering:
+# research/pipeline_2026-11-02/fixes_1115/title_case_1115.txt, title_rule_1115.json)
+MENU_PAGES = frozenset({"sitemap"})
 # 资料 rows (structured data the export keeps under data/) become no record; the report gives each its reason
 # (phase-2 review: to-text has one skip reason for all of them, which fits the calendar only)
 DATA_CALENDAR = "行事历：建库直接读成行事历事件（corpus.load_calendar）"
@@ -444,12 +452,14 @@ class _Assembly:
         them (an archive member: its archive's row's); since 11-09 (owner, blueprint item 15) area_mark, the first of
         corpus.ROW_MARKS its 缺什么 holds (alone or joined to other reasons by 、: AREA_MARKS, and since the crawler's
         fa81f41 NO_DATA), else ''; and (blueprint item 22, the crawler's 53cf31b) list_kind, its 页别, and
-        list_category, its 列表上的类别, '' in an export without them."""
+        list_category, its 列表上的类别, '' in an export without them; since 11-15 (the owner: 「在你的程序里读第 30 栏
+        「公告单位」」; the crawler's 2989f60) publisher, its 公告单位 on one line, '' in an export without the column."""
         return {"site": self.site, "fetched": row.get("抓取时间") or "", "page_date": row.get("网页上写的日期") or "",
                 "page_date_raw": row.get("日期原文") or "", "date_source": row.get("日期来源") or "",
                 "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or "",
                 "area_mark": next((m for m in ROW_MARKS if m in (row.get("缺什么") or "")), ""),
-                "list_kind": row.get("页别") or "", "list_category": row.get("列表上的类别") or ""}
+                "list_kind": row.get("页别") or "", "list_category": row.get("列表上的类别") or "",
+                "publisher": " ".join((row.get("公告单位") or "").split())}
 
     # ------------------------------------------------------------ texts
 
@@ -515,6 +525,8 @@ class _Assembly:
         refs = _Refs()
         for u in pages:
             hits = found[u]
+            if page_kind(u) in MENU_PAGES:  # the menu written out as a page: every link of it is a menu's
+                hits = [replace(h, zone="nav") for h in hits]
             refs.links[u] = [(h.row, h.context, h.anchor) for h in hits if h.zone != "nav"]
             text_links = [h for h in hits if h.zone != "nav"]
             if not hits:  # no link to it on that page: a button, a script, a page not exported

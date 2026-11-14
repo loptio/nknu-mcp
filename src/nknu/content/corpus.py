@@ -123,6 +123,11 @@ class Record:
     # joined by CATEGORY_SEP: documents.Document.categories); '' without them, and in an export or a corpus made before
     list_kind: str = ""
     list_category: str = ""
+    # the owner, 11-15 (「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」), the crawler's 2989f60 export: the
+    # row's 公告单位, the words of the announcement platform's 「公告單位：」 cell on the notice's page, as written
+    # (「教務處註冊組」; not matched to the unit tree: build._stated_units does that); '' on every other row, on a
+    # platform notice whose cell is empty, and in an export or a corpus made before
+    publisher: str = ""
     # plan 2026-11-08 T4: the export folder the build read it with (its file, and a notice's header fields, are read
     # there); set by the build for each input, never written to corpus.json ('' when read alone)
     export: str = ""
@@ -147,6 +152,7 @@ def load_corpus(path: Path) -> list[Record]:
             modified=r.get("modified") or "", origin=r.get("origin") or "", area_mark=r.get("area_mark") or "",
             under_read=None if r.get("under_read") is None else bool(r.get("under_read")),
             list_kind=r.get("list_kind") or "", list_category=r.get("list_category") or "",
+            publisher=r.get("publisher") or "",
         )
         for r in rows
     ]

@@ -110,7 +110,15 @@ link texts. Two kinds of titles say nothing: one that SAME_TITLE_MIN or more pag
 alumni pages their own title cell since d9d8239, so this is for what is left), and an attachment's file name without
 a Han character, 「643-79-8.odt」 (TITLE_FILE) 【Claude, the main session's brief of 11-14: narrower than the plan's
 「标题只是档名的附件」, since a file name with Han characters usually says what the file is, and the 11-02 decision G4
-keeps file names as titles for year tables on purpose】.
+keeps file names as titles for year tables on purpose】. Since 11-15 a third kind, the other way round (TITLE_LABEL,
+own_titles' _labels): the name a page gives a file is a label, not a name, when SAME_TITLE_MIN or more files of the
+site carry it (「檔案連結」, 「公文」), and such a file is titled by its file name again when that has a Han character.
+
+A document's stated publishing unit (the owner, 11-15: 「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」; the
+crawler's 2989f60): Document.stated_unit carries the words of the announcement platform's 「公告單位：」 cell from the
+export's 公告单位 (Record.publisher; one page in several exports: _joined). build_documents only carries them: the
+unit stays the site table's here, and the build, which has the unit tree, names the unit and the 組別 by them
+(build._stated_units).
 """
 
 from __future__ import annotations
@@ -204,6 +212,9 @@ _TRUSTED = {OWN_FIELD: FIELD_SOURCE, LIST_ROW: LIST_SOURCE}
 CLOCK_SECONDS = 120
 # plan 2026-11-14 T4 (own_titles; the module docstring). The kinds of titles that say nothing, as the report names them
 TITLE_SHARED, TITLE_FILE = "shared", "file"
+# 11-15 (the owner: 「请看一下附件标题取自链接文字还是档名的规则对不对，能修的话在这轮重建前一起修掉」) 【Claude】: a name
+# SAME_TITLE_MIN or more attachments of one site take from their pages is a label, not a name (own_titles)
+TITLE_LABEL = "label"
 # the plan's 「同一网站 20 页以上标题一模一样的」: so many pages and notices of one site with one title make it no title,
 # and a new title so many documents of the site would carry is none either
 SAME_TITLE_MIN = 20
@@ -293,6 +304,15 @@ class Document:
     # plan 2026-11-14 T2 (main session, after the review): the units of the copies the build merged into this
     # document, each once, never its own (build._take_over); build.unit_scope reads them
     also_units: tuple[str, ...] = ()
+    # the owner, 11-15 (「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」): the publishing unit its page states
+    # (Record.publisher: the announcement platform's 「公告單位：」 cell, as written), '' without one; and whether its
+    # unit and 組別 are the ones that statement names, which the build sets (build._stated_units: a notice so stated,
+    # and a file of the platform hanging on it), never build_documents
+    stated_unit: str = ""
+    unit_stated: bool = False
+    # 11-15 (own_titles' TITLE_LABEL): the title is its file name again, the name its page gave it being a label many
+    # files of its site carry (old_title holds that label)
+    title_was_label: bool = False
 
 
 def clean_text(s: str) -> str:
@@ -481,7 +501,8 @@ def _joined(keep: Record, others: list[Record]) -> Record:
     (list_category: keep's own first, then each other one once; blueprint item 22, review 11-09: without this, 66 ids
     of the 11-09 exports lost every category, 57 SSO news notices whose news.nknu.edu.tw mirror, fetched later, is
     kept while the list at sso.nknu.edu.tw/news gave the category, and 9 records whose &amp; spelling, the one a list
-    links, gives way to the plain one: research/pipeline_2026-11-02/reading_gaps_1109/review_1109k/lab_cat_loss.out)."""
+    links, gives way to the plain one: research/pipeline_2026-11-02/reading_gaps_1109/review_1109k/lab_cat_loss.out);
+    and the publishing unit its page states (Record.publisher, 11-15), keep's own, else the first other's."""
     linked, nav = list(keep.linked), list(keep.nav_linked)
     zones, contexts, rows = dict(keep.zones), dict(keep.contexts), dict(keep.rows)
     texts, formats = [t for t in keep.linktext.split(LINK_SEP) if t], list(keep.formats)
@@ -502,9 +523,12 @@ def _joined(keep: Record, others: list[Record]) -> Record:
         texts += [t for t in other.linktext.split(LINK_SEP) if t and t not in texts]
         formats += [f for f in other.formats if f.get("id") not in {g.get("id") for g in formats}]
         categories += [c for c in _categories(other.list_category) if c not in categories]
+    # the publishing unit the page states (11-15): one page whatever export brought it, so the first that read it
+    publisher = keep.publisher or next((o.publisher for o in others if o.publisher), "")
     return dataclasses.replace(keep, linked=tuple(linked), nav_linked=tuple(u for u in nav if u not in linked),
                                zones=zones, contexts=contexts, rows=rows, linktext=LINK_SEP.join(texts),
-                               formats=tuple(formats), list_category=CATEGORY_SEP.join(categories))
+                               formats=tuple(formats), list_category=CATEGORY_SEP.join(categories),
+                               publisher=publisher)
 
 
 def fetched_at(stamp: str) -> float:
@@ -778,7 +802,10 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
                      page_date_source=page_source, server_date=_server_day(r), source=r.source, formats=r.formats,
-                     site=r.site or site, categories=_categories(r.list_category))
+                     site=r.site or site, categories=_categories(r.list_category),
+                     # whatever kind its own address makes it: a notice, a page, or a short link another site
+                     # writes for the platform's notice (50 of the 2,040 stated rows of 11-15: 外站:reurl.cc, a link)
+                     stated_unit=r.publisher)
         docs.append(d)
         doc_of[r.id] = d
         for f in r.formats:
@@ -953,11 +980,55 @@ def _spread(items: list, n: int) -> list:
     return items if len(items) <= n else [items[i * len(items) // n] for i in range(n)]
 
 
-def own_titles(docs: list[Document], school: str = "", on: bool = True) -> dict:
+def _labels(docs: list[Document], on: bool) -> dict:
+    """own_titles' TITLE_LABEL part (11-15; the owner: 「请看一下附件标题取自链接文字还是档名的规则对不对，能修的话在这轮
+    重建前一起修掉」) 【Claude】. An attachment is titled by what its page calls it, its file name otherwise (addendum
+    2026-11-02 B), which is right where the page names the file and the file name does not (5,188 of the 10,377
+    attachments the 111 sites title by a page are named 「file1_7149.doc」 and the like) and wrong where the page's
+    word is a label many files stand under: 「檔案連結」 (395 files of one site), 「公文」 (209), 「第一頁」,
+    「114年」, while the file names say what each one is (「中國青年救國團函.pdf」;
+    research/pipeline_2026-11-02/fixes_1115/title_labels_1115.json). So: a title SAME_TITLE_MIN or more attachments
+    of one site take from their pages, to the character, is no name (the count TITLE_SHARED tells a page's title that
+    says nothing by), and each of them whose file name, its extension aside, has a Han character is titled by that
+    file name again; the label goes to old_title and stays in linktext, title_was_label is set, and title_from_context
+    is cleared. One whose file name has no Han character keeps the label (why 'no_name': 「相關檔案」 says more than
+    「a09000000e_1150096406_senddoc1_att.pdf」). Returns {'titles': the labels (site and title), 'documents',
+    'retitled', 'kept', 'why', 'by_site': {site: {'retitled', 'kept'}}, 'examples'}; on False changes nothing and
+    still counts."""
+    carried = Counter((d.site, d.title) for d in docs if d.kind_class == "attachment" and d.title_from_context)
+    targets = [d for d in docs if d.kind_class == "attachment" and d.title_from_context
+               and carried[(d.site, d.title)] >= SAME_TITLE_MIN]
+    why: Counter[str] = Counter()
+    by_site: dict[str, dict[str, int]] = {}
+    retitled: list[dict] = []
+    for d in targets if on else ():
+        count = by_site.setdefault(d.site, {"retitled": 0, "kept": 0})
+        if not _HAN.search(_EXTENSION.sub("", d.file_title)):
+            why["no_name"] += 1
+            count["kept"] += 1
+            continue
+        count["retitled"] += 1
+        d.old_title, d.title, d.file_title = d.title, d.file_title, ""
+        d.title_from_context, d.title_was_label = False, True
+        if d.old_title not in d.linktext.split(LINK_SEP):
+            d.linktext = LINK_SEP.join(part for part in (d.linktext, d.old_title) if part)
+        retitled.append({"id": d.doc_id, "site": d.site, "old": d.old_title[:TITLE_SHOWN], "new": d.title})
+    return {"titles": sum(n >= SAME_TITLE_MIN for n in carried.values()), "documents": len(targets),
+            "retitled": len(retitled), "kept": len(targets) - len(retitled), "why": dict(why), "by_site": by_site,
+            "examples": _spread(retitled, TITLE_EXAMPLES)}
+
+
+def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: bool = False) -> dict:
     """Give each document whose title says nothing the title its own text gives (plan 2026-11-14 T4; the module
     docstring), in place, and report it. docs: the documents the build keeps, copies merged, so that 20 addresses of
     one page are one document 【Claude: the plan does not say when to count】. school: the school's name
-    (sites.table().school), no title for any document.
+    (sites.table().school), no title for any document. labels (11-15, the build's label_titles; off unless asked):
+    first, an attachment whose page-given title is a label many files of its site carry takes its file name back
+    (_labels: TITLE_LABEL in the report, with 'by_site' and 'examples' of its own); never without on. Off by default
+    【Claude, after measuring it on the 111 sites of 11-15】: 894 files got a title that says what they are, and of the
+    33 questions the answer to 「學號」 went from the 4th place to the 15th, eight of 師培處's certificate forms taking
+    the places before it once their file names (「…教育學程生-學號-學系-姓名-證明書.docx」) were their titles
+    (research/pipeline_2026-11-02/fixes_1115/explain_N02.txt); the owner has not seen it yet.
 
     Whose title says nothing:
     - TITLE_SHARED: a page or a notice whose title SAME_TITLE_MIN or more pages and notices of its site (Document.site)
@@ -977,6 +1048,7 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True) -> dict:
     {site: {kind: {'retitled', 'kept'}}} (the sites and kinds with such documents; {} when off), 'examples': {kind:
     up to TITLE_EXAMPLES of the retitled, spread over them: id, site, old, new}}, the plan's 「建库报告记换了几份、没换
     几份」 and what the direction's 「抽看几十份」 looks at."""
+    labelled = _labels(docs, on and labels)
     same = Counter((d.site, d.title) for d in docs if d.kind_class in ("page", "notice"))
     targets: list[tuple[Document, str]] = []
     for d in docs:
@@ -1022,7 +1094,7 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True) -> dict:
         return {"documents": n, "retitled": len(retitled[kind]), "kept": n - len(retitled[kind]),
                 "why": dict(why[kind])}
 
-    return {"on": on, "same_min": SAME_TITLE_MIN, "max_chars": TITLE_MAX_CHARS,
+    return {"on": on, "labels": on and labels, "same_min": SAME_TITLE_MIN, "max_chars": TITLE_MAX_CHARS,
             TITLE_SHARED: {"titles": sum(n >= SAME_TITLE_MIN for n in same.values()), **part(TITLE_SHARED)},
-            TITLE_FILE: part(TITLE_FILE), "by_site": by_site,
+            TITLE_FILE: part(TITLE_FILE), TITLE_LABEL: labelled, "by_site": by_site,
             "examples": {kind: _spread(retitled[kind], TITLE_EXAMPLES) for kind in kinds}}

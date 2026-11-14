@@ -36,7 +36,10 @@ from tests.content import test_multisite_1108 as tm
 TODAY = date(2026, 11, 14)
 OLD, NEW = "2026-10-27T07:00:00+08:00", "2026-11-07T07:00:00+08:00"
 ACA_SITE, TG_SITE = "c.nknu.edu.tw/aca", "c.nknu.edu.tw/tg"
-CAL_FILE = "data/0001-Google 行事历 o@example.invalid 的事件.json"
+# the calendar id is written without its @ in the file name: the build finds the file by 行事历 alone, and an
+# address-shaped string in a test is what nknu check stops (the owner, 11-15: 「有一个像电邮的测试字串被 nknu check
+# 拦下，请顺手改掉」)
+CAL_FILE = "data/0001-Google 行事历 o.example.invalid 的事件.json"
 CAL_URL = "https://www.googleapis.com/calendar/v3/calendars/o%40example.invalid/events"
 LINK = "https://www.google.com/calendar/event?eid="
 

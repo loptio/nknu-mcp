@@ -109,6 +109,10 @@ NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議�
 # of a build before T1 (one title and text then), stays as it was
 NOTE_COPIES = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
                "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
+# The owner, 11-14 23:55 (nknu.content.build's platform twins: 「公告平台和单位网站各一份」 merged): a copy of a notice whose
+# words are not the kept one's to the letter says wording_differs; what that means, said once per response
+NOTE_WORDING = ("【系統】copies 中 wording_differs 為 true 的是同一則公告在公告平台或單位網站上的另一份：它的每一行都在該筆裡，"
+                "排版、標點可能不同，也可能比該筆少幾行。")
 # I5: format siblings (the doc and odt beside a pdf on one row, T7a) have their own id, url and format, no date of
 # their own
 NOTE_FORMATS = ("【系統】copies 中有 format 的是同一份文件的其他格式：各有自己的 id、網址和格式，沒有自己的日期；"
@@ -236,6 +240,7 @@ def _copies(conn: sqlite3.Connection, doc_id: str) -> list[dict]:
         out.append(_compact({"id": c.get("id"), "url": c.get("url"), "format": str(c.get("format") or "").upper(),
                              "date": c.get("date"),
                              "date_type": DATE_LABELS.get(c.get("date_kind") or "") if c.get("date") else None,
+                             "wording_differs": bool(c.get("wording_differs")) or None,
                              "parent": _compact({"id": c.get("parent_id"), "title": c.get("parent_title")})}))
     return out
 
@@ -250,7 +255,8 @@ def _copies_notes(copies: list[dict]) -> list[str]:
     a copy lists no id (a build before plan 2026-11-08 T1)."""
     kinds = {"format" in c for c in copies}
     notes = (NOTE_COPIES, NOTE_FORMATS) if all(c.get("id") for c in copies) else (NOTE_COPIES_NO_ID, NOTE_FORMATS_NO_ID)
-    return [note for note, kind in zip(notes, (False, True), strict=True) if kind in kinds]
+    out = [note for note, kind in zip(notes, (False, True), strict=True) if kind in kinds]
+    return out + [NOTE_WORDING] if any(c.get("wording_differs") for c in copies) else out
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:
