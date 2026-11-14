@@ -184,7 +184,8 @@ def test_each_sites_deleted_notices_are_in_the_sites_table(tmp_path):
     assert sum(n for k, n in report.excluded.items() if k.endswith(DELETED)) == 2
     assert [s["deleted_notices"] for s in report.sites] == [2, 0]
     assert "page" in kinds  # the page whose areas are missing but whose text was read stays
-    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-7"  # pipeline-7: sites.under_read (item 22)
+    # pipeline-7: sites.under_read (item 22); pipeline-8: docs.expires, valid_ay and date_line (plan 2026-11-14)
+    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-8"
     assert "deleted_notices" in build.SITE_COLUMNS
 
 

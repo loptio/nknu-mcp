@@ -26,7 +26,7 @@ from nknu.content.embed import PASSAGE_VERSION, VecCache, chunk_passages, embed_
 from nknu.content.units import load_units, resolve
 from nknu.retrieval import respond
 from nknu.retrieval.respond import build_response, read_response
-from nknu.retrieval.search import search_docs
+from nknu.retrieval.search import RankConfig, search_docs
 from tests.content import test_assemble as ta
 from tests.content import test_build as tb
 from tests.totext import test_pages_1108 as tp
@@ -712,7 +712,8 @@ def departments(tmp_path):
 def test_a_department_page_is_found_by_its_short_name_though_its_text_never_says_it(departments):
     _, conn, d = departments
     assert conn.execute("SELECT count(*) FROM docs WHERE text LIKE '%軟體%'").fetchone() == (0,)
-    hits = {h.doc_id: h for h in search_docs(conn, "軟體系 師資", today=TODAY, aliases=[]).hits}
+    before = RankConfig(topic_required=False)  # the search of 11-08, which the lines below describe
+    hits = {h.doc_id: h for h in search_docs(conn, "軟體系 師資", today=TODAY, aliases=[], rank=before).hits}
     # 化學系's page says 師資 twice and leads by its own words without the patch; the unit line puts 軟體系's first,
     # then 軟體系's other page (its unit words alone), then 化學系's (師資 alone). Changed 11-08 10:16 on purpose (owner,
     # N11): a word only the unit words have counts half (RankConfig.unit_cover), so 1.0, 0.67 are 0.67, 0.33 now; and
@@ -720,6 +721,10 @@ def test_a_department_page_is_found_by_its_short_name_though_its_text_never_says
     assert list(hits)[:3] == [d["soft"], d["bus"], d["chem"]]
     assert [round(h.coverage, 2) for h in hits.values()] == [0.67, 0.33, 0.33] + [0.0] * 6
     assert search_docs(conn, "化學系 師資", today=TODAY, aliases=[]).hits[0].doc_id == d["chem"]
+    # the default since the owner's word of 11-14 (plan 2026-11-14 T5, 「找候选开」): a page must have a topic word,
+    # so 軟體系's other page, found by its unit words alone, is no candidate; 軟體系's own page on the topic leads still
+    now = [h.doc_id for h in search_docs(conn, "軟體系 師資", today=TODAY, aliases=[]).hits]
+    assert now[:2] == [d["soft"], d["chem"]] and d["bus"] not in now
     title, unit = (t.split() for t in conn.execute(
         "SELECT f.title_tokens, f.unit_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid WHERE c.doc_id = ?",
         (d["soft"],)).fetchone())

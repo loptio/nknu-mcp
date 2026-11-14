@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS unit_aliases (alias TEXT NOT NULL, unit_id TEXT NOT N
 CREATE TABLE IF NOT EXISTS doc_scope (doc_id TEXT NOT NULL, relation TEXT NOT NULL, unit_id TEXT, campus TEXT,
                                       level TEXT, cohort_from INTEGER);
 """
-OFF = HybridConfig(dense=False, rerank=False)
+# scope_factor and valid_decay at 1: the settings of before plan 2026-11-14, under which these tests were written
+# (the owner's defaults of 11-14 are 0.9 and 0.85: tests/retrieval/test_audience_1114.py, test_valid_1114.py)
+OFF = HybridConfig(dense=False, rerank=False, scope_factor=1.0, valid_decay=1.0)
 
 
 class FakeEmbedder:
@@ -475,8 +477,8 @@ def test_rerank_passage_has_titles_heading_and_table_header(db):
 # The scope's weights are 0 since 11-08 (addendum M5); the mechanism stays, so these tests give it addendum F's
 # starting values back.
 S_SCOPE, S_MENTION = 0.3, 0.1
-SCOPED_OFF = HybridConfig(dense=False, rerank=False, w_scope=S_SCOPE, w_mention=S_MENTION)
-SCOPED_RERANK = HybridConfig(dense=False, w_scope=S_SCOPE, w_mention=S_MENTION)
+SCOPED_OFF = HybridConfig(dense=False, rerank=False, w_scope=S_SCOPE, w_mention=S_MENTION, scope_factor=1.0)
+SCOPED_RERANK = HybridConfig(dense=False, w_scope=S_SCOPE, w_mention=S_MENTION, scope_factor=1.0)
 
 
 def test_scope_has_no_weight_by_default(db):
@@ -505,7 +507,7 @@ def test_scope_boosts_the_named_department(db):
     r = db.hybrid(q, reranker=FakeReranker({"畢業": 0.5}), config=SCOPED_RERANK)
     assert _ids(r) == ["dz", "da"] and _hit(r, "dz").score - _hit(r, "da").score == pytest.approx(2 * S_SCOPE)
     # both weights 0 (T10's comparison from one build): as if the build had no scope
-    assert db.hybrid(q, config=HybridConfig(dense=False, rerank=False, w_scope=0.0, w_mention=0.0)).hits == plain.hits
+    assert db.hybrid(q, config=OFF).hits == plain.hits  # OFF: w_scope and w_mention are 0 by default
 
 
 def test_scope_neutral_for_school_wide(db):

@@ -887,6 +887,25 @@ def test_format_copies_say_other_formats(db):
     assert NOTE_FORMATS in read["notes"] and NOTE_COPIES not in read["notes"] and read["copies"][0]["format"] == "ODT"
 
 
+def test_copies_with_ids_are_said_to_share_their_content_not_their_title(db):
+    # plan 2026-11-14 T2: the build merges documents of one text whatever their titles (a notice two sites post), so
+    # the note of copies that carry ids says the content is the same and the title may differ; the note of a build
+    # before plan 2026-11-08 T1 (no ids: one title and text then) stays as it was
+    db.doc("dA", prose(300), title="暑假開館公告", url="https://c.nknu.edu.tw/aca/newsdetail.aspx?nid=1&gi=2")
+    copy = {"id": "dB", "url": "https://c.nknu.edu.tw/tg/newsdetail.aspx?nid=9", "date": "2026-03-05",
+            "date_kind": "published"}
+    db.conn.execute("INSERT INTO meta VALUES ('copies:dA', ?)", (json.dumps([copy], ensure_ascii=False),))
+    note = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
+            "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
+    assert respond.NOTE_COPIES == note and respond.NOTE_COPIES_NO_ID == NOTE_COPIES
+    resp = build_response(db.conn, result(hit("dA", [1])), today=TODAY)
+    assert resp["results"][0]["copies"] == [{"id": "dB", "url": copy["url"], "date": "2026-03-05", "date_type": "發布"}]
+    assert note in resp["notes"] and NOTE_COPIES not in resp["notes"]
+    read = read_response(db.conn, "dA", "", today=TODAY)
+    assert note in read["notes"] and NOTE_COPIES not in read["notes"]
+    assert not [n for n in (*resp["notes"], *read["notes"]) if "標題和內容都相同" in n]
+
+
 def test_identity_of_an_archive_member(db):
     # an archive member's address is <archive url>#<its path> (T7a): the label names the member's format and the
     # archive it sits in, not the archive's format alone

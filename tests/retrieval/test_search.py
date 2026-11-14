@@ -16,7 +16,9 @@ WITHDRAW = ["停修", "棄選", "退選"]
 # (spec 2026-11-01 「排序 v2」), the pool cap aside (addendum M1). The date part is tested in test_rank_v2.py, the tier
 # and the cap in test_tier_1108.py. Owner 11-03 (「可以，这样砍」): no series, so every document is its own hit, in
 # score order.
-BASE = RankConfig(recency=False, tier=False)
+# topic_required off: these tests were written under the search of before plan 2026-11-14 T5 (the default since the
+# owner's word of 11-14 asks for a topic word; tests/retrieval/test_topic_1114.py)
+BASE = RankConfig(recency=False, tier=False, topic_required=False)
 # the series part of the schema before 11-03 (pipeline-1 and the skeleton's skeleton-2), which a build no longer writes
 OLD_SERIES_DDL = """
 ALTER TABLE docs ADD COLUMN series_id TEXT;

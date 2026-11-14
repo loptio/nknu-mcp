@@ -658,8 +658,12 @@ def test_assembled_corpus_builds(tmp_path):
         assert stop == ("學生停修申請表", d["p2"], "114學年度停修公告", "2025-09-01", "inherited", "stop.pdf", "totext")
         refs = conn.execute("SELECT ref_id, zone, context FROM doc_refs WHERE doc_id=?", (d["a4"],)).fetchall()
         assert sorted(refs) == sorted([(d["p1"], "content", "停修申請表"), (d["p2"], "content", "學生停修申請表")])
-        rule = one("SELECT title, parent_id, parent_title, ident_date, ident_kind FROM docs WHERE doc_id=?", d["a5"])
-        assert rule == ("rule.pdf", None, "", "2024-02-03", "server")  # menus only: no parent, the server's date
+        rule = one("SELECT title, parent_id, parent_title, ident_date, ident_kind, linktext FROM docs WHERE doc_id=?",
+                   d["a5"])
+        # menus only: no parent, the server's date. Changed 11-14 on purpose (plan 2026-11-14 T4): no page names
+        # rule.pdf and the file name has no Han character, so its title is the first line of its own text and the
+        # file name stays in its link texts (build_db(own_titles=False) keeps 「rule.pdf」: test_own_titles_1114)
+        assert rule == (BODY, None, "", "2024-02-03", "server", "rule.pdf")
         assert sorted(conn.execute("SELECT ref_id, zone FROM doc_refs WHERE doc_id=?", (d["a5"],)).fetchall()) == (
             sorted([(d["p1"], "nav"), (d["p2"], "nav")]))
         assert one("SELECT title FROM docs WHERE doc_id=?", d["a6"]) == ("學生退學申請書",)
@@ -676,7 +680,9 @@ def test_assembled_corpus_builds(tmp_path):
     assert report.excluded == {"附件:无文字(doc)(其他格式)": 1, "附件:无文字(odt)(其他格式)": 1}
     assert report.text_sources == {"totext": 6}
     assert report.counts["doc_refs"] == 5
-    assert report.counts["attachments"] == {"title_from_page": 2, "title_file_name": 1, "parent": 2, "no_parent": 1}
+    # changed 11-14 on purpose (plan 2026-11-14 T4): rule.pdf is no longer titled by its file name
+    assert report.counts["attachments"] == {"title_from_page": 2, "title_file_name": 0, "parent": 2, "no_parent": 1}
+    assert report.titles["file"] == {"documents": 1, "retitled": 1, "kept": 0, "why": {}}
 
 
 BANNER = ACA + "uploadfile/mainimg/m1.jpg"

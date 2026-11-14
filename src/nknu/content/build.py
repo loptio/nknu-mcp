@@ -31,6 +31,61 @@ address, date and parent in meta under copies:<kept id>, which respond shows as 
 is its file name (a title from a page may differ between the addresses); the kept one takes the others' references
 and list categories (blueprint item 22) and keeps their titles findable in its linktext.
 
+Plan 2026-11-14 T2 (direction 2026-11-13 第 2 件; the owner 11-14 「你可以开始了」), three things, each with a switch
+that builds as before, so one set of inputs built twice measures each alone:
+- Copies, widened (copy_rule, --copy-rule text|title; COPY_TEXT is the default). 「一字不差的副本合成一份。跨站、同站同
+  一个规则：同一类、去掉空白后相同、至少 200 字；公告也合；不要求标题相同」: besides the groups of the rule above (still
+  made, as they were), documents of one kind_class, events aside, whose text is the same once all whitespace is removed
+  and then at least COPY_MIN_CHARS long are one document, a notice of a detail path too, whatever their titles
+  (_text_groups). Of such a group the earliest by its identity date is kept, 「显示最早的那份（原发单位）和它自己的日期」
+  (an undated one after every dated one; on one day documents.home_rank, the plan's 「同一天照现有的 _rank」, then the
+  order of before: _merge_copies; a primary document before any background one 【Claude】); the others are its copies
+  as above, each with its own address and date, and their titles and file names join its link texts (_take_over). A
+  group only the rule above makes (a text under 200 characters with one title, the same bytes with no text) keeps
+  the choice of before, the one on the latest notice 【Claude: the plan names the earliest for the copies of its own
+  rule】. A document whose words are not the document (has_text false: a scan with a few words) is no part of the new
+  rule 【Claude】. COPY_TITLE is the rule above alone. Completed the same day, after the first rebuild (_rank_dates):
+  the kept document shows its own date (docs.ident_date) and ranks by the latest among it and its copies
+  (docs.rank_date, which nknu.retrieval.search reads: RankConfig.copy_dates), so that merging never ranks a document
+  lower than before; BuildReport.dedupe['rank_dates'] counts them.
+- Recurring calendar events (merge_recurring, --no-merge-recurring): the instances of one recurring event are one
+  event document (documents.one_event_per_series, run on the events kept per id): 'e' + the series id, its first and
+  last day as its two calendar dates, every instance's days in its text; the instances folded away are counted as
+  行事历(重复系列), and the document's title tokens carry every term an instance falls in (_rows, _write_index), so a
+  term still finds it.
+- The alumni directory (alumni_background, --no-alumni-background): a page of the c.nknu template's 所友名錄, the page
+  of one alumnus and the directory's list (ALUMNI_KINDS: the page kinds, never a site), is docs.tier background
+  (tier_of); 「所友名录进背景（你 11-11 同意的）」.
+BuildReport.dedupe (meta dedupe_json) counts all three: the copy groups, the documents they removed and, per site,
+the groups whose kept document is the site's and the site's documents merged away; the series merged and the event
+documents before and after; the alumni pages made background. meta copy_rule, recurring_events and alumni_background
+say how the database was built.
+
+Plan 2026-11-14 T3, T4 and T6 (direction 2026-11-13 第 3、4、6 件), the first two each with a switch that builds as
+before:
+- A calendar event's date line (event_dates, --no-event-dates; _event_lines): docs.date_line holds the event's term
+  and days (documents.event_line: 「115學年度第2學期 2027-02-15～2027-02-18」; one day alone; a merged recurring event's
+  first and last day and how many times it occurs). The line is the reranker's only (corrected 11-14 after the first
+  rebuild, which had it in the vectors too: nknu.content.embed has the measurement): nknu.content.embed puts it
+  after the unit line of the passages the reranker reads at query time (chunk_passages) and never into the text
+  embedded here, which for an event is the one of before T3, so the vector cache of before serves it. A database
+  without the column is read as before; the keyword index (chunk_fts) does not change. meta event_dates says rerank
+  (EVENT_DATES_RERANK: the line is written, for the reranker) or off; on is what the two databases of 11-14's first
+  rebuild say, whose vectors hold the line too.
+- A document's own title (own_titles, --no-own-titles; _retitle): once the copies are merged, a page or a notice
+  whose title 20 or more pages and notices of its site share, and an attachment titled by a file name without a Han
+  character, take the title their own text gives (documents.own_titles: the first heading at the top, else the first
+  line; not a line that is no title, nor one 20 documents of the site would share); the old title stays in linktext,
+  so the index's title column holds both. What a title gives is then read again for those documents: the term
+  (period_ay, period_sem), the cohort, the doc type and so the tier. BuildReport.titles (meta titles_json) counts
+  the retitled and the kept per kind of title and per reason, per site, with examples to look at; meta own_titles
+  says on or off.
+- 「还有效」, always written (_validity, _expires_alone): docs.expires (1: the document goes out of date) and
+  docs.valid_ay (the ROC academic year it belongs to), which hybrid.validity reads when HybridConfig.valid_decay is
+  set. BuildReport.validity (meta validity_json) counts what expires per kind_class and per reason, and of the
+  attachments on a document that expires what each clue kept from it (a fixed word in the title, a copy that does
+  not expire, a cohort): the count that stands in for an audit by hand.
+
 Ids (plan 2026-11-08 T1): a document's id is 'd' + its record's id, which assemble derives from the record's identity
 (nknu.content.ids; meta id_scheme). The build stops (BuildError 「编号撞了」) when one id stands for two keys or one key
 has two ids (a member's and an address's); records of one key are one document (documents.one_per_id, (重复)).
@@ -102,6 +157,7 @@ one set of inputs, the two databases measure the whole patch, these parts togeth
     python -m nknu.content.build [--corpus research/pipeline_2026-11-02/corpus.json] [--export …] [--out …]
         [--site-list research/site_probe_2026-10-23/data.json] [--units config/units.yaml] [--no-unit-words]
     python -m nknu.content.build --input <corpus.json>::<export folder> [--input …] [--out …] …
+        [--copy-rule text|title] [--no-merge-recurring] [--no-alumni-background] [--no-event-dates] [--no-own-titles]
     uv run --extra pipeline python -m nknu.content.build --embed [--vec-cache <out folder>/vec_cache.sqlite]
 """
 
@@ -140,6 +196,7 @@ from nknu.content.corpus import (
 from nknu.content.dates import (
     FIELD_SOURCE,
     INHERITED_SOURCE,
+    LIST_SOURCE,
     PAGE_SOURCE,
     DateFact,
     extract_periods,
@@ -147,18 +204,45 @@ from nknu.content.dates import (
     load_server_dates,
 )
 from nknu.content.documents import (
+    EVENT_KIND,
     LINK_SEP,
+    SERIES,
+    TITLE_FILE,
+    TITLE_SHARED,
     Document,
     build_documents,
     deleted_notice,
+    event_line,
+    home_rank,
     kind_class,
     one_event_per_id,
+    one_event_per_series,
     one_per_id,
+    own_titles,
 )
 from nknu.content.embed import PAGE_SIZE, PASSAGE_VERSION, EmbedStats, VecCache, embed_chunks
 from nknu.content.schema import ALIAS_WHYS, BACKGROUND, EXAM, JOURNAL, MINUTES, PRIMARY, create_schema
-from nknu.content.terms import Term, canonical_tokens, event_term, find_cohorts, find_terms, term_tokens
-from nknu.content.units import CAMPUSES, LEVELS, Unit, ancestors, doc_scope, load_units, reach, resolve
+from nknu.content.terms import (
+    Term,
+    canonical_tokens,
+    current_term,
+    event_term,
+    find_cohorts,
+    find_terms,
+    first_term_at,
+    term_tokens,
+)
+from nknu.content.units import (
+    CAMPUSES,
+    LEVELS,
+    TEACHING_KINDS,
+    Unit,
+    ancestors,
+    doc_scope,
+    load_units,
+    reach,
+    resolve,
+)
 from nknu.core import models
 from nknu.core.textnorm import norm_text, tokenize
 from nknu.core.timeutil import TAIPEI, today_tpe
@@ -183,6 +267,41 @@ COPY = "(副本)"  # excluded-count suffix: the same page or file at another add
 COPY_KINDS = ("page", "attachment")
 COPIES_KEY = "copies:"  # meta key prefix: the kept document's id -> JSON list of its copies (url, date, parent;
 #                          format for a format sibling)
+# plan 2026-11-14 T2 (direction 2026-11-13 第 2 件 1): which documents are one (build_sites' copy_rule, --copy-rule).
+# COPY_TEXT, the default: the rule of before and, whatever their titles, documents of one kind_class whose text is the
+# same once all whitespace is removed and then at least COPY_MIN_CHARS long (the direction's 「至少 200 字」: under it
+# two titles with one text are too often two things, 「簡章請見附件」). COPY_TITLE: the rule of before alone (one kind,
+# title and text), so the database of before can be rebuilt and the two compared
+COPY_TEXT, COPY_TITLE = "text", "title"
+COPY_RULES = (COPY_TEXT, COPY_TITLE)
+COPY_MIN_CHARS = 200
+_SPACE = re.compile(r"\s+")  # every whitespace character (str.isspace's), as plan 2026-11-14 T1's scorer removes them
+DEDUPE_KEY = "dedupe_json"  # meta: BuildReport.dedupe as JSON
+LARGEST_GROUPS, TITLE_SHOWN = 10, 60  # the copy groups BuildReport.dedupe lists, and how much of a title 【Claude】
+# plan 2026-11-14 T2 (direction 2026-11-13 第 2 件 4, 「所友名录进背景（你 11-11 同意的）」; the 11-11 design: 「按页种认
+# （c.nknu 平台的所友详细页这一种），不按网站」): the page kinds of the c.nknu template's alumni directory, as
+# pagetext.page_kind names a page of a c.nknu-template host (its leaf without .aspx; docs.kind_raw): the page of one
+# alumnus (student_detail.aspx, which the crawler calls student_detail: 成教所's 1,976 on 11-09) and the directory's
+# list (student.aspx; a row a press brought is student#翻页/按钮, left out already when the export marks it 列表翻页).
+# No other platform gives these names (its pages are page:<profile>, detail:<profile>, page), so no site is named.
+# A rule to keep up: another platform's directory would be another kind here
+ALUMNI_KINDS = ("student_detail", "student")
+# meta event_dates of a build that wrote the calendar events' date lines (plan 2026-11-14 T3, corrected the same day):
+# the lines are in docs.date_line for the reranker's passages and in no vector. "on" is the value of the first rebuild
+# of 11-14 (aca1114.db, sites111v6.db on the lab PC), whose vectors embed them too; "off": no line was written.
+# A value of its own 【Claude】, so that a database says which of the two texts hold the line; nothing reads it back
+EVENT_DATES_RERANK = "rerank"
+TITLES_KEY = "titles_json"  # meta: BuildReport.titles as JSON (plan 2026-11-14 T4)
+VALIDITY_KEY = "validity_json"  # meta: BuildReport.validity as JSON (plan 2026-11-14 T6)
+# plan 2026-11-14 T6 (direction 2026-11-13 第 6 件: 「标题带『辦法』『要點』『規則』『須知』『申請書』这类固定字眼」; the plan's
+# list adds 準則、細則、章程、規程、申請表、表單; the main session's brief of 11-14 adds 規定 and 注意事項 【Claude】):
+# the words of rules and forms in a title, on norm_text (Simplified). A document so titled does not go out of date
+# (_expires_alone)
+_FIXED_WORDS = re.compile(r"办法|要点|规则|须知|准则|细则|章程|规程|规定|注意事项|申请书|申请表|表单")
+# docs.expires's reasons as BuildReport.validity counts them (_expires_alone, _validity): why a document goes out of
+# date, and why it does not
+EXPIRES_WHY = ("event", "title_year", "notice", "dated_page", "parent")
+STAYS_WHY = ("undated", "fixed_words", "cohort", "standing_copy", "standing")
 SOURCES = ("totext", "fallback-1029", "none", "corpus")  # BuildReport.text_sources, in the order the CLI prints
 # the unit stage (addendum 2026-11-02 F, T7d)
 SITE_LIST = REPO_ROOT / "research" / "site_probe_2026-10-23" / "data.json"  # the site probe's list: the units' names,
@@ -265,6 +384,28 @@ class BuildReport:
     sites: list = field(default_factory=list)
     inputs: list = field(default_factory=list)
     passage: dict = field(default_factory=dict)
+    # plan 2026-11-14 T2: 'copies' (_copies_report: rule, min_chars, groups, removed, cross_site, by_rule, by_kind,
+    # by_site: site -> kept, the groups whose kept document is its, and merged, its documents merged away; largest),
+    # 'rank_dates' (_rank_dates: dated, the documents with a docs.rank_date; later, those that rank by a copy's later
+    # day; from_copy, the undated ones that take a copy's; undated_copy, the dated ones a copy of which has no date),
+    # 'recurring' (on, series: the recurring events merged, instances, removed, other_titles, id_taken, events_before,
+    # events_after: the event documents without and with the merge, by_site: site -> series, instances) and 'alumni'
+    # (on, background: the alumni directory's pages made background)
+    dedupe: dict = field(default_factory=dict)
+    # plan 2026-11-14 T3: {'on': whether the build wrote the calendar events' date lines (the reranker reads them; no
+    # vector holds them), 'events': the events with one}
+    event_dates: dict = field(default_factory=dict)
+    # plan 2026-11-14 T4 (_retitle): documents.own_titles' report (on, same_min, max_chars, shared and file: documents,
+    # retitled, kept, why; by_site; examples) and 'changed', what the new titles then gave: {'period': documents whose
+    # new title set their term, 'typed': {doc type: documents their new title gave it}, 'untyped': {doc type:
+    # documents whose new title took it away}}
+    titles: dict = field(default_factory=dict)
+    # plan 2026-11-14 T6 (_validity): 'expires' (documents that go out of date, per kind_class with any, and total),
+    # 'why' (kind_class -> reason -> documents: EXPIRES_WHY and STAYS_WHY), 'attachments' (of those on a document that
+    # expires: parent_expires, expire, kept, undated, clues: fixed_words, standing_copy, cohort), 'valid_ay' (where
+    # each document's year came from: title, date, event, copy, none) and 'year_named' (documents that expire by the
+    # year their title names though it holds a fixed word or states a cohort: fixed_words, cohort)
+    validity: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -316,6 +457,20 @@ class _Row:
     cohorts: list[tuple[int, bool, str]]  # (學年度, onwards, as written)
     dtype: str = ""  # doc_type
     unit: UnitWords = field(default_factory=UnitWords)  # plan 2026-11-08 T4 (unit_words)
+    # plan 2026-11-14 T2: the other terms the instances of a recurring event fall in (ay and sem are its first day's);
+    # () for any other document
+    terms: tuple[Term, ...] = ()
+    # plan 2026-11-14 T3: docs.date_line, an event's term and days for the reranker's passages (_event_lines); '' else
+    date_line: str = ""
+    # plan 2026-11-14 T6 (_validity): docs.expires and docs.valid_ay
+    expires: bool = False
+    valid_ay: int | None = None
+    # plan 2026-11-14 T2, completed (_rank_dates): docs.rank_date, the latest identity date among the document and the
+    # copies merged into it (ident, its own, is what docs.ident_date and a response show)
+    rank_date: date | None = None
+    # plan 2026-11-14 T2 (main session, the same day): docs.rank_undated, a dated document one of whose merged copies
+    # has no date; search gives it no less than an undated document gets (search._date_part)
+    rank_undated: bool = False
 
 
 def check_ids(records: list[Record]) -> None:
@@ -340,13 +495,20 @@ def id_scheme(records: list[Record]) -> str:
     return ids.ID_SCHEME if records and all(r.key for r in records) else ids.SERIAL_SCHEME
 
 
-def tier_of(doc_id: str, dtype: str) -> str:
+def alumni_page(kind_raw: str) -> bool:
+    """Whether a document's kind (docs.kind_raw, the corpus record's kind) is a page of the c.nknu template's alumni
+    directory (ALUMNI_KINDS; plan 2026-11-14 T2), a row a press brought too (<kind>#翻页/按钮)."""
+    return kind_raw.partition("#")[0] in ALUMNI_KINDS
+
+
+def tier_of(doc_id: str, dtype: str, kind_raw: str = "", alumni: bool = True) -> str:
     """docs.tier (plan 2026-11-08 T1; addendum M2 by source): BACKGROUND for an archive member (its record id starts
-    with m, ids.record_id; an older corpus's a<序号>m<k>) and for a journal, an exam or meeting minutes (doc_type);
-    PRIMARY else."""
+    with m, ids.record_id; an older corpus's a<序号>m<k>), for a journal, an exam or meeting minutes (doc_type) and,
+    since plan 2026-11-14 T2, for a page of the alumni directory by its page kind (alumni_page of kind_raw; not with
+    alumni=False, the build's --no-alumni-background, nor without a kind_raw: as before); PRIMARY else."""
     if doc_id.startswith("dm") or _OLD_MEMBER.fullmatch(doc_id) or dtype in (JOURNAL, EXAM, MINUTES):
         return BACKGROUND
-    return PRIMARY
+    return BACKGROUND if alumni and alumni_page(kind_raw) else PRIMARY
 
 
 def _protected(out: Path, export_dir: Path | Sequence[Path]) -> bool:
@@ -410,17 +572,21 @@ def _cohort_raw(src: str, ay: int, onwards: bool) -> str:
 
 
 def _cohorts(d: Document) -> list[tuple[int, bool, str]]:
-    for src in (d.title, d.text[:COHORT_ZONE]):
+    """The cohorts the title names, else those the text's first COHORT_ZONE characters name; between the two, for a
+    document plan 2026-11-14 T4 gave its own title, those its old title named (Document.old_title, '' else)."""
+    for src in (d.title, d.old_title, d.text[:COHORT_ZONE]):
         if found := find_cohorts(src):
             return [(ay, onwards, _cohort_raw(src, ay, onwards)) for ay, onwards in found]
     return []
 
 
 def _term(d: Document, event: Event | None) -> Term | None:
-    """The first term the title names; a calendar event always has one (terms.event_term: else its first day's)."""
+    """The first term the title names; a calendar event always has one (terms.event_term: else its first day's). A
+    document plan 2026-11-14 T4 gave its own title keeps the term only its old title named (Document.old_title: a
+    file name such as 115-1a.pdf) 【Claude】."""
     if d.kind_class == "event" and event is not None:
         return event_term(d.title, event.start)
-    terms = find_terms(d.title)
+    terms = find_terms(d.title) or (find_terms(d.old_title) if d.old_title else [])
     return terms[0] if terms else None
 
 
@@ -466,6 +632,16 @@ def _is_minutes(title: str, parent_title: str) -> bool:
     return bool(named) and not (_RULE.search(title) or _FORM.search(title))
 
 
+def _typed(d: Document) -> str:
+    """A document's doc_type: by its title, its parent's title and its address (doc_type). A document plan 2026-11-14
+    T4 gave its own title is typed by that title, the document's own word for itself (a file on a page of minutes
+    whose own title is a rule is a rule; one whose own title says 會議紀錄 is minutes); and when that names no type, by
+    what its old title alone says plainly (Document.old_title, without the parent's title or the address, which the
+    first reading had already: 20 pages each titled 歷屆試題 stay exams) 【Claude】."""
+    return (doc_type(d.title, d.parent_title, d.url, d.kind_class)
+            or (doc_type(d.old_title, "", "", d.kind_class) if d.old_title else ""))
+
+
 def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date]) -> list[_Row]:
     by_id = {d.doc_id: d for d in docs}
     out = []
@@ -473,9 +649,213 @@ def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date
         event = events.get(d.doc_id)
         facts = _facts(d, by_id.get(d.parent_id or ""), event, server)
         term = _term(d, event)
+        more: tuple[Term, ...] = ()
+        if event is not None and event.days:  # plan 2026-11-14 T2: a recurring event's instances in other terms
+            more = tuple(t for t in dict.fromkeys(event_term(d.title, start) for start, _ in event.days) if t != term)
         out.append(_Row(d, facts, identity_date(facts), term.ay if term else None, term.sem if term else None,
-                        _cohorts(d), doc_type(d.title, d.parent_title, d.url, d.kind_class)))
+                        _cohorts(d), _typed(d), terms=more))
     return out
+
+
+def _retitle(rows: list[_Row], on: bool) -> dict:
+    """BuildReport.titles (plan 2026-11-14 T4; direction 2026-11-13 第 4 件): documents.own_titles on the documents
+    kept (rows: after _merge_copies, so the 20 that make a title no title are 20 documents of the database, and a
+    copy's title, already in the kept one's link texts, counts no more), then, for each document it gave a new title,
+    what a title gives is read again: its term (_term: period_ay, period_sem, which search matches a query's term
+    with and _validity reads), its cohort (_cohorts) and its doc type and so its tier (_typed). Its dates, its parent
+    and what hangs on it stay: an attachment keeps the parent_title it has, as it keeps a merged page's (the index
+    reads it) 【Claude: the plan names the document's title only】. With on False no title changes and the report
+    still counts whose title says nothing. 'changed' in the report: {'period': the documents whose new title set
+    their term, 'typed': {doc type: documents their new title gave it}, 'untyped': {doc type: documents whose new
+    title took it away (a file on a page of minutes whose own title is a rule)}}, the side of the new titles to look
+    at after a build: both move documents between the primary and the background ones."""
+    report = own_titles([r.doc for r in rows], sites.table().school, on=on)
+    period, typed, untyped = 0, Counter(), Counter()
+    for r in rows:
+        if not r.doc.title_from_text:
+            continue
+        term = _term(r.doc, None)
+        ay, sem = (term.ay, term.sem) if term else (None, None)
+        dtype = _typed(r.doc)
+        period += (ay, sem) != (r.ay, r.sem)
+        if dtype != r.dtype:
+            (typed if dtype else untyped)[dtype or r.dtype] += 1
+        r.ay, r.sem, r.cohorts, r.dtype = ay, sem, _cohorts(r.doc), dtype
+    return {**report, "changed": {"period": period, "typed": dict(typed), "untyped": dict(untyped)}}
+
+
+def _event_lines(rows: list[_Row], events: Mapping[str, Event], on: bool) -> dict:
+    """BuildReport.event_dates (plan 2026-11-14 T3; direction 2026-11-13 第 3 件): each calendar event's date line
+    (documents.event_line) into its row, which _write stores in docs.date_line and embed puts into the passages the
+    reranker reads of the event, never into the text it embeds (corrected 11-14: nknu.content.embed): its term (the
+    row's: its title's, else its first day's; a recurring event's first and last, _Row.terms), its first and last day
+    and, for a merged recurring event, how many times it occurs (Event.days). on False (the build's event_dates off)
+    writes none: every passage the reranker reads is the one of before. The vectors are the same either way."""
+    n = 0
+    for r in rows if on else ():
+        event = events.get(r.doc.doc_id)
+        if r.doc.kind_class != "event" or event is None:
+            continue
+        terms = [*([Term(r.ay, r.sem)] if r.ay is not None else []), *r.terms]
+        r.date_line = event_line(terms, event.start, event.end_inclusive, len(event.days))
+        n += 1
+    return {"on": on, "events": n}
+
+
+def _fixed_words(title: str) -> bool:
+    """Whether a title holds a fixed word of rules and forms (_FIXED_WORDS; plan 2026-11-14 T6)."""
+    return bool(_FIXED_WORDS.search(norm_text(title)))
+
+
+def _year_notes_a_rule(title: str) -> bool:
+    """A title whose fixed word of rules and forms stands before the first term it names: the year is a note on a
+    rule, 「學生請假規則（113學年度第1學期第2次校務會議修正通過）」, 「…要點(111學年度起適用)」, not the year the document
+    is of, as in 「114學年度第二學期 網路選課注意事項」 (main session 11-14, after the review 【Claude】: on the 111 sites
+    the year comes first in 155 of the titles that have both and the fixed word in 9)."""
+    at = first_term_at(title)
+    word = _FIXED_WORDS.search(norm_text(title))
+    return word is not None and at is not None and word.start() < at
+
+
+def _expires_alone(r: _Row, parent_expires: bool) -> tuple[bool, str]:
+    """(whether a document goes out of date, why), its merged copies aside (plan 2026-11-14 T6; direction 2026-11-13
+    第 6 件: 「会过期的文件，按结构认，不按网站写规则：公告正文；有发布日期的帖子和新闻；标了学期或学年的文件；行事历事件；旧公告
+    的附件」 and 「不会过期的：常设网页；没日期的文件；规章和表单」). The first that holds, the reason one of EXPIRES_WHY
+    or STAYS_WHY:
+    - a calendar event: it expires ('event'), always 【Claude: no clue below is asked of an event; 「期末考試，若教師另訂
+      其他日期者，從其規定」 holds a fixed word and is over when its day is】;
+    - its title names a term or year (period_ay): it expires ('title_year'), whatever cohort it holds and whether it
+      has a date or not (main session 11-14, after the review 【Claude】: as first written an undated document never
+      expired, so 758 undated files of the 111 sites that name their year, a 「108學年度行事曆」, kept their full
+      weight for ever although docs.valid_ay knew the year); unless a fixed word stands before that year in the
+      title (_year_notes_a_rule): then it does not ('fixed_words'). A fixed word after the year changes nothing
+      【Claude, against the main session's brief of 11-14, which had the fixed words and the cohort win over every
+      reason to expire: of 教务处's 498 notices 33 name a year beside a fixed word, 「114學年度第二學期 本校網路選課相關
+      注意事項」 (the trap of question Q07, which the next term's notice replaces), 「110學年度大學部新生報到須知」, and
+      the notices of 停修 hold 規定 in a bracket; with the final stage's date bonus gone (hybrid, valid_decay) they
+      would no longer rank by their term at all】;
+    - no identity date: it does not ('undated');
+    - its title holds a fixed word of rules and forms (_FIXED_WORDS): it does not ('fixed_words');
+    - it states an entry cohort (「X學年度起入學適用」: its applies_to rows, _cohorts): it does not ('cohort'), valid
+      for that cohort as long as it studies 【Claude: the plan's 「写了『入學適用』届别的」】;
+    - a notice: it expires ('notice');
+    - a page dated by its platform's date field or by the row of a list linking it (a post, a piece of news, an
+      activity page: dates.FIELD_SOURCE, LIST_SOURCE): it expires ('dated_page'); a page the export dated by its own
+      words (「更新日期：…」, PAGE_SOURCE) is a standing page that says when it was changed;
+    - an attachment whose parent expires (parent_expires: the parent's docs.expires, its copies counted in): it
+      expires ('parent');
+    - anything else does not ('standing'): a standing page, a file on one or on none, a file on a rule's notice."""
+    d = r.doc
+    if d.kind_class == "event":
+        return True, "event"
+    if r.ay is not None:
+        return (False, "fixed_words") if _year_notes_a_rule(d.title) else (True, "title_year")
+    if r.ident is None:
+        return False, "undated"
+    if _fixed_words(d.title):
+        return False, "fixed_words"
+    if r.cohorts:
+        return False, "cohort"
+    if d.kind_class == "notice":
+        return True, "notice"
+    if d.kind_class == "page" and r.ident.kind == "published" and r.ident.source in (FIELD_SOURCE, LIST_SOURCE):
+        return True, "dated_page"
+    if d.kind_class == "attachment" and parent_expires:
+        return True, "parent"
+    return False, "standing"
+
+
+def _own_year(r: _Row) -> int | None:
+    """The ROC academic year a document belongs to by itself (plan 2026-11-14 T6: docs.valid_ay): a calendar event's
+    last day's (a merged recurring event's last instance's: its event_end fact); else the year its title names
+    (period_ay), else its identity date's (the year turns on 1 August: terms.current_term), else None."""
+    if r.doc.kind_class == "event":
+        last = next((f.date for f in r.facts if f.kind == "event_end"), None)
+        return current_term(last).ay if last is not None else None
+    if r.ay is not None:
+        return r.ay
+    return current_term(r.ident.date).ay if r.ident is not None else None
+
+
+def _validity(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
+    """Each kept document's docs.expires and docs.valid_ay into its row, and BuildReport.validity (plan 2026-11-14 T6,
+    the build's part; hybrid.validity reads the two columns). rows: the documents kept, with their final titles
+    (after _retitle); copies: _merge_copies' (kept id -> the documents merged into it).
+    - expires: a document and its merged copies are one document at several places, each judged alone
+      (_expires_alone, a copy by its own title, date and parent), and the most favourable counts (the direction:
+      「『还有效』取各副本里最有利的：有一份在常设页上，就算不会过期」): when one of them does not expire, the document does
+      not ('standing_copy' when that one is a copy). Pages and notices first, then the attachments, whose parents are
+      among those. One kind of place says nothing either way 【Claude】: an attachment on no kept document (linked only
+      from a page the build leaves out, a list or an album) that stays only for want of a parent or of a date
+      ('standing', 'undated') is no copy 「在常设页上」. It keeps no copy on a notice from expiring, and kept itself
+      (the earliest) it takes the fate of a copy that expires, with that copy's reason. 教务处's album pages
+      (album_images, 230 of them, titled 「2025/5/5｜公告…」 and left out as lists) hold a twin of many a notice's
+      file at another address: on 11-14 (the Mac's partial corpus) 9 files, name lists of 轉系 and 輔系 among them,
+      would not have expired for such a twin alone. Alone, with no copy that expires, such a file stays as
+      _expires_alone says.
+    - valid_ay: the latest of its own year and its copies' (_own_year) 【Claude: the kept document is the earliest
+      (plan 2026-11-14 T2), so a text posted again in a later year would else count as old as its first posting; the
+      plan's rule, the title's year else the date's, names no copies】.
+    The report (the plan's 「先用程序数一数各线索认到多少。不做 200 份的人工抽查」): 'expires', the documents that go out
+    of date per kind_class with any, and their total; 'why', per kind_class the documents by reason; 'attachments',
+    of the attachments on a document that expires (themselves or by a merged copy): how many (parent_expires), how
+    many expire and how many are kept from it, the undated among those, and per clue the kept ones it holds for, each
+    clue counted where it would keep the document alone (its title holds a fixed word and names no year; it states a
+    cohort and its title names no year; a copy of it does not expire), so one document can count under two;
+    'valid_ay', where the documents' years came from (title, date, event, copy: a copy's later year, none);
+    'year_named', the documents that expire by the year their title names though it holds a fixed word (fixed_words)
+    or they state a cohort (cohort): what _expires_alone decides against the brief, to be weighed."""
+    by_id = {r.doc.doc_id: r for r in rows}
+
+    def parent_expires(r: _Row) -> bool:
+        parent = by_id.get(r.doc.parent_id or "")
+        return parent is not None and parent.expires
+
+    def firm(r: _Row, expires: bool, reason: str) -> bool:
+        """Whether r, judged alone, shows that the document does not expire: not a file on no kept document that
+        stays only for want of a parent or a date."""
+        placed = r.doc.kind_class != "attachment" or (r.doc.parent_id or "") in by_id
+        return not expires and (placed or reason not in ("standing", "undated"))
+
+    why: dict[str, str] = {}
+    standing_copy: set[str] = set()  # the documents a copy of which shows that they do not expire
+    hung: list[_Row] = []  # the attachments on a document that expires, themselves or by a copy
+    sources: Counter[str] = Counter()
+    for r in sorted(rows, key=lambda r: r.doc.kind_class == "attachment"):  # stable: the parents first
+        members = [r, *copies.get(r.doc.doc_id, ())]
+        verdicts = [_expires_alone(m, parent_expires(m)) for m in members]
+        shown = [firm(m, *v) for m, v in zip(members, verdicts, strict=True)]
+        expires, reason = verdicts[0]
+        if any(shown):
+            if not shown[0]:
+                expires, reason = False, "standing_copy"
+        elif not expires:  # it stays for want of a parent or a date: a copy that expires decides
+            expires, reason = next((v for v in verdicts[1:] if v[0]), (expires, reason))
+        if any(shown[1:]):
+            standing_copy.add(r.doc.doc_id)
+        if r.doc.kind_class == "attachment" and any(map(parent_expires, members)):
+            hung.append(r)
+        r.expires, why[r.doc.doc_id] = expires, reason
+        own = _own_year(r)
+        r.valid_ay = max((y for y in map(_own_year, members) if y is not None), default=None)
+        sources["event" if r.doc.kind_class == "event" else "copy" if r.valid_ay != own
+                else "title" if r.ay is not None else "date" if r.ident is not None else "none"] += 1
+    reasons: dict[str, Counter[str]] = {}
+    for r in rows:
+        reasons.setdefault(r.doc.kind_class, Counter())[why[r.doc.doc_id]] += 1
+    expiring = Counter(r.doc.kind_class for r in rows if r.expires)
+    kept = [r for r in hung if not r.expires]
+    dated = [r for r in rows if r.doc.kind_class != "event" and r.ident is not None and r.ay is not None]
+    return {"expires": {**expiring, "total": sum(expiring.values())},
+            "why": {kind: dict(c) for kind, c in reasons.items()},
+            "attachments": {"parent_expires": len(hung), "expire": len(hung) - len(kept), "kept": len(kept),
+                            "undated": sum(r.ident is None for r in kept),
+                            "clues": {"fixed_words": sum(r.ay is None and _fixed_words(r.doc.title) for r in kept),
+                                      "standing_copy": sum(r.doc.doc_id in standing_copy for r in kept),
+                                      "cohort": sum(r.ay is None and bool(r.cohorts) for r in kept)}},
+            "valid_ay": dict(sources),
+            "year_named": {"fixed_words": sum(_fixed_words(r.doc.title) for r in dated),
+                           "cohort": sum(bool(r.cohorts) for r in dated)}}
 
 
 def _file_digest(export_dir: Path, records: list[Record]) -> Callable[[str], str | None]:
@@ -493,8 +873,9 @@ def _file_digest(export_dir: Path, records: list[Record]) -> Callable[[str], str
     return digest
 
 
-def _copy_groups(rows: list[_Row], digest: Callable[[str], str | None]) -> list[list[_Row]]:
-    """Pages or attachments that are one document at several addresses: same kind and title (an attachment's file
+def _title_groups(rows: list[_Row], digest: Callable[[str], str | None]) -> list[list[_Row]]:
+    """The rule of before plan 2026-11-14 T2 (COPY_TITLE; until then _copy_groups).
+    Pages or attachments that are one document at several addresses: same kind and title (an attachment's file
     name), and the same text; when there is no text, the same file bytes (looked at only for documents that share a
     kind and a title). Titles that differ never merge, so every title stays findable. A page documents._class made a
     notice (sub-step 4, spec 2026-11-08 §四: GEO shows one notice at every index= of its id, 145 of them at two
@@ -521,6 +902,63 @@ def _copy_groups(rows: list[_Row], digest: Callable[[str], str | None]) -> list[
     return groups
 
 
+def _bare(text: str) -> str:
+    """text without any whitespace (plan 2026-11-14 T2; T1's scorer, offline_eval._bare, compares copies the same
+    way)."""
+    return _SPACE.sub("", text)
+
+
+def _by_text(d: Document) -> str | None:
+    """What the text rule compares a document by (plan 2026-11-14 T2): its text without whitespace when that is at
+    least COPY_MIN_CHARS long; None for a document the rule leaves alone: a shorter one, a calendar event (no part
+    of this rule: its text is its title, and its days are what tell two apart; documents.one_event_per_series merges
+    the instances of one recurring event) and one whose words are not the document (has_text false: a scan's few
+    words, which two scans can share; such files merge by the rule of before only) 【Claude】."""
+    if d.kind_class == "event" or not d.has_text or len(d.text) < COPY_MIN_CHARS:
+        return None
+    bare = _bare(d.text)
+    return bare if len(bare) >= COPY_MIN_CHARS else None
+
+
+def _text_groups(rows: list[_Row]) -> list[list[_Row]]:
+    """The text rule's groups (plan 2026-11-14 T2; direction 2026-11-13 第 2 件 1): documents of one kind_class with
+    the same _by_text, across sites and inside one, a notice of a detail path too, whatever their titles (the kept
+    one's link texts keep every title findable: _take_over)."""
+    by_text: dict[tuple[str, str], list[_Row]] = {}
+    for r in rows:
+        if (bare := _by_text(r.doc)) is not None:
+            by_text.setdefault((r.doc.kind_class, hashlib.sha256(bare.encode()).hexdigest()), []).append(r)
+    return [g for g in by_text.values() if len(g) > 1]
+
+
+def _copy_groups(rows: list[_Row], digest: Callable[[str], str | None], rule: str = COPY_TEXT) -> list[list[_Row]]:
+    """The documents that are one, group by group. COPY_TITLE: the groups of before, as they were (_title_groups).
+    COPY_TEXT (plan 2026-11-14 T2): those and the text rule's (_text_groups), two groups sharing a document being one
+    (a page with one title and text as another is with it in both; the text rule only widens), each group in the
+    rows' order and the groups by their first row; with no text group they are the groups of before."""
+    groups = _title_groups(rows, digest)
+    wider = _text_groups(rows) if rule == COPY_TEXT else []
+    if not wider:
+        return groups
+    place = {id(r): i for i, r in enumerate(rows)}
+    root = list(range(len(rows)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    for group in (*wider, *groups):
+        first = find(place[id(group[0])])
+        for r in group[1:]:
+            root[find(place[id(r)])] = first
+    joined: dict[int, list[_Row]] = {}
+    for i in sorted({place[id(r)] for group in (*wider, *groups) for r in group}):
+        joined.setdefault(find(i), []).append(rows[i])
+    return list(joined.values())
+
+
 def _inherited(r: _Row) -> date | None:
     return next((f.date for f in r.facts if f.kind == "inherited"), None)
 
@@ -528,27 +966,85 @@ def _inherited(r: _Row) -> date | None:
 def _take_over(keep: Document, other: Document) -> None:
     """keep stands for other from now on: other's references join keep's, other's title stays findable in keep's
     linktext, and other's list categories join keep's, each once after keep's own (blueprint item 22, review 11-09:
-    the unit line, written after this, would otherwise lose a category only a copy's list row states)."""
+    the unit line, written after this, would otherwise lose a category only a copy's list row states). Plan 2026-11-14
+    T2: so does other's file name when a page gave it its title (file_title), since copies of one text need not share
+    a file name any more; under the rule of before both have one file name, which keep's title or linktext holds
+    already, so nothing is added there 【Claude】."""
     known = {ref for ref, _, _ in keep.refs}
     keep.refs += tuple(ref for ref in other.refs if ref[0] not in known and ref[0] != keep.doc_id)
-    if other.title != keep.title and other.title not in keep.linktext.split(LINK_SEP):
-        keep.linktext = LINK_SEP.join(p for p in (keep.linktext, other.title) if p)
+    for name in (other.title, other.file_title):
+        if name and name != keep.title and name not in keep.linktext.split(LINK_SEP):
+            keep.linktext = LINK_SEP.join(p for p in (keep.linktext, name) if p)
     keep.categories += tuple(c for c in other.categories if c not in keep.categories)
+    # main session 11-14, after the review: whose sites hold a copy (unit_scope: a department's document that other
+    # departments keep too applies to them all)
+    if other.unit and other.unit != keep.unit and other.unit not in keep.also_units:
+        keep.also_units += (other.unit,)
+    keep.also_units += tuple(u for u in other.also_units if u != keep.unit and u not in keep.also_units)
 
 
-def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None],
-                  excluded: dict[str, int]) -> tuple[list[_Row], dict[str, list[_Row]]]:
-    """Keep one document of each copy group (review 11-01: copies took half the places in the top ten): the one on the
-    latest dated notice (the school still posts the file then), else the latest identity date, else the first in
-    corpus order. The others are counted in excluded as <kind>(副本) and returned, newest first, under the kept id;
-    the kept one takes their references and list categories (_take_over); a document hanging on a dropped page hangs
-    on the kept one (same title and text), and a reference to a dropped page points at the kept one."""
+def _owner_level(d: Document, units: Mapping[str, Unit]) -> int:
+    """How likely the unit a copy stands under is the one the text comes from, the lower the likelier (_merge_copies)
+    【Claude】: 0 an office's, a section's or a centre's (when the same text is on an office's site and on
+    departments', the departments took it from the office: a rule, a form, an admission brochure); 1 a college's, a
+    department's or a programme's (its own rule that the school's rule system or announcement platform also shows is
+    its own); 2 any other: the school as a whole, an unknown unit, and a shared platform's own export, whose unit is
+    a placeholder (documents.home_rank 2). The unit is the one the site table gives the copy's address
+    (Document.unit: sites.unit_for)."""
+    if home_rank(d.url, d.site) == 2:
+        return 2
+    unit_id = resolve(d.unit, units)
+    if unit_id is None or units[unit_id].parent_id is None:
+        return 2
+    return 1 if units[unit_id].kind in TEACHING_KINDS else 0
+
+
+def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None], excluded: dict[str, int],
+                  rule: str = COPY_TEXT, alumni: bool = True,
+                  units: Mapping[str, Unit] | None = None) -> tuple[list[_Row], dict[str, list[_Row]]]:
+    """Keep one document of each copy group (review 11-01: copies took half the places in the top ten; _copy_groups
+    by rule). Which one:
+    - a group the text rule made or widened (plan 2026-11-14 T2: one of its documents has a _by_text): first by
+      whose copy it is (units given: _owner_level; main session 11-14, after the review 【Claude】: the direction's
+      「显示最早的那份（原发单位）」 takes the earliest for the one who first published, and dates do not say that: an
+      attachment's date is its notice's or the server's. On the 111 sites 251 texts that an office keeps on its own
+      site were kept under a department whose copy carried an earlier date, among them the school's 《抵免學分要點》
+      and the 輔系 form of two test questions; the unit line, the scope and so the audience factor followed the
+      department); then the earliest
+      by its identity date, 「显示最早的那份（原发单位）和它自己的日期」, an undated one after every dated one; among
+      those of that day the nearest home (documents.home_rank: a unit's own site before the export that brought a
+      page, a shared platform's own export last; the plan's 「同一天照现有的 _rank」), then the choice of before. A
+      primary document comes before a background one whatever their dates (tier_of, with alumni as the build's
+      switch) 【Claude】: a file a notice links is often in an older archive too, and kept under the archive member it
+      would leave the primary documents for the background ones, which the rule of before never did to another title;
+    - any other group (the rule of before alone: every group under COPY_TITLE): the one on the latest dated notice
+      (the school still posts the file then), else the latest identity date, else the first in corpus order.
+    The others are counted in excluded as <kind>(副本) and returned, newest first, under the kept id; the kept one
+    takes their references, titles and list categories (_take_over); a document hanging on a dropped page hangs on
+    the kept one (the same text; its parent_title stays the dropped page's, which the index reads), and a reference to
+    a dropped page points at the kept one."""
     order = {r.doc.doc_id: i for i, r in enumerate(rows)}
+
+    def before(r: _Row) -> tuple:
+        """The choice of before, the greatest first."""
+        return (_inherited(r) is not None, _inherited(r) or date.min, r.ident.date if r.ident else date.min,
+                -order[r.doc.doc_id])
+
+    def earliest(group: list[_Row]) -> _Row:
+        front = [r for r in group if tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni) == PRIMARY] or group
+        if units is not None:
+            nearest = min(_owner_level(r.doc, units) for r in front)
+            front = [r for r in front if _owner_level(r.doc, units) == nearest]
+        first = min((r.ident.date for r in front if r.ident), default=None)
+        tied = [r for r in front if (r.ident.date if r.ident else None) == first]
+        home = min(home_rank(r.doc.url, r.doc.site) for r in tied)
+        return max((r for r in tied if home_rank(r.doc.url, r.doc.site) == home), key=before)
+
     kept_of: dict[str, str] = {}
     copies: dict[str, list[_Row]] = {}
-    for group in _copy_groups(rows, digest):
-        keep = max(group, key=lambda r: (_inherited(r) is not None, _inherited(r) or date.min,
-                                         r.ident.date if r.ident else date.min, -order[r.doc.doc_id]))
+    for group in _copy_groups(rows, digest, rule):
+        by_text = rule == COPY_TEXT and any(_by_text(r.doc) is not None for r in group)
+        keep = earliest(group) if by_text else max(group, key=before)
         others = sorted((r for r in group if r is not keep),
                         key=lambda r: (r.ident is None, -(r.ident.date.toordinal() if r.ident else 0),
                                        order[r.doc.doc_id]))
@@ -569,6 +1065,82 @@ def _merge_copies(rows: list[_Row], digest: Callable[[str], str | None],
                 refs[ref] = (zone, context)
         r.doc.refs = tuple((ref, zone, context) for ref, (zone, context) in refs.items())
     return kept, copies
+
+
+def _copies_report(kept: list[_Row], copies: dict[str, list[_Row]], rule: str,
+                   site_order: Sequence[str] = ()) -> dict:
+    """BuildReport.dedupe['copies'] (plan 2026-11-14 T2: 「合了几组、少了几份、每个网站各留了几份、各被合掉几份」, and the
+    direction's 「动手前先数 849 组的正本落在谁家」) of _merge_copies' result: the rule, COPY_MIN_CHARS, the groups
+    merged and the documents they removed; the groups whose documents are of more than one site (cross_site); by_rule,
+    the groups the text rule made or widened and those of the rule of before alone; by_kind, the documents removed
+    per kind_class; by_site, per site (docs.site, the export a document came from; site_order first, then by name)
+    kept, the groups whose kept document is the site's, and merged, the site's documents merged away; largest, the
+    LARGEST_GROUPS groups with the most copies (the kept id, its site, kind_class and title cut to TITLE_SHOWN, the
+    copies, the sites and the different titles in the group), to look at after a build: a group of many titles is a
+    text many pages share, which the kept one's link texts then all name 【Claude】."""
+    by_id = {r.doc.doc_id: r for r in kept}
+    by_rule = {name: {"groups": 0, "removed": 0} for name in COPY_RULES}
+    by_kind: Counter[str] = Counter()
+    sites_: dict[str, dict[str, int]] = {}
+    cross = 0
+    for kept_id, others in copies.items():
+        group = [by_id[kept_id], *others]
+        made = COPY_TEXT if rule == COPY_TEXT and any(_by_text(r.doc) is not None for r in group) else COPY_TITLE
+        by_rule[made]["groups"] += 1
+        by_rule[made]["removed"] += len(others)
+        by_kind[group[0].doc.kind_class] += len(others)
+        cross += len({r.doc.site for r in group}) > 1
+        for r, what in ((group[0], "kept"), *((o, "merged") for o in others)):
+            sites_.setdefault(r.doc.site, {"kept": 0, "merged": 0})[what] += 1
+    first = {site: i for i, site in enumerate(site_order)}
+    largest = sorted(copies.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:LARGEST_GROUPS]
+    return {"rule": rule, "min_chars": COPY_MIN_CHARS, "groups": len(copies),
+            "removed": sum(len(others) for others in copies.values()), "cross_site": cross, "by_rule": by_rule,
+            "by_kind": dict(by_kind),
+            "by_site": {site: sites_[site] for site in sorted(sites_, key=lambda x: (first.get(x, len(first)), x))},
+            "largest": [{"kept": kept_id, "site": by_id[kept_id].doc.site, "kind": by_id[kept_id].doc.kind_class,
+                         "title": by_id[kept_id].doc.title[:TITLE_SHOWN], "copies": len(others),
+                         "sites": len({r.doc.site for r in (by_id[kept_id], *others)}),
+                         "titles": len({r.doc.title for r in (by_id[kept_id], *others)})}
+                        for kept_id, others in largest]}
+
+
+def _rank_dates(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
+    """Each kept document's docs.rank_date into its row, and BuildReport.dedupe['rank_dates'] (plan 2026-11-14 T2,
+    completed the same day. The direction, 2026-11-13 第 2 件 1: 「显示最早的那份（原发单位）和它自己的日期」; the main
+    session's brief of 11-14 after the first rebuild: for ranking by recency the most favourable among the copies
+    counts, the latest date, so that merging never ranks a document lower than before). rows: the documents kept;
+    copies: _merge_copies' (kept id -> the documents merged into it), of either copy rule.
+
+    rank_date: the latest identity date among the document and its copies; its own for a document without copies;
+    None when none of them is dated (an event has no identity date: search ranks it by its last day, as before). The
+    kept document of the text rule is the earliest (_merge_copies), so until this its docs.ident_date, which search
+    ranked by, was the earliest of the group: on the 教务处 control a gold document's keyword rank fell from 4 to 26
+    once its copies were merged into an earlier one (main session, 11-14, the first rebuild). docs.ident_date stays
+    the kept document's own, and every copy keeps its own in the copies' list (_copies_meta).
+
+    The report, to read after a build: 'dated', the documents with a rank date; 'later', those dated themselves that
+    rank by a copy's later day; 'from_copy', those without a date of their own that take a copy's (a primary file
+    kept before a dated archive member: search gives it no less than an undated document gets, search._date_part);
+    'undated_copy', those that rank by a date though a copy of theirs has none. The last is where 「never lower than
+    before」 is not kept 【Claude: counted, not solved】: ranking v2 gives an undated document half of today's bonus,
+    more than a date over about 250 days old gives, so such a copy ranked above where the merged document now does.
+    Whether that is a loss depends on the copy (a rule's copy on a standing page loses its standing; a second address
+    of one dated post only shows its age now), and a date column cannot say 「no date at one of its places」."""
+    later = from_copy = undated_copy = 0
+    for r in rows:
+        members = [r, *copies.get(r.doc.doc_id, ())]
+        r.rank_date = max((m.ident.date for m in members if m.ident is not None), default=None)
+        if r.rank_date is None:
+            continue
+        later += r.ident is not None and r.rank_date > r.ident.date
+        from_copy += r.ident is None
+        # main session, 11-14 (the direction's v5 wording: 「没日期的副本照现在算 0.15。这样合并不会让一份文件比现在排得
+        # 更后」): the flag search needs for what the docstring above calls counted, not solved
+        r.rank_undated = r.ident is not None and any(m.ident is None for m in members)
+        undated_copy += r.rank_undated
+    return {"dated": sum(r.rank_date is not None for r in rows), "later": later, "from_copy": from_copy,
+            "undated_copy": undated_copy}
 
 
 def _copies_meta(rows: list[_Row], copies: dict[str, list[_Row]]) -> dict[str, str]:
@@ -638,7 +1210,9 @@ def _write_index(conn: sqlite3.Connection, rows: list[_Row]) -> tuple[int, int]:
     title_tokens: title, parent title, link text and the section heading, each on a line of its own; body_tokens: the
     chunk, after its table header when it has one (T7a: a row far down a table still finds the column names). Both
     carry the term tokens (term115s1 ...); an event's title column also carries its own term's, which its title seldom
-    writes (fix round 2, 11-01: 「下學期 選課」 finds next term's 選課). unit_tokens: the unit words (plan 2026-11-08 T4:
+    writes (fix round 2, 11-01: 「下學期 選課」 finds next term's 選課), and a recurring event's every term an instance of
+    it falls in (_Row.terms, plan 2026-11-14 T2: each instance carried its own before the merge, so the terms after
+    its first would find it no more). unit_tokens: the unit words (plan 2026-11-08 T4:
     the unit's name and short names, the 組別, the units it applies to, the list rows' categories since blueprint item
     22; unit_words), a word at a time; in title_tokens until 11-08 10:16, a column of their own since (N11: search
     weighs them apart, RankConfig.unit_weight, and counts a query word only they have as part found,
@@ -662,6 +1236,8 @@ def _write_index(conn: sqlite3.Connection, rows: list[_Row]) -> tuple[int, int]:
         n_sec += len(sections)
         heading = {s.sec_id: s.heading for s in sections}
         own_term = term_tokens(Term(r.ay, r.sem)) if d.kind_class == "event" and r.ay is not None else None
+        if own_term is not None and r.terms:
+            own_term = list(dict.fromkeys(own_term + [t for term in r.terms for t in term_tokens(term)]))
         titles: dict[int, str] = {}
         unit = _tokens("\n".join(r.unit.words))
         for c in chunks:
@@ -839,6 +1415,17 @@ def unit_scope(docs: list[Document], units: dict[str, Unit]) -> _UnitScope:
         if d.grp and pub is not None and pub != resolve(d.grp, units):
             unplaced[d.grp] += 1
         applies, mentions = doc_scope(d.title, d.text[:SCOPE_HEADER], pub, units, body=d.text[:SCOPE_BODY])
+        found = applies  # what the document itself says: the report's 'narrowed' counts read this
+        # plan 2026-11-14 T2 (main session, after the review 【Claude】): one text on several departments' sites is
+        # kept once, under one of them (_merge_copies); it applies to every college, department and programme whose
+        # site holds a copy, so a question naming one of the others finds it with that unit's words and is not
+        # told it is another department's (hybrid.off_audience). Only for a document that applies to such units
+        # alone: an office's document applies to the school whoever copied it.
+        shared = {u for u in (resolve(n, units) for n in d.also_units)
+                  if u is not None and units[u].kind in TEACHING_KINDS} - applies.units
+        if shared and applies.units and all(units[u].kind in TEACHING_KINDS for u in applies.units):
+            applies = dataclasses.replace(applies, units=applies.units | shared)
+            named["copies"] += 1
         own = [(d.doc_id, "applies_to", u, c, lv, applies.cohort_from) for u in tree_order(applies.units)
                for c in sorted(applies.campus, key=CAMPUSES.index) or [None]
                for lv in sorted(applies.levels, key=LEVELS.index) or [None]]
@@ -849,12 +1436,12 @@ def unit_scope(docs: list[Document], units: dict[str, Unit]) -> _UnitScope:
         rows += own
         docs_with.update({r[1] for r in own})
         base = reach(pub, units)
-        if applies != base:
+        if found != base:
             narrowed["title" if doc_scope(d.title, "", pub, units)[0] != base else "header"] += 1
-            named["units"] += int(applies.units != base.units)
-            named["cohort"] += int(applies.cohort_from is not None)
-            campus.update(applies.campus)
-            levels.update(applies.levels)
+            named["units"] += int(found.units != base.units)
+            named["cohort"] += int(found.cohort_from is not None)
+            campus.update(found.campus)
+            levels.update(found.levels)
     per_rel = Counter(r[1] for r in rows)
     report = {"units": len(units), "kinds": dict(Counter(u.kind for u in units.values())),
               "aliases": sum(len(u.aliases) for u in units.values()),
@@ -863,6 +1450,8 @@ def unit_scope(docs: list[Document], units: dict[str, Unit]) -> _UnitScope:
                            "header": narrowed["header"]},
               "named": {"units": named["units"], "campus": {c: campus[c] for c in CAMPUSES if campus[c]},
                         "levels": {lv: levels[lv] for lv in LEVELS if levels[lv]}, "cohort": named["cohort"]},
+              # documents whose applies_to also names the departments that hold a copy of them (Document.also_units)
+              "copies_units": named["copies"],
               "publishers": dict(publishers.most_common()), "grp_unplaced": dict(unplaced.most_common()),
               "seconds": round(time.monotonic() - started, 2)}
     return _UnitScope([(u.unit_id, u.name, u.kind, u.parent_id, u.campus) for u in units.values()],
@@ -885,10 +1474,13 @@ SITE_COLUMNS = ("site", "name", "unit", "data_as_of", "missing_pages", "missing_
 
 
 def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, scope: _UnitScope | None = None,
-           aliases: list[tuple[str, str, str]] | None = None, site_rows: list[dict] | None = None) -> None:
-    """The database at path: schema, docs (with their tier, site and unit line), doc_alias (aliases: _aliases' rows),
+           aliases: list[tuple[str, str, str]] | None = None, site_rows: list[dict] | None = None,
+           alumni: bool = True) -> None:
+    """The database at path: schema, docs (with their tier, site and unit line, and since plan 2026-11-14 T3, T6 and
+    T2 their date line, expires, valid_ay and rank_date: _event_lines, _validity, _rank_dates), doc_alias (aliases:
+    _aliases' rows),
     doc_refs, dates, applies_to, the unit tables when scope is given, sites (site_rows: _site_rows'), the index,
-    meta."""
+    meta. alumni: whether the alumni directory's pages are background (tier_of; plan 2026-11-14 T2)."""
     conn = sqlite3.connect(path)
     try:
         conn.execute(f"PRAGMA page_size={PAGE_SIZE}")  # before the first table: room for chunk_vecs' 2 KB rows (T7b)
@@ -898,11 +1490,14 @@ def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, sco
         conn.executemany(
             "INSERT INTO docs(doc_id, kind_class, kind_raw, title, url, unit, grp, parent_id, parent_title, linktext,"
             " has_text, text, chars, period_ay, period_sem, ident_date, ident_kind, doc_type, text_source, tier, site,"
-            " unit_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " unit_line, date_line, expires, valid_ay, rank_date, rank_undated)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(r.doc.doc_id, r.doc.kind_class, r.doc.kind_raw, r.doc.title, r.doc.url, r.doc.unit, r.doc.grp,
               r.doc.parent_id, r.doc.parent_title, r.doc.linktext, int(r.doc.has_text), r.doc.text, len(r.doc.text),
               r.ay, r.sem, r.ident.date.isoformat() if r.ident else None, r.ident.kind if r.ident else None,
-              r.dtype, r.doc.source, tier_of(r.doc.doc_id, r.dtype), r.doc.site, r.unit.line) for r in rows])
+              r.dtype, r.doc.source, tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni), r.doc.site,
+              r.unit.line, r.date_line, int(r.expires), r.valid_ay,
+              r.rank_date.isoformat() if r.rank_date else None, int(r.rank_undated)) for r in rows])
         conn.executemany("INSERT INTO doc_alias(alias, doc_id, why) VALUES (?, ?, ?)", aliases or [])
         conn.executemany("INSERT INTO doc_refs(doc_id, ref_id, zone, context) VALUES (?, ?, ?, ?)",
                          [(r.doc.doc_id, *ref) for r in rows for ref in r.doc.refs])
@@ -1003,7 +1598,9 @@ def build_db(corpus: Path, export_dir: Path, out: Path, **kw) -> BuildReport:
 def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates: Path | None = None,
                 aliases: Path = ALIASES, today: date | None = None, embed: bool = False, vec_cache: Path | None = None,
                 embedder=None, site_list: Path | None = None, units_config: Path = UNITS,
-                unit_words: bool = True, unit_in_vectors: bool = False) -> BuildReport:
+                unit_words: bool = True, unit_in_vectors: bool = False, copy_rule: str = COPY_TEXT,
+                merge_recurring: bool = True, alumni_background: bool = True, event_dates: bool = True,
+                own_titles: bool = True) -> BuildReport:
     """One database from inputs, each (corpus.json, the export folder it was assembled from), in order (plan
     2026-11-08 T4; the module docstring). Read every input first (a broken one stops the build before anything is
     written), then write out + '.tmp' and move it over out. today (default: Asia/Taipei today) bounds the server dates
@@ -1016,11 +1613,21 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     units as written. unit_words=False (--no-unit-words; T4 review): no unit line and no unit tokens anywhere, the
     owner's patch left out to be measured (_set_unit_words; meta unit_words says which). unit_in_vectors
     (--unit-words-in-vectors): the vectors embed the unit line too; off by default (embed_chunks says why), so the
-    keyword index and the reranker carry the unit words and the vectors hold the text. BuildError: a corpus with ids
+    keyword index and the reranker carry the unit words and the vectors hold the text. Plan 2026-11-14 T2 (the module
+    docstring), each default the new way and its other value the build of before: copy_rule (--copy-rule; COPY_TEXT,
+    or COPY_TITLE for the copy rule of before alone; anything else is a ValueError), merge_recurring
+    (--no-merge-recurring: every instance of a recurring calendar event stays a document) and alumni_background
+    (--no-alumni-background: the alumni directory's pages stay primary). Plan 2026-11-14 T3 and T4, likewise:
+    event_dates (--no-event-dates: no calendar event gets its date line, every passage the reranker reads is the one
+    of before; the vectors hold no such line either way) and
+    own_titles (--no-own-titles: every document keeps the title it has). T6's docs.expires and docs.valid_ay are
+    always written (a new column each; nothing read them before). BuildError: a corpus with ids
     of its own beside another input, a corpus with another export, an id of two keys or a key of two ids."""
     pairs = [(Path(c), Path(e)) for c, e in inputs]
     if not pairs:
         raise ValueError("至少要一份输入（corpus.json 和它的导出资料夹）")
+    if copy_rule not in COPY_RULES:
+        raise ValueError(f"copy_rule 只能是 {'、'.join(COPY_RULES)}，给的是 {copy_rule!r}")
     out = Path(out)
     vec_cache = Path(vec_cache) if vec_cache is not None else None
     tmp = out.with_name(out.name + ".tmp")
@@ -1066,17 +1673,33 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             in_inputs.setdefault(r.id, set()).add(n)
     records, merged = one_per_id(records)
     events, repeated = one_event_per_id([ev for inp in read for ev in inp.events])
+    # plan 2026-11-14 T2: the instances of one recurring event are one event (after one per id: every export showing
+    # the calendar brings each instance)
+    folded = {"series": 0, "instances": 0, "other_titles": 0, "id_taken": 0}
+    if merge_recurring:
+        events, folded = one_event_per_series(events)
+        if folded["id_taken"]:
+            warnings.append(f"行事历有 {folded['id_taken']} 个重复系列的编号和别的事件的编号一样，没合并，各次照旧各算一份")
     first = read[0]
     # the school's deleted notices build_documents leaves out, per site (owner 11-09, blueprint item 15)
     deleted = Counter(r.site or first.info["site"] for r in records if deleted_notice(r))
     docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"])
     for kind, n in [*merged.items(), *repeated.items()]:
         excluded[kind] = excluded.get(kind, 0) + n
+    if away := folded["instances"] - folded["series"]:  # the instances folded into their series' one document
+        excluded[EVENT_KIND + SERIES] = away
     groups = load_aliases(aliases)
     server = _server_dates(server_dates, today or today_tpe(), warnings)
-    rows, copies = _merge_copies(_rows(docs, {"e" + ev.id: ev for ev in events}, server),
-                                 _file_digest(first.export, records), excluded)
+    by_event = {"e" + ev.id: ev for ev in events}
+    rows, copies = _merge_copies(_rows(docs, by_event, server), _file_digest(first.export, records), excluded,
+                                 copy_rule, alumni_background, units)
     docs = [r.doc for r in rows]
+    # plan 2026-11-14 T2's report first: it names the kept documents by the titles they were merged under
+    copied = _copies_report(rows, copies, copy_rule, [inp.info["site"] for inp in read])
+    ranked = _rank_dates(rows, copies)  # plan 2026-11-14 T2, completed: the date each merged document ranks by
+    titled = _retitle(rows, own_titles)  # plan 2026-11-14 T4: before anything below reads a title
+    dated = _event_lines(rows, by_event, event_dates)  # plan 2026-11-14 T3
+    valid = _validity(rows, copies)  # plan 2026-11-14 T6
     scope = unit_scope(docs, units) if units is not None else None
     _set_unit_words(rows, units, unit_words, _applies(scope))
     id_aliases = _aliases(rows, copies)  # doc_alias (not config/aliases.yaml, the synonym groups)
@@ -1098,7 +1721,22 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     site_rows = _site_rows(read, docs, warnings, deleted, {site: again.get(site, 0) for site in judged})
 
     attachments = [d for d in docs if d.kind_class == "attachment"]
-    tiers = Counter(tier_of(r.doc.doc_id, r.dtype) for r in rows)
+    tiers = Counter(tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni_background) for r in rows)
+    event_docs = sum(d.kind_class == "event" for d in docs)
+    series_sites: dict[str, dict[str, int]] = {}  # site -> its recurring events merged and their instances
+    for ev in events:
+        if ev.days:
+            per = series_sites.setdefault(ev.site or first.info["site"], {"series": 0, "instances": 0})
+            per["series"] += 1
+            per["instances"] += len(ev.days)
+    dedupe = {  # plan 2026-11-14 T2 (BuildReport.dedupe)
+        "copies": copied,
+        "rank_dates": ranked,
+        "recurring": {"on": merge_recurring, "series": folded["series"], "instances": folded["instances"],
+                      "removed": away, "other_titles": folded["other_titles"], "id_taken": folded["id_taken"],
+                      "events_before": event_docs + away, "events_after": event_docs, "by_site": series_sites},
+        "alumni": {"on": alumni_background,
+                   "background": sum(alumni_page(d.kind_raw) for d in docs) if alumni_background else 0}}
     whys = Counter(why for _, _, why in id_aliases)
     sources: dict[str, Counter] = {}
     for r in rows:
@@ -1109,8 +1747,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
               "cohort_rows": sum(len(r.cohorts) for r in rows),
               "doc_types": {t: sum(r.dtype == t for r in rows) for t in (JOURNAL, EXAM, MINUTES)},
               "doc_refs": sum(len(d.refs) for d in docs),
+              # title_file_name: still titled by its file name, so without those plan 2026-11-14 T4 gave their own
+              # title (BuildReport.titles counts them)
               "attachments": {"title_from_page": sum(d.title_from_context for d in attachments),
-                              "title_file_name": sum(not d.title_from_context for d in attachments),
+                              "title_file_name": sum(not d.title_from_context and not d.title_from_text
+                                                     for d in attachments),
                               "parent": sum(d.parent_id is not None for d in attachments),
                               "no_parent": sum(d.parent_id is None for d in attachments)},
               "tiers": {t: tiers[t] for t in (PRIMARY, BACKGROUND) if tiers[t]},  # plan 2026-11-08 T1
@@ -1130,6 +1771,16 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             "aliases_json": json.dumps(groups, ensure_ascii=False), "id_scheme": scheme,
             "unit_words": "on" if unit_words else "off",  # T4 review: a build with --no-unit-words says so
             "unit_in_vectors": "on" if unit_words and unit_in_vectors else "off",  # 11-08: off unless asked
+            # plan 2026-11-14 T2: how this database was built, and what that merged
+            "copy_rule": copy_rule, "recurring_events": "on" if merge_recurring else "off",
+            "alumni_background": "on" if alumni_background else "off",
+            DEDUPE_KEY: json.dumps(dedupe, ensure_ascii=False),
+            # plan 2026-11-14 T3, T4, T6: whether the events' passages carry their date line (docs.date_line holds
+            # it: embed reads that column for the reranker's passages and never for the vectors, so the value is
+            # EVENT_DATES_RERANK, not the first rebuild's "on"), whether documents took their own titles, and what
+            # each counted
+            "event_dates": EVENT_DATES_RERANK if event_dates else "off", "own_titles": "on" if own_titles else "off",
+            TITLES_KEY: json.dumps(titled, ensure_ascii=False), VALIDITY_KEY: json.dumps(valid, ensure_ascii=False),
             "text_pipeline": "totext" if any(r.source == "totext" for r in records) else "",
             SCOPE_KEY: json.dumps(scope.report if scope is not None else SCOPE_SKIPPED, ensure_ascii=False),
             **_copies_meta(rows, copies)}
@@ -1140,7 +1791,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     tmp.unlink(missing_ok=True)
     vectors = None
     try:
-        _write(tmp, rows, meta, counts, scope, id_aliases, site_rows)
+        _write(tmp, rows, meta, counts, scope, id_aliases, site_rows, alumni_background)
         if embed:
             vectors = _embed(tmp, embedder, vec_cache, unit=unit_words and unit_in_vectors)
         os.replace(tmp, out)
@@ -1157,7 +1808,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                                 "records": len(inp.records), "events": len(inp.events)} for inp in read],
                        passage={"version": PASSAGE_VERSION, "unit_words": unit_words,
                                 "unit_in_vectors": unit_words and unit_in_vectors,
-                                "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF})
+                                "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF},
+                       dedupe=dedupe, event_dates=dated, titles=titled, validity=valid)
 
 
 def _progress_to_stderr() -> Callable[[], None]:
@@ -1192,6 +1844,69 @@ def _pairs(args: argparse.Namespace) -> list[tuple[Path, Path]] | str:
     return pairs
 
 
+def _dedupe_words(dedupe: dict) -> list[str]:
+    """The printed summary's parts for BuildReport.dedupe (plan 2026-11-14 T2), in Simplified Chinese: the copy
+    groups and the documents they removed, the merged documents that rank by a copy's later date and those that rank
+    by a date though a copy of theirs has none (each when there are any), the recurring calendar events merged with
+    the event documents before and after, the alumni pages made background; a switch turned off says so."""
+    c, r, a = dedupe["copies"], dedupe["recurring"], dedupe["alumni"]
+    text, title = c["by_rule"][COPY_TEXT], c["by_rule"][COPY_TITLE]
+    how = (f"去掉空白后全文相同、至少 {c['min_chars']} 字的 {text['groups']} 组，标题和全文都相同的 {title['groups']} 组"
+           if c["rule"] == COPY_TEXT else f"照原来的规则，只合标题和全文都相同的：--copy-rule {COPY_TITLE}")
+    copies = (f"副本合并 {c['groups']} 组、少 {c['removed']} 份（跨网站 {c['cross_site']} 组；{how}；"
+              "每站数见报告 dedupe.copies.by_site）")
+    out = [copies]
+    d = dedupe.get("rank_dates") or {}  # plan 2026-11-14 T2, completed (_rank_dates)
+    if moved := d.get("later", 0) + d.get("from_copy", 0):
+        out.append(f"合并后按副本里较新的日期排名的 {moved} 份（显示的日期照旧是留下那份自己的）")
+    if d.get("undated_copy"):
+        out.append(f"合并后自己有日期、但有副本没日期的 {d['undated_copy']} 份照有日期的排名"
+                   "（合并前那份没日期的副本可能排得比较前；报告 dedupe.rank_dates）")
+    if not r["on"]:
+        out.append("行事历重复系列没合并（--no-merge-recurring）")
+    elif r["series"]:
+        out.append(f"行事历重复系列 {r['series']} 个各合成一份（原 {r['instances']} 个单次事件；"
+                   f"事件 {r['events_before']} → {r['events_after']} 份）")
+    if not a["on"]:
+        out.append("所友名录没算背景（--no-alumni-background）")
+    elif a["background"]:
+        out.append(f"所友名录 {a['background']} 份算背景")
+    return out
+
+
+KIND_WORDS = {"notice": "公告", "page": "网页", "attachment": "附件", "event": "行事历", "link": "外站链接"}  # _v6_words
+
+
+def _v6_words(report: BuildReport) -> list[str]:
+    """The printed summary's parts for plan 2026-11-14 T3, T4 and T6 (BuildReport.event_dates, titles, validity), in
+    Simplified Chinese: the events given a date line (the reranker's, in no vector); the documents given their own
+    title, per kind of title with those that kept theirs; the documents that go out of date per kind, and of the
+    attachments on such a document how many each clue kept from it. A switch turned off says so."""
+    out = []
+    if not report.event_dates["on"]:
+        out.append("行事历事件没加日期行（--no-event-dates）")
+    elif report.event_dates["events"]:
+        out.append(f"行事历事件加日期行 {report.event_dates['events']} 份（只给重排读，不放进向量）")
+    t = report.titles
+    shared, files = t[TITLE_SHARED], t[TITLE_FILE]
+    if not t["on"]:
+        out.append("没换标题（--no-own-titles）")
+    elif shared["documents"] or files["documents"]:
+        out.append(f"标题换成文件自己的 {shared['retitled'] + files['retitled']} 份（同名网页 {shared['documents']} 份里换 "
+                   f"{shared['retitled']}、留 {shared['kept']}；档名没有汉字的附件 {files['documents']} 份里换 "
+                   f"{files['retitled']}、留 {files['kept']}）")
+    v = report.validity
+    kinds = "、".join(f"{word} {v['expires'][kind]}" for kind, word in KIND_WORDS.items() if v["expires"].get(kind))
+    out.append(f"会过期的文件 {v['expires']['total']} 份" + (f"（{kinds}）" if kinds else ""))
+    a = v["attachments"]
+    if a["parent_expires"]:
+        c = a["clues"]
+        out.append(f"挂在会过期的文件上的附件 {a['parent_expires']} 份：照样会过期 {a['expire']}、不会过期 {a['kept']}"
+                   f"（各线索认到的：固定字眼 {c['fixed_words']}、常设页上有副本 {c['standing_copy']}、"
+                   f"入学届别 {c['cohort']}，一份可以算进两项）")
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m nknu.content.build",
                                  description="把拼好的 corpus.json 和它们的导出建成一个资料库（输入只读）")
@@ -1224,6 +1939,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="不加单位词（单位行，和关键词索引 unit_tokens 里的单位名、组别、简称、适用单位、列表类别）："
                          "passage 和第 1 版一样，用来量整个单位补丁（这几样一起，分不开；计划 2026-11-08 T4 审查）；"
                          "平时不要用")
+    ap.add_argument("--copy-rule", choices=COPY_RULES, default=COPY_TEXT,
+                    help=f"哪些文件算同一份（计划 2026-11-14 T2）。{COPY_TEXT}（默认）：同一类、去掉空白后全文相同、至少 "
+                         f"{COPY_MIN_CHARS} 字的合成一份，跨站、同站、公告都合，不要求标题相同，留最早的那份；原来会合的照旧合。"
+                         f"{COPY_TITLE}：只照原来的规则（同类、同标题、同全文），用来重建旧的做法对照")
+    ap.add_argument("--no-merge-recurring", action="store_true",
+                    help="行事历的重复事件不合成一份，每一次照旧各算一份文件（计划 2026-11-14 T2；用来对照）")
+    ap.add_argument("--no-alumni-background", action="store_true",
+                    help="所友名录（c.nknu 模板的所友详细页和名单页）不算背景，照旧算主料（计划 2026-11-14 T2；用来对照）")
+    ap.add_argument("--no-event-dates", action="store_true",
+                    help="行事历事件给重排读的字不加「学期和日期」那一行，照旧只有标题（计划 2026-11-14 T3；用来对照）。"
+                         "这一行只给重排读，向量本来就不放（11-14 量过：放进向量会把短标题冲淡），所以开不开向量都一样")
+    ap.add_argument("--no-own-titles", action="store_true",
+                    help="不把没用的标题（同一网站 20 页以上一模一样的、档名没有汉字的附件）换成文件自己正文的标题，"
+                         "照旧用原来的标题（计划 2026-11-14 T4；用来对照）")
     args = ap.parse_args(argv)
     pairs = _pairs(args)
     if isinstance(pairs, str):
@@ -1240,7 +1969,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = build_sites(pairs, args.out, server_dates=server, aliases=args.aliases, embed=args.embed,
                              vec_cache=vec_cache, site_list=args.site_list, units_config=args.units,
-                             unit_words=not args.no_unit_words, unit_in_vectors=args.unit_words_in_vectors)
+                             unit_words=not args.no_unit_words, unit_in_vectors=args.unit_words_in_vectors,
+                             copy_rule=args.copy_rule, merge_recurring=not args.no_merge_recurring,
+                             alumni_background=not args.no_alumni_background, event_dates=not args.no_event_dates,
+                             own_titles=not args.no_own_titles)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1271,6 +2003,8 @@ def main(argv: list[str] | None = None) -> int:
     words += f"；学校删掉的公告 {gone}（不收，每站数见 sites）" if gone else ""
     whole = sum(s.get("under_read") or 0 for s in report.sites)  # owner 11-09, blueprint item 22
     words += f"；读到的字远少于整页、改读整页 {whole} 份（每站数见 sites）" if whole else ""
+    words += "".join(f"；{part}" for part in _dedupe_words(report.dedupe))  # plan 2026-11-14 T2
+    words += "".join(f"；{part}" for part in _v6_words(report))  # plan 2026-11-14 T3, T4, T6
     print(f"{args.out}：{docs['total']} 份文件、{report.counts['chunks']} 小段；"
           f"网站 {len(report.sites)} 个（各站资料截至和缺漏见报告 sites）；"
           f"无日期 {report.no_date}、无文字 {report.no_text}；学报（含旧校刊、校讯） {types[JOURNAL]}、考题 {types[EXAM]}、"
@@ -1284,6 +2018,9 @@ def main(argv: list[str] | None = None) -> int:
         else:  # the passages are version 1's: a cache of a build before T4 would have served them
             print(f"注意：向量快取一个都没中，可是这次没加单位词、passage 和第 1 版一样，本来应该命中："
                   f"{vec_cache} 是第 1 版建库用的那一份吗？", file=sys.stderr)
+    if by_site := report.dedupe["copies"]["by_site"]:  # plan 2026-11-14 T2: where the kept ones are, per site
+        print("副本各站（留：留作正本的组数；并掉：被合掉的份数）：" + "；".join(
+            f"{site} 留 {n['kept']}、并掉 {n['merged']}" for site, n in by_site.items()))
     for w in report.warnings:
         print(f"注意：{w}", file=sys.stderr)
     return 0

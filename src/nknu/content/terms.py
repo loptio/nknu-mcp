@@ -143,6 +143,12 @@ def find_terms(text: str) -> list[Term]:
     return list(dict.fromkeys(h.term for h in _scan(norm_text(text), query=False, today=None) if h.term))
 
 
+def first_term_at(text: str) -> int | None:
+    """Where the first term norm_text(text) names starts (find_terms' first: a semester or a year), None when it
+    names none."""
+    return next((h.start for h in _scan(norm_text(text), query=False, today=None) if h.term), None)
+
+
 def find_cohorts(text: str) -> list[tuple[int, bool]]:
     """(ay, onwards): 「113學年度起入學」 -> (113, True); 「113學年度入學」 -> (113, False)."""
     return list(dict.fromkeys(h.cohort for h in _scan(norm_text(text), query=False, today=None) if h.cohort))

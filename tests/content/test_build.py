@@ -256,8 +256,9 @@ def test_meta_pipeline(built):
     # on 11-08 (plan 2026-11-08 T1): doc_alias and docs.tier came, so it is pipeline-3; and (plan 2026-11-08 T4) the
     # sites table, docs.site and docs.unit_line, so it is pipeline-4; and (owner 11-08 10:16, N11) chunk_fts.unit_tokens,
     # so it is pipeline-5; and (owner 11-09, blueprint item 15) sites.deleted_notices, so it is pipeline-6; and (owner
-    # 11-09, blueprint item 22) sites.under_read, so it is pipeline-7
-    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-7"
+    # 11-09, blueprint item 22) sites.under_read, so it is pipeline-7; and (plan 2026-11-14 T6 and T3) docs.expires,
+    # docs.valid_ay and docs.date_line, so it is pipeline-8
+    assert meta["schema_version"] == SCHEMA_VERSION == "pipeline-8"
     assert meta["id_scheme"] == "serial"  # this corpus's ids are its own (no keys): not the stable ids of assemble
     assert meta["text_pipeline"] == ""  # the 10-29 corpus: no record says where its text came from
     tables = tables_of(conn)
@@ -839,10 +840,16 @@ def test_embed_encodes_chunk_passages_only(tmp_path):
     finally:
         conn.close()
     # 11-08 (main session): the vectors embed each passage without its unit line (embed_chunks' unit, off by default);
-    # the reranker's passages (chunk_passages) keep it
-    lines = {c: line for c, line in sqlite3.connect(f"file:{out}?mode=ro", uri=True).execute(
-        "SELECT c.chunk_id, d.unit_line FROM chunks c JOIN docs d USING (doc_id)")}
-    plain = {p.replace("\n" + lines[c], "", 1) if lines[c] else p for c, p in passages.items()}
+    # the reranker's passages (chunk_passages) keep it. 11-14 (plan 2026-11-14 T3, corrected the same day): nor do
+    # they embed a calendar event's date line, which the reranker's passages alone carry
+    lines = {c: [line for line in more if line] for c, *more in sqlite3.connect(f"file:{out}?mode=ro", uri=True).execute(
+        "SELECT c.chunk_id, d.unit_line, d.date_line FROM chunks c JOIN docs d USING (doc_id)")}
+    assert sum(len(more) == 2 for more in lines.values()) == 2  # the two events have both lines
+    plain = set()
+    for c, p in passages.items():
+        for line in lines[c]:
+            p = p.replace("\n" + line, "", 1)
+        plain.add(p)
     assert emb.calls == 1 and set(emb.texts) == plain and len(emb.texts) == len(set(emb.texts))
     assert report.vectors["chunks"] == len(ids) == report.counts["chunks"] and meta["vec_count"] == str(len(ids))
     assert not series_tables and "series_embed_json" not in meta and not (tmp_path / "series_candidates.md").exists()

@@ -81,6 +81,36 @@ spelling still gives way first; on a tie, _rank: the export of the address's own
 platform, then any other export, the one that brought it, a shared platform's own export last; then the first in input
 order) with what all of them say; one_event_per_id keeps one event per id the same way. A document's site is the
 export its record or event came from (docs.site), which the sites table dates.
+
+Recurring calendar events (plan 2026-11-14 T2; direction 2026-11-13 第 2 件 3: 「行事历重复系列合成一笔：原民系 10,019
+个事件变 195 个系列，进修学院 598 个变 48 个」): the calendar export holds the Calendar API's items expanded with
+singleEvents=true, so every instance of a recurring event is an item of its own that carries recurringEventId
+(Event.series) and the id <that id>_<its start> (教务处's 11-02 export: 46 such items of 6 series, each id of that
+shape, all of 2017 and 2018, so none of them is a document and 教务处's events stay as they were).
+one_event_per_series, run after one_event_per_id, makes one event of a series' instances: its id is the series
+id (the document 'e' + it), its title their title, its start the first day and its end the last (what dates an event
+and says when it is over: build._facts), and its text lists every instance's days after the title (series_text), so
+no day is dropped. Only instances that would be documents (from CALENDAR_SINCE on, with a title) and share the title
+most of them have are merged; an instance with a title of its own (an exception the unit renamed) and the only
+instance of a series stay the single events they were 【Claude】.
+
+An event's date line (plan 2026-11-14 T3; direction 2026-11-13 第 3 件: 「给向量和重排读的字，加一行学期和日期。现在模型只读到
+标题，分不出不同年的同名事件」): event_line writes an event's term and days, 「115學年度第2學期 2027-02-15～2027-02-18」,
+which the build stores in docs.date_line and embed puts into the passages the reranker reads of the event. Corrected
+the same day, against the direction's 「给向量」: the vectors do not embed it (measured on the first rebuild, the line
+dilutes an event's short title in the vectors while the reranker gains from it: nknu.content.embed).
+
+A document's own title (plan 2026-11-14 T4; direction 2026-11-13 第 4 件: 「其余同名页（约四千份）和标题只是档名的附件…：
+用正文第一个标题，没有就用正文第一行。旧标题都留着。」 and 「取到『附件一』『說明』这种的那一类，就留旧标题」): own_titles,
+which the build runs on the documents it keeps (copies merged), gives a document whose title says nothing the title
+its own text gives (text_title), unless that line is no title either (title_flaw; since the first rebuild of 11-14 a
+line that holds a file size, a download list's 「… pdf 146 KB」, is none: _SIZE), and keeps the old title in the
+link texts. Two kinds of titles say nothing: one that SAME_TITLE_MIN or more pages and notices of one site share
+(TITLE_SHARED: a site name used as every page's title; the crawler's export gives activity pages, forum posts and
+alumni pages their own title cell since d9d8239, so this is for what is left), and an attachment's file name without
+a Han character, 「643-79-8.odt」 (TITLE_FILE) 【Claude, the main session's brief of 11-14: narrower than the plan's
+「标题只是档名的附件」, since a file name with Han characters usually says what the file is, and the 11-02 decision G4
+keeps file names as titles for year tables on purpose】.
 """
 
 from __future__ import annotations
@@ -89,6 +119,7 @@ import dataclasses
 import html
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.parse import parse_qs, urlsplit
@@ -109,6 +140,9 @@ from nknu.content.corpus import (
     taipei_day,
 )
 from nknu.content.dates import FIELD_SOURCE, LIST_ROW, LIST_SOURCE, OWN_FIELD, PAGE_SOURCE, kept_range
+from nknu.content.numbering import marks, strip_decor
+from nknu.content.terms import Term
+from nknu.core.textnorm import CJK, norm_text
 from nknu.core.timeutil import TAIPEI
 
 EVENT_KIND = "行事历"  # kind_raw of calendar events (the export's data file name)
@@ -135,6 +169,12 @@ CALENDAR_SINCE = date(2023, 1, 1)
 BEFORE = f"({CALENDAR_SINCE.year}年以前)"  # excluded-count suffix: an event before CALENDAR_SINCE (a 1 January)
 FORMAT = "(其他格式)"  # excluded-count suffix: a format sibling assemble folded into another record (addendum B)
 DELETED = "(学校删掉)"  # excluded-count suffix: a notice the school deleted, only the template left (deleted_notice)
+# excluded-count suffix (plan 2026-11-14 T2): an instance of a recurring calendar event folded into the one event of
+# its series (one_event_per_series); the series' own document is not counted
+SERIES = "(重复系列)"
+# the line a series' text carries after its title (series_text): ours, not the school's, so it opens with 【系統】;
+# as few words as say it, since they are indexed with the text 【Claude】
+SERIES_NOTE = "【系統】共 {n} 次，日期（年-月：日）："
 PAGER_SUFFIX = "(列表翻页)"  # excluded-count suffix: a page marked 列表翻页 its kind alone would keep (_class; item 22)
 # excluded-count suffix: a page the school answered with no data (corpus.NO_DATA, the crawler's fa81f41) its kind alone
 # would keep (_class); the key, and that it goes before PAGER_SUFFIX (_left_out_as), are 【Claude】
@@ -162,6 +202,45 @@ _TRUSTED = {OWN_FIELD: FIELD_SOURCE, LIST_ROW: LIST_SOURCE}
 # spec 2026-11-08 §四) 【Claude】; so is one after it (a server clock running fast: a file is never changed after the
 # answer that carried it, and HTTP forbids a Last-Modified later than the answer's Date; none in the local crawls)
 CLOCK_SECONDS = 120
+# plan 2026-11-14 T4 (own_titles; the module docstring). The kinds of titles that say nothing, as the report names them
+TITLE_SHARED, TITLE_FILE = "shared", "file"
+# the plan's 「同一网站 20 页以上标题一模一样的」: so many pages and notices of one site with one title make it no title,
+# and a new title so many documents of the site would carry is none either
+SAME_TITLE_MIN = 20
+TITLE_MIN_CHARS = 2  # the plan's 「太短（少于 2 个字）」, counted in letters and Han characters (title_flaw)
+# 【Claude】 a longer line is a sentence or a paragraph, not a title: the longest of 教务处's 498 notice titles has 76
+# characters (99 in 100 have at most 62), and a line cut short would be no title either
+TITLE_MAX_CHARS = 80
+# 【Claude】 the text's first heading is its title only on one of its first lines with text: a label or a date stands
+# above a title (附件四, 114年9月修訂), a heading further down heads a part (說明：, 切結書, 五、報考資格). Counted on
+# 教务处's converted files of 11-14 (the Mac's partial cache, 395 with a Markdown heading): the first heading is the
+# first line with text in 301 and the second in 42, where it is the better title in about 36 (「附件四」 above
+# 「個人資料蒐集、處理及利用同意書」); in the 22 where it is the third to sixth it is as often worse than the first line
+# (目錄 contents, 電子公布欄公文, 第十四條), and in the 30 where it is later still it is nearly always a part's
+HEAD_LINES = 2
+TITLE_EXAMPLES = 40  # the retitled documents of each kind the report lists, spread over them, to look at after a build
+TITLE_SHOWN = 80  # how much of an old title an example shows
+IMAGE_KIND = "附件:图片"  # assemble's kind of a picture with OCR text (title_unread)
+_HAN = re.compile(rf"[{CJK}]")
+_LETTER = re.compile(r"[^\W\d_]")  # a letter or a Han character, as numbering._TEXT
+_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,5}$")  # a file name's extension
+_LINE = re.compile(r"[^\n]+")
+_NOT_HAN_OR_DIGIT = re.compile(rf"[^{CJK}0-9]+")
+# 【Claude】 the lines that say nothing as a title (the direction's 「附件一」「說明」, the plan's 「注意事項」; kept short),
+# each alone or with a number after it, compared as the Han characters and digits of norm_text (_bare_key: 附件 1,
+# 【附件二】, 說明：, 目錄 contents). 附表, 附錄, 目錄, 備註 and 抄本 (the copy mark of an official letter) are of the
+# same kind: labels a file carries above its title. The school's own name and the document's unit say nothing either
+# (title_flaw's names): of 教务处's 628 files with text that are named without a Han character (pictures aside), 28
+# open with the school's name on a line of its own
+_NOTHING = re.compile(r"(?:附件|附表|附录|说明|注意事项|目录|备注|抄本)[一二三四五六七八九十0-9]*")
+_LABEL_END = ("：", ":")  # a line ending so is a field's label (檔號：, 授課科目：), no title
+# 【Claude】 plan 2026-11-14 T4, after the first rebuild: a file size in a line, on norm_text (NFKC, lowercase,
+# Simplified): a number, then a unit of bytes (146 KB, 23kb, 1.2 MB, 3 MiB, 3072 bytes, 512 位元組, 千位元組, 字节; the
+# one-character ㎅ and ㎆ come out of NFKC as kb and mb). Not a longer word that only starts like a unit (100 kbps,
+# 3MBA), a bare letter (113B 教室, 5G) or a unit with no number before it (KB 國民銀行). The rebuilt 111-site database
+# had 9 attachments whose new title was such a line, 「… 146 KB」, 「pdf 23kb」: a download list's link text as the
+# first line of their text, which says how big a file is and not what the document is (title_flaw's 'size')
+_SIZE = re.compile(r"\d\s*(?:(?:[kmgt]i?b|[kmgt]?bytes?)(?![a-z])|[千兆百万]{0,2}(?:位元组|字节))")
 
 
 @dataclass
@@ -206,6 +285,14 @@ class Document:
     # copies: build._take_over), which build.UnitWords puts on its unit line; () for a record without them (an
     # attachment, a link) and for an event
     categories: tuple[str, ...] = ()
+    # plan 2026-11-14 T4 (own_titles): the title is the one its own text gives, and old_title the title it had until
+    # then (a site's name, a file name; '' when that was empty), kept findable in linktext; False and '' for any other
+    # document, and for every one when the build's own_titles is off
+    title_from_text: bool = False
+    old_title: str = ""
+    # plan 2026-11-14 T2 (main session, after the review): the units of the copies the build merged into this
+    # document, each once, never its own (build._take_over); build.unit_scope reads them
+    also_units: tuple[str, ...] = ()
 
 
 def clean_text(s: str) -> str:
@@ -430,20 +517,29 @@ def fetched_at(stamp: str) -> float:
     return (when if when.tzinfo is not None else when.replace(tzinfo=TAIPEI)).timestamp()
 
 
-def _rank(r: Record) -> int:
-    """Which export's record of one identity stays on a tie of 抓取时间 (one_per_id; plan 2026-11-08 T4 review)
-    【Claude】, the lower first:
+def home_rank(url: str, site: str) -> int:
+    """How far the export of site is from being the home of what is at url, the lower the nearer (plan 2026-11-08 T4
+    review) 【Claude】:
     - 0: the export of the site its own address belongs to (scope.site_key, as sites.unit_for reads it), whose 资料截至
       then dates it, when that site is no shared platform;
     - 1: any other export, the one that brought it (教务处's notice files on the announcement platform);
     - 2: a shared platform's own export (sites: shared, the announcement system and SSO's common parts). Its record
       would take the platform's placeholder unit (秘書室, or the school, which gives no unit words) and lose the 組別
       and the 资料截至 of the unit that brought it, against T3's rule (sites.unit_for: what another site's export
-      brought from a shared platform is that site's unit's)."""
-    if not r.site or scope.site_key(r.url) != r.site:
+      brought from a shared platform is that site's unit's).
+    one_per_id asks it of the records of one identity (_rank); since plan 2026-11-14 T2 the build asks it of the
+    documents of one text dated the same day (build._merge_copies: 「同一天照现有的 _rank」), so a unit's own notice
+    stays before the announcement platform's copy of it."""
+    if not site or scope.site_key(url) != site:
         return 1
-    row = sites.table().rows.get(r.site)
+    row = sites.table().rows.get(site)
     return 2 if row is not None and row.shared else 0
+
+
+def _rank(r: Record) -> int:
+    """Which export's record of one identity stays on a tie of 抓取时间 (one_per_id; plan 2026-11-08 T4 review)
+    【Claude】, the lower first: home_rank of its address and its export's site."""
+    return home_rank(r.url, r.site)
 
 
 def one_per_id(records: list[Record]) -> tuple[list[Record], dict[str, int]]:
@@ -493,6 +589,127 @@ def one_event_per_id(events: list[Event]) -> tuple[list[Event], dict[str, int]]:
     kept = [ev for i, ev in enumerate(events) if best[ev.id] == i]
     left = len(events) - len(kept)
     return kept, ({EVENT_KIND + DUPLICATE: left} if left else {})
+
+
+def one_event_per_series(events: list[Event]) -> tuple[list[Event], dict[str, int]]:
+    """One event per recurring calendar event (plan 2026-11-14 T2; the module docstring). events: one per id
+    (one_event_per_id). The instances of one series (Event.series) that would be documents (from CALENDAR_SINCE on,
+    with a title: build_documents leaves the others out and counts them as before) are grouped by their title on one
+    line; the title most of them have (on a tie the one whose first day is earliest, then by the title) names the
+    series, and its instances, two or more, become one event in the place of the first of them:
+    - id: the series id, so its document is 'e' + it; title: theirs; series: the same id;
+    - start: the first day of the earliest instance; end_inclusive: the last day of any;
+    - days: every instance's (first day, last day), by day (one per instance: two on one day are two);
+    - url: the earliest instance's (each instance has its own htmlLink);
+    - site and fetched: those of the instance of the newest fetch, the first in the events' order on a tie, as
+      one_event_per_id keeps the newest (one calendar in two exports fetched at different times) 【Claude】.
+    Left as they are: a single event; an instance whose title is not its series' (stats other_titles: an exception the
+    unit renamed stays a document of its own, so no title is lost); the only instance of a series (nothing to merge);
+    and every instance of a series whose id another event already has (stats id_taken: never seen, the API giving
+    instances only; the build warns) 【Claude】.
+    Returns the events and {'series': the series merged, 'instances': the instances folded into them, 'other_titles',
+    'id_taken'}; the build counts instances - series as 行事历(重复系列)."""
+    stats = {"series": 0, "instances": 0, "other_titles": 0, "id_taken": 0}
+    groups: dict[str, dict[str, list[int]]] = {}  # series id -> title on one line -> the places of its instances
+    for i, ev in enumerate(events):
+        if ev.series and not ev.days and ev.start >= CALENDAR_SINCE and (title := _one_line(ev.title)):
+            groups.setdefault(ev.series, {}).setdefault(title, []).append(i)
+    taken = {ev.id for ev in events}
+    merged: dict[int, Event] = {}  # the place of a series' first instance -> the series' one event
+    gone: set[int] = set()
+    for series, by_title in groups.items():
+        title, places = min(by_title.items(),
+                            key=lambda kv: (-len(kv[1]), min(events[i].start for i in kv[1]), kv[0]))
+        if len(places) < 2:
+            continue
+        if series in taken:
+            stats["id_taken"] += 1
+            continue
+        instances = sorted((events[i] for i in places), key=lambda e: (e.start, e.end_inclusive))
+        newest = events[max(places, key=lambda i: (fetched_at(events[i].fetched), -i))]
+        merged[places[0]] = dataclasses.replace(
+            newest, id=series, title=title, start=instances[0].start,
+            end_inclusive=max(e.end_inclusive for e in instances), url=instances[0].url,
+            days=tuple((e.start, e.end_inclusive) for e in instances))
+        gone.update(places[1:])
+        stats["series"] += 1
+        stats["instances"] += len(places)
+        stats["other_titles"] += sum(len(p) for t, p in by_title.items() if t != title)
+    if not merged:
+        return events, stats
+    return [merged.get(i, ev) for i, ev in enumerate(events) if i not in gone], stats
+
+
+def series_text(title: str, days: Sequence[tuple[date, date]]) -> str:
+    """The text of a recurring event's one document (plan 2026-11-14 T2: 「同一个 Google 重复事件展开出来的单次事件合成
+    一份，日期全部列出来」; no day is dropped): the title, SERIES_NOTE with the number of instances, then one line per
+    month an instance starts in, 「2026-09：07、14、21～22」: each instance by its first day, with 「～」 and its last day
+    when it runs longer (the day alone in the same month, month-day in another month of the year, the whole date in
+    another year), and 「（N 次）」 after days N instances share. The format 【Claude】: a weekly event of fourteen years
+    is about 4,000 characters this way, each line far under chunks.MAX_CHARS, and no line starts like a numbered
+    heading (numbering.marks)."""
+    months: dict[tuple[int, int], list[str]] = {}
+    for (start, end), n in sorted(Counter(days).items()):
+        said = f"{start.day:02d}"
+        if end != start:
+            last = (f"{end.day:02d}" if (end.year, end.month) == (start.year, start.month)
+                    else f"{end.month:02d}-{end.day:02d}" if end.year == start.year else end.isoformat())
+            said += "～" + last
+        months.setdefault((start.year, start.month), []).append(said + (f"（{n} 次）" if n > 1 else ""))
+    lines = [f"{year}-{month:02d}：{'、'.join(said)}" for (year, month), said in months.items()]
+    return "\n".join([title, SERIES_NOTE.format(n=len(days)), *lines])
+
+
+_SERIES_HEAD = re.compile(r"【系統】共 \d+ 次，日期（年-月：日）：")  # SERIES_NOTE with any number
+_SERIES_MONTH = re.compile(r"(\d{4})-(\d{2})：(.+)")
+_SERIES_ITEM = re.compile(r"(\d{2})(?:～(?:(\d{4})-)?(?:(\d{2})-)?(\d{2}))?(?:（(\d+) 次）)?")
+
+
+def series_days(text: str) -> list[tuple[date, date]]:
+    """series_text read back (main session 11-14, after the review: respond stated one period from a series' first
+    day to its last and called it 進行中 between two instances): each instance's (first day, last day), earliest
+    first, an instance the text says N times N times. [] for any other text (a single event's is its title alone)
+    and for a line that is no month of days."""
+    lines = text.split("\n")
+    if len(lines) < 3 or not _SERIES_HEAD.fullmatch(lines[1].strip()):
+        return []
+    days: list[tuple[date, date]] = []
+    for line in lines[2:]:
+        month = _SERIES_MONTH.fullmatch(line.strip())
+        if month is None:
+            continue
+        year, mon = int(month.group(1)), int(month.group(2))
+        for item in month.group(3).split("、"):
+            m = _SERIES_ITEM.fullmatch(item)
+            if m is None:
+                continue
+            try:
+                start = date(year, mon, int(m.group(1)))
+                end = start if m.group(4) is None else date(int(m.group(2) or year), int(m.group(3) or mon),
+                                                            int(m.group(4)))
+            except ValueError:
+                continue
+            days += [(start, end)] * int(m.group(5) or 1)
+    return sorted(days)
+
+
+def event_line(terms: Sequence[Term], start: date, end: date, times: int = 1) -> str:
+    """A calendar event's date line (plan 2026-11-14 T3: 「事件给向量和重排读的字多一行：学期和日期，例如『115學年度第2學期
+    2027-02-15～02-18』」), which the build stores in docs.date_line and embed.passage gives the reranker, and since
+    the correction of 11-14 the reranker only (the embedder reads an event as before T3: nknu.content.embed has the
+    measurement): the term as the school writes it and a query is rewritten (terms.school_spelling: 115學年度第2學期), then
+    the event's first day, with 「～」 and its last day when it runs longer, both whole so that each reads alone
+    【Claude: the plan's example cuts the second to 02-18】. terms: the terms the event falls in; of several (a
+    recurring event's instances: build._Row.terms) the first and the last are written with 「～」 between them, none
+    gives the days alone. times: how many times a merged recurring event occurs (Event.days), written 「（共 N 次）」
+    after its first and last day as documents.SERIES_NOTE words it; not written for a single event. The format is
+    【Claude】; the line is read by the reranker only, never shown to an agent, so like the unit line it has no
+    【系統】 mark."""
+    known = sorted({(t.ay, t.sem or 0) for t in terms})
+    ends = list(dict.fromkeys((known[0], known[-1]))) if known else []
+    term = "～".join(f"{ay}學年度第{sem}學期" if sem else f"{ay}學年度" for ay, sem in ends)
+    days = start.isoformat() if end == start else f"{start.isoformat()}～{end.isoformat()}"
+    return " ".join(part for part in (term, days + (f"（共 {times} 次）" if times > 1 else "")) if part)
 
 
 def _context_title(named: list[tuple[date | None, str]]) -> str:
@@ -643,8 +860,169 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
             excluded[EVENT_KIND + BLANK] += 1
             continue
         # an event's whole text is its title: has_text, so it is shown as text and never as a scanned file; its unit is
-        # its export's site's (plan 2026-11-08 T3)
+        # its export's site's (plan 2026-11-08 T3). The one event of a recurring series (one_event_per_series, plan
+        # 2026-11-14 T2: its id is the series id) lists every instance's days after the title
         docs.append(Document(doc_id="e" + ev.id, kind_class="event", kind_raw=EVENT_KIND, title=title, url=ev.url,
                              unit=sites.unit_of_site(ev.site or site), grp="", parent_id=None, parent_title="",
-                             linktext="", has_text=True, text=title, site=ev.site or site))
+                             linktext="", has_text=True, text=series_text(title, ev.days) if ev.days else title,
+                             site=ev.site or site))
     return docs, dict(excluded)
+
+
+# ---------------------------------------------------------------- a document's own title (plan 2026-11-14 T4)
+
+def text_title(text: str) -> str:
+    """The title a text gives itself (plan 2026-11-14 T4: 「正文第一个标题，没有就用正文第一行」): its first Markdown
+    heading (a line the conversion wrote with #s, told as the sections tell one: numbering.strip_decor) when that is
+    one of its first HEAD_LINES lines with text 【Claude: HEAD_LINES has the count】, else its first line with text;
+    without its Markdown decoration, on one line. '' for a text with no line of text. A page's text has no Markdown
+    heading (pagetext writes h1 to h6 as plain lines), so a page gives its first line."""
+    first, seen = "", 0
+    for line in _LINE.finditer(text):
+        clean, hashes = strip_decor(line.group())
+        if not clean:
+            continue
+        if hashes:
+            return _one_line(clean)
+        first, seen = first or clean, seen + 1
+        if seen >= HEAD_LINES:
+            break
+    return _one_line(first)
+
+
+def _bare_key(s: str) -> str:
+    """s as its Han characters and digits alone, of norm_text (NFKC, lowercase, Simplified): what a line that says
+    nothing is told by, whatever brackets, spaces, colons or English it carries."""
+    return _NOT_HAN_OR_DIGIT.sub("", norm_text(s))
+
+
+def title_flaw(candidate: str, old: str = "", names: Sequence[str] = ()) -> str:
+    """Why a line is no title for a document (plan 2026-11-14 T4: 「太短（少于 2 个字）、只是『附件一』『說明』『注意事項』这类
+    字眼、或和旧标题一样，就不换」), '' when it is one. candidate: text_title's line; old: the title the document has;
+    names: names that say nothing of this document (the school's, its unit's). The first that holds:
+    - 'blank': no line;
+    - 'short': fewer than TITLE_MIN_CHARS letters or Han characters (the plan's two characters, so counted 【Claude】:
+      a date, a number or a rule of dashes is no title either);
+    - 'long': more than TITLE_MAX_CHARS characters 【Claude】;
+    - 'nothing': one of _NOTHING's words alone or numbered, or names and nothing more (_bare_key of each; fewer than
+      TITLE_MIN_CHARS characters are left without them) 【Claude: the list; since the review of 11-14 any run of the
+      names, not one name alone: 「國立高雄師範大學語文教學中心」 and the school's name twice were taken as titles】;
+    - 'size' 【Claude, after the first rebuild of 11-14: 9 attachments of the 111 sites took such a line】: it holds a
+      file size, a number followed by a unit of bytes (_SIZE: 「學生轉系辦法 pdf 146 KB」, 「pdf 23kb」), the link text
+      of a download list, whatever else it says: a line cut at the size would be a guess at where the name ends;
+    - 'no_title' 【Claude, from the classes that came out wrong on 教务处's files】: a Markdown table's row, a field's
+      label (it ends with a colon: 檔號：, 授課科目：) or a numbered part (numbering.marks: 一、依據, 第十四條, 1., Q1：),
+      which heads a part of a document, never the document;
+    - 'same': the old title.
+    A line of words that passes may still be a poor title (a slogan, an English logo read by OCR): the plan leaves
+    such documents to the count the build reports (「规则取不好的那一小部分，这一轮就留旧标题」 is for the classes above)."""
+    if not candidate:
+        return "blank"
+    if len(_LETTER.findall(candidate)) < TITLE_MIN_CHARS:
+        return "short"
+    if len(candidate) > TITLE_MAX_CHARS:
+        return "long"
+    key = rest = _bare_key(candidate)
+    said = sorted({_bare_key(name) for name in names if name} - {""}, key=len, reverse=True)
+    for name in said:
+        rest = rest.replace(name, "")
+    if key and (_NOTHING.fullmatch(key) or (rest != key and len(rest) < TITLE_MIN_CHARS)):
+        return "nothing"
+    if _SIZE.search(norm_text(candidate)):
+        return "size"
+    if candidate.startswith("|") or candidate.endswith(_LABEL_END) or marks(candidate):
+        return "no_title"
+    return "same" if candidate == old else ""
+
+
+def title_unread(d: Document) -> str:
+    """Why a document's text gives it no title whatever its first line says, '' when it may (plan 2026-11-14 T4)
+    【Claude】: 'blank', it has no text; 'image', its text is what OCR read on a picture (IMAGE_KIND), top line first:
+    a masthead, a logo or a slogan more often than a title (the first lines of 教务处's 848 file-name pictures on
+    11-14: 專題報導 55, 第1版 國內郵資已付 22, 人物特寫 20, nknu 14 …, and misread characters); 'scan', its words are
+    not the document (has_text false: a scan with a few words)."""
+    if not d.text.strip():
+        return "blank"
+    if d.kind_raw.startswith(IMAGE_KIND):
+        return "image"
+    return "" if d.has_text else "scan"
+
+
+def _spread(items: list, n: int) -> list:
+    """items, or n of them at even steps from the first when there are more."""
+    return items if len(items) <= n else [items[i * len(items) // n] for i in range(n)]
+
+
+def own_titles(docs: list[Document], school: str = "", on: bool = True) -> dict:
+    """Give each document whose title says nothing the title its own text gives (plan 2026-11-14 T4; the module
+    docstring), in place, and report it. docs: the documents the build keeps, copies merged, so that 20 addresses of
+    one page are one document 【Claude: the plan does not say when to count】. school: the school's name
+    (sites.table().school), no title for any document.
+
+    Whose title says nothing:
+    - TITLE_SHARED: a page or a notice whose title SAME_TITLE_MIN or more pages and notices of its site (Document.site)
+      have, counted together, to the character; an empty title is a title;
+    - TITLE_FILE: an attachment titled by its file name (title_from_context false) when that name, its extension
+      aside, has no Han character.
+    Each takes text_title of its text, unless its text gives none (title_unread), the line is no title (title_flaw,
+    with the school's name and the document's unit as names), or SAME_TITLE_MIN or more documents of its site would
+    then carry that title, those that have it already counted in ('shared': a site's header on every page's first
+    line). The old title goes to old_title and, when it is not there yet, to the end of linktext, so the keyword
+    index's title column still holds its words; title_from_text is set. Nothing else of the document changes here: the
+    build reads again what a title gives (the term, the cohort, the doc type: build._retitle). on=False (the build's
+    own_titles off) changes no document and still counts whose title says nothing.
+
+    Returns {'on', 'same_min', 'max_chars', TITLE_SHARED: {'titles': the shared titles (site and title), 'documents',
+    'retitled', 'kept', 'why': {reason: documents kept for it}}, TITLE_FILE: the same without 'titles', 'by_site':
+    {site: {kind: {'retitled', 'kept'}}} (the sites and kinds with such documents; {} when off), 'examples': {kind:
+    up to TITLE_EXAMPLES of the retitled, spread over them: id, site, old, new}}, the plan's 「建库报告记换了几份、没换
+    几份」 and what the direction's 「抽看几十份」 looks at."""
+    same = Counter((d.site, d.title) for d in docs if d.kind_class in ("page", "notice"))
+    targets: list[tuple[Document, str]] = []
+    for d in docs:
+        if d.kind_class in ("page", "notice"):
+            if same[(d.site, d.title)] >= SAME_TITLE_MIN:
+                targets.append((d, TITLE_SHARED))
+        elif (d.kind_class == "attachment" and not d.title_from_context
+              and not _HAN.search(_EXTENSION.sub("", d.title))):
+            targets.append((d, TITLE_FILE))
+    kinds = (TITLE_SHARED, TITLE_FILE)
+    why: dict[str, Counter[str]] = {kind: Counter() for kind in kinds}
+    found: list[tuple[Document, str, str]] = []  # (document, kind, the line that may be its title)
+    for d, kind in targets if on else ():
+        candidate = text_title(d.text)
+        if flaw := title_unread(d) or title_flaw(candidate, d.title, (school, d.unit)):
+            why[kind][flaw] += 1
+        else:
+            found.append((d, kind, candidate))
+    taking = Counter((d.site, candidate) for d, _, candidate in found)
+    chosen = {id(d) for d, _, _ in found}
+    held = Counter((d.site, d.title) for d in docs if id(d) not in chosen)
+    new: dict[int, str] = {}
+    for d, kind, candidate in found:
+        if taking[(d.site, candidate)] + held[(d.site, candidate)] >= SAME_TITLE_MIN:
+            why[kind]["shared"] += 1
+        else:
+            new[id(d)] = candidate
+    retitled: dict[str, list[dict]] = {kind: [] for kind in kinds}
+    by_site: dict[str, dict[str, dict[str, int]]] = {}
+    for d, kind in targets if on else ():
+        count = by_site.setdefault(d.site, {}).setdefault(kind, {"retitled": 0, "kept": 0})
+        if id(d) not in new:
+            count["kept"] += 1
+            continue
+        count["retitled"] += 1
+        d.old_title, d.title, d.title_from_text = d.title, new[id(d)], True
+        if d.old_title and d.old_title not in d.linktext.split(LINK_SEP):
+            d.linktext = LINK_SEP.join(part for part in (d.linktext, d.old_title) if part)
+        retitled[kind].append({"id": d.doc_id, "site": d.site, "old": d.old_title[:TITLE_SHOWN], "new": d.title})
+
+    def part(kind: str) -> dict:
+        n = sum(k == kind for _, k in targets)
+        return {"documents": n, "retitled": len(retitled[kind]), "kept": n - len(retitled[kind]),
+                "why": dict(why[kind])}
+
+    return {"on": on, "same_min": SAME_TITLE_MIN, "max_chars": TITLE_MAX_CHARS,
+            TITLE_SHARED: {"titles": sum(n >= SAME_TITLE_MIN for n in same.values()), **part(TITLE_SHARED)},
+            TITLE_FILE: part(TITLE_FILE), "by_site": by_site,
+            "examples": {kind: _spread(retitled[kind], TITLE_EXAMPLES) for kind in kinds}}

@@ -246,6 +246,14 @@ class Event:
     # the 抓取时间 of the export's row of its calendar file: the newest of one id's events stays (plan 2026-11-08 T4,
     # documents.one_event_per_id); '' for one made by hand or a file the manifest does not list
     fetched: str = ""
+    # plan 2026-11-14 T2: the id of the recurring event this one is an instance of (the Calendar API's
+    # recurringEventId; the export holds the instances, expanded with singleEvents=true, each with the id
+    # <that id>_<its start>); '' for a single event
+    series: str = ""
+    # plan 2026-11-14 T2: only on the one event documents.one_event_per_series makes of a series' instances (its id is
+    # the series id, start its first day and end_inclusive its last): every instance's (first day, last day), by day;
+    # () on any other event
+    days: tuple[tuple[date, date], ...] = ()
 
 
 def _day(when: dict) -> tuple[date, bool]:
@@ -265,7 +273,8 @@ def load_calendar(export_dir: Path) -> list[Event]:
     documents start at documents.CALENDAR_SINCE), each with its export's site (the manifest's 网站; '' without one) and
     its file's 抓取时间 (the manifest row whose 本地档案 it is; plan 2026-11-08 T4). An all-day event's end.date is the
     day after its last day, so end_inclusive = end.date - 1; a timed event ending exactly at midnight ends the day
-    before."""
+    before. An instance of a recurring event keeps that event's id (recurringEventId: Event.series, plan 2026-11-14
+    T2), which documents.one_event_per_series merges by."""
     export_dir = Path(export_dir)
     files = sorted({f for pattern in CALENDAR_FILES for f in export_dir.glob(pattern)})
     manifest = _manifest(str(export_dir.resolve())) if files else {}
@@ -282,7 +291,7 @@ def load_calendar(export_dir: Path) -> list[Event]:
             if (all_day or _midnight(it["end"])) and end > start:
                 end -= timedelta(days=1)
             out.append(Event(str(it["id"]), (it.get("summary") or "").strip(), start, max(start, end),
-                             it.get("htmlLink") or "", site, when))
+                             it.get("htmlLink") or "", site, when, series=str(it.get("recurringEventId") or "").strip()))
     return out
 
 

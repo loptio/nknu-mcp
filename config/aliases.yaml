@@ -25,3 +25,7 @@ groups:
   - [單一登入, 單登, SSO]  # where online applications are made (Q03)
   - [行事曆, 校曆]
   - [書卷獎, 學業成績前三名]  # 書卷獎 is the usual name; the site writes 學業成績前三名 (Q39)
+  # plan 2026-11-14 (direction 2026-11-13 第 5 件: 「N21 的答案里没有『學測』两个字，缺一条别名」): what students say
+  # beside what the school writes. Added by Claude; the owner 11-14: 「你加的改动：两组别名（學測、校車）……全部保留。」
+  - [學測, 大學學科能力測驗, 學科能力測驗]  # the calendar event is 大學學科能力測驗 (N21)
+  - [校車, 交通車]  # 總務處 writes 往返兩校區交通車時刻表; students say 校車 (N01)

@@ -180,8 +180,14 @@ def test_each_vector_is_its_chunks_passage(tmp_path):
     embed_chunks(conn, emb, unit=True)  # the vectors as the owner's patch reads (--unit-words-in-vectors)
     vecs = vectors_of(conn)
     every = chunk_passages(conn, list(vecs))
+    # plan 2026-11-14 T3, corrected the same day: a calendar event's date line is the reranker's only, so the two
+    # events' vectors are their passages without that line; every other chunk's vector is its passage
+    dated = dict(conn.execute("SELECT c.chunk_id, d.date_line FROM chunks c JOIN docs d USING (doc_id)"
+                              " WHERE d.date_line != ''"))
+    embedded = {c: p.replace("\n" + dated[c], "", 1) if c in dated else p for c, p in every.items()}
+    assert len(dated) == 2 and all(dated[c] in every[c] for c in dated)
     assert set(every) == set(vecs) and all(np.allclose(from_blob(vecs[c]), emb.vector(p), atol=1e-3)
-                                           for c, p in every.items())
+                                           for c, p in embedded.items())
     assert conn.execute("SELECT value FROM meta WHERE key = 'vec_passage'").fetchone() == (embed.PASSAGE_VERSION,)
     ids = [c for (c,) in conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ? ORDER BY chunk_id", ("da3",))]
     # plan 2026-11-08 T4 (deliberate, the owner's unit patch): the unit line is every passage's second line; both

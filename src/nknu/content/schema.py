@@ -33,14 +33,29 @@ such column, and the per-site report shows nothing for it.
 pipeline-7 (owner 11-09, blueprint item 22, 「照这个做」): sites.under_read, how many of the site's documents were read
 again whole, their content area having given much less than their own words (assemble's under_read); a database
 before it has no such column, and the per-site report shows nothing for it.
+
+pipeline-8 (plan 2026-11-14 T6 and T3; direction 2026-11-13 第 6、3 件): docs.expires (1: the document goes out of
+date) and docs.valid_ay (the ROC academic year it belongs to), which hybrid.validity reads for the 「还有效」 factor
+(build._validity has the rules); and docs.date_line, a calendar event's term and days, a line of the passages the
+reranker reads of it (nknu.content.embed.chunk_passages; never of the text embedded, since the correction of 11-14;
+'' for every other document and when the build left the line out). A database without them (pipeline-7 and before)
+is scored and read as before: hybrid.validity gives None, embed reads no such line.
+Still pipeline-8 (plan 2026-11-14 T2, completed the same day): docs.rank_date, the latest identity date among a
+document and the copies the build merged into it (build._rank_dates), which search ranks by where it reads a date
+(RankConfig.copy_dates) while docs.ident_date, the document's own, is what a response shows. The version stays: it
+came in on 11-14 and no database of it is in use yet (the two of that day's first rebuild, aca1114.db and
+sites111v6.db on the lab PC, say pipeline-8 without the column; search reads them, like any database without it, by
+ident_date as before).
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-# pipeline-6 (owner 11-09, blueprint item 15): sites.deleted_notices; pipeline-7 (item 22): sites.under_read
-SCHEMA_VERSION = "pipeline-7"
+# pipeline-6 (owner 11-09, blueprint item 15): sites.deleted_notices; pipeline-7 (item 22): sites.under_read;
+# pipeline-8 (plan 2026-11-14 T6, T3): docs.expires, docs.valid_ay and docs.date_line; and, the version kept (it is
+# of the same day and no database of it is in use yet), docs.rank_date (plan 2026-11-14 T2, completed)
+SCHEMA_VERSION = "pipeline-8"
 # docs.doc_type: journal | exam | minutes | '' (build.doc_type, spec 2026-11-01 「排序 v2」); build.tier_of makes all
 # three background in docs.tier, which search ranks after the primary documents (addendum M2; plan 2026-11-08 T1)
 JOURNAL = "journal"  # 學報: issues, tables of contents, abstracts, papers; since 11-09 (owner, blueprint item 17)
@@ -81,8 +96,32 @@ CREATE TABLE docs (
     tier        TEXT NOT NULL DEFAULT 'primary', -- primary | background (build.tier_of: archive members, journals,
                                                  -- exams, meeting minutes)
     site        TEXT NOT NULL DEFAULT '',   -- the export it came from: a sites.site (plan 2026-11-08 T4)
-    unit_line   TEXT NOT NULL DEFAULT ''    -- 單位：<unit>（<short names>） <組別>, a passage's second line; ''
+    -- No ASCII comma in the comments from here to the closing bracket. ALTER TABLE ... DROP COLUMN of a table's last
+    -- column cuts the stored statement back to the nearest comma before the column's name and a comment's comma
+    -- counts: the bracket then lands inside the comment and SQLite refuses (「incomplete input」). The tests that read
+    -- a database as one built before drop these columns in any order (plan 2026-11-14 T6 found it).
+    unit_line   TEXT NOT NULL DEFAULT '',   -- 單位：<unit>（<short names>） <組別>: a passage's second line; ''
                                             -- when its unit is the school and it has no 組別 (build.unit_words)
+    date_line   TEXT NOT NULL DEFAULT '',   -- a calendar event's term and days: 115學年度第2學期 2027-02-15～2027-02-18;
+                                            -- a line after the unit line in the passages the reranker reads and in
+                                            -- no vector (plan 2026-11-14 T3: documents.event_line; embed); '' for
+                                            -- any other document and for every one when the build left it out
+                                            -- (meta event_dates off)
+    expires     INTEGER NOT NULL DEFAULT 0, -- 1: it goes out of date (a notice; a dated post; a title naming a term
+                                            -- or year; an event; a file on such a document). 0: it does not (undated;
+                                            -- a rule or a form; a standing page). plan 2026-11-14 T6: build._validity
+    valid_ay    INTEGER,                    -- the ROC academic year it belongs to (its title's or else its date's; an
+                                            -- event's last day's); NULL when unknown (plan 2026-11-14 T6)
+    rank_date   TEXT,                       -- ISO date: the latest identity date among the document and the copies
+                                            -- merged into it; its own ident_date when it has no copies; NULL when
+                                            -- none of them is dated. search ranks by it (RankConfig.copy_dates);
+                                            -- what a response shows stays ident_date (plan 2026-11-14 T2:
+                                            -- build._rank_dates)
+    rank_undated INTEGER NOT NULL DEFAULT 0 -- 1: the document is dated but a copy merged into it has no date (a
+                                            -- rule's copy on a standing page); search then gives it no less than an
+                                            -- undated document gets (plan 2026-11-14 T2: build._rank_dates;
+                                            -- search._date_part). No comma in these comments: see the note on
+                                            -- DROP COLUMN above
 );
 
 CREATE TABLE sites (                 -- one row per export's site (plan 2026-11-08 T4; build._site_rows)

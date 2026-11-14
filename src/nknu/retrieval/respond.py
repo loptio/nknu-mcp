@@ -48,6 +48,7 @@ from urllib.parse import unquote, urlsplit
 
 from nknu.content.chunks import table_header
 from nknu.content.dates import FIELD_SOURCE, INHERITED_SOURCE, PAGE_SOURCE
+from nknu.content.documents import series_days
 from nknu.content.numbering import strip_decor
 from nknu.core.textnorm import norm_text
 from nknu.retrieval.types import DocHit, SearchResult
@@ -102,8 +103,11 @@ NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程�
 # old 校刊 and 校訊 named since owner 11-09 (blueprint item 17, 「照建议定」: build._PAPER_DIRS)
 NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題），"
                    "排在主要文件後面；需要時再看。")
-# plan 2026-11-08 T1: each copy carries its own id, which read answers with the kept document (NOTE_ALIAS)
-NOTE_COPIES = ("【系統】copies 是同一份文件（標題和內容都相同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
+# plan 2026-11-08 T1: each copy carries its own id, which read answers with the kept document (NOTE_ALIAS). Plan
+# 2026-11-14 T2: the build merges documents of one text whatever their titles, so the note says the content is the same
+# (the plan's 「內容相同」) and no longer the title; that a title may differ is said too 【Claude】. NOTE_COPIES_NO_ID,
+# of a build before T1 (one title and text then), stays as it was
+NOTE_COPIES = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
                "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
 # I5: format siblings (the doc and odt beside a pdf on one row, T7a) have their own id, url and format, no date of
 # their own
@@ -119,6 +123,8 @@ NOTE_SECTIONS = ("【系統】長文件只給命中的章節和目錄；〔第 N
 NOTE_DATES = ("【系統】每個日期後面括號是它的來源。附件的日期是所屬網頁的日期或伺服器檔案時間，"
               "不一定是文件本身的修訂日；文件自己寫的日期請看原文（開頭或沿革）。")
 NOTE_NOT_FOUND = "【系統】查無相關資料：目前收錄的教務處資料裡沒有符合的內容，請勿推測。"
+# a merged recurring event's status (_status): its first and last day, how many times, then where today falls
+SERIES_STATUS = "行事曆寫的日期 {first}～{last}（重複事件，共 {n} 次）：{phase}"
 # plan 2026-11-08 T4: the texts of a database whose sites table has rows (many sites): no unit named, no site list
 COVERAGE_SITES = ("目前收錄高師大 {sites} 個網站的公開網頁、公告、附件{calendar}，資料截至 {span}，"
                   "每筆結果附所屬網站的資料截至日期（data_as_of）；另有 {missing_pages} 個網頁、{missing_files} 個附件沒抓到；"
@@ -407,13 +413,40 @@ def _phase(start: str | None, end: str | None, today: str) -> str:
     return "尚未截止" if end else "已開始"
 
 
-def _status(dates: list[_Date], today: date) -> str:
-    """Absolute status only from dates the text or the calendar writes (never from 學年度 or publication)."""
+def _span(day: tuple[date, date]) -> str:
+    return day[0].isoformat() if day[1] == day[0] else f"{day[0].isoformat()}～{day[1].isoformat()}"
+
+
+def _series_phase(days: list[tuple[date, date]], today: date) -> str:
+    """Where today falls among a recurring event's instances (days: documents.series_days, earliest first)."""
+    last = max(days, key=lambda d: d[1])
+    if today < days[0][0]:
+        return f"尚未開始，第一次 {_span(days[0])}"
+    if today > last[1]:
+        return f"已結束，最後一次 {_span(last)}"
+    coming = next((d for d in days if d[0] > today), None)
+    if (now := next((d for d in days if d[0] <= today <= d[1]), None)) is not None:
+        return f"今天有一次（{_span(now)}）" + (f"，下一次 {_span(coming)}" if coming else "")
+    before = max((d for d in days if d[1] < today), key=lambda d: d[1])
+    return f"上一次 {_span(before)}，下一次 {_span(coming)}"
+
+
+def _status(dates: list[_Date], today: date, series: str = "") -> str:
+    """Absolute status only from dates the text or the calendar writes (never from 學年度 or publication).
+    series: the text of a calendar event. When it is a merged recurring event's (plan 2026-11-14 T2: one document,
+    every instance's days listed in its text), the calendar wrote those days, not one period from the first to the
+    last: the status says how many times it occurs and which instance is the last before and the next after today
+    (main session 11-14, after the review: a yearly event read 進行中 in the months between two of its days)."""
     t = today.isoformat()
     parts = [f"正文寫的期間 {s or ''}～{e or ''}：{_phase(s, e, t)}"
              for s, e in _pairs(dates, "period_start", "period_end")]
-    parts += [f"行事曆寫的日期 {s or ''}～{e or ''}：{_phase(s, e, t)}"
-              for s, e in _pairs(dates, "event_start", "event_end")]
+    if days := series_days(series) if series else []:
+        last = max(d[1] for d in days)
+        parts.append(SERIES_STATUS.format(first=days[0][0].isoformat(), last=last.isoformat(), n=len(days),
+                                          phase=_series_phase(days, today)))
+    else:
+        parts += [f"行事曆寫的日期 {s or ''}～{e or ''}：{_phase(s, e, t)}"
+                  for s, e in _pairs(dates, "event_start", "event_end")]
     return "；".join(parts)
 
 
@@ -438,7 +471,14 @@ def _header(conn: sqlite3.Connection, doc: sqlite3.Row, today: date) -> dict:
     dates = _dates(conn, doc["doc_id"])
     return _compact({"identity": _identity(doc, dates), "title": doc["title"], "url": doc["url"],
                      "data_as_of": _data_as_of(conn, doc["doc_id"]), "dates": _date_items(dates),
-                     "status": _status(dates, today), "applies_to": _applies(conn, doc), "parent": _parent(conn, doc)})
+                     "status": _status(dates, today, _event_text(doc)), "applies_to": _applies(conn, doc),
+                     "parent": _parent(conn, doc)})
+
+
+def _event_text(doc: sqlite3.Row) -> str:
+    """A calendar event's text when the row was read with it, else ''."""
+    # a sqlite3.Row's `in` looks among its values: its keys are asked for
+    return (doc["text"] or "") if doc["kind_class"] == "event" and "text" in doc.keys() else ""  # noqa: SIM118
 
 
 # ---------------------------------------------------------------- text

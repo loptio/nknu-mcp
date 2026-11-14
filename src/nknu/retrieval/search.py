@@ -10,6 +10,12 @@
    Each document keeps its best PER_DOC matched chunks by bm25, and the pool keeps the best POOL_DOCS documents by
    their best chunk (owner 11-08, plan addendum M1: a long document no longer fills the pool or gains coverage from
    many chunks).
+   With RankConfig.topic_required (plan 2026-11-14 T5, direction 2026-11-13 第 5 件; the default), when the query
+   has both topic words and other tokens (_topic), only the documents with a chunk that has a topic word are
+   candidates (_FTS_TOPIC): one that has only a unit's name or only a term is none. The MATCH and so every chunk's
+   bm25 are the ones of before, so a document on the topic keeps the chunks, the bm25 and the coverage it had: the
+   unit's name and the term count for it as they did (the direction: 「进了候选的文件，这些词照样算进挑 300 份的那个
+   分」). Steps 2 to 4 are as they are.
 2. The kept chunks are grouped by document:
    score = W_COVERAGE*coverage + W_BM25*bm25_norm + W_PERIOD*period_match + W_COHORT*cohort_match,
    ties newest identity date first (no date last), then doc_id.
@@ -22,6 +28,13 @@
    Ranking v2 (spec 「排序 v2」, 11-01; RankConfig) adds, when the query names no term or year (a cohort is not one):
    w_recent * exp(-days before today / tau_days) of the identity date, else of a calendar event's last day (a day
    after today counts as today), else no_date_factor * w_recent.
+   The date a document ranks by (plan 2026-11-14 T2, completed the same day; RankConfig.copy_dates, on by default):
+   for a document the build merged copies into, the latest identity date among it and them (docs.rank_date), in this
+   date part, in the tie of equal scores above (sort_docs) and in adjustments; the date part is never less than its
+   own date gives (_date_part). The build keeps the earliest copy and shows its day, and ranked by that day a gold
+   document of the 教务处 control fell from keyword rank 4 to 26 (main session, 11-14). What a response shows is
+   still the document's own date: respond reads docs.ident_date itself, never _Doc. Off, and in a database without
+   the column, the date is the document's own.
 3. By tier (owner 11-08, addendum M2; RankConfig.tier): archive members, journals, exams and (since 11-08 10:16)
    files of meeting minutes are background material
    (background_ids: docs.tier, which the build writes since plan 2026-11-08 T1; in an older database the 11-08 rule
@@ -53,7 +66,7 @@ from datetime import date
 from nknu.content.schema import BACKGROUND, EXAM, JOURNAL
 from nknu.content.terms import Term, canonical_tokens, query_terms
 from nknu.core.textnorm import CJK, fts_query, norm_text, tokenize
-from nknu.retrieval.aliases import expand
+from nknu.retrieval.aliases import expand, synonyms, unit_spans
 from nknu.retrieval.types import DocHit, SearchResult, Understood
 
 TITLE_WEIGHT = 3.0
@@ -90,15 +103,36 @@ _OPENER = re.compile(rf"(?<![{CJK}])(?:请问|请教(?![务室]))")
 
 # step 1: every match scored once, each document's best PER_DOC chunks, the best POOL_DOCS documents by their best
 # chunk (ties by doc_id); the tokens are read for the kept chunks only (_TOKENS)
-_FTS = ("SELECT chunk_id, score FROM ("
-        " SELECT chunk_id, score, DENSE_RANK() OVER (ORDER BY best, doc_id) AS d FROM ("
-        "  SELECT m.chunk_id, m.score, c.doc_id,"
-        "   ROW_NUMBER() OVER (PARTITION BY c.doc_id ORDER BY m.score, m.chunk_id) AS n,"
-        "   MIN(m.score) OVER (PARTITION BY c.doc_id) AS best"
-        "  FROM (SELECT rowid AS chunk_id, bm25(chunk_fts, ?, 1.0, ?) AS score FROM chunk_fts WHERE chunk_fts MATCH ?) m"
-        "  JOIN chunks c ON c.chunk_id = m.chunk_id)"
-        " WHERE n <= ?)"
-        " WHERE d <= ? ORDER BY d, score")
+
+
+def _fts_sql(only: str = "") -> str:
+    """The keyword query: each document's best PER_DOC matched chunks, of the POOL_DOCS documents whose best chunk is
+    best. only: a WHERE on the matched chunks' documents (c.doc_id), read before the two limits are counted."""
+    return ("SELECT chunk_id, score FROM ("
+            " SELECT chunk_id, score, DENSE_RANK() OVER (ORDER BY best, doc_id) AS d FROM ("
+            "  SELECT m.chunk_id, m.score, c.doc_id,"
+            "   ROW_NUMBER() OVER (PARTITION BY c.doc_id ORDER BY m.score, m.chunk_id) AS n,"
+            "   MIN(m.score) OVER (PARTITION BY c.doc_id) AS best"
+            "  FROM (SELECT rowid AS chunk_id, bm25(chunk_fts, ?, 1.0, ?) AS score FROM chunk_fts"
+            "        WHERE chunk_fts MATCH ?) m"
+            f"  JOIN chunks c ON c.chunk_id = m.chunk_id{only})"
+            " WHERE n <= ?)"
+            " WHERE d <= ? ORDER BY d, score")
+
+
+_FTS = _fts_sql()
+# plan 2026-11-14 T5 (RankConfig.topic_required): the same over the documents that have a chunk with a topic word
+# (the second MATCH, which ranks nothing; its parameter follows the first MATCH's). Main session 11-14, after the
+# first measurements: as first written the one MATCH was (topic) AND (every token). That asked the topic of each
+# chunk and counted a topic word twice in bm25, so a document on the topic lost the chunks that only name the unit
+# and went to the reranker with other chunks than before. The direction asks it of the document and leaves the
+# score alone: 「讲什么的词至少对上一个，文件才进候选……进了候选的文件，这些词照样算进挑 300 份的那个分」.
+_FTS_TOPIC = _fts_sql(" WHERE c.doc_id IN (SELECT t.doc_id FROM chunks t WHERE t.chunk_id IN"
+                      " (SELECT rowid FROM chunk_fts WHERE chunk_fts MATCH ?))")
+# the topic is asked of a chunk's own words, never of its unit words (chunk_fts.unit_tokens): 工程 would admit every
+# page of 軟體工程與管理學系, the very unit-only match the setting leaves out (review 11-14). A column filter that names
+# the two columns every database has; one before pipeline-5 keeps its unit words among the title tokens
+_TOPIC_COLUMNS = "{{title_tokens body_tokens}} : ({})"
 _TOKENS = "SELECT rowid, title_tokens, body_tokens{} FROM chunk_fts WHERE rowid IN ({})"  # {}: ', unit_tokens' or ''
 # (a database before pipeline-5 has no such column: its unit words, if any, are title tokens)
 # background material by source (addendum M2): docs.tier, which the build writes since plan 2026-11-08 T1 (archive
@@ -122,7 +156,14 @@ class RankConfig:
     weight of the unit words' column (the owner: 「放进 body_tokens（1 倍权重）或者控制单位词在 BM25 里的权重」), and
     what a query word found only there counts in coverage 【Claude】 (1.0: as much as one in the document's own words;
     the unit words were title tokens before, weight TITLE_WEIGHT, counting fully). unit_names applies to any database
-    with the unit tables, the 11-04 and 11-08 builds too: RankConfig(unit_names=False) ranks those as before."""
+    with the unit tables, the 11-04 and 11-08 builds too: RankConfig(unit_names=False) ranks those as before.
+    topic_required (plan 2026-11-14 T5; on since the owner's defaults of 11-14, 「找候选开」; False is the search of
+    before): a candidate document must have one of the query's topic words; a unit's name and a term count for it as before but bring no document by
+    themselves (module docstring, step 1; _topic, _FTS_TOPIC).
+    copy_dates (plan 2026-11-14 T2, completed the same day; on by default): a document ranks by the latest identity
+    date among it and the copies the build merged into it (docs.rank_date: module docstring, step 2), so merging
+    ranks no document lower than before. False: by its own identity date, the search of before; a database without
+    the column (built before, the first rebuild of 11-14 too) ranks so either way."""
 
     recency: bool = True
     w_recent: float = 0.3
@@ -132,6 +173,8 @@ class RankConfig:
     unit_names: bool = True
     unit_weight: float = 1.0
     unit_cover: float = 0.5
+    topic_required: bool = True
+    copy_dates: bool = True
 
 
 @dataclass
@@ -147,6 +190,19 @@ class _Doc:
     ranked: list[int] | None = None  # hybrid's chunk order (reranked picks first, then dense hits); None: by bm25
     background: bool = False  # step 3: an archive member, journal or exam (set when the tier applies)
     unit_tokens: set[str] = field(default_factory=set)  # its unit words' (chunk_fts.unit_tokens, pipeline-5)
+    # plan 2026-11-14 T2: docs.rank_date, the latest identity date among it and the copies merged into it, when
+    # RankConfig.copy_dates had it read (doc_rows); None: it ranks by ident, its own identity date (docs.ident_date),
+    # as every document does with copy_dates off and in a database without the column
+    rank_date: str | None = None
+    # plan 2026-11-14 T2 (main session, the same day): docs.rank_undated, read with rank_date: the document is dated
+    # but a copy merged into it has no date, so its date part is never under an undated document's (_date_part)
+    rank_undated: bool = False
+
+    @property
+    def day(self) -> str | None:
+        """The date it ranks by where the order alone asks (sort_docs' tie): rank_date when it has one, else its
+        own."""
+        return self.rank_date or self.ident
 
     @property
     def bm25(self) -> float:
@@ -174,6 +230,8 @@ class KeywordPool:
     ordered: list[_Doc]  # docs in score order (sort_docs); search_docs' order is by_tier(ordered)
     rows: int  # kept chunks (SearchResult.candidates)
     tier: bool = True  # rank.tier: docs' background flags are set
+    topic: list[str] = field(default_factory=list)  # plan 2026-11-14 T5: the tokens one of which a matched chunk had
+    #                                                 to have; empty: none was asked for (the MATCH of before)
 
 
 def _label(t: Term) -> str:
@@ -214,23 +272,36 @@ def _coverage(words: list[str], tokens: set[str], alias_sets: list[tuple[set[str
     return sum(1.0 if found(w, tokens) else unit_cover if unit and found(w, every) else 0.0 for w in words) / len(words)
 
 
-def doc_rows(conn: sqlite3.Connection, ids: list[str]) -> dict[str, _Doc]:
-    """The documents of ids that exist, unscored and without chunks (hybrid: those only the vector path found)."""
+def has_rank_date(conn: sqlite3.Connection) -> bool:
+    """docs has rank_date (a database built since plan 2026-11-14 T2 was completed)."""
+    return any(r[1] == "rank_date" for r in conn.execute("PRAGMA table_info(docs)"))
+
+
+def doc_rows(conn: sqlite3.Connection, ids: list[str], *, copy_dates: bool = True) -> dict[str, _Doc]:
+    """The documents of ids that exist, unscored and without chunks (hybrid: those only the vector path found), each
+    with its own identity date and, with copy_dates (RankConfig.copy_dates; plan 2026-11-14 T2) in a database that
+    has docs.rank_date, the date it ranks by. The default is RankConfig's: hybrid reads the documents only the
+    vectors found with no RankConfig at hand, and adjustments, the first to read their dates, takes the rank dates
+    away again when the setting is off."""
     if not ids:
         return {}
-    return {r[0]: _Doc(r[0], r[1], r[2], r[3]) for r in conn.execute(
-        "SELECT doc_id, period_ay, period_sem, ident_date FROM docs"
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(docs)")} if copy_dates else set()
+    ranks_by = "rank_date" if "rank_date" in columns else "NULL"
+    undated = "rank_undated" if "rank_undated" in columns else "0"  # with rank_date since the same day's fix
+    return {r[0]: _Doc(r[0], r[1], r[2], r[3], rank_date=r[4], rank_undated=bool(r[5])) for r in conn.execute(
+        f"SELECT doc_id, period_ay, period_sem, ident_date, {ranks_by}, {undated} FROM docs"
         f" WHERE doc_id IN ({_marks(len(ids))})", ids)}
 
 
-def _candidates(conn: sqlite3.Connection, rows: list) -> dict[str, _Doc]:
-    """rows: (chunk_id, bm25) of the kept chunks; their documents with those chunks and their tokens."""
+def _candidates(conn: sqlite3.Connection, rows: list, copy_dates: bool = True) -> dict[str, _Doc]:
+    """rows: (chunk_id, bm25) of the kept chunks; their documents (doc_rows, with copy_dates) with those chunks and
+    their tokens."""
     ids = [r[0] for r in rows]
     owner = {r[0]: r[1] for r in conn.execute(
         f"SELECT chunk_id, doc_id FROM chunks WHERE chunk_id IN ({_marks(len(ids))})", ids)}
     unit = ", unit_tokens" if has_unit_tokens(conn) else ""
     tokens = {r[0]: r[1:] for r in conn.execute(_TOKENS.format(unit, _marks(len(ids))), ids)}
-    docs = doc_rows(conn, list(dict.fromkeys(owner.values())))
+    docs = doc_rows(conn, list(dict.fromkeys(owner.values())), copy_dates=copy_dates)
     for rowid, score in rows:
         d = docs.get(owner.get(rowid, ""))
         if d is not None:
@@ -290,6 +361,22 @@ def _recency(rank: RankConfig, day: str | None, today: date) -> float:
     return rank.w_recent * math.exp(-max(0, (today - date.fromisoformat(day)).days) / rank.tau_days)
 
 
+def _date_part(rank: RankConfig, d: _Doc, end: str | None, today: date) -> float:
+    """Ranking v2's date part of one document's score: _recency of its own identity date, else of end (a calendar
+    event's last day), else of no date, as always. With a rank date (_Doc.rank_date: plan 2026-11-14 T2,
+    RankConfig.copy_dates), the higher of that and what the rank date gives 【Claude: the higher, where the main
+    session's brief of 11-14 says to read the rank date whenever there is one】. For a document dated itself that is
+    the rank date's, which is never earlier than its own. For one kept without a date beside a dated copy (a primary
+    file before an archive member) no date can give more than an old date does (no_date_factor), and it keeps that:
+    the aim of the correction, that merging ranks no document lower than before, holds for it too. A document whose
+    rank date is its own scores to the bit as before."""
+    own = _recency(rank, d.ident or end, today)
+    best = max(own, _recency(rank, d.rank_date, today)) if d.rank_date else own
+    # main session, 11-14: a dated document with an undated copy merged into it (docs.rank_undated: a rule kept on a
+    # standing page beside the notice that posted it) gets no less than that copy got alone, the no-date share
+    return max(best, _recency(rank, None, today)) if d.rank_undated else best
+
+
 def _cohort_docs(conn: sqlite3.Connection, ids: list[str], cohorts: list[int]) -> set[str]:
     """Documents that apply to one of the 入學 years: cohort_exact == X or cohort_from <= X."""
     if not cohorts or not ids:
@@ -310,9 +397,11 @@ def top_hits(ordered: list[_Doc], limit: int) -> list[DocHit]:
 
 
 def sort_docs(docs: Iterable[_Doc]) -> list[_Doc]:
-    """search_docs' order: score high to low, ties newest identity date first (no date last), then doc_id."""
+    """search_docs' order: score high to low, ties newest identity date first (no date last), then doc_id. The date
+    is the one a document ranks by (_Doc.day: its rank date when RankConfig.copy_dates had one read, plan 2026-11-14
+    T2; else its own, as before)."""
     ordered = sorted(docs, key=lambda d: d.doc_id)
-    ordered.sort(key=lambda d: d.ident or "", reverse=True)
+    ordered.sort(key=lambda d: d.day or "", reverse=True)
     ordered.sort(key=lambda d: d.score, reverse=True)
     return ordered
 
@@ -337,6 +426,44 @@ def unit_names(conn: sqlite3.Connection) -> list[list[str]]:
     return out
 
 
+def unit_spellings(conn: sqlite3.Connection) -> list[str]:
+    """Plan 2026-11-14 T5: every name the unit tree has for a unit, each once: the units' names and short names (the
+    build's tables units and unit_aliases, plan 2026-11-02 T7d); [] without them. Not unit_names, which is what a
+    short name brings and so leaves out the school and the units without a short name: here the question is what in a
+    query is a unit's name, and 教務處 (no short name) and 高師大 (the school) say whose a thing is as 軟體系 does."""
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN"
+                                       " ('units', 'unit_aliases')")}
+    if have != {"units", "unit_aliases"}:
+        return []
+    names = [r[0] for r in conn.execute("SELECT name FROM units ORDER BY rowid")]
+    names += [r[0] for r in conn.execute("SELECT alias FROM unit_aliases ORDER BY rowid")]
+    return [n for n in dict.fromkeys(names) if n and tokenize(n)]
+
+
+def _topic(rest: str, tokens: list[str], units: list[tuple[int, int]], others: list[str]) -> list[str]:
+    """Plan 2026-11-14 T5 (direction 2026-11-13 第 5 件): the query's topic words, the tokens one of which a candidate
+    must have, or [] when the query is searched as before. rest: norm_text(query) with its terms blanked
+    (QueryTerms.rest); tokens: everything the query searches for; units: where it writes a unit's name
+    (aliases.unit_spans); others: what the alias table brings (aliases.synonyms).
+
+    Topic words are the bigrams and ASCII words of rest outside the unit names and the question words, and others (a
+    synonym of a topic word is one). So a unit's name, what its short name brings, a term's canonical tokens and a
+    bigram across a name's edge (軟體系學雜費's 系學) are no topic words: they are in tokens and count as before.
+    【Claude】 A single character is no topic word (有 in 軟體系有哪些課程: in the index a lone character is one that
+    stands apart, which says nothing of the topic), and no reason for the conjunction either.
+    [] when there is no topic word (a unit's name alone, a term alone, question words alone) or nothing else of more
+    than one character is searched for: asking for a topic word would then leave out no document for its unit or
+    term, and the query of before is run."""
+    kept = list(rest)
+    for start, end in units:
+        kept[start:end] = " " * (end - start)
+    searched = set(tokens)
+    words = [w for w in _words("".join(kept), fallback=False) if len(w) > 1]
+    topic = [t for t in dict.fromkeys(words + others) if t in searched]
+    apart = searched.difference(topic)  # a unit's, a term's, a name's edge; single characters
+    return topic if topic and any(len(t) > 1 for t in apart) else []
+
+
 def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]],
                  rank: RankConfig | None = None) -> KeywordPool:
     """Steps 1 and 2: the FTS match and each document's score, added up exactly as search_docs always has (the float
@@ -352,12 +479,21 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
     understood = Understood(words, canon, matched, [_label(t) for t in named.terms], cohorts)
     tokens = list(dict.fromkeys(words + canon + extra))
     recent = rank.recency and not named.terms
-    rows = (conn.execute(_FTS, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens), PER_DOC, POOL_DOCS)).fetchall()
-            if tokens else [])
+    topic: list[str] = []
+    if rank.topic_required and tokens:  # plan 2026-11-14 T5; the unit tree is read whatever rank.unit_names says
+        spans = unit_spans(q, unit_spellings(conn))
+        topic = _topic(named.rest, tokens, spans, synonyms(q, aliases, names, spans))
+    if not tokens:
+        rows = []
+    elif topic:
+        rows = conn.execute(_FTS_TOPIC, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens),
+                                         _TOPIC_COLUMNS.format(fts_query(topic)), PER_DOC, POOL_DOCS)).fetchall()
+    else:
+        rows = conn.execute(_FTS, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens), PER_DOC, POOL_DOCS)).fetchall()
     if not rows:
-        return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, {}, [], 0, rank.tier)
+        return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, {}, [], 0, rank.tier, topic)
 
-    docs = _candidates(conn, rows)
+    docs = _candidates(conn, rows, rank.copy_dates)
     alias_sets = [(set(tokenize(m)), [set(tokenize(o)) for g in [*aliases, *names] if m in g for o in g if o != m])
                   for m in matched]
     applies = _cohort_docs(conn, list(docs), cohorts)
@@ -371,23 +507,35 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
         d.score = (W_COVERAGE * d.coverage + W_BM25 * bm25_norm + W_PERIOD * _period_match(named.terms, d.ay, d.sem)
                    + W_COHORT * (d.doc_id in applies))
         if recent:
-            d.score += _recency(rank, d.ident or ends.get(d.doc_id), today)
+            d.score += _date_part(rank, d, ends.get(d.doc_id), today)
     return KeywordPool(q, understood, named.terms, cohorts, recent, tokens, docs, sort_docs(docs.values()), len(rows),
-                       rank.tier)
+                       rank.tier, topic)
 
 
 def adjustments(conn: sqlite3.Connection, docs: dict[str, _Doc], pool: KeywordPool, rank: RankConfig,
-                today: date) -> dict[str, float]:
+                today: date, *, recency: bool = True) -> dict[str, float]:
     """doc_id -> the part of its score that is not keyword relevance: W_PERIOD*period_match + W_COHORT*cohort_match
-    and the ranking-v2 date part when pool.recent (hybrid adds it to the reranker's relevance)."""
+    and the ranking-v2 date part when pool.recent (hybrid adds it to the reranker's relevance). recency=False leaves
+    the date part out (plan 2026-11-14 T6: hybrid then multiplies by how valid the document still is, so the date
+    is not counted twice).
+    With rank.copy_dates off, each of docs loses its rank date here (plan 2026-11-14 T2): hybrid reads the documents
+    only the vectors found with doc_rows' default, having no RankConfig to pass it, and this is the first place that
+    reads their dates and the one hybrid hands the RankConfig, before it sorts the reranked head (sort_docs). So with
+    the setting off the date part and that sort's tie read each document's own date, as before, whoever read the
+    rows 【Claude: hybrid.py was not to be edited; passing copy_dates to its doc_rows call would do the same】."""
+    if not rank.copy_dates:
+        for d in docs.values():
+            d.rank_date = None
+            d.rank_undated = False
+    dated = pool.recent and recency
     ids = list(docs)
     applies = _cohort_docs(conn, ids, pool.cohorts)
-    ends = _event_ends(conn, ids) if pool.recent and ids else {}
+    ends = _event_ends(conn, ids) if dated and ids else {}
     out: dict[str, float] = {}
     for d in docs.values():
         a = W_PERIOD * _period_match(pool.terms, d.ay, d.sem) + W_COHORT * (d.doc_id in applies)
-        if pool.recent:
-            a += _recency(rank, d.ident or ends.get(d.doc_id), today)
+        if dated:
+            a += _date_part(rank, d, ends.get(d.doc_id), today)
         out[d.doc_id] = a
     return out
 
