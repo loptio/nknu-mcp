@@ -317,3 +317,11 @@ def test_the_pages_warn_when_the_installed_copy_lags_the_pipelines_code(db, tmp_
     fresh = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(fresh, base_url=BASE) as client:
         assert "建库用的程序" not in client.get("/search").text
+
+
+def test_a_file_the_pack_replaced_is_fine_once_the_pipeline_has_the_packs_own_version(tmp_path):
+    """After the tools' commit reaches the pipeline's source too (the usual code sync), the pipeline's file is the
+    installed copy's own: no difference to warn of (11-15, found right after the commit: it was compared with the
+    version the pack was made from alone, so the warning would have come up falsely)."""
+    work, code = _installed(tmp_path, changed={"nknu/retrieval/hybrid.py": "HYBRID = 1\nRECORDER = 1\n"})
+    assert web.install_state(code, work / "src")["drift"] == []

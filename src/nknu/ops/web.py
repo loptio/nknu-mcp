@@ -138,8 +138,9 @@ def install_state(code_root: Path, pipeline_src: Path) -> dict | None:
     The tools run a copy of the pipeline's source with their own files laid over it (deploy/lab-inspect/install.sh;
     plan 2026-11-15 T8), so after the pipeline's code changes, the scores and the left-out reasons shown here are the
     older rules' until the copy is installed again (review 11-15: nothing on the pages showed it). drift: the
-    pipeline's .py files that differ from the copy's, a file the pack replaced counting when the pipeline's is no
-    longer the one the pack was made from (BASE.sha256), a new file of the pipeline's counting too; the tools' own
+    pipeline's .py files that differ from the copy's, a new file of the pipeline's counting too; a file the pack
+    replaced counts only when the pipeline's is neither the version the pack was made from (BASE.sha256) nor the
+    copy's own (after a code sync the pipeline has the tools' changes too: nothing to warn of); the tools' own
     package aside."""
     try:
         stamp = (code_root / "INSTALLED").read_text(encoding="utf-8").split()
@@ -159,8 +160,10 @@ def install_state(code_root: Path, pipeline_src: Path) -> dict | None:
         if rel.startswith(OWN_CODE):
             continue
         ours = code_root / "src" / rel
-        want = base.get("src/" + rel) or (sha256_file(ours) if ours.is_file() else "")
-        if sha256_file(path) != want:
+        same = {sha256_file(ours)} if ours.is_file() else set()
+        if (made_from := base.get("src/" + rel)) is not None:
+            same.add(made_from)
+        if sha256_file(path) not in same:
             drift.append(rel)
     return {"installed": stamp[0] if stamp else "", "pack": stamp[1] if len(stamp) > 1 else "", "drift": drift}
 
