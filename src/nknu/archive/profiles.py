@@ -237,6 +237,25 @@ class NoData:
 
 
 @dataclass(frozen=True)
+class PageTitle:
+    """Where a kind of page that is no notice keeps its own title (the owner 11-14 「先补标题栏」 and, shown how,
+    「可以，开工」; the ask is the direction paper's item 4, docs/superpowers/specs/2026-11-13-direction.md: 「先取网页上
+    现成的栏位：services 活动的名称、讨论区每则提问的标题、所友的名字」): sites, a regular expression matched in full
+    against the site key of the page's own address (as Profile.sites is); paths searched in the lowercase path of that
+    address; title, the CSS selector of the cell; why: in words, for people. The export's alone (page_title_rule, which
+    export.page_title reads for the manifest's 标题): no Profile holds one, so the crawl, the platform profiles and the
+    content stage's page version (a digest of PROFILES) are as they were. A Detail names a title too, but it makes the
+    page a notice page as well (its empty areas flagged by the crawler and said in the export's 缺什么), and
+    sso.nknu.edu.tw/services has no profile to hold one (design docs/superpowers/specs/2026-11-14-page-titles-design.md
+    【Claude 的执行办法】)."""
+
+    sites: str
+    paths: str
+    title: str
+    why: str
+
+
+@dataclass(frozen=True)
 class DataApi:
     """A data address a platform's pages ask by script (design §23 C1): read by the crawler itself, once per site, a
     POST written exactly as the page's script writes it (url, headers, body: JSON.stringify of the script's object
@@ -772,6 +791,21 @@ DATAOPEN = Profile(
 PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, SSO_OSA, SSO_REGULATIONS, SSO_SOFTWARE, CNKNU, OIA, EE, LIS, ELEC, ENGLISH,
             CLCTS, WORDPRESS, GEO, ID, DATAOPEN)
 
+# The pages whose own title sits in one cell while their <title>, h1 and h2 name the site (PageTitle; the owner 11-14).
+# Measured 11-14 on round one's archive, read only: the cell is on every page of its kind, one match a page, 187
+# characters at most (11,449 activity pages of the shared module, 3 of them with no words in it; 655 threads of 总务处's
+# forum; 1,976 pages of 成教所's 所友名錄). Until then every page of a kind had one title in the export: 「國立高雄師範大學
+# 單一登入 網路資訊平台」, 「國立高雄師範大學 總務處」 and 「所友名錄」. The cell's own words are the title, with no prefix
+PAGE_TITLES: tuple[PageTitle, ...] = (
+    PageTitle(CNKNU.sites, r"/forumsview\.aspx$", "#lbl_PoTitle",
+              "c.nknu 模板的讨论串：标题是提问的主题那一格（总务处讨论区 655 页，每页都有字）"),
+    PageTitle(CNKNU.sites, r"/student_detail\.aspx$", "#lbl_aname",
+              "c.nknu 模板的所友名錄详细页：标题是姓名那一格（成教所 1,976 页，每页都有字）"),
+    PageTitle(r"sso\.nknu\.edu\.tw/services", r"^/services/(?:academicactivities|campusactivities)/actdetail\.aspx$",
+              "[id$='_ActivityContent_lbSubject']",
+              "SSO 共用模块的学术活动、校园活动详情页：标题是「活動名稱」那一格（11,449 页，其中 3 页那一格是空的）"),
+)
+
 
 def profile_for_site(site: str | None) -> Profile | None:
     """The profile of a site key, or None for a site no platform file describes."""
@@ -1021,8 +1055,17 @@ def check_profiles() -> list[str]:
     """What is wrong in the profiles themselves (a test keeps this empty): a writing that ignores a click, a key
     pattern that does not compile (a menu's paths too, a no-data rule's paths and says), a detail's date_path without
     its groups y, m and d, two profiles that claim one site of the round-1 list, a menu whose form is none of its
-    profile's forms (§7.5 step 10: no other form is ever sent; gap ⑩ of 11-08)."""
+    profile's forms (§7.5 step 10: no other form is ever sent; gap ⑩ of 11-08), a page-title rule whose sites or paths
+    do not compile or that names no cell."""
     out = []
+    for t in PAGE_TITLES:
+        for pattern in (t.sites, t.paths):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                out.append(f"page title {t.paths}: {pattern}: {exc}")
+        if not t.title.strip():
+            out.append(f"page title {t.paths}: it names no cell")
     for p in PROFILES:
         for w in p.writings:
             if w.key.startswith("click:") and w.decision == "ignore":
@@ -1237,6 +1280,14 @@ def school_no_data(url: str, html: str | None) -> NoData | None:
         return None
     path = _path(url)
     return next((n for n in p.no_data if re.search(n.paths, path) and re.search(n.says, html)), None)
+
+
+def page_title_rule(url: str) -> PageTitle | None:
+    """The rule naming the cell that holds a page's own title (PageTitle; the owner 11-14 「先补标题栏」), or None: by
+    the site key and the path of the page's own address, as profile_for goes (a redirect's landing page, a page
+    another site's export lists). The export's alone (export.page_title): the crawler never asks it."""
+    site, path = scope.site_key(url), _path(url)
+    return next((t for t in PAGE_TITLES if _re(t.sites).fullmatch(site) and re.search(t.paths, path)), None)
 
 
 # design §23.9 A1 ③ (second review 10-27, 【Claude 的执行办法】): a short answer (FILE_SHORT_BYTES at most, as text)

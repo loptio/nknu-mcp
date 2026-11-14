@@ -1353,8 +1353,11 @@ def _profile(url: str, site: str) -> profiles.Profile | None:
 
 
 def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") -> str:
-    """The page's own title: its platform's detail title (profiles.Detail.title), else its first h1, else its first
-    h2, else <title>. c.nknu's <title> is the unit's name on every page, so the headings come first."""
+    """The page's own title: its platform's detail title (profiles.Detail.title), else the cell a title rule names for
+    its kind of page (profiles.PageTitle, by the page's own address: an activity's name, a forum question's title, an
+    alumnus's name; the owner 11-14 「先补标题栏」), else its first h1, else its first h2, else <title>. c.nknu's
+    <title> is the unit's name on every page, so the headings come first; a cell with no words leaves the reading
+    to them (3 of round one's 11,449 activity pages)."""
     prof = _profile(url, site)
     parts = urlsplit(url)
     where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
@@ -1364,6 +1367,11 @@ def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") 
                 got = _first_text(tree, d.title)
                 if got:
                     return got
+    rule = profiles.page_title_rule(url)
+    if rule is not None:
+        got = _first_text(tree, rule.title)
+        if got:
+            return got
     for css in ("h1", "h2", "title"):
         got = _first_text(tree, css)
         if got:
@@ -2914,7 +2922,8 @@ COLUMN_HELP = {
     "最后落地网址": ("跳转以后真正拿到内容的网址（没有跳转就空白）；用 10-24 旧存档的副本补上的行，是副本的网址（和「网址」一样"
                "就空白），这一轮跳到哪里写在「备注」"),
     "本地档案": "导出资料夹里的档案；空白就是没抓到",
-    "标题": "网页：平台的标题栏，否则第一个 h1、h2，再不然 <title>；附件和图片：档名；按钮按出来的公告：列表上的标题",
+    "标题": ("网页：平台的标题栏（公告的标题、活动的名称、讨论区提问的主题、所友的姓名），否则第一个 h1、h2，再不然 <title>；"
+           "附件和图片：档名；按钮按出来的公告：列表上的标题"),
     "网页上写的日期": "程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」",
     "日期原文": "找到的日期在网页上的原样（含标签），用来核对",
     "完整度": ("有档的网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他（附件、图片、"
