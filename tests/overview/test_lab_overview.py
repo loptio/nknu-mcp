@@ -250,3 +250,15 @@ def test_the_build_s_checks_are_shown_only_for_the_library_they_were_made_of(roo
     assert d["checked"] == "" and all(s["ck"] is None for s in d["sites"])
     path.write_text("{not json", encoding="utf-8")
     assert data_mod.collect(root, today=TODAY)["checked"] == ""
+
+
+def test_a_file_dated_by_its_own_table_row_is_a_date_source_of_its_own(root: Path) -> None:
+    # the library of 11-16 (spec 2026-11-16-data-fixes §二): a file's own row on a file table dates it, ident_kind
+    # 「published」 like a notice's own date; the page names it apart (DSRC's fifth)
+    db = sqlite3.connect(root / data_mod.DB)
+    db.execute("insert into docs values ('dA5', 'c.nknu.edu.tw/aaa', 'attachment', '附件:office', 1, 30, '2026-10-01',"
+               " 'published', 'main', '', '', 'https://c.nknu.edu.tw/aaa/f#按钮=表一')")
+    db.commit()
+    db.close()
+    a = data_mod.collect(root, today=TODAY)["sites"][0]
+    assert a["ds"] == [2, 0, 0, 0, 1] and a["dsc"] == [150, 0, 0, 0, 30]

@@ -807,7 +807,7 @@ function checkRows(one, sc) {
     if (!hit.length) continue;
     const isNew = hit.filter(s => s.ck.nw.includes(k)).length;
     fresh += isNew;
-    rows.push(ckRow(CK[k][0], CK[k][1] + '：' + hit.slice(0, 6).map(s => s.n).join('、') + (hit.length > 6 ? ' 等' : ''), hit.length + ' 站', isNew));
+    rows.push(ckRow(CK[k][0], CK[k][1] + '：' + hit.slice(0, 6).map(s => s.f).join('、') + (hit.length > 6 ? ' 等' : ''), hit.length + ' 站', isNew));
   }
   const sp = sum(sc.map(s => (s.ck && s.ck.sp) || 0));
   if (sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1], fmt(sp) + ' 份', false));
