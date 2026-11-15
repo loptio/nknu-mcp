@@ -3482,7 +3482,12 @@ class Crawler:
         cols: dict[str, Any] = {"state": "done", "reason": None, "status": snap.status, "final_url": snap.url,
                                 "ctype": ctype[:100], "bytes": len(snap.body), "sha256": snap.sha256,
                                 "warc": self._warc_path(sink), "warc_offset": snap.warc_offset,
-                                "warc_len": snap.warc_len, "attempts": 0}
+                                "warc_len": snap.warc_len, "attempts": 0,
+                                # what an answer says of itself is this answer's: a row fetched again (periodic updates,
+                                # stage 1) keeps none of the last answer's (a 404 after a page: no title, no links, no
+                                # thin mark); the paths below set what this answer has
+                                "flags": None, "title": None, "sniff": None, "filename": None, "text_chars": None,
+                                "n_links": None, "n_postbacks": None}
         if kind0 == outcome.SHORTLINK:
             self._shortlink(row, snap, cols)
             return
