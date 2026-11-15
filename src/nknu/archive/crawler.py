@@ -197,6 +197,22 @@ MAX_DEPTH = 15
 # the reasons _cap gives (design §9): what a run's start judges again (_release_caps). Google's caps (cap:drive,
 # cap:drive_depth, cap:drive_list, cap:calendar) are google_api's own counts, which _cap knows nothing of: never here
 CAP_REASONS = ("cap:depth", "cap:file", "cap:image", "cap:site", "cap:variant")
+# periodic updates, stage 1 (design 2026-11-16 §四, the owner 11-16: 「设计时要交代上限怎么放宽或分开算，别让定期更新卡死」):
+# a site whose first crawl is finished (meta UPDATE_SITES_KEY, a JSON list that update's go-live writes) is held by
+# what one run adds to it, not by all it holds; the depth limit stays. A run cap's row waits for a person (`nknu archive
+# retry cap:run`), never let go by a run's start (not in CAP_REASONS). The numbers are 【Claude】's, to be set again
+# after the first two weeks of nights (one night of the whole school brings about 24 notices).
+UPDATE_SITES_KEY = "update:sites"
+
+
+@dataclass(frozen=True)
+class RunCaps:
+    pages: int = 300
+    files: int = 500
+    images: int = 500
+
+
+RUN_CAPS = RunCaps()
 GAP = (2.0, 5.0)  # the gap after each response (CLAUDE.md, design §6.3): the default
 GAP_FAST = (1.0, 2.0)  # the owner 10-26: once the pilot passed (record 一·3); never the default
 MIN_GAP_S = 1.0  # no setting goes below this
@@ -790,6 +806,7 @@ class Crawler:
         self.google: round1.GoogleStep | None = google_api.step(self.plan) if google_step else None
         # the platform chains (design §7.5): the presses planned from stored pages, and every list's walk
         self.chains = postback.Chains(self.frontier, root, clock=clock)
+        self.start_run_caps()  # run() again at its start
         self._real_net = client_factory is None  # the real network: run() needs the machine-wide lock
         self._fetched = 0
         self._count_lock = threading.Lock()
@@ -936,6 +953,11 @@ class Crawler:
             cap = self._cap(url, placement.owner_site, kind, depth)
             if cap is not None:
                 state, reason = "held", cap
+                if cap.startswith("cap:run_") and (placement.owner_site, kind) not in self._run_cap_warned:
+                    self._run_cap_warned.add((placement.owner_site, kind))
+                    self.frontier.event("warn", "run_cap", f"{placement.owner_site}: this run added as many {kind} "
+                                        f"rows as one run may ({cap}); the rest are held for a person to look "
+                                        "(`nknu archive retry cap:run` lets them go)", host, url)
             else:
                 state, reason, next_at = self._due(url, host)
         owner = placement.owner_site
@@ -980,11 +1002,33 @@ class Crawler:
         elif prio < row["prio"]:
             self.frontier.x("UPDATE url SET prio=? WHERE id=? AND prio>?", (prio, row["id"], prio))
 
+    def start_run_caps(self) -> None:
+        """A run's start for the growth caps (UPDATE_SITES_KEY): the sites under periodic update and the moment from
+        which a row counts as this run's."""
+        raw = self.frontier.meta(UPDATE_SITES_KEY)
+        try:
+            sites = json.loads(raw) if raw else []
+        except ValueError:
+            sites = []
+        if not isinstance(sites, list):
+            sites = []
+        self._update_sites = frozenset(x for x in sites if isinstance(x, str))
+        self._run_started = self.clock()
+        self._let_go: dict[tuple[str, str], int] = {}  # rows a run cap counts that _release_caps let go this run
+        self._run_cap_warned: set[tuple[str, str]] = set()
+
     def _cap(self, url: str, owner: str | None, kind: str, depth: int) -> str | None:
-        """The cap a new row of this round would pass (design §9): held, never skipped, and listed."""
+        """The cap a new row of this round would pass (design §9): held, never skipped, and listed. A site under
+        periodic update has its run caps instead (RUN_CAPS: what this run added to it, the rows let go included)."""
         if depth > MAX_DEPTH:
             return "cap:depth"
         if owner is None:
+            return None
+        if owner in self._update_sites:
+            limit = {"page": RUN_CAPS.pages, "file": RUN_CAPS.files, "image": RUN_CAPS.images}.get(kind)
+            if limit is not None and (self.frontier.count_added(owner, kind, self._run_started)
+                                      + self._let_go.get((owner, kind), 0)) >= limit:
+                return f"cap:run_{kind}"
             return None
         pk = profiles.page_kind(url)
         if kind == "page" and (pk == "detail" or scope.is_platform_detail(url)):
@@ -1025,6 +1069,9 @@ class Crawler:
             if self.frontier.x("UPDATE url SET state=?, reason=?, next_at=? WHERE id=? AND state='held'",
                                (state, reason, next_at, r["id"])):
                 let_go[r["reason"]] = let_go.get(r["reason"], 0) + 1
+                if r["owner_site"] in self._update_sites:  # counts toward the site's run cap (stage 1)
+                    k = (r["owner_site"], r["kind"])
+                    self._let_go[k] = self._let_go.get(k, 0) + 1
         n = sum(let_go.values())
         if n:
             self.frontier.event("info", "caps_released", f"{n} rows held by a cap are free of it now ("
@@ -1155,6 +1202,7 @@ class Crawler:
         # §7.6: no key, the googleapis queue waits (no failure); --only: the listed rows' reasons only
         google_api.hold_for_key(self.frontier, self.clock(), ids=self.only)
         self._skip_aliases()  # 11-03 P05: a row under a spelling canonical() now merges is never fetched
+        self.start_run_caps()  # periodic updates, stage 1: the sites under update and this run's start
         self._release_caps()  # 11-03 P02, 11-06: a row held by a cap the rules of today no longer hold is let go
         sites = sorted(self.sites) if self.sites else None
         if self.only is not None and self.sites is None:

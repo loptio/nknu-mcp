@@ -491,6 +491,12 @@ class Frontier:
         owner_site, the site a row counts for."""
         return self.q(COUNT_SITE, (site, kind))[0][0]
 
+    def count_added(self, site: str, kind: str, since: float) -> int:
+        """The rows of a kind a site counts that were first found at `since` or later (a run's growth: periodic
+        updates, stage 1), Google's API rows aside (google_api's own caps count them)."""
+        return self.q(f"SELECT count(*) FROM url WHERE owner_site=? AND kind=? AND added_at >= ? AND host <> "
+                      f"'www.googleapis.com' AND {_WILL_FETCH}", (site, kind, since))[0][0]
+
     def count_path(self, site: str, path: str) -> int:
         return self.q(COUNT_PATH, (site, path))[0][0]
 

@@ -6,8 +6,11 @@ Made-up rows and pages only."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from nknu.archive import crawler as crawler_mod
 from nknu.archive import postback, scope
 from tests.archive.test_archive import make, seed, snap
 from tests.archive.test_crawler_round1 import settle
@@ -365,3 +368,62 @@ def test_a_get_look_whose_next_page_did_not_come_keeps_the_walks(tmp_path):
     look = crawler.frontier.q("SELECT * FROM list_look WHERE list_id=?", (page2,))[0]
     assert look["ended_by"].startswith("not_got:done/404")
     assert [w[:7] + w[8:10] for w in _group_walks(crawler)] == [w[:7] + w[8:10] for w in before]
+
+
+# ---------------------------------------------------------------- Task 5: growth caps of a site under update
+
+SITE = HOST
+
+
+def _rows_of(crawler, n: int, *, kind: str = "page", added_at: float, state: str = "done", reason=None,
+             prefix: str = "old") -> None:
+    for i in range(n):
+        crawler.frontier.add(f"https://{HOST}/{prefix}/{i}.html", host=HOST, site=SITE, unit=None, tier=1, kind=kind,
+                             depth=1, found_via="link", found_from=None, owner_site=SITE, state=state, reason=reason,
+                             added_at=added_at)
+
+
+def _under_update(crawler, sites=(SITE,)) -> None:
+    """What update's go-live writes (meta update:sites), then a run's start (Crawler.start_run_caps)."""
+    crawler.frontier.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps(sorted(sites)))
+    crawler.start_run_caps()
+
+
+def test_a_site_under_update_is_free_of_its_lifetime_cap(tmp_path):
+    crawler, _net, clock = make(tmp_path, {})
+    _rows_of(crawler, 4000, added_at=clock() - 86400 * 30)
+    new = f"https://{HOST}/new/1.html"
+    assert crawler._cap(new, SITE, "page", 2) == "cap:site"  # today's rule
+    _under_update(crawler)
+    assert crawler._cap(new, SITE, "page", 2) is None
+    assert crawler._cap(new, SITE, "page", 99) == "cap:depth"  # the depth limit stays
+
+
+def test_a_run_adding_more_than_its_cap_holds_the_rest_and_never_lets_them_go(tmp_path):
+    crawler, _net, clock = make(tmp_path, {})
+    _under_update(crawler)
+    _rows_of(crawler, crawler_mod.RUN_CAPS.pages, added_at=clock(), state="pending", prefix="tonight")
+    assert crawler._cap(f"https://{HOST}/new/1.html", SITE, "page", 2) == "cap:run_page"
+    assert crawler._cap(f"https://{HOST}/new/1.pdf", SITE, "file", 2) is None  # files count apart
+    _rows_of(crawler, 1, added_at=clock(), state="held", reason="cap:run_page", prefix="held")
+    clock.t += 86400
+    crawler.start_run_caps()
+    assert crawler._release_caps() == 0  # a run cap's row waits for a person (`retry cap:run`)
+    assert crawler.frontier.row(f"https://{HOST}/held/0.html")["state"] == "held"
+
+
+def test_letting_go_of_held_rows_stops_at_the_run_cap(tmp_path):
+    crawler, _net, clock = make(tmp_path, {})
+    crawler.queue_of(HOST)
+    _rows_of(crawler, crawler_mod.RUN_CAPS.pages + 20, added_at=clock() - 86400, state="held", reason="cap:site")
+    _under_update(crawler)
+    assert crawler._release_caps() == crawler_mod.RUN_CAPS.pages
+    assert crawler.frontier.q("SELECT count(*) FROM url WHERE state='held'")[0][0] == 20
+    assert crawler._cap(f"https://{HOST}/new/1.html", SITE, "page", 2) == "cap:run_page"  # the let-go counted
+
+
+def test_a_site_not_under_update_keeps_the_lifetime_caps(tmp_path):
+    crawler, _net, clock = make(tmp_path, {})
+    _rows_of(crawler, 4000, added_at=clock() - 86400)
+    _under_update(crawler, sites=("another.nknu.edu.tw",))
+    assert crawler._cap(f"https://{HOST}/new/1.html", SITE, "page", 2) == "cap:site"
