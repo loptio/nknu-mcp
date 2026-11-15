@@ -2237,7 +2237,11 @@ class Writer:
         (the item entries by their lists' url row ids: page_res is read with no order of its own, the contract review of
         11-09). A page that is no row of a list has none; a list's own page and a page its pager brought have none (each
         of their rows is another page's). The category is set on a row with no file too (it is the list row's, whatever
-        became of the page), its date only on a page written (_dates) 【Claude 的执行办法】."""
+        became of the page), its date only on a page written (_dates) 【Claude 的执行办法】.
+        Since 11-16 (the owner: 「请导出给按钮带来的档案行填同样的栏：网页上写的日期、日期原文、日期来源＝列表上的日期，
+        以及 列表上的类别，栏名和写法跟网页的完全一样。」): a file a row's download button brought takes its row's date and
+        category too, by the press's row key as a pressed notice does (its date only when the file was written). A
+        file a page links plainly has none of these: the content stage dates it by the page that links it."""
         self._foreign_rows()
         by_key: dict[tuple[int, str], list[tuple[int, postback.Row]]] = defaultdict(list)
         by_href: dict[str, list[tuple[int, postback.Row]]] = defaultdict(list)
@@ -2256,9 +2260,15 @@ class Writer:
         for r in self.s.foreign_items:  # item entries every one of them, naming a row of this site, in that order
             entries[r["res_id"]].append((r["page_id"], r["res_key"][len("item:"):]))
         for it in self.items.values():
-            if it.type != PAGE or it.page_role == "list" or it.kind == "pager":
+            if it.type == FILE and it.kind == "download":
+                # the file a row's download button brought: its row's date and category, as a notice a row's press
+                # brought (the owner 11-16; an SSO unit site's file tables: 966 rows of 36 sites on 11-15, whose
+                # server states no Last-Modified, so that they had no date at all)
+                rows = (by_key.get((it.list_id, it.row_key))
+                        or by_key.get((it.list_id, _PRESS_N.sub("", it.row_key)), []))
+            elif it.type != PAGE or it.page_role == "list" or it.kind == "pager":
                 continue
-            if it.kind == "detail":
+            elif it.kind == "detail":
                 rows = (by_key.get((it.list_id, it.row_key))
                         or by_key.get((it.list_id, _PRESS_N.sub("", it.row_key)), []))
             elif it.key[:1] == "u" and it.key[1:].isdigit():
@@ -2298,6 +2308,10 @@ class Writer:
                 self._take_list_date(it)
             elif words is not None:
                 (it.date, it.date_raw), it.date_from = words, PAGE_WORDS
+        for key in self.list_dates:  # a file a row's button brought (no page is read of it: _list_dates), once written
+            it = self.items[key]
+            if it.type == FILE and it.path:
+                self._take_list_date(it)
 
     def _page(self, it: Item, url: str, body: bytes, ctype: str | None) -> tuple[bytes, str]:
         try:
@@ -2905,7 +2919,9 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
              "文章、活动花絮、相簿这类），或公告是按列表上的按钮才出来的（SSO 单位网站的消息，网址是列表网址加 #按钮=），"
              "只要列表上有一行指到它，就用那一行的日期（列表的日期栏；c.nknu 的列表没有日期栏，取那一行文字里第一个四位数"
              "年份的日期）。别的网站的列表指到它也算（例如单位网站的书表指到 SSO 的活动页）。好几行指到同一则、写的日期又"
-             "不一样，取多数的，一样多取最早的，「备注」栏写明。"),
+             "不一样，取多数的，一样多取最早的，「备注」栏写明。**列表上一行的下载按钮带来的档案也照这一条**（SSO 单位网站的"
+             "法规、表单、会议纪录这类档案表格：一行是类别、档名、下载按钮、日期），档案那一行的「网页上写的日期」「日期原文」"
+             "「日期来源」「列表上的类别」写的就是它那一行的；网页用普通链接链到的档案不填。"),
             ("3. **网页文字里标签后面紧接的日期**。先找「发布、發佈、公告、更新、張貼、刊登」"
             "（后面可以接「日期」或「時間」，例如「更新時間」「公告日期」；英文 Posted、Published、Updated）这类标签，"
             "找不到才找单独的「日期」「Date」（活动页上「活動日期」写在「公告日期」前面时，取的是公告日期）；「最新公告」"
@@ -2954,7 +2970,8 @@ COLUMN_HELP = {
     "本地档案": "导出资料夹里的档案；空白就是没抓到",
     "标题": ("网页：平台的标题栏（公告的标题、活动的名称、讨论区提问的主题、所友的姓名、心得的标题、教师履历页和系所成员页的"
            "姓名、地理系网页的页名），否则第一个 h1、h2，再不然 <title>；附件和图片：档名；按钮按出来的公告：列表上的标题"),
-    "网页上写的日期": "程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」",
+    "网页上写的日期": ("程序在网页上找到的日期（西元，YYYY-MM-DD），找不到空白；见下面「日期怎么来的」。列表上一行的下载按钮"
+                "带来的档案：那一行写的日期；别的附件和图片空白"),
     "日期原文": "找到的日期在网页上的原样（含标签），用来核对",
     "完整度": ("有档的网页：完整、部分完整、不完整、待判定、列表没核对、还没抓完、完整（学校那边缺）；其他（附件、图片、"
             "没有档的网页……）：和「分类」一样（抓到了、连接失败、要登录……）"),
@@ -2982,7 +2999,8 @@ COLUMN_HELP = {
     "最后修改时间": ("学校服务器说的最后修改时间（Last-Modified），云端硬盘的档案是它的修改时间；台北时间，没有就空白。"
                "同一个网站很多档挤在同一段时间的，是服务器复制档案的时间，不是档案的日期（见下面「日期怎么来的」）"),
     "日期来源": (f"「网页上写的日期」是怎么找到的：{OWN_FIELD}（公告页上平台的日期栏）、{LIST_ROW}（指到这一页的列表那一行"
-             f"写的日期；别的网站的列表也算）、{PAGE_WORDS}（网页文字里标签后面的日期）；没有日期就空白"),
+             f"写的日期；别的网站的列表也算；下载按钮带来的档案是它那一行写的日期）、{PAGE_WORDS}（网页文字里标签后面的"
+             "日期）；没有日期就空白"),
     "来源": (f"这一行的档从哪里来：空白是这一轮爬虫的存档；「{ORIGIN_OLD}」是这一轮没抓到能用的内容、导出时用 10-24 旧存档"
            "的正常副本补上的（结果、分类、原因还是这一轮的，备注写这一轮抓到什么）"),
     "页别": (f"「{LIST_FIRST}」：平台设定读得到列表格子的网页（列表的第一页；网站首页上的公告列表也算，这种页也有自己的字）；"
@@ -2991,7 +3009,7 @@ COLUMN_HELP = {
            "网页"),
     "列表上的类别": ("指到这一页的列表那一行写的类别（平台设定读得到类别的列表才有：SSO 公告中心、SSO 单位网站的消息和书表、"
                "cLv2 单位网站的公告；c.nknu 的列表没有设定类别栏，空白）；别的网站的列表指到它也算；几行写的不一样就都列出，"
-               "用 | 隔开，「备注」写明；没有就空白"),
+               "用 | 隔开，「备注」写明；没有就空白。列表上一行的下载按钮带来的档案：那一行写的类别"),
     "公告单位": ("公告页上平台的「公告單位」那一格的原文（平台设定写了这一格的公告页才有：SSO 公告中心和新闻网的公告、校园亮点）；"
              "转到这种公告页的行、和它共用同一个档的行一样有；那一格没有字、别的网页、附件和图片都空白"),
 }
