@@ -3525,6 +3525,8 @@ class Crawler:
     def _store(self, queue: str, row, snap: Snapshot, sink) -> None:
         uid, ctype = row["id"], snap.headers.get("content-type", "").lower()
         kind0 = row["kind0"] or row["kind"]
+        if not self._to_page(kind0, snap, ctype):
+            self._forget_hint(row)  # its flags go (below), and pagetypes.observe will not see this answer
         # attempts 0: an answer came, so the tries that got none are not held against the row's next fetch (periodic
         # updates, stage 0a: design 2026-11-16 §7.1; a row first got on its third try would otherwise fail for good on
         # one timeout of a later fetch). Not so: the first look at the school's not-found page (says_step, below) and
@@ -3601,6 +3603,19 @@ class Crawler:
             self.frontier.finish(uid, **cols)
             return
         self._page(row, snap, text or "", cols, flags)
+
+    @staticmethod
+    def _to_page(kind0: str, snap: Snapshot, ctype: str) -> bool:
+        """Whether _store sends this answer to _page (and so to pagetypes.observe)."""
+        return (kind0 != outcome.SHORTLINK and snap.status == 200 and kind0 not in ("form", "embed")
+                and kind0 not in outcome._EXPECTED_FILE and sniff.sniff(snap.body, ctype) == "html")
+
+    def _forget_hint(self, row) -> None:
+        """A row whose last answer carried a strong sign (js_hint, counted in its page type's n_strong) answered with
+        what is no web page: the count takes it back, so the next page answer is counted once (observe takes the
+        row's js_hint as already counted; review of 7f12e29..8474164)."""
+        if row["page_type"] and pagetypes.HINT_FLAG in (row["flags"] or "").split(","):
+            self.frontier.x("UPDATE page_type SET n_strong=max(n_strong - 1, 0) WHERE key=?", (row["page_type"],))
 
     def _shortlink(self, row, snap: Snapshot, cols: dict) -> None:
         """A short link's one GET (design §7.7, round1.short_answer): its target, read from a 3xx's Location or the

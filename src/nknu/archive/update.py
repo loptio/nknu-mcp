@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from nknu.archive import crawler as crawl_mod
-from nknu.archive import postback
+from nknu.archive import outcome, postback
 from nknu.archive.frontier import Frontier
 
 # the seed sources whose pages are a site's way in (seeds.py): its home, the owner's extra pages, a c.nknu template's
@@ -54,11 +54,23 @@ def _in(ids) -> str:
     return ",".join("?" * len(ids))
 
 
-def select(frontier: Frontier, root: Path) -> Tonight:
-    """Tonight's lists and pages (the module's docstring), each url row in one of the three at most."""
+def update_keys(frontier: Frontier) -> set[str]:
+    """The run keys under update: round one's sites, and the keys of the owner's extra seeds (archive_round1.json
+    extra: pages on keys that site_plan lists as round two or not at all; review of 7f12e29..8474164)."""
+    keys = {r[0] for r in frontier.q("SELECT site FROM site_plan WHERE round='1'")}
+    keys |= {r[0] for r in frontier.q("SELECT DISTINCT u.owner_site FROM seed_src s JOIN url u ON u.url = s.url WHERE "
+                                      "s.source='extra' AND u.owner_site IS NOT NULL")}
+    return keys
+
+
+def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
+           closable: set[int] | frozenset[int] = frozenset()) -> Tonight:
+    """Tonight's lists and pages (the module's docstring), each url row in one of the three at most. sites: only these
+    run keys (the run that follows is given the same: `archive run --sites`); closable: looks put-back will close
+    first (Chains.stale_looks), counted as closed."""
     t = Tonight()
-    r1 = {r[0] for r in frontier.q("SELECT site FROM site_plan WHERE round='1'")}
-    open_looks = ({r[0] for r in frontier.q("SELECT list_id FROM list_look WHERE ended_at IS NULL")}
+    r1 = update_keys(frontier) if sites is None else set(sites)
+    open_looks = ({r[0] for r in frontier.q("SELECT list_id FROM list_look WHERE ended_at IS NULL")} - set(closable)
                   if _has(frontier, "list_look") else set())
     waiting = {r[0] for r in frontier.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
                                         "state IN ('pending', 'active')")}
@@ -66,10 +78,14 @@ def select(frontier: Frontier, root: Path) -> Tonight:
     # a list walked by button: its listwalk counts its rows (page_stored, _pager_answer); get_walk writes rows NULL
     for r in frontier.q("SELECT w.list_id, w.ended_by, u.owner_site, u.state FROM listwalk w JOIN url u ON u.id = "
                         "w.list_id WHERE w.rows IS NOT NULL ORDER BY w.list_id"):
-        if r["owner_site"] not in r1 or r["state"] not in ("done", "failed"):
+        if r["owner_site"] not in r1:
             continue
         walked.add(r["list_id"])
-        if r["list_id"] in open_looks:
+        if r["state"] in ("pending", "active"):
+            t.skipped["first_page_waiting"] += 1
+        elif r["state"] not in ("done", "failed"):
+            t.skipped["first_page_not_got"] += 1
+        elif r["list_id"] in open_looks:
             t.skipped["look_open"] += 1
         elif r["list_id"] in waiting:
             t.skipped["presses_waiting"] += 1
@@ -90,9 +106,13 @@ def select(frontier: Frontier, root: Path) -> Tonight:
         num, _nexts = postback._numbering(edges)
         first = min((i for i, n in num.items() if n == 1), default=None)
         row = frontier.row_by_id(first) if first is not None else None
-        if row is None or row["owner_site"] not in r1 or row["kind"] != "page" or row["state"] not in ("done", "failed"):
-            if row is None:
-                t.skipped["get_no_first_page"] += 1
+        if row is None:
+            t.skipped["get_no_first_page"] += 1
+            continue
+        if row["owner_site"] not in r1 or row["kind"] != "page":
+            continue
+        if row["state"] not in ("done", "failed"):
+            t.skipped["first_page_waiting" if row["state"] in ("pending", "active") else "first_page_not_got"] += 1
             continue
         walks = frontier.q(f"SELECT ended_by FROM listwalk WHERE list_id IN ({_in(group)})", sorted(group))
         if group & open_looks:
@@ -101,19 +121,27 @@ def select(frontier: Frontier, root: Path) -> Tonight:
             t.skipped["walk_unfinished"] += 1
         else:
             t.looks_get.append(first)
-    taken = walked | grouped
+    taken = walked | set(t.looks_get)  # a home inside a GET pager group (an SSO unit site's) stays a home
     homes: list[int] = []
-    for h in frontier.q(f"SELECT DISTINCT u.id, u.status, u.final_url, u.owner_site FROM seed_src s JOIN url u ON "
+    for h in frontier.q(f"SELECT DISTINCT u.id, u.status, u.final_url, u.flags, u.owner_site FROM seed_src s "
+                        f"JOIN url u ON "
                         f"u.url = s.url WHERE s.source IN ({_in(HOME_SOURCES)}) AND u.kind = 'page' AND u.tier IN "
                         f"(0, 1) AND u.state IN ('done', 'failed') ORDER BY u.id", HOME_SOURCES):
         if h["owner_site"] not in r1 or h["id"] in taken:
             continue
         homes.append(h["id"])
-        if h["status"] is not None and 300 <= h["status"] < 400 and h["final_url"]:
-            # a seed that moves: the page it leads to is a dup of every reading, never fetched again by itself
-            to = frontier.row(h["final_url"])
-            if to is not None and to["kind"] == "page" and to["state"] in ("done", "failed") and to["id"] not in taken:
+        # a seed that moves (a 3xx, a script or a refresh): the page it lands on is a dup of every reading, never
+        # fetched again by itself; followed as far as a redirect chain goes
+        at = h
+        for _hop in range(outcome.MAX_HOPS):
+            moved = ((at["status"] is not None and 300 <= at["status"] < 400)
+                     or "js_redirect" in (at["flags"] or "").split(","))
+            to = frontier.row(at["final_url"]) if moved and at["final_url"] else None
+            if to is None or to["id"] in homes or to["kind"] != "page" or to["state"] not in ("done", "failed"):
+                break
+            if to["id"] not in taken:
                 homes.append(to["id"])
+            at = to
     t.homes = list(dict.fromkeys(homes))
     return t
 
@@ -144,9 +172,20 @@ def _report(frontier: Frontier, t: Tonight) -> None:
     if queues:
         print("按服务器：" + "、".join(f"{q} {n}" for q, n in queues.most_common()))
     if t.skipped:
-        words = {"walk_unfinished": "上次翻页没翻完（等整个重翻）", "presses_waiting": "还有按钮等着按（下次 run 开头接着翻）",
-                 "look_open": "上次的查看还没结束", "get_no_first_page": "认不出第 1 页"}
+        words = {"walk_unfinished": "上次翻页没有结尾（现在没有程序会重翻，要人看；第 2 段的每月全翻才会）",
+                 "presses_waiting": "还有按钮等着按（下次 run 开头接着翻）", "look_open": "上次的查看还没结束",
+                 "get_no_first_page": "认不出第 1 页", "first_page_waiting": "第 1 页还在等着抓",
+                 "first_page_not_got": "第 1 页上次没抓到"}
         print("今晚不看的列表：" + "、".join(f"{words.get(k, k)} {n}" for k, n in t.skipped.most_common()))
+
+
+def _sites(raw: str | None) -> set[str] | None:
+    if not raw:
+        return None
+    if raw.startswith("@"):
+        lines = Path(raw[1:]).read_text(encoding="utf-8").splitlines()
+        return {x.split("#", 1)[0].strip() for x in lines if x.split("#", 1)[0].strip()}
+    return {x.strip() for x in raw.split(",") if x.strip()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,12 +194,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", required=True, type=Path, help="存档目录（frontier.db 所在）")
     ap.add_argument("action", choices=("plan", "put-back", "go-live"),
                     help="plan 只读、只算数；put-back 放回今晚要看的；go-live 第一晚以前做一次")
+    ap.add_argument("--sites", default=None,
+                    help="只挑这些网站键（逗号分隔，或 @档名：一行一个）；之后的 archive run 给同样的 --sites")
     a = ap.parse_args(argv)
     root = a.dir
+    if not (root / "frontier.db").is_file():
+        print(f"{root} 里没有 frontier.db（--dir 打错了？）：什么都没做", file=sys.stderr)
+        return 1
+    sites = _sites(a.sites)
     if a.action == "plan":
         f = Frontier(root / "frontier.db", readonly=True)
         try:
-            _report(f, select(f, root))
+            closable = ({r["list_id"] for r in postback.Chains(f, root).stale_looks()}
+                        if _has(f, "list_look") else set())
+            _report(f, select(f, root, sites=sites, closable=closable))
         finally:
             f.close()
         return 0
@@ -174,12 +221,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if a.action == "go-live":
                 n = postback.backfill_list_rows(f, root)
-                sites = sorted(r[0] for r in f.q("SELECT site FROM site_plan WHERE round='1'"))
-                f.meta(crawl_mod.UPDATE_SITES_KEY, json.dumps(sites))
-                print(f"列表的每一行读进 list_row：{n} 行；{len(sites)} 个第一轮网站进入定期更新（每晚的增长上限）")
+                keys = sorted(update_keys(f))
+                f.meta(crawl_mod.UPDATE_SITES_KEY, json.dumps(keys))
+                print(f"列表的每一行读进 list_row：{n} 行；{len(keys)} 个网站键进入定期更新（每晚的增长上限）")
                 return 0
+            if not f.meta(crawl_mod.UPDATE_SITES_KEY):
+                # list_row empty: every row news, every look a whole walk (review of 7f12e29..8474164)
+                print("还没做过 go-live（列表的每一行还没读进 list_row）：先跑 go-live，再放回", file=sys.stderr)
+                return 1
             closed = postback.Chains(f, root).close_stale_looks()
-            t = select(f, root)
+            t = select(f, root, sites=sites)
             got = put_back(f, root, t)
             _report(f, t)
             print(f"放回去了：列表 {got['looks']} 个、按网址翻页的第 1 页 {got['looks_get']} 个、首页和起点 "

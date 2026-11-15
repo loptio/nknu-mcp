@@ -112,6 +112,7 @@ def test_the_plan_reads_only_even_an_archive_from_before_stage_1(ledger, capsys)
 def test_put_back_opens_the_looks_and_puts_the_pages_back(ledger, capsys):
     f, ids, root = ledger
     f.close()
+    assert update.main(["--dir", str(root), "go-live"]) == 0
     assert update.main(["--dir", str(root), "put-back"]) == 0
     g = Frontier(root / "frontier.db")
     try:
@@ -128,6 +129,7 @@ def test_put_back_opens_the_looks_and_puts_the_pages_back(ledger, capsys):
 def test_put_back_is_refused_while_a_run_holds_the_archive(ledger):
     f, _ids, root = ledger
     f.close()
+    assert update.main(["--dir", str(root), "go-live"]) == 0
     lock = crawler_mod.hold_run_lock(root)
     try:
         assert update.main(["--dir", str(root), "put-back"]) == 1
@@ -149,3 +151,104 @@ def test_go_live_names_the_round_one_sites_under_update(ledger):
         assert json.loads(g.meta(crawler_mod.UPDATE_SITES_KEY)) == [R1]
     finally:
         g.close()
+
+
+# ---------------------------------------------------------------- the review of 7f12e29..8474164 (fix pass)
+
+
+def _tiny(tmp_path, *sites):
+    f = Frontier(tmp_path / "frontier.db")
+    for s in sites:
+        _site(f, s, "1")
+    return f
+
+
+def test_a_home_inside_a_list_paged_by_get_stays_a_home(tmp_path):
+    """An SSO unit site's home holds MoreNews page 1's grid and pager: it is in the pager group, a home all the same
+    (only the group's first page is a GET look)."""
+    f = _tiny(tmp_path, R1)
+    home = _url(f, "/web/default.aspx", depth=0, found_via="seed")
+    f.seed_src(f"https://{R1}/web/default.aspx", "site_home")
+    p1, p2 = _url(f, "/web/more.aspx?pagenum=1"), _url(f, "/web/more.aspx?pagenum=2")
+    for i in (home, p1, p2):
+        _walk(f, i, "last_page", None)
+    for src, dst, text in ((home, p1, "1"), (home, p2, "2"), (p1, p2, "2"), (p2, p1, "1")):
+        _pager(f, src, dst, text)
+    t = update.select(f, tmp_path)
+    assert t.looks_get == [p1] and t.homes == [home]
+    f.close()
+
+
+def test_the_owners_extra_seed_on_a_key_of_no_round_one_is_under_update(tmp_path):
+    """The 7 extra seeds (archive_round1.json extra) sit on run keys site_plan lists as round 2 or not at all."""
+    f = _tiny(tmp_path, R1)
+    _site(f, "sso.nknu.edu.tw/recruit", "2")
+    extra = _url(f, "/recruit/index.aspx", site="sso.nknu.edu.tw/recruit", depth=0, found_via="seed", tier=0)
+    f.seed_src("https://sso.nknu.edu.tw/recruit/recruit/index.aspx", "extra")
+    t = update.select(f, tmp_path)
+    assert t.homes == [extra]
+    f.close()
+    assert update.main(["--dir", str(tmp_path), "go-live"]) == 0
+    g = Frontier(tmp_path / "frontier.db")
+    try:
+        assert json.loads(g.meta(crawler_mod.UPDATE_SITES_KEY)) == [R1, "sso.nknu.edu.tw/recruit"]
+    finally:
+        g.close()
+
+
+def test_sites_narrow_the_night_to_the_run_that_follows(ledger, capsys):
+    f, _ids, root = ledger
+    third = "c.nknu.edu.tw/x"
+    _site(f, third, "1")
+    home3 = _url(f, "/x/", site=third, depth=0, found_via="seed")
+    f.seed_src(f"https://{third}/x/", "site_home")
+    assert home3 in update.select(f, root).homes
+    assert update.select(f, root, sites={third}).ids() == [home3]
+    f.close()
+    assert update.main(["--dir", str(root), "plan", "--sites", third]) == 0
+    assert "共 1 个网址" in capsys.readouterr().out
+
+
+def test_a_home_that_moves_twice_is_read_where_it_lands(tmp_path):
+    f = _tiny(tmp_path, R1)
+    home = _url(f, "/", depth=0, found_via="seed", status=302, final_url=f"https://{R1}/a/")
+    f.seed_src(f"https://{R1}/", "site_home")
+    a = _url(f, "/a/", found_via="redirect", final_url=f"https://{R1}/b/")
+    f.x("UPDATE url SET flags='js_redirect' WHERE id=?", (a,))
+    b = _url(f, "/b/", found_via="js_redirect")
+    assert update.select(f, tmp_path).homes == [home, a, b]
+    f.close()
+
+
+def test_a_mistyped_dir_does_nothing(tmp_path, capsys):
+    gone = tmp_path / "no-such-archive"
+    for action in ("plan", "put-back", "go-live"):
+        assert update.main(["--dir", str(gone), action]) == 1
+    assert not gone.exists()
+    assert "frontier.db" in capsys.readouterr().err
+
+
+def test_put_back_waits_for_go_live(ledger, capsys):
+    """Without list_row filled every row is news and every look walks its list whole: put-back refuses."""
+    f, _ids, root = ledger
+    f.close()
+    assert update.main(["--dir", str(root), "put-back"]) == 1
+    g = Frontier(root / "frontier.db")
+    try:
+        assert not g.q("SELECT 1 FROM url WHERE state='pending'")
+    finally:
+        g.close()
+    assert "go-live" in capsys.readouterr().err
+
+
+def test_the_plan_counts_what_put_back_will_do(ledger, capsys):
+    """A look no answer can end (its page not pending) is closed by put-back first: the plan counts its list as
+    taken, not as a look still open; a list whose page waits is counted with that reason."""
+    f, ids, root = ledger
+    f.x("INSERT INTO list_look(list_id, mode, started, saved_walk, saved_res) VALUES (?, 'look', 1, '[]', '[]')",
+        (ids["list"],))
+    f.x("UPDATE url SET state='pending' WHERE id=?", (ids["g1"],))
+    f.close()
+    assert update.main(["--dir", str(root), "plan"]) == 0
+    out = capsys.readouterr().out
+    assert "按按钮翻页的列表 1 个" in out and "第 1 页还在等着抓 1" in out
