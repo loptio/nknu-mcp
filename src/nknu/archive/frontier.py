@@ -215,7 +215,8 @@ CREATE INDEX IF NOT EXISTS drive_item_parent ON drive_item(parent_id);
 # or a maintenance page never leaves a program without the way to the last good copy (the WARC keeps every record; the
 # row's pointer is the only way to it). One row per stored answer (the record its pointer names), the first copy
 # standing: a later copy of the same answer comes after a fetch that got none, and may carry that fetch's marks on the
-# row (fetched_at cleared or now, a 3xx's status) 【Claude】. state, reason and attempts are the row's when it was set
+# row (fetched_at cleared or now, a 3xx's status) 【Claude】. kept_at: seconds since the epoch (watch.night picks
+# the first copy kept since a night started). state, reason and attempts are the row's when it was set
 # aside, never its answer's result (which is worked out from the evidence: status, flags, kind, sniff …). Never
 # changed or deleted. UPDATE_TABLES is kept apart from TABLES: only the crawler writes its tables and no reader needs
 # them yet (the export reads them from stage 0b), so a read-only view of a frontier.db written before them opens as it
@@ -225,7 +226,7 @@ KEPT_COLS = ("state", "reason", "attempts", "status", "final_url", "ctype", "byt
              "sniff", "text_chars", "filename")
 UPDATE_TABLES = """
 CREATE TABLE IF NOT EXISTS url_version(
-  id INTEGER PRIMARY KEY, url_id INTEGER NOT NULL, kept_at TEXT NOT NULL,
+  id INTEGER PRIMARY KEY, url_id INTEGER NOT NULL, kept_at REAL NOT NULL,
   state TEXT, reason TEXT, attempts INTEGER, status INTEGER, final_url TEXT, ctype TEXT, bytes INTEGER, sha256 TEXT,
   warc TEXT NOT NULL, warc_offset INTEGER NOT NULL, warc_len INTEGER, title TEXT, flags TEXT, fetched_at TEXT,
   n_links INTEGER, n_postbacks INTEGER, kind TEXT, page_role TEXT, page_type TEXT, sniff TEXT, text_chars INTEGER,
@@ -247,6 +248,11 @@ CREATE TABLE IF NOT EXISTS list_row(list_id INTEGER NOT NULL, ident TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS list_look(list_id INTEGER PRIMARY KEY, mode TEXT NOT NULL, started REAL NOT NULL,
   ended_at REAL, epoch_from INTEGER, pages INTEGER NOT NULL DEFAULT 0, rows INTEGER, claimed INTEGER,
   furthest INTEGER NOT NULL DEFAULT 0, ended_by TEXT, saved_walk TEXT, saved_res TEXT, note TEXT);
+-- what each page's answers came to night by night (periodic updates, stage 2: watch.night): the fingerprint of its
+-- last good answer (watch.fingerprint; a file's sha256), when it was last checked and last changed, how many nights in
+-- a row it changed, and since when (and how many times in a row) it answered as gone
+CREATE TABLE IF NOT EXISTS page_watch(url_id INTEGER PRIMARY KEY, fp TEXT, checked_at REAL, changed_at REAL,
+  changes INTEGER NOT NULL DEFAULT 0, gone_at REAL, gone INTEGER NOT NULL DEFAULT 0);
 """
 _KEEP = (f"INSERT OR IGNORE INTO url_version(url_id, kept_at, {', '.join(KEPT_COLS)}) "
          f"SELECT id, ?, {', '.join(KEPT_COLS)} FROM url WHERE id = ? AND warc IS NOT NULL AND warc_offset IS NOT NULL")
@@ -544,7 +550,7 @@ class Frontier:
         crawler's for the row it takes by hand (the other scheme's: crawler._move_scheme, _switch_scheme; review of
         4be5e34, Important 1): no row is fetched without passing here."""
         with self.lock:
-            self.conn.execute(_KEEP, (utc_now(), uid))
+            self.conn.execute(_KEEP, (time.time(), uid))
             self.conn.execute("UPDATE url SET state='active' WHERE id=?", (uid,))
 
     def finish(self, uid: int, **cols) -> None:
@@ -557,7 +563,7 @@ class Frontier:
         with self.lock:
             if moving:
                 changed = " OR ".join(f"{k} IS NOT ?" for k in moving)
-                self.conn.execute(f"{_KEEP} AND ({changed})", (utc_now(), uid, *(cols[k] for k in moving)))
+                self.conn.execute(f"{_KEEP} AND ({changed})", (time.time(), uid, *(cols[k] for k in moving)))
             self.conn.execute(f"UPDATE url SET {sets} WHERE id=?", (*cols.values(), uid))
 
     def old_only(self, uid: int) -> bool:
