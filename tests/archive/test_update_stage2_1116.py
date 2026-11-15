@@ -4,11 +4,17 @@ pages; the list fixture is the SSO list of test_postback (its read counters)."""
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
-from nknu.archive import watch
+from nknu.archive import crawler as crawler_mod
+from nknu.archive import update, watch
+from nknu.archive.frontier import Frontier
 from tests.archive.test_postback import SSO_LIST, World, fx
 
 PAGE = "https://a.nknu.edu.tw/aca/page.aspx?id=1"
@@ -127,3 +133,120 @@ def test_a_site_answering_one_body_everywhere_is_an_alarm(world):
     night = _night(world, since)
     assert SITE in night.alarms and SITE not in night.sites_changed
     assert {_change(night, u) for u in uids} == {"changed"}
+
+
+# ---------------------------------------------------------------- Task 4: review, the status file, the nightly script
+
+SCRIPT = Path(__file__).resolve().parents[2] / "research" / "crawler_lab_2026-11-04" / "nightly_update.sh"
+
+
+def test_review_writes_the_change_list_and_the_status(world, capsys):
+    world.f.x("INSERT INTO site_plan(site, name, round) VALUES (?, ?, '1')", (SITE, SITE))
+    world.f.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps([SITE]))
+    a = _answer(world, f"https://{SITE}/a.aspx", _html("<p>甲</p>"))
+    world.f.meta(update.NIGHT_KEY, repr(time.time()))  # put-back's: the night starts
+    _answer(world, f"https://{SITE}/a.aspx", _html("<p>乙</p>"))
+    new = _answer(world, f"https://{SITE}/b.aspx", _html("<p>丙</p>"))
+    world.f.close()
+    assert update.main(["--dir", str(world.root), "review"]) == 0
+    status = json.loads((world.root / "reports" / "update-status.json").read_text(encoding="utf-8"))
+    assert status["counts"] == {"changed": 1, "new": 1} and status["sites_changed"] == [SITE]
+    rows = (world.root / "reports" / status["changes_file"]).read_text(encoding="utf-8").splitlines()
+    assert rows[0] == "site,url,kind,change,previous_at" and len(rows) == 3
+    assert {r.split(",")[3] for r in rows[1:]} == {"changed", "new"} and a != new
+    assert "改了 1" in capsys.readouterr().out
+    world.f = Frontier(world.root / "frontier.db")
+
+
+def test_review_without_a_night_does_nothing(world, capsys):
+    world.f.close()
+    assert update.main(["--dir", str(world.root), "review"]) == 1
+    assert "put-back" in capsys.readouterr().err
+    world.f = Frontier(world.root / "frontier.db")
+
+
+def _fake_python(tmp_path: Path, fail_at: str | None) -> Path:
+    """A python that only says what it was asked (the script's steps), failing at one."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    py = bin_ / "python"
+    py.write_text("#!/usr/bin/env bash\n"
+                  'step="$1"; [ "$1" = "-m" ] && step="$5"; [ "$1" = "-c" ] && step="run"; [ "$1" = "-" ] && step="backup"\n'
+                  f'echo "$step $*" >> "{tmp_path}/calls.log"\n'
+                  '[ "$step" = "sites" ] && echo "a.nknu.edu.tw"\n'
+                  f'[ "$step" = "{fail_at or "-none-"}" ] && exit 1\n'
+                  "exit 0\n", encoding="utf-8")
+    py.chmod(0o755)
+    return py
+
+
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="the lab's scripts live in research/ (not in git); this checkout has none")
+@pytest.mark.parametrize("fail_at", [None, "put-back", "run"])
+def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_path, fail_at):
+    py = _fake_python(tmp_path, fail_at)
+    (tmp_path / "archive").mkdir()
+    env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups")}
+    got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
+    steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
+    if fail_at is None:
+        assert got.returncode == 0 and steps == ["backup", "put-back", "sites", "run", "review"]
+    else:
+        assert got.returncode == 1 and steps[-1] == "fail" and fail_at in steps
+        assert steps.index(fail_at) == len(steps) - 2  # nothing after the failed step but the note of it
+
+
+def _main(world, *argv) -> int:
+    world.f.close()
+    try:
+        return update.main(["--dir", str(world.root), *argv])
+    finally:
+        world.f = Frontier(world.root / "frontier.db")
+
+
+def test_put_back_records_when_the_night_starts(world):
+    world.f.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps([SITE]))
+    t0 = time.time()
+    assert _main(world, "put-back") == 0
+    assert t0 <= float(world.f.meta(update.NIGHT_KEY)) <= time.time()
+
+
+def test_a_night_is_counted_once(world, capsys):
+    a = _answer(world, f"https://{SITE}/a.aspx", _html("<p>甲</p>"))
+    world.f.meta(update.NIGHT_KEY, repr(time.time()))
+    _answer(world, f"https://{SITE}/a.aspx", _html("<p>乙</p>"))
+    assert _main(world, "review") == 0 and _main(world, "review") == 0
+    assert world.f.q("SELECT changes FROM page_watch WHERE url_id=?", (a,))[0]["changes"] == 1
+    assert "已经算过" in capsys.readouterr().out
+
+
+def test_the_status_names_the_runs_end(world):
+    world.f.meta(update.NIGHT_KEY, repr(time.time() - 5))
+    world.f.event("info", "run_end", json.dumps({"reason": "finished", "pending": 0}))
+    assert _main(world, "review") == 0
+    status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
+    assert status["run_end"]["reason"] == "finished" and status["failed_step"] is None and status["counts"] == {}
+
+
+def test_fail_says_where_the_night_stopped(world):
+    assert _main(world, "fail", "--step", "put-back") == 0
+    status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
+    assert status["failed_step"] == "put-back"
+
+
+def test_sites_are_one_comma_list(world, capsys):
+    assert _main(world, "sites") == 1  # no go-live yet
+    world.f.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps([SITE, "b.nknu.edu.tw"]))
+    assert _main(world, "sites") == 0
+    assert capsys.readouterr().out.strip() == f"{SITE},b.nknu.edu.tw"
+
+
+def test_the_status_carries_each_sites_last_look_and_what_put_back_took(world):
+    """Design §7.5's status file: when each site was last looked at, and how many of each batch went back tonight."""
+    world.f.x("INSERT INTO site_plan(site, name, round) VALUES (?, ?, '1')", (SITE, SITE))
+    world.f.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps([SITE]))
+    assert _main(world, "put-back", "--today", "2026-11-20") == 0
+    _answer(world, f"https://{SITE}/a.aspx", _html("<p>甲</p>"))
+    assert _main(world, "review") == 0
+    status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
+    assert status["put_back"] == dict.fromkeys(update.BATCHES, 0)
+    assert status["sites_seen"][SITE] == world.f.row(f"https://{SITE}/a.aspx")["fetched_at"]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 
 import pytest
 
@@ -15,6 +16,9 @@ from nknu.archive import update
 from nknu.archive.frontier import Frontier
 
 R1, R2 = "a.nknu.edu.tw", "b.nknu.edu.tw"
+# a day on which no share of these fixtures falls (stage 2's monthly walks and weekly standing pages): these tests pin
+# the nightly batches apart from the rotations (test_update_rotations_1116)
+QUIET = date(2026, 11, 20)
 
 
 def _site(f: Frontier, site: str, rnd: str) -> None:
@@ -86,7 +90,7 @@ def ledger(tmp_path):
 
 def test_tonight_takes_each_list_once_and_the_homes_apart(ledger):
     f, ids, root = ledger
-    t = update.select(f, root)
+    t = update.select(f, root, today=QUIET)
     assert t.looks == [ids["list"]]
     assert t.looks_get == [ids["g1"]]  # the list paged by GET: its first page only
     assert sorted(t.homes) == sorted([ids["home"], ids["moved"], ids["moved_to"], ids["sitemap"]])
@@ -113,7 +117,7 @@ def test_put_back_opens_the_looks_and_puts_the_pages_back(ledger, capsys):
     f, ids, root = ledger
     f.close()
     assert update.main(["--dir", str(root), "go-live"]) == 0
-    assert update.main(["--dir", str(root), "put-back"]) == 0
+    assert update.main(["--dir", str(root), "put-back", "--today", QUIET.isoformat()]) == 0
     g = Frontier(root / "frontier.db")
     try:
         looks = {r["list_id"]: r["mode"] for r in g.q("SELECT * FROM list_look WHERE ended_at IS NULL")}
@@ -132,7 +136,7 @@ def test_put_back_is_refused_while_a_run_holds_the_archive(ledger):
     assert update.main(["--dir", str(root), "go-live"]) == 0
     lock = crawler_mod.hold_run_lock(root)
     try:
-        assert update.main(["--dir", str(root), "put-back"]) == 1
+        assert update.main(["--dir", str(root), "put-back", "--today", QUIET.isoformat()]) == 1
     finally:
         lock.close()
     g = Frontier(root / "frontier.db")
@@ -174,7 +178,7 @@ def test_a_home_inside_a_list_paged_by_get_stays_a_home(tmp_path):
         _walk(f, i, "last_page", None)
     for src, dst, text in ((home, p1, "1"), (home, p2, "2"), (p1, p2, "2"), (p2, p1, "1")):
         _pager(f, src, dst, text)
-    t = update.select(f, tmp_path)
+    t = update.select(f, tmp_path, today=QUIET)
     assert t.looks_get == [p1] and t.homes == [home]
     f.close()
 
@@ -185,7 +189,7 @@ def test_the_owners_extra_seed_on_a_key_of_no_round_one_is_under_update(tmp_path
     _site(f, "sso.nknu.edu.tw/recruit", "2")
     extra = _url(f, "/recruit/index.aspx", site="sso.nknu.edu.tw/recruit", depth=0, found_via="seed", tier=0)
     f.seed_src("https://sso.nknu.edu.tw/recruit/recruit/index.aspx", "extra")
-    t = update.select(f, tmp_path)
+    t = update.select(f, tmp_path, today=QUIET)
     assert t.homes == [extra]
     f.close()
     assert update.main(["--dir", str(tmp_path), "go-live"]) == 0
@@ -202,8 +206,8 @@ def test_sites_narrow_the_night_to_the_run_that_follows(ledger, capsys):
     _site(f, third, "1")
     home3 = _url(f, "/x/", site=third, depth=0, found_via="seed")
     f.seed_src(f"https://{third}/x/", "site_home")
-    assert home3 in update.select(f, root).homes
-    assert update.select(f, root, sites={third}).ids() == [home3]
+    assert home3 in update.select(f, root, today=QUIET).homes
+    assert update.select(f, root, sites={third}, today=QUIET).ids() == [home3]
     f.close()
     assert update.main(["--dir", str(root), "plan", "--sites", third]) == 0
     assert "共 1 个网址" in capsys.readouterr().out
@@ -216,7 +220,7 @@ def test_a_home_that_moves_twice_is_read_where_it_lands(tmp_path):
     a = _url(f, "/a/", found_via="redirect", final_url=f"https://{R1}/b/")
     f.x("UPDATE url SET flags='js_redirect' WHERE id=?", (a,))
     b = _url(f, "/b/", found_via="js_redirect")
-    assert update.select(f, tmp_path).homes == [home, a, b]
+    assert update.select(f, tmp_path, today=QUIET).homes == [home, a, b]
     f.close()
 
 
@@ -232,7 +236,7 @@ def test_put_back_waits_for_go_live(ledger, capsys):
     """Without list_row filled every row is news and every look walks its list whole: put-back refuses."""
     f, _ids, root = ledger
     f.close()
-    assert update.main(["--dir", str(root), "put-back"]) == 1
+    assert update.main(["--dir", str(root), "put-back", "--today", QUIET.isoformat()]) == 1
     g = Frontier(root / "frontier.db")
     try:
         assert not g.q("SELECT 1 FROM url WHERE state='pending'")
