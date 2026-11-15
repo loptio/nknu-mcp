@@ -5,12 +5,15 @@ on the row); and an answer that comes back starts the row's try count again. Mad
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
 
 import pytest
 
+from nknu.archive import crawler as crawler_mod
 from nknu.archive import postback, profiles, scope
-from nknu.archive.frontier import Frontier, _missing
+from nknu.archive.frontier import KEPT_COLS, Frontier, _missing
+from nknu.archive.postback import Chains
 from tests.archive.test_archive import make, seed, snap
 from tests.archive.test_crawler_round1 import settle, timeout_err
 from tests.archive.test_pilot_fixes import make as make_press
@@ -231,3 +234,87 @@ def test_the_first_look_at_a_not_found_page_still_spends_a_try(tmp_path):
     settle(crawler, net, [queue])
     row = crawler.frontier.row(att)
     assert (row["state"], row["flags"], row["attempts"]) == ("done", "gone_page", 0)
+
+
+# ---------------------------------------------------------------- the review of 4be5e34 (fix pass)
+
+
+def test_a_row_taken_without_next_for_keeps_its_answer_before_a_fetch_that_gets_none(tmp_path):
+    """Important 1: the other scheme's row is taken by crawler._move_scheme / _switch_scheme, never next_for; it goes
+    through Frontier.activate like any row, so its answer is kept before the fetch, and a timeout and a 3xx to a school
+    error page (fetched_at and status rewritten, the pointer not moved) never become the kept copy."""
+    f = _ledger(tmp_path)
+    uid = _row(f)
+    _take(f)
+    _answer(f, uid, 1)
+    _back(f, uid)
+    f.activate(uid)
+    assert f.row_by_id(uid)["state"] == "active"
+    f.finish(uid, state="pending", attempts=1, reason="timeout", fetched_at=None, next_at=0)
+    f.x("UPDATE url SET status=302, final_url='https://a.nknu.edu.tw/error.aspx' WHERE id=?", (uid,))
+    _take(f)
+    assert [(k["warc_offset"], k["status"], k["fetched_at"]) for k in _kept(f, uid)] == [(100, 200, _at(1))]
+
+
+def test_the_crawler_takes_a_row_only_through_activate():
+    """No row is made active by hand (what made Important 1 possible): every taking keeps the row's answer first."""
+    assert "UPDATE url SET state='active'" not in inspect.getsource(crawler_mod)
+
+
+def test_a_pointer_cleared_by_finish_is_kept_first(tmp_path):
+    f = _ledger(tmp_path)
+    uid = _row(f)
+    _take(f)
+    _answer(f, uid, 1)
+    f.finish(uid, warc=None, warc_offset=None)
+    assert [k["warc_offset"] for k in _kept(f, uid)] == [100]
+
+
+def test_a_fetched_row_put_back_starts_its_tries_again(tmp_path):
+    """Important 2: a row the ledger holds as got on its third try (attempts 2, written before 4be5e34), put back to be
+    fetched again, starts at 0, so one timeout of the new fetch is no failure for good; a row not yet got (pending
+    after a failure) keeps its count. Both ways a fetched row is put back: postback.restart_chain, crawler._gsimg_reread."""
+    f = _ledger(tmp_path)
+    got = _row(f)
+    _take(f)
+    _answer(f, got, 1, attempts=2)
+    waiting = _row(f, f"https://{HOST}/news-b.aspx")
+    f.x("UPDATE url SET state='pending', attempts=1 WHERE id=?", (waiting,))
+    chains = Chains(f, tmp_path, clock=lambda: 1000.0)
+    chains.restart_chain(got, "look")
+    chains.restart_chain(waiting, "look")
+    assert (f.row_by_id(got)["state"], f.row_by_id(got)["attempts"]) == ("pending", 0)
+    assert (f.row_by_id(waiting)["state"], f.row_by_id(waiting)["attempts"]) == ("pending", 1)
+    crawler, _net, _clock = make(tmp_path / "c", {})
+    crawler.frontier.add(URL, host=HOST, site=HOST, unit=None, tier=1, kind="page", depth=0, found_via="seed",
+                         found_from=None, owner_site=HOST)
+    uid = crawler.frontier.row(URL)["id"]
+    crawler.frontier.finish(uid, state="done", status=200, kind="page", attempts=2, warc="warc/q1.warc.gz",
+                            warc_offset=100)
+    assert crawler._gsimg_reread(uid)
+    assert (crawler.frontier.row_by_id(uid)["state"], crawler.frontier.row_by_id(uid)["attempts"]) == ("pending", 0)
+
+
+def test_an_older_url_version_gains_the_columns_it_lacks(tmp_path):
+    """Minor 1: url_version is migrated as TABLES is (a column added later is added in place), so a copy never fails
+    on a table an older version made."""
+    path = tmp_path / "frontier.db"
+    Frontier(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE url_version")
+    conn.execute("CREATE TABLE url_version(id INTEGER PRIMARY KEY, url_id INTEGER NOT NULL, kept_at TEXT NOT NULL, "
+                 "warc TEXT NOT NULL, warc_offset INTEGER NOT NULL, UNIQUE(url_id, warc, warc_offset))")
+    conn.commit()
+    conn.close()
+    f = Frontier(path)
+    try:
+        assert set(KEPT_COLS) <= {r[1] for r in f.q("PRAGMA table_info(url_version)")}
+        f.set_host(HOST, queue=f"ip:{HOST}")
+        uid = _row(f)
+        _take(f)
+        _answer(f, uid, 1)
+        _back(f, uid)
+        _take(f)
+        assert [k["status"] for k in _kept(f, uid)] == [200]
+    finally:
+        f.close()

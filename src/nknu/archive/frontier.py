@@ -342,11 +342,12 @@ class OutdatedFrontier(RuntimeError):
     """A frontier.db written by an older version, opened read-only: it lacks what the monitor reads."""
 
 
-def _missing(conn: sqlite3.Connection) -> list[tuple[str, tuple]]:
-    """The tables and columns TABLES has and the database lacks: (table, None) or (table, PRAGMA table_info row)."""
+def _missing(conn: sqlite3.Connection, schema: str = TABLES) -> list[tuple[str, tuple]]:
+    """The tables and columns a schema (TABLES unless told) has and the database lacks: (table, None) or (table,
+    PRAGMA table_info row)."""
     want = sqlite3.connect(":memory:")
     try:
-        want.executescript(TABLES)
+        want.executescript(schema)
         out: list[tuple[str, tuple]] = []
         for (table,) in want.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
             have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -359,10 +360,10 @@ def _missing(conn: sqlite3.Connection) -> list[tuple[str, tuple]]:
         want.close()
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Add the columns an older frontier.db lacks (tables are created by TABLES itself). A column that cannot be added
-    (part of the key, or NOT NULL without a default) stops here, before any request goes out."""
-    for table, col in _missing(conn):
+def _migrate(conn: sqlite3.Connection, schema: str = TABLES) -> None:
+    """Add the columns an older frontier.db lacks (tables are created by the schema itself: TABLES, VERSIONS). A column
+    that cannot be added (part of the key, or NOT NULL without a default) stops here, before any request goes out."""
+    for table, col in _missing(conn, schema):
         if col is None:
             continue
         _cid, name, typ, notnull, default, pk = col
@@ -400,6 +401,7 @@ class Frontier:
         if new:  # made by this version: a round-1 archive (an old file opened here never becomes one)
             self.conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (ROUND_KEY, ROUND))
         _migrate(self.conn)
+        _migrate(self.conn, VERSIONS)  # a copy names every column (_KEEP): never one an older table lacks
         self.conn.executescript(INDEXES)
         outcome.create_views(self.conn)
 
@@ -481,8 +483,8 @@ class Frontier:
         all of them, the lowest first (design §23 B1: a Google Sites page's runtime pictures right after the page,
         the hop a picture's 302 leads to before the next picture, the page read again for new addresses). sites: only
         rows that count for these sites (a run given --sites); ids: only these rows (a run given --only). The row is
-        marked active; one that holds an answer (put back to be fetched again) has it copied into url_version first,
-        while every column still says it (VERSIONS). (Queue pauses are the caller's check.)"""
+        marked active (activate: one that holds an answer has it copied into url_version first). (Queue pauses are
+        the caller's check.)"""
         if not hosts:
             return None
         marks = ",".join("?" * len(hosts))
@@ -499,10 +501,17 @@ class Frontier:
                      ORDER BY min(u.prio, 0), u.tier, u.prio, u.host = ? DESC, u.depth, u.id LIMIT 1""",
                 (*args, *id_args, prefer_host or "")).fetchone()
             if row is not None:
-                if row["warc"] is not None and row["warc_offset"] is not None:
-                    self.conn.execute(_KEEP, (utc_now(), row["id"]))
-                self.conn.execute("UPDATE url SET state='active' WHERE id=?", (row["id"],))
+                self.activate(row["id"])
             return row
+
+    def activate(self, uid: int) -> None:
+        """A row taken to be fetched: the answer it holds, when it holds one (put back to be fetched again), copied into
+        url_version first while every column still says it (VERSIONS), then the row active. next_for's way, and the
+        crawler's for the row it takes by hand (the other scheme's: crawler._move_scheme, _switch_scheme; review of
+        4be5e34, Important 1): no row is fetched without passing here."""
+        with self.lock:
+            self.conn.execute(_KEEP, (utc_now(), uid))
+            self.conn.execute("UPDATE url SET state='active' WHERE id=?", (uid,))
 
     def finish(self, uid: int, **cols) -> None:
         """The row's columns after a fetch (or a reading again: rejudge). When they move its pointer to another answer

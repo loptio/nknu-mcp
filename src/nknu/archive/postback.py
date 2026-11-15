@@ -1981,8 +1981,10 @@ class Chains:
         with self.f.lock:
             self.f.conn.execute("UPDATE action SET state='superseded', reason=? WHERE list_id=? AND kind NOT IN ('click', 'data') "
                                 "AND state IN ('pending','active')", (f"restart: {why}"[:200], list_id))
-            self.f.conn.execute("UPDATE url SET state='pending', reason='chain_restart', prio=0, next_at=0 WHERE id=?",
-                                (list_id,))
+            # a fetched list page taken again starts its count (review of 4be5e34, Important 2: one got on its third try
+            # would fail for good on one timeout); one still waiting for its first answer keeps it
+            self.f.conn.execute("UPDATE url SET state='pending', reason='chain_restart', prio=0, next_at=0, attempts="
+                                "CASE WHEN state='done' THEN 0 ELSE attempts END WHERE id=?", (list_id,))
             if walk:
                 self.f.conn.execute("UPDATE listwalk SET ended_by='walking', ok=NULL, note=?, at=? WHERE list_id=?",
                                     (f"restart: {why}"[:200], self.clock(), list_id))

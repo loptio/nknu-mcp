@@ -43,8 +43,10 @@ row or a page came to is outcome.py's views.
   answer that sends the visitor back to the scheme that failed is no way in: the address is the URL's failure (an
   expired certificate: tls_cert), never a loop (second review, 10-26).
 - Failures: a 4xx (but 408/429) is the server's answer, archived as it is. Timeouts, 5xx and TLS failures are the URL's:
-  tried again after 30 min × attempts, three in all; any answer that comes starts the count again (_store). The
-  server rests as a whole (second review 10-26, CLAUDE.md
+  tried again after 30 min × attempts, three in all. An answer stored starts the count again (_store; not the first
+  look at the school's not-found page, nor a 3xx to a school error page, which are tries), and so does a fetched row
+  put back to be fetched again (postback.restart_chain, _gsimg_reread). The server rests as a whole (second review
+  10-26, CLAUDE.md
   「出错或回『太忙』整台休息」, design §6.3): a 503 at once, and three errors in a row (5xx, 408, timeouts, whichever of
   its names) a fixed SERVER_REST_S; only the requests that went out cost their URLs an attempt. A Retry-After (or a
   429) rests the whole server queue, no attempt used. The client's breaker (three in a row on one name) cools that name
@@ -2898,7 +2900,7 @@ class Crawler:
         self.frontier.finish(row["id"], state="skipped", reason="moved_scheme", final_url=other)
         if moved is None or moved["state"] not in ("pending", "active"):
             return None
-        self.frontier.x("UPDATE url SET state='active' WHERE id=?", (moved["id"],))
+        self.frontier.activate(moved["id"])  # its answer, when it holds one, kept first (review of 4be5e34)
         self._tl.row = moved["id"]
         self._carry_only(row["id"], moved["id"])
         return self.frontier.row_by_id(moved["id"])
@@ -2943,7 +2945,7 @@ class Crawler:
             self._learn_scheme(row["host"], urlsplit(other).scheme)
         self._answered(row["host"], other, got.status)
         if moved["state"] in ("pending", "active"):
-            self.frontier.x("UPDATE url SET state='active' WHERE id=?", (moved["id"],))
+            self.frontier.activate(moved["id"])  # its answer, when it holds one, kept first (review of 4be5e34)
             self._tl.row = moved["id"]
             self._carry_only(row["id"], moved["id"])
             self._store(queue, self.frontier.row_by_id(moved["id"]), got, sink)
@@ -3209,8 +3211,9 @@ class Crawler:
         keep = {k: page[k] for k in GSIMG_KEEP_COLS}
         self.frontier.meta(f"{GSIMG_PAGE_KEY}{page_id}", json.dumps({"n": n + 1, "prio": prio, "keep": keep},
                                                                     ensure_ascii=False))
-        self.frontier.x("UPDATE url SET state='pending', reason=?, next_at=0, prio=? WHERE id=? AND state='done'",
-                        (GSIMG_REREAD, PRIO_NOW, page_id))
+        # attempts 0: a fetched row taken again starts its count (review of 4be5e34, Important 2)
+        self.frontier.x("UPDATE url SET state='pending', reason=?, next_at=0, prio=?, attempts=0 WHERE id=? AND "
+                        "state='done'", (GSIMG_REREAD, PRIO_NOW, page_id))
         self.frontier.event("info", "gsimg_reread", f"Google Sites pictures answered 403 halfway: the page is read "
                             f"again for new addresses ({n + 1}/{GSIMG_REREADS})", page["host"], page["url"])
         return True
@@ -3474,7 +3477,8 @@ class Crawler:
         kind0 = row["kind0"] or row["kind"]
         # attempts 0: an answer came, so the tries that got none are not held against the row's next fetch (periodic
         # updates, stage 0a: design 2026-11-16 §7.1; a row first got on its third try would otherwise fail for good on
-        # one timeout of a later fetch). The first look at the school's not-found page spends one (says_step, below).
+        # one timeout of a later fetch). Not so: the first look at the school's not-found page (says_step, below) and
+        # a 3xx to a school error page (_redirect: _failed), each a try.
         cols: dict[str, Any] = {"state": "done", "reason": None, "status": snap.status, "final_url": snap.url,
                                 "ctype": ctype[:100], "bytes": len(snap.body), "sha256": snap.sha256,
                                 "warc": self._warc_path(sink), "warc_offset": snap.warc_offset,
