@@ -11,7 +11,8 @@ The round-1 tables (design §12): the site list (site_plan), page types and thei
 page uses (page_res), the ASP.NET buttons pressed (action: POSTs only, the url table holds GETs) and each list's walk
 to its last page (listwalk), Drive items, the id probes, where each seed came from (seed_src), the run's facts
 (meta), what the browser check saw on each page it opened (js_page), each site's last reconciliation
-(reconcile_site), and a person's word that a row's result is the school's (review_mark). What a row came to is
+(reconcile_site), and a person's word that a row's result is the school's (review_mark); for the periodic updates,
+each answer a row held before a fetch could replace it (url_version, VERSIONS: kept apart). What a row came to is
 never stored: each open builds the views url_result, action_result, page_resource and page_completeness from
 outcome.py (a read-only open, in its own temp schema), so every reader applies the same rules.
 """
@@ -207,6 +208,30 @@ CREATE INDEX IF NOT EXISTS url_sha ON url(sha256);
 CREATE INDEX IF NOT EXISTS drive_item_file ON drive_item(file_id);
 CREATE INDEX IF NOT EXISTS drive_item_parent ON drive_item(parent_id);
 """
+# An answer a url row held when it was about to lose it (periodic updates, stage 0a: design 2026-11-16-periodic-update-
+# design.md §7.1, 2026-11-15 update.md §6.1): copied when the row is taken to be fetched again (next_for) and when a
+# later answer takes its place on the row (finish), so that a re-fetch the school answers with a 404, an empty template
+# or a maintenance page never leaves a program without the way to the last good copy (the WARC keeps every record; the
+# row's pointer is the only way to it). One row per stored answer (the record its pointer names), the first copy
+# standing: a later copy of the same answer comes after a fetch that got none, and may carry that fetch's marks on the
+# row (fetched_at cleared or now, a 3xx's status) 【Claude】. state, reason and attempts are the row's when it was set
+# aside, never its answer's result (which is worked out from the evidence: status, flags, kind, sniff …). Never
+# changed or deleted. Kept apart from TABLES: only the crawler writes it and no reader needs it yet (the export reads
+# it from stage 0b), so a read-only view of a frontier.db written before it opens as it did (_missing).
+KEPT_COLS = ("state", "reason", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc", "warc_offset",
+             "warc_len", "title", "flags", "fetched_at", "n_links", "n_postbacks", "kind", "page_role", "page_type",
+             "sniff", "text_chars", "filename")
+VERSIONS = """
+CREATE TABLE IF NOT EXISTS url_version(
+  id INTEGER PRIMARY KEY, url_id INTEGER NOT NULL, kept_at TEXT NOT NULL,
+  state TEXT, reason TEXT, attempts INTEGER, status INTEGER, final_url TEXT, ctype TEXT, bytes INTEGER, sha256 TEXT,
+  warc TEXT NOT NULL, warc_offset INTEGER NOT NULL, warc_len INTEGER, title TEXT, flags TEXT, fetched_at TEXT,
+  n_links INTEGER, n_postbacks INTEGER, kind TEXT, page_role TEXT, page_type TEXT, sniff TEXT, text_chars INTEGER,
+  filename TEXT, UNIQUE(url_id, warc, warc_offset));
+"""
+_KEEP = (f"INSERT OR IGNORE INTO url_version(url_id, kept_at, {', '.join(KEPT_COLS)}) "
+         f"SELECT id, ?, {', '.join(KEPT_COLS)} FROM url WHERE id = ? AND warc IS NOT NULL AND warc_offset IS NOT NULL")
+_POINTER = ("warc", "warc_offset")
 ALL_QUEUES = "*"  # the pause row that holds every queue (our network is down)
 NETWORKS = ("school", "other")  # the school's addresses (140.127.*) and everything else, told apart when one is down
 _NET = "net:"  # the pause row of one network: net:school, net:other
@@ -371,6 +396,7 @@ class Frontier:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(TABLES)
+        self.conn.executescript(VERSIONS)  # the crawler's own table, never asked of a read-only view (_missing)
         if new:  # made by this version: a round-1 archive (an old file opened here never becomes one)
             self.conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (ROUND_KEY, ROUND))
         _migrate(self.conn)
@@ -455,7 +481,8 @@ class Frontier:
         all of them, the lowest first (design §23 B1: a Google Sites page's runtime pictures right after the page,
         the hop a picture's 302 leads to before the next picture, the page read again for new addresses). sites: only
         rows that count for these sites (a run given --sites); ids: only these rows (a run given --only). The row is
-        marked active. (Queue pauses are the caller's check.)"""
+        marked active; one that holds an answer (put back to be fetched again) has it copied into url_version first,
+        while every column still says it (VERSIONS). (Queue pauses are the caller's check.)"""
         if not hosts:
             return None
         marks = ",".join("?" * len(hosts))
@@ -472,13 +499,23 @@ class Frontier:
                      ORDER BY min(u.prio, 0), u.tier, u.prio, u.host = ? DESC, u.depth, u.id LIMIT 1""",
                 (*args, *id_args, prefer_host or "")).fetchone()
             if row is not None:
+                if row["warc"] is not None and row["warc_offset"] is not None:
+                    self.conn.execute(_KEEP, (utc_now(), row["id"]))
                 self.conn.execute("UPDATE url SET state='active' WHERE id=?", (row["id"],))
             return row
 
     def finish(self, uid: int, **cols) -> None:
+        """The row's columns after a fetch (or a reading again: rejudge). When they move its pointer to another answer
+        (warc, warc_offset), the answer it held is copied into url_version first (VERSIONS): a row made active without
+        next_for (the other scheme's row, crawler._move_scheme), or an answer put back (crawler._gsimg_reread_end)."""
         cols.setdefault("fetched_at", utc_now())
         sets = ", ".join(f"{k}=?" for k in cols)
-        self.x(f"UPDATE url SET {sets} WHERE id=?", (*cols.values(), uid))
+        moving = [k for k in _POINTER if k in cols]
+        with self.lock:
+            if moving:
+                changed = " OR ".join(f"{k} IS NOT ?" for k in moving)
+                self.conn.execute(f"{_KEEP} AND ({changed})", (utc_now(), uid, *(cols[k] for k in moving)))
+            self.conn.execute(f"UPDATE url SET {sets} WHERE id=?", (*cols.values(), uid))
 
     def old_only(self, uid: int) -> bool:
         """Only an old source names this row (found_via OLD_VIAS: the old archive's, Common Crawl's) and no page of this

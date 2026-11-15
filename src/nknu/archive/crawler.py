@@ -43,7 +43,8 @@ row or a page came to is outcome.py's views.
   answer that sends the visitor back to the scheme that failed is no way in: the address is the URL's failure (an
   expired certificate: tls_cert), never a loop (second review, 10-26).
 - Failures: a 4xx (but 408/429) is the server's answer, archived as it is. Timeouts, 5xx and TLS failures are the URL's:
-  tried again after 30 min × attempts, three in all. The server rests as a whole (second review 10-26, CLAUDE.md
+  tried again after 30 min × attempts, three in all; any answer that comes starts the count again (_store). The
+  server rests as a whole (second review 10-26, CLAUDE.md
   「出错或回『太忙』整台休息」, design §6.3): a 503 at once, and three errors in a row (5xx, 408, timeouts, whichever of
   its names) a fixed SERVER_REST_S; only the requests that went out cost their URLs an attempt. A Retry-After (or a
   429) rests the whole server queue, no attempt used. The client's breaker (three in a row on one name) cools that name
@@ -3471,10 +3472,13 @@ class Crawler:
     def _store(self, queue: str, row, snap: Snapshot, sink) -> None:
         uid, ctype = row["id"], snap.headers.get("content-type", "").lower()
         kind0 = row["kind0"] or row["kind"]
+        # attempts 0: an answer came, so the tries that got none are not held against the row's next fetch (periodic
+        # updates, stage 0a: design 2026-11-16 §7.1; a row first got on its third try would otherwise fail for good on
+        # one timeout of a later fetch). The first look at the school's not-found page spends one (says_step, below).
         cols: dict[str, Any] = {"state": "done", "reason": None, "status": snap.status, "final_url": snap.url,
                                 "ctype": ctype[:100], "bytes": len(snap.body), "sha256": snap.sha256,
                                 "warc": self._warc_path(sink), "warc_offset": snap.warc_offset,
-                                "warc_len": snap.warc_len}
+                                "warc_len": snap.warc_len, "attempts": 0}
         if kind0 == outcome.SHORTLINK:
             self._shortlink(row, snap, cols)
             return
