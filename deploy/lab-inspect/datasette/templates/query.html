@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{#- A query's page (Datasette 0.65.5's query.html, in the owner's words 【Claude】): a ready-made query shows its
+    short title and its rows, and nothing to read first (owner 11-15: 「頁面廢話太多了」). A query about one site names
+    that site beside its title, with 「換網站」 opening the same list the home page finds a site in (templates/
+    _sitefind.html; the sites come from plugins/guide.py), and when it has no rows it says why (the site holds no
+    document, or every document of it has a date) instead of 「沒有結果」: the owner had picked a site with nothing
+    in it and was told only that. Its SQL stays one click away, under the rows. A query of the owner's own keeps the
+    editor. -#}
+{% from "_sitefind.html" import finder %}
+
+{% block title %}{% if canned_query and metadata.title %}{{ metadata.title }} · {% endif %}{{ database }}{% endblock %}
+
+{% block extra_head %}
+{{- super() -}}
+{% if columns %}
+<style>
+@media only screen and (max-width: 576px) {
+{% for column in columns %}
+    .rows-and-columns td:nth-of-type({{ loop.index }}):before { content: "{{ column|escape_css_string }}"; }
+{% endfor %}
+}
+</style>
+{% endif %}
+{% include "_codemirror.html" %}
+{% endblock %}
+
+{% block body_class %}query db-{{ database|to_css_class }}{% if canned_query %} query-{{ canned_query|to_css_class }}{% endif %}{% endblock %}
+
+{% block crumbs %}
+{{ crumbs.nav(request=request, database=database) }}
+{% endblock %}
+
+{% block content %}
+
+{% if canned_write and db_is_immutable %}
+    <p class="message-error">這個資料庫只能讀，這條查詢要寫，所以不能執行。</p>
+{% endif %}
+
+{%- set has_site = canned_query and sites and named_parameter_values and "site" in named_parameter_values %}
+{%- set site = named_parameter_values.get("site") if has_site else "" %}
+{%- set at = namespace(cur=none, shown=0) %}
+{%- for s in sites or [] if has_site and s.site == site %}{% set at.cur = s %}{% endfor %}
+{%- for name in named_parameter_values or {} if not (has_site and name == "site") %}{% set at.shown = at.shown + 1 %}{% endfor %}
+<div class="page-header">
+    <h1>{% if canned_query %}{{ metadata.title or canned_query }}{% else %}自己寫的查詢{% endif %}{% if private %} 🔒{% endif %}</h1>
+    {% if display_rows %}<span class="count">{% if truncated %}超過 {% endif %}{{ "{:,}".format(display_rows|length) }} 列</span>{% endif %}
+</div>
+
+{% if has_site %}
+<details class="card swap"{% if not site %} open{% endif %}>
+    <summary>
+        {%- if at.cur %}<b>{{ at.cur.name }}</b><code>{{ site }}</code><span class="nums">{{ "{:,}".format(at.cur.docs) }} 份　沒日期 {{ "{:,}".format(at.cur.undated) }}</span>
+        {%- elif site %}<code>{{ site }}</code>
+        {%- else %}<b>選一個網站</b>{% endif %}
+        {%- if site %}<span class="btn">換網站</span>{% endif -%}
+    </summary>
+    {{ finder(sites, urls.database(database) ~ "/" ~ canned_query ~ "?site=", urls.database(database) ~ "/site_undated_why?site=", site) }}
+</details>
+{% endif %}
+
+<form class="sql{% if canned_query %} canned{% endif %}{% if canned_query and hide_sql and not at.shown and not error %} bare{% endif %}" action="{{ urls.database(database) }}{% if canned_query %}/{{ canned_query }}{% endif %}" method="{% if canned_write %}post{% else %}get{% endif %}">
+    {% if error %}
+        <p class="message-error">{{ error }}</p>
+    {% endif %}
+    {% if not hide_sql %}
+        {% if editable and allow_execute_sql %}
+            <p><textarea id="sql-editor" name="sql"{% if query and query.sql %} style="height: {{ query.sql.split("\n")|length + 2 }}em"{% endif %}
+            >{% if query and query.sql %}{{ query.sql }}{% else %}select * from {{ tables[0].name|escape_sqlite }}{% endif %}</textarea></p>
+        {% else %}
+            <pre id="sql-query">{% if query %}{{ query.sql }}{% endif %}</pre>
+        {% endif %}
+    {% else %}
+        {% if not canned_query %}
+            <input type="hidden" name="sql"
+                value="{% if query and query.sql %}{{ query.sql }}{% else %}select * from {{ tables[0].name|escape_sqlite }}{% endif %}"
+            >
+        {% endif %}
+    {% endif %}
+    <div class="params">
+    {% if named_parameter_values %}
+        {% for name, value in named_parameter_values.items() %}
+            {%- if has_site and name == "site" %}
+                <input type="hidden" name="site" value="{{ value }}">
+            {%- else %}
+            <label for="qp{{ loop.index }}">{{ (param_names or {}).get(name) or name }}
+                <input type="text" id="qp{{ loop.index }}" name="{{ name }}" value="{{ value }}">
+            </label>
+            {%- endif %}
+        {% endfor %}
+    {% endif %}
+        {% if not hide_sql %}<button id="sql-format" type="button" hidden>整理格式</button>{% endif %}
+        {% if canned_write %}<input type="hidden" name="csrftoken" value="{{ csrftoken() }}">{% endif %}
+        {% if at.shown or not canned_query or not hide_sql %}<input type="submit" value="{% if canned_query %}查{% else %}執行{% endif %}"{% if canned_write and db_is_immutable %} disabled{% endif %}>{% endif %}
+        {{ show_hide_hidden }}
+    </div>
+</form>
+
+{% if display_rows %}
+<div class="table-wrapper"><table class="rows-and-columns">
+    <thead>
+        <tr>
+            {% for column in columns %}<th class="col-{{ column|to_css_class }}" scope="col"><span class="zh">{{ column }}</span></th>{% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in display_rows %}
+        <tr>
+            {% for column, td in zip(columns, row) %}
+                <td class="col-{{ column|to_css_class }}"><div class="c">{{ td }}</div></td>
+            {% endfor %}
+        </tr>
+    {% endfor %}
+    </tbody>
+</table></div>
+<div class="tools">
+    <span class="export-links">下載：{% for name, url in renderers.items() %}<a href="{{ url }}">{{ name|upper }}</a>{{ " · " if not loop.last }}{% endfor %} · <a href="{{ url_csv }}">CSV</a></span>
+</div>
+{% else %}
+    {% if not canned_write and not error %}
+        {%- if has_site and not site %}
+        {%- elif at.cur and not at.cur.docs %}
+        <p class="zero-results">「{{ at.cur.name }}」沒有文件進庫。</p>
+        {%- elif at.cur and canned_query in ("site_undated_why", "site_undated") and not at.cur.undated %}
+        <p class="zero-results">「{{ at.cur.name }}」的 {{ "{:,}".format(at.cur.docs) }} 份文件都有日期。</p>
+        {%- elif named_parameter_values and not (named_parameter_values.values()|select|list) %}
+        {%- else %}
+        <p class="zero-results">沒有結果</p>
+        {%- endif %}
+    {% endif %}
+{% endif %}
+
+{% if canned_query and not query_error %}
+<div class="tools sqltools">
+    <a class="show-hide-sql" href="{{ show_hide_link }}">{% if hide_sql %}看 SQL{% else %}收起 SQL{% endif %}</a>
+    {% if edit_sql_url %}<a href="{{ edit_sql_url }}" class="canned-query-edit-sql">改 SQL</a>{% endif %}
+</div>
+{% endif %}
+
+<script src="{{ urls.path('/static/sitefind.js') }}"></script>
+<script>
+// A query that says what to do about each row (a 怎麼辦 tag and a 份數: the site's reasons of no date) gets one line
+// over its rows that adds them up by what to do, in the rows' order (what can be done first): whether a site needs
+// anything is read at once 【Claude】. Only from what the page shows; without this script the rows say it all.
+(() => {
+  const table = document.querySelector('table.rows-and-columns');
+  if (!table) return;
+  const heads = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+  const at = heads.indexOf('怎麼辦'), count = heads.indexOf('份數');
+  if (at < 0 || count < 0) return;
+  const sums = new Map();
+  for (const tr of table.querySelectorAll('tbody tr')) {
+    const tag = tr.children[at] && tr.children[at].querySelector('.tag');
+    const n = parseFloat((tr.children[count] || {}).textContent.replace(/,/g, ''));
+    if (!tag || !(n >= 0)) continue;
+    const word = tag.textContent.trim();
+    const sum = sums.get(word) || { n: 0, cls: tag.className, tip: tag.getAttribute('data-tip') || '' };
+    sum.n += n;
+    sums.set(word, sum);
+  }
+  if (!sums.size) return;
+  const line = document.createElement('p');
+  line.className = 'dosum';
+  for (const [word, sum] of sums) {
+    const tag = document.createElement('span');
+    tag.className = sum.cls;
+    tag.setAttribute('data-tip', sum.tip);
+    tag.textContent = word + ' ' + sum.n.toLocaleString('en');
+    line.append(tag);
+  }
+  table.closest('.table-wrapper').before(line);
+})();
+</script>
+<script>
+// A column of counts gets a bar behind each number, as long as the number is beside the column's largest: the rows
+// are compared at a glance. Only the columns named here (a query's own Chinese names).
+(() => {
+  const COUNTS = ['份數', '文件數', '沒日期'];
+  const table = document.querySelector('table.rows-and-columns');
+  if (!table) return;
+  [...table.querySelectorAll('thead th')].forEach((th, i) => {
+    if (!COUNTS.includes(th.textContent.trim())) return;
+    const cells = [...table.querySelectorAll('tbody tr')].map(tr => tr.children[i]).filter(Boolean);
+    const values = cells.map(td => parseFloat(td.textContent.replace(/,/g, '')));
+    const most = Math.max(...values.filter(v => v > 0), 0);
+    if (!most || cells.length < 2) return;
+    cells.forEach((td, k) => {
+      if (!(values[k] >= 0)) return;
+      td.classList.add('amount');
+      td.style.setProperty('--w', (100 * values[k] / most).toFixed(1) + '%');
+    });
+  });
+})();
+</script>
+
+{% include "_codemirror_foot.html" %}
+
+{% endblock %}

@@ -41,8 +41,12 @@ x-ours: &ours   # 跑我们自己程序的两个服务：映像 nknu-pipeline（
       max-file: "3"
 
 services:
-  # 翻库里的表。官方映像，版本固定。-i 是只读而且不上锁；有哪个库就开哪个（对照库被删了也照样开得起来）。
-  # 不让整个库被下载（allow_download off），不自动猜分类栏（suggest_facets off：大表上很慢）。
+  # 资料库（11-15 以前叫「翻库里的表」）。官方映像，版本固定。-i 是只读而且不上锁；有哪个库就开哪个（对照库被删了也照样开得起来）。
+  # 不让整个库被下载（allow_download off），不自动猜分类栏（suggest_facets off：大表上很慢）；表格旁边的统计给 3 秒
+  # （facet_time_limit_ms：预设 0.2 秒，文件表的「种类」算不完，页面上只剩一句「算太久」）。
+  # --static 把 datasette/static/ 放在 /static/：每一页接上的 tc.css（繁体字的字型排在前面，metadata.yaml 指它）。
+  # --template-dir 的 index.html 换掉首页：库的地图（几张表、怎么接、每个栏位的意思，资料由 plugins/guide.py 给）。
+  # 这些资料夹要先随 pack.sh 的包装进 /work/inspect-code 才开得起来（Datasette 找不到资料夹就不启动）。
   datasette:
     image: datasetteproject/datasette:0.65.5
     volumes:
@@ -59,9 +63,12 @@ services:
         exec datasette "$$@" -h 0.0.0.0 -p 8001
         --metadata /work/inspect-code/deploy/lab-inspect/datasette/metadata.yaml
         --plugins-dir /work/inspect-code/deploy/lab-inspect/datasette/plugins
+        --static static:/work/inspect-code/deploy/lab-inspect/datasette/static
+        --template-dir /work/inspect-code/deploy/lab-inspect/datasette/templates
         --setting sql_time_limit_ms 5000
         --setting allow_download off
         --setting suggest_facets off
+        --setting facet_time_limit_ms 3000
         --setting truncate_cells_html 300
         --setting default_page_size 50
         --setting max_returned_rows 2000
@@ -82,11 +89,12 @@ services:
     ports:
       - "127.0.0.1:8766:8766"
 
-  # 检视台：搜索试验台和逐份追踪两页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
+  # 检视台：搜索测试和文件追踪两页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
   ops:
     <<: *ours
     command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
               "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
+              "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
               "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json"]
     ports:
       - "127.0.0.1:8878:8878"

@@ -1,0 +1,35 @@
+# 资料总览（实时）：在实验室电脑上跑的只读小服务。这个资料夹的五个档（server.py、overview_data.py、page.html、本档、
+# README.md）整个放在 C:\nknu-transfer\overview\，本档用相对路径把这个资料夹挂成 /app。给用户的步骤在 README.md。
+#   docker compose -f C:\nknu-transfer\overview\compose.yaml up -d             开
+#   docker compose -f C:\nknu-transfer\overview\compose.yaml ps                看状态
+#   docker compose -f C:\nknu-transfer\overview\compose.yaml logs --tail 30    看纪录（每次统计一行）
+#   docker compose -f C:\nknu-transfer\overview\compose.yaml restart           换程序以后
+#   docker compose -f C:\nknu-transfer\overview\compose.yaml down              关（磁碟区不会动）
+# 只读：磁碟区 nknu-work 和这个资料夹都挂成唯读；口只开在实验室电脑自己的 127.0.0.1，从 Mac 经 SSH 隧道看。
+# 不用显卡、不用模型，也不读爬虫的账本（抓取结果读的是建库用的那份导出清单）。
+name: nknu-overview
+
+services:
+  overview:
+    image: nknu-pipeline
+    working_dir: /work
+    environment:
+      TZ: Asia/Taipei
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - nknu-work:/work:ro
+      - ./:/app:ro
+    command: ["python", "/app/server.py", "--root", "/work", "--host", "0.0.0.0", "--port", "8879", "--interval", "60"]
+    ports:
+      - "127.0.0.1:8879:8879"
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  nknu-work:
+    external: true

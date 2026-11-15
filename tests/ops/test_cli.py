@@ -56,13 +56,13 @@ class _Service:
 def test_search_explain_prints_the_table(run, path):
     got = run("search", "停修", "--explain", "--db", path, *OFF)
     assert got.exit_code == 0, got.output
-    for word in ("问题：停修", "只有关键词", "115學年度第一學期線上申請停修", "名次"):
+    for word in ("问题：停修", "只有關鍵字", "115學年度第一學期線上申請停修", "名次"):
         assert word in got.output, word
 
 
 def test_search_explain_follows_documents(run, path):
     got = run("search", "停修", "--explain", "--doc", "dx", "--doc", "none", "--limit", "2", "--db", path, *OFF)
-    assert got.exit_code == 0 and "追的文件" in got.output and "库里没有" in got.output and "dx" in got.output
+    assert got.exit_code == 0 and "追的文件" in got.output and "庫裡沒有" in got.output and "dx" in got.output
 
 
 def test_search_explain_json_is_the_report(run, path, db):

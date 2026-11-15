@@ -68,7 +68,8 @@ def test_a_file_read_by_ocr(w):
     assert (t["ocr_pages"], t["pages"], t["ocr_lines"], t["ocr_mean_score"]) == (2, 2, 2, 0.93)
     assert t["ocr_reasons"] == ["没有可用的文字层"]
     assert report["library"]["doc"]["has_text"] == 0
-    assert "全部 2 页靠 OCR" in trace_text(report) and "没有可用的文字层" in trace_text(report)
+    # the reason is kept as to-text wrote it (above) and shown in Traditional (owner 11-15: 「可视化dashboard全部换繁体字」)
+    assert "全部 2 頁掃描認字" in trace_text(report) and "沒有可用的文字層" in trace_text(report)
 
 
 def test_the_pages_read_by_ocr_are_counted_once_whoever_read_them(tmp_path):
@@ -89,7 +90,7 @@ def test_the_pages_read_by_ocr_are_counted_once_whoever_read_them(tmp_path):
 def test_a_notice_with_its_date_unit_and_chunks(w):
     report = _trace(w, NOTICE_URL)
     assert report["record"]["under_read"] is False and report["record"]["date_source"] == "详细页的日期栏"
-    assert report["totext"]["route"] == "page" and "正文区" in report["totext"]["reading"]
+    assert report["totext"]["route"] == "page" and "正文區" in report["totext"]["reading"]
     # a page is re-saved on export: its cache entry is the exported file's, not the manifest's sha256
     assert report["totext"]["sha256"] != report["export"]["row"]["sha256"]
     assert report["totext"]["full_chars"] > report["totext"]["chars"] and report["totext"]["full"].startswith("首頁")
@@ -121,7 +122,7 @@ def test_a_merged_copy_is_answered_with_the_document_kept_for_it(w):
     assert report["export"]["row"]["网址"] == COPY_URL and report["export"]["site"] == world.BOARD
     assert report["export"]["of"] == "reference" and report["totext"]["route"] == "page"
     assert report["record"]["kind"] == "page"
-    assert f"并进了 {kept}" in trace_text(report) and "①～③ 是你给的那一份" in trace_text(report)
+    assert f"并进了 {kept}" in trace_text(report) and "①～③ 是你給的那一份" in trace_text(report)
 
 
 def test_a_copys_id_finds_its_own_row_by_the_address_the_library_kept_of_it(w):
@@ -137,8 +138,8 @@ def test_a_copy_whose_own_row_is_gone_shows_the_kept_documents_and_says_so(w):
     assert report["export"]["site"] == world.SITE and report["export"]["of"] == "kept"
     assert report["export"]["row"]["网址"] == NOTICE_URL
     text = trace_text(report)
-    assert "①～③ 是留下来的那一份" in text and "①～③ 是你给的那一份" not in text
-    assert any("导出资料夹" in m for m in report["missing"])
+    assert "①～③ 是留下來的那一份" in text and "①～③ 是你給的那一份" not in text
+    assert any("匯出資料夾" in m for m in report["missing"])
 
 
 def test_a_document_of_the_library_opens_its_own_sites_manifest_only(w, monkeypatch):
@@ -171,8 +172,9 @@ def test_a_lists_pager_page_is_left_out_and_the_reason_is_the_builds_own(w):
 def test_a_row_that_was_never_fetched_says_what_the_crawler_got(w):
     report = _trace(w, MENU_URL)
     assert report["export"]["row"]["结果"] == "没抓到" and report["totext"] is None and report["record"] is None
-    assert report["left_out"]["key"] == "" and "没抓到" in report["left_out"]["words"]
-    assert "HTTP 404" in report["left_out"]["words"]
+    assert report["crawl"]["result"] == "没抓到"  # as the crawler wrote it: the 檢視台 page matches on it
+    assert report["left_out"]["key"] == "" and "結果「沒抓到」" in report["left_out"]["words"]
+    assert "HTTP 404" in report["left_out"]["words"] and "缺「檔案」" in report["left_out"]["words"]
 
 
 @pytest.mark.parametrize("ref", ["https://school.example/nowhere.aspx", "https://other.example/x", "junk", ""])
@@ -181,13 +183,13 @@ def test_a_reference_found_nowhere_is_said_in_words(w, ref):
     assert report["resolved"]["doc_id"] is None
     assert report["export"] is None and report["library"] is None and report["left_out"] is None
     assert report["missing"] and "库里找不到这一份" in trace_text(report)
-    assert any("找不到" in m or "找过了" in m for m in report["missing"])
+    assert any("找不到" in m or "找過了" in m for m in report["missing"])
 
 
 def test_a_cache_entry_that_is_gone_is_said(w):
     report = _trace(w, LOST_URL)
     assert report["totext"] is None and report["library"]["doc"]["title"] == "舊表單"
-    assert any("转文字" in m for m in report["missing"])
+    assert any("轉文字" in m for m in report["missing"])
 
 
 def test_an_export_folder_that_is_gone_is_said(w):
@@ -195,7 +197,7 @@ def test_an_export_folder_that_is_gone_is_said(w):
     report = _trace(w, doc_id(FORM_URL))
     assert report["export"] is None and report["crawl"] is None and report["totext"] is None
     assert report["library"]["doc"]["title"] == "停修申請表"
-    assert any("导出资料夹" in m for m in report["missing"])
+    assert any("匯出資料夾" in m for m in report["missing"])
 
 
 def test_a_database_built_before_pipeline_8_still_traces(w):
@@ -206,7 +208,7 @@ def test_a_database_built_before_pipeline_8_still_traces(w):
     lib = report["library"]
     assert lib["doc"]["title"] == "115-1 停修公告" and lib["site"] is None and lib["scope"] == [] and lib["copies"] == []
     assert "expires" not in lib["doc"] and len(lib["chunks"]) == 2
-    assert report["export"] is None and any("导出" in m for m in report["missing"])
+    assert report["export"] is None and any("匯出" in m for m in report["missing"])
     assert trace_text(report)
 
 
@@ -247,7 +249,15 @@ def test_times_and_sizes_are_written_plainly():
     from nknu.ops.trace import size_words, when
 
     assert when("2026-11-08T03:12:00+08:00") == "2026-11-08 03:12" and when("") == "" and when("昨天") == "昨天"
-    assert [size_words(n) for n in (None, 13, 2048, 5 * 1024 * 1024)] == ["", "13 字节", "2.0 KB", "5.0 MB"]
+    assert [size_words(n) for n in (None, 13, 2048, 5 * 1024 * 1024)] == ["", "13 位元組", "2.0 KB", "5.0 MB"]
+
+
+def test_a_failed_conversion_shows_the_reason_to_text_wrote_in_traditional():
+    from nknu.ops.trace import how_converted
+
+    t = {"route": "office", "status": "failed", "reason": "认不出格式（xlsx）"}
+    assert how_converted(t) == "Office 檔　沒轉成（failed：認不出格式（xlsx））"
+    assert how_converted({**t, "reason": ""}) == "Office 檔　沒轉成（failed：沒寫原因）"
 
 
 def test_the_text_writes_the_fetch_time_plainly(w):
@@ -259,34 +269,34 @@ def test_a_file_on_another_host_is_found_in_the_manifest_of_the_site_that_links_
     of its own host do not list it, every site's manifest is asked, once per process."""
     report = _trace(w, AWAY_URL)
     assert report["export"]["site"] == "school.example" and report["export"]["row"]["网址"] == AWAY_URL
-    assert "链接已失效" in report["left_out"]["words"] and report["missing"] == []
+    assert "鏈接已失效" in report["left_out"]["words"] and report["missing"] == []
 
 
 def test_what_no_manifest_lists_says_how_far_it_looked(w):
     report = _trace(w, "https://files.example/never-linked.pdf")
-    assert report["export"] is None and any("2 个网站的清单都找过了" in m for m in report["missing"])
+    assert report["export"] is None and any("2 個網站的清單都找過了" in m for m in report["missing"])
 
 
 def test_manifests_that_cannot_be_read_are_named_when_nothing_is_found(w):
     shutil.move(w.exports[world.BOARD], w.exports[world.BOARD].with_name("moved-away"))
     report = _trace(w, "https://files.example/never-linked.pdf")
-    said = [m for m in report["missing"] if "找过了" in m]
-    assert len(said) == 1 and "2 个网站" in said[0] and "读得到的 1 个" in said[0] and "school.example_board" in said[0]
+    said = [m for m in report["missing"] if "找過了" in m]
+    assert len(said) == 1 and "2 個網站" in said[0] and "讀得到的 1 個" in said[0] and "school.example_board" in said[0]
 
 
 def test_with_the_corpus_unreadable_the_reason_is_not_guessed(w):
     (w.root / world.CORPUS).unlink()
     report = _trace(w, PAGER_URL)
     assert report["record"] is None and report["left_out"]["key"] == ""
-    assert "没有留下它" not in report["left_out"]["words"] and "说不出" in report["left_out"]["words"]
-    assert sum("记录档" in m for m in report["missing"]) == 1
+    assert "沒有留下它" not in report["left_out"]["words"] and "說不出" in report["left_out"]["words"]
+    assert sum("紀錄檔" in m for m in report["missing"]) == 1
 
 
 def test_a_corpus_assembled_again_since_the_build_is_said(w):
     corpus = w.root / world.CORPUS
     corpus.write_text(corpus.read_text(encoding="utf-8") + " ", encoding="utf-8")  # the same records, another sha256
     report = _trace(w, PAGER_URL)
-    assert any("重新整理过" in m for m in report["missing"])
+    assert any("重新整理過" in m for m in report["missing"])
     assert report["left_out"]["key"] == "default(列表翻页)" and "不一定" in report["left_out"]["words"]
 
 
@@ -294,6 +304,7 @@ def test_a_row_a_button_brought_is_asked_about_under_its_own_key(w):
     report = _trace(w, world.PRESS_URL)
     assert report["export"]["row"]["按钮编号"] == "row-key-1"
     assert report["record"]["kind"] == "newslist#翻页/按钮" and report["left_out"]["key"] == "newslist#翻页/按钮"
+    assert "「newslist#翻頁/按鈕」" in report["left_out"]["words"]  # the build's key, kept above, shown in Traditional
 
 
 def test_a_layout_the_passages_cannot_be_read_from_still_traces(w):
@@ -304,16 +315,27 @@ def test_a_layout_the_passages_cannot_be_read_from_still_traces(w):
     lib = _trace(w, NOTICE_URL)
     assert len(lib["library"]["chunks"]) == 2 and lib["library"]["chunks"][0]["passage"] == ""
     assert lib["library"]["chunks"][0]["text"] == "115學年度第1學期停修申請自11月3日起受理。"
-    assert any("模型实际读到的字" in m for m in lib["missing"])
+    assert any("模型實際讀到的字" in m for m in lib["missing"])
 
 
 def test_the_cohort_a_document_applies_to_is_printed(w):
     report = _trace(w, NOTICE_URL)
     assert report["library"]["applies_to"] == [{"unit": "教務處", "cohort_from": 113, "cohort_exact": None,
                                                 "raw": "113學年度起入學"}]
-    assert "113 学年度起入学" in trace_text(report)
+    assert "113 學年度起入學" in trace_text(report)
 
 
 def test_an_address_without_its_scheme_is_an_address(w):
     report = _trace(w, PAGER_URL.removeprefix("https://"))
     assert report["export"]["row"]["页别"] == "列表翻页" and report["left_out"]["key"] == "default(列表翻页)"
+
+
+def test_a_document_s_own_date_is_named_by_where_it_was_read():
+    # spec 2026-11-16-data-fixes §二: a file dated by its own row on a file table is no 公告日期
+    from nknu.ops.trace import ident_words
+
+    dates = [{"kind": "published", "date": "2026-03-01", "raw": "2026-03-01", "source": "列表上的日期"},
+             {"kind": "server", "date": "2026-02-01", "raw": "", "source": "伺服器"}]
+    assert ident_words({"ident_kind": "published", "ident_date": "2026-03-01"}, dates) == "列表上的日期"
+    assert ident_words({"ident_kind": "server", "ident_date": "2026-02-01"}, dates) == "伺服器檔案時間"
+    assert ident_words({"ident_kind": "published", "ident_date": "2026-03-09"}, dates) == "公告日期"  # no fact found

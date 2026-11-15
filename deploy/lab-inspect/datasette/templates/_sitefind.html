@@ -1,0 +1,22 @@
+{#- Finding a site (owner 11-15: 「我選網站和找網站的時候有點費勁…只能一個個看名字…最後說沒有結果。我覺得這很不人性化」).
+    One box to type in and every site under it as a row 【Claude】: its name, how many documents it holds and how many
+    of them have no date (the bar is that share), so a site with nothing to show is seen before it is opened. Typing
+    narrows the rows (static/sitefind.js: part of the name, its unit's short names, its code, in either script);
+    a header sorts by its number. The rows are links, so the list works without the script.
+    `go` and `why` are the addresses a row's two links start with (the site's code is added). -#}
+{% macro finder(sites, go, why, current="") %}
+<div class="sitefind">
+    <input type="search" placeholder="打幾個字找網站：軟體、教務、圖書…" aria-label="找網站" autocomplete="off" spellcheck="false">
+    <div class="hd"><span>網站</span><button type="button" data-sort="n" class="on" data-tip="按文件數排">文件</button><button type="button" data-sort="u" data-tip="按沒日期的份數排">沒日期</button></div>
+    <ol>
+    {%- for s in sites %}
+        <li data-k="{{ s.found_by }}" data-n="{{ s.docs }}" data-u="{{ s.undated }}" class="{% if s.site == current %}cur{% endif %}{% if not s.docs %} zero{% endif %}">
+            <a class="nm" href="{{ go }}{{ s.site|urlencode }}"><b>{{ s.name }}</b><code>{{ s.site }}</code></a>
+            <a class="n" href="{{ go }}{{ s.site|urlencode }}" data-tip="看這個網站的文件">{{ "{:,}".format(s.docs) }}</a>
+            <a class="u" href="{{ why }}{{ s.site|urlencode }}" data-tip="{{ "{:,}".format(s.docs) }} 份裡 {{ "{:,}".format(s.undated) }} 份沒有日期{% if s.undated %}；點了看原因{% endif %}"><span class="t"><i style="width:{{ s.share }}%"></i></span>{{ "{:,}".format(s.undated) }}</a>
+        </li>
+    {%- endfor %}
+    </ol>
+    <p class="none" hidden>沒有這個網站</p>
+</div>
+{% endmacro %}

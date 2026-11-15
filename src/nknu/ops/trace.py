@@ -25,6 +25,8 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from opencc import OpenCC
+
 from nknu.content import ids
 from nknu.content.corpus import Record, load_corpus
 from nknu.content.documents import build_documents
@@ -47,20 +49,31 @@ ROW_COLUMNS = ("序号", "类型", "网址", "最后落地网址", "本地档案
                "按钮编号", "sha256")
 RECORD_FIELDS = ("kind", "source", "under_read", "list_kind", "list_category", "area_mark", "date_source", "page_date",
                  "page_date_raw", "modified", "origin")
+# The sentences a report carries are shown on the 檢視台 page, so they are in Traditional Chinese with Taiwan usage
+# (owner 11-15: 「可视化dashboard全部换繁体字」); what the code matches stays as the crawler and the build write it:
+# each pair's mark below, the export's column names, the build's keys, the crawler's results.
 LEFT_OUT = (  # how a left-out record's key reads, by what it ends with or is (documents.build_documents' counts)
-    ("(学校回答没有资料)", "学校这一页回答的是「没有资料」，所以不收。"),
-    ("(列表翻页)", "这是列表的翻页：它列的每一则都另外收了，这一页本身不收。"),
-    ("(学校删掉)", "这是学校删掉的公告，只剩空壳，所以不收。"),
-    ("(空白)", "它没有标题，也没有读到字，所以不收。"),
-    ("(重复)", "同一则公告在同一个网站有另一个网址，留的是那一个。"),
-    ("只在选单出现的图片", "它是只在选单上出现的图片（多半是单位的横幅），不算一份文件。"),
+    ("(学校回答没有资料)", "學校這一頁回答的是「沒有資料」，所以不收。"),
+    ("(列表翻页)", "這是列表的翻頁：它列的每一則都另外收了，這一頁本身不收。"),
+    ("(学校删掉)", "這是學校刪掉的公告，只剩空殼，所以不收。"),
+    ("(空白)", "它沒有標題，也沒有讀到字，所以不收。"),
+    ("(重复)", "同一則公告在同一個網站有另一個網址，留的是那一個。"),
+    ("只在选单出现的图片", "它是只在選單上出現的圖片（多半是單位的橫幅），不算一份文件。"),
 )
-READINGS = {"nothing": "对不上就不读", "whole": "对不上就整页读", "body": "对不上就读去掉页首、选单、页尾的整页"}
-ALONE = {"nothing": "这种网页不读字", "whole": "整页读", "body": "读去掉页首、选单、页尾的整页"}
+READINGS = {"nothing": "對不上就不讀", "whole": "對不上就整頁讀", "body": "對不上就讀去掉頁首、選單、頁尾的整頁"}
+ALONE = {"nothing": "這種網頁不讀字", "whole": "整頁讀", "body": "讀去掉頁首、選單、頁尾的整頁"}
 # what the assembled record of a manifest row turned out to be (_record): read; the corpus was read and has none; the
 # corpus could not be read; the library names no corpus for the site
 FOUND, ABSENT, UNREADABLE, UNNAMED = "found", "absent", "unreadable", "unnamed"
-STALE = "这个原因是照现在的记录档问出来的；记录档在建库以后重新整理过，不一定是建库当时的原因。"
+STALE = "這個原因是照現在的紀錄檔問出來的；紀錄檔在建庫以後重新整理過，不一定是建庫當時的原因。"
+_S2TW = OpenCC("s2tw")
+
+
+def _tw(text: str) -> str:
+    """What the crawler, to-text or the build wrote in Simplified (a result, a reason, a build key), as a sentence of
+    the report shows it: OpenCC s2tw. The report's own fields keep the value as written, for what matches on it."""
+    return _S2TW.convert(text) if text else text
+
 
 OwnTitleSearch = Callable[[sqlite3.Connection, str], tuple[list[str], str]]
 
@@ -205,7 +218,7 @@ def _reading(page_kind: str) -> str:
         return ""
     area, _, rest = parts[1].rpartition(":")
     if area:
-        return f"先照平台（{area}）设定的正文区读，{READINGS.get(rest, rest)}"
+        return f"先照平台（{area}）設定的正文區讀，{READINGS.get(rest, rest)}"
     return ALONE.get(rest, rest)
 
 
@@ -214,7 +227,7 @@ def _totext(cache: Cache, sha: str, missing: list[str]) -> dict | None:
         folder = cache.dir(sha)
         result = json.loads((folder / RESULT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        missing.append(f"转文字的缓存里没有这个档的结果（{sha[:12] or '清单上没有它的 sha256'}）。")
+        missing.append(f"轉文字的快取裡沒有這個檔的結果（{sha[:12] or '清單上沒有它的 sha256'}）。")
         return None
     text = cache.extra(sha, TEXT)
     full = cache.extra(sha, FULL) if (folder / FULL).exists() else None
@@ -249,9 +262,9 @@ def _record(conn: sqlite3.Connection, root: Path, site: str, doc_id: str) -> tup
     try:
         loaded: _Corpus = _cached(_corpora, root / corpus, CORPORA, _load_corpus)
     except (OSError, ValueError) as exc:
-        return None, UNREADABLE, False, [f"整理好的记录档读不了：{corpus}（{type(exc).__name__}）。"]
+        return None, UNREADABLE, False, [f"整理好的紀錄檔讀不了：{corpus}（{type(exc).__name__}）。"]
     stale = bool(built) and loaded.sha256 != built
-    notes = [f"记录档 {corpus} 在建库以后重新整理过（和库读的不是同一版）：「整理成的记录」不一定是建库当时的。"] if stale else []
+    notes = [f"紀錄檔 {corpus} 在建庫以後重新整理過（和庫讀的不是同一版）：「整理成的紀錄」不一定是建庫當時的。"] if stale else []
     record = loaded.records.get(doc_id[1:])
     return record, FOUND if record is not None else ABSENT, stale, notes
 
@@ -260,7 +273,7 @@ def _words_for(key: str) -> str:
     for mark, words in LEFT_OUT:
         if key.endswith(mark) or key == mark:
             return words
-    return f"建库把它归在「{key}」这一类，这一类不收（列表页、相簿、网站地图这类页面只是通往别的网页）。"
+    return f"建庫把它歸在「{_tw(key)}」這一類，這一類不收（列表頁、相簿、網站地圖這類頁面只是通往別的網頁）。"
 
 
 def _left_out(row: dict, record: Record | None, state: str, stale: bool) -> dict:
@@ -269,20 +282,20 @@ def _left_out(row: dict, record: Record | None, state: str, stale: bool) -> dict
     be read."""
     if record is None:
         if not row.get("本地档案"):
-            got = "、".join(f"{label}「{row[name]}」" for name, label in (("结果", "结果"), ("原因", "原因"), ("缺什么", "缺"))
-                           if row.get(name))
-            return {"key": "", "words": f"导出清单上这一行没有档案（{got or '没写原因'}）。没有档就没有文字，所以没进库。"}
+            labels = (("结果", "結果"), ("原因", "原因"), ("缺什么", "缺"))  # the manifest's column, the words' label
+            got = "、".join(f"{label}「{_tw(row[name])}」" for name, label in labels if row.get(name))
+            return {"key": "", "words": f"匯出清單上這一行沒有檔案（{got or '沒寫原因'}）。沒有檔就沒有文字，所以沒進庫。"}
         if state == ABSENT:
-            return {"key": "", "words": "导出清单上有这一行，整理成记录时没有留下它"
-                                        "（嵌在网页里的图片、压缩档本身这类，不会自己成为一条记录）。" + (STALE if stale else "")}
-        return {"key": "", "words": "导出清单上这一行有档，但整理成的记录读不到，所以说不出建库为什么没收它。"}
+            return {"key": "", "words": "匯出清單上有這一行，整理成紀錄時沒有留下它"
+                                        "（嵌在網頁裡的圖片、壓縮檔本身這類，不會自己成為一條紀錄）。" + (STALE if stale else "")}
+        return {"key": "", "words": "匯出清單上這一行有檔，但整理成的紀錄讀不到，所以說不出建庫為什麼沒收它。"}
     try:
         docs, excluded = build_documents([record], {}, [], site=record.site)
     except Exception as exc:  # noqa: BLE001 - whatever the build's rules raise on one record never fails the trace
-        return {"key": "", "words": f"问不出建库会怎么判这一条：{type(exc).__name__}: {exc}"}
+        return {"key": "", "words": f"問不出建庫會怎麼判這一條：{type(exc).__name__}: {exc}"}
     if docs or not excluded:
-        return {"key": "", "words": "照规则它会成为一份文件，但库里没有：多半是这个库建好以后才导出，"
-                                    "或它和别的文件一字不差、被并成了副本。" + (STALE if stale else "")}
+        return {"key": "", "words": "照規則它會成為一份文件，但庫裡沒有：多半是這個庫建好以後才匯出，"
+                                    "或它和別的文件一字不差、被併成了副本。" + (STALE if stale else "")}
     key = next(iter(excluded))
     return {"key": key, "words": _words_for(key) + (STALE if stale else "")}
 
@@ -336,7 +349,7 @@ def _library(conn: sqlite3.Connection, doc_id: str, max_chunks: int, missing: li
         try:
             passages = chunk_passages(conn, [r[0] for r in rows])
         except (sqlite3.Error, ValueError) as exc:  # a layout older than the table-header columns (the skeleton's)
-            missing.append(f"这个库的版面比较旧，读不出每一小段「模型实际读到的字」（{type(exc).__name__}: {exc}）。")
+            missing.append(f"這個庫的版面比較舊，讀不出每一小段「模型實際讀到的字」（{type(exc).__name__}: {exc}）。")
     out["chunks"] = [{"chunk_id": c, "sec_id": sec, "heading": heading.get(sec, ""), "start": start, "end": end,
                       "text": text[start:end], "passage": passages.get(c, "")} for c, sec, start, end in rows]
     return out
@@ -379,7 +392,7 @@ def _own_row(root: Path, sites: dict[str, str], res: Resolved, doc: dict, copies
         order += _near(sites, hint)[:NEAR] if hint else []
     order = list(dict.fromkeys(order))
     if not own:
-        missing.append("库里找不到这个编号；它也不是网址，没办法再到导出清单里找。")
+        missing.append("庫裡找不到這個編號；它也不是網址，沒辦法再到匯出清單裡找。")
         return None, "reference"
     gone: list[str] = []
     found = _find_row(root, sites, order, own, urls, gone) if order else None
@@ -388,21 +401,21 @@ def _own_row(root: Path, sites: dict[str, str], res: Resolved, doc: dict, copies
         if (site := next((listed[i] for i in own if i in listed), None)) is not None and site not in order:
             found = _find_row(root, sites, [site], own, urls, gone)
         if found is None and res.doc_id is None:
-            looked = (f"{len(sites)} 个网站的清单都找过了" if not unreadable else
-                      f"{len(sites)} 个网站里，读得到的 {len(sites) - len(unreadable)} 个都找过了；读不到的："
+            looked = (f"{len(sites)} 個網站的清單都找過了" if not unreadable else
+                      f"{len(sites)} 個網站裡，讀得到的 {len(sites) - len(unreadable)} 個都找過了；讀不到的："
                       f"{'、'.join(unreadable[:3])}{' 等' if len(unreadable) > 3 else ''}")
-            missing.append(f"导出清单里找不到它（{looked}）。")
+            missing.append(f"匯出清單裡找不到它（{looked}）。")
     of = "reference"
     if found is None and res.via == "alias" and doc.get("site") in sites:
         found, of = _find_row(root, sites, [doc["site"]], [res.doc_id], [doc.get("url") or ""], gone), "kept"
         if found is not None:
-            missing.append("你给的那一份（并掉的副本）自己的清单行找不到，①～③ 显示的是留下来的那一份。")
+            missing.append("你給的那一份（併掉的副本）自己的清單行找不到，①～③ 顯示的是留下來的那一份。")
     if found is None and res.doc_id is not None and not gone:
-        missing.append("它来自的网站的导出清单上没有它自己的一行（压缩档里的档、行事历事件是这样），"
-                       "所以导出和转文字这两步看不到。")
+        missing.append("它來自的網站的匯出清單上沒有它自己的一行（壓縮檔裡的檔、行事曆事件是這樣），"
+                       "所以匯出和轉文字這兩步沒有紀錄。")
     if gone:
-        missing.append("导出资料夹不在了或读不了：" + "、".join(dict.fromkeys(gone))
-                       + "（多半是这个网站后来重导、旧的那份被清掉了）。")
+        missing.append("匯出資料夾不在了或讀不了：" + "、".join(dict.fromkeys(gone))
+                       + "（多半是這個網站後來重新匯出、舊的那份被清掉了）。")
     return found, of
 
 
@@ -410,7 +423,8 @@ def trace(conn: sqlite3.Connection, ref: str, *, root: Path, today: date,
           own_title_search: OwnTitleSearch | None = None, totext: Path | None = None,
           max_chunks: int = MAX_CHUNKS) -> dict:
     """What each step left of ref: the module docstring. A part that cannot be read is None and 'missing' says why, in
-    Simplified Chinese; the dict is JSON. totext: the to-text output folder (default root / TOTEXT)."""
+    Traditional Chinese (the 檢視台 page shows it); the dict is JSON. totext: the to-text output folder (default
+    root / TOTEXT)."""
     root = Path(root)
     res: Resolved = resolve(conn, ref)
     missing: list[str] = []
@@ -425,9 +439,9 @@ def trace(conn: sqlite3.Connection, ref: str, *, root: Path, today: date,
     sites = site_exports(conn)
     found = None
     if not res.ref:
-        missing.append("找不到：没有给网址或文件编号。")
+        missing.append("找不到：沒有給網址或文件編號。")
     elif not sites:
-        missing.append("这个库没有记下每个网站的导出资料夹（建得比较早），所以导出和转文字这两步看不到。")
+        missing.append("這個庫沒有記下每個網站的匯出資料夾（建得比較早），所以匯出和轉文字這兩步沒有紀錄。")
     else:
         found, of = _own_row(root, sites, res, doc, library.get("copies", []), missing)
     if found is not None:
@@ -458,18 +472,31 @@ def trace(conn: sqlite3.Connection, ref: str, *, root: Path, today: date,
             report["search"] = {"query": doc["title"], "rank": place, "within": WITHIN, "how": how}
         except Exception as exc:
             log.exception("拿标题去搜失败")
-            missing.append(f"拿它的标题去搜没有成功：{type(exc).__name__}: {exc}")
+            missing.append(f"拿它的標題去搜沒有成功：{type(exc).__name__}: {exc}")
     report["missing"] = list(dict.fromkeys(missing))
     return report
 
 
 # ---------------------------------------------------------------- as text (the command's output)
 
-ROUTES = {"pdf": "PDF", "page": "网页", "image": "图片", "office": "Office 档", "archive": "压缩档", "text": "文字档"}
-KINDS = {"notice": "公告", "page": "网页", "attachment": "附件", "event": "行事历", "link": "校外链接"}
-DATE_KINDS = {"published": "公告日期", "inherited": "跟所属公告", "server": "服务器档案时间", "period_start": "期间开始",
-              "period_end": "期间结束", "event_start": "事件开始", "event_end": "事件结束"}
-HOW = {"keyword": "只用关键词", "hybrid": "关键词＋向量＋重排"}
+# the words below and what size_words ... cohort_words return are the 檢視台 page's too (nknu.ops.web): Traditional
+ROUTES = {"pdf": "PDF", "page": "網頁", "image": "圖片", "office": "Office 檔", "archive": "壓縮檔", "text": "文字檔"}
+KINDS = {"notice": "公告", "page": "網頁", "attachment": "附件", "event": "行事曆", "link": "校外連結"}
+DATE_KINDS = {"published": "公告日期", "inherited": "跟所屬公告", "server": "伺服器檔案時間", "period_start": "期間開始",
+              "period_end": "期間結束", "event_start": "事件開始", "event_end": "事件結束"}
+HOW = {"keyword": "只用關鍵字", "hybrid": "關鍵字＋向量＋重排"}
+
+
+def ident_words(doc: dict, dates: list[dict]) -> str:
+    """What a document's own date is, said by the fact it came from: a 「published」 date by where it was read (the
+    date's source: 公告頁日期欄, 列表上的日期, 網頁上寫的日期; since the library of 11-16 a file is dated by its own row
+    on a file table too, spec 2026-11-16-data-fixes §二, and 公告日期 would misname it), any other by its kind."""
+    kind = doc.get("ident_kind") or ""
+    if kind == "published":
+        for x in dates:
+            if x.get("kind") == kind and x.get("date") == doc.get("ident_date") and x.get("source"):
+                return str(x["source"])
+    return DATE_KINDS.get(kind, kind)
 
 
 def when(stamp: str) -> str:
@@ -483,56 +510,58 @@ def size_words(n: int | None) -> str:
     for unit, step in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
         if n >= step:
             return f"{n / step:.1f} {unit}"
-    return f"{n} 字节"
+    return f"{n} 位元組"
 
 
 def how_converted(t: dict) -> str:
-    """One line on how a file became text."""
+    """One line on how a file became text. OCR is 掃描認字 here, the word 資料總覽 uses for it (owner 11-15, of that
+    page's names: say it the way a person would, no jargon on the page)."""
     route = ROUTES.get(t["route"], str(t["route"]))
     if t["status"] != "ok":
-        return f"{route}　没转成（{t['status']}：{t['reason'] or '没写原因'}）"
+        return f"{route}　沒轉成（{t['status']}：{_tw(t['reason']) or '沒寫原因'}）"
     if t["route"] == "page":
         how = t["reading"]
     elif t["route"] == "image":
-        how = f"靠 OCR 认字（{t['ocr_lines']} 行）"
+        how = f"掃描認字（{t['ocr_lines']} 行）"
     elif not t["ocr_pages"]:
-        how = "直接读（没用 OCR）"
+        how = "直接讀（不用認字）"
     elif t["ocr_pages"] >= t["pages"]:
-        how = f"全部 {t['pages']} 页靠 OCR"
+        how = f"全部 {t['pages']} 頁掃描認字"
     else:
-        how = f"{t['pages']} 页里 {t['ocr_pages']} 页靠 OCR"
+        how = f"{t['pages']} 頁裡 {t['ocr_pages']} 頁掃描認字"
     if t["route"] != "page" and t.get("ocr_reasons"):
-        how += f"（{'、'.join(t['ocr_reasons'])}）"
-    score = f"　OCR 平均把握 {t['ocr_mean_score']:.2f}" if isinstance(t["ocr_mean_score"], int | float) else ""
-    pages = f"　{t['pages']} 页" if t["pages"] else ""
+        how += f"（{'、'.join(_tw(r) for r in t['ocr_reasons'])}）"
+    score = f"　認字信心 {t['ocr_mean_score']:.2f}" if isinstance(t["ocr_mean_score"], int | float) else ""
+    pages = f"　{t['pages']} 頁" if t["pages"] else ""
     return f"{route}　{how}{pages}　{t['text_chars']:,} 字{score}"
 
 
 def under_read_words(value: bool | None) -> str:
     if value is None:
         return ""
-    return "正文区读到的字太少，建库时改读了整页" if value else "照正文区读到的字建库"
+    return "正文區讀到的字太少，建庫時改讀了整頁" if value else "照正文區讀到的字建庫"
 
 
 def merged_words(report: dict) -> str:
     """For a merged copy's reference: whose rows the steps show."""
     if report["export"] is not None and report["export"].get("of") == "reference":
-        return "①～③ 是你给的那一份，④ 和 ⑤ 是留下来的那一份。"
+        return "①～③ 是你給的那一份，④ 和 ⑤ 是留下來的那一份。"
     if report["export"] is not None:
-        return "你给的那一份自己的清单行找不到，所以 ①～③ 是留下来的那一份，④ 和 ⑤ 也是。"
-    return "④ 和 ⑤ 是留下来的那一份。"
+        return "你給的那一份自己的清單行找不到，所以 ①～③ 是留下來的那一份，④ 和 ⑤ 也是。"
+    return "④ 和 ⑤ 是留下來的那一份。"
 
 
 def cohort_words(applies: list[dict]) -> str:
-    """The cohorts a document says it applies to: 113 学年度起入学、110 学年度入学."""
-    said = [f"{a['cohort_from']} 学年度起入学" if a.get("cohort_from") is not None else
-            f"{a['cohort_exact']} 学年度入学" if a.get("cohort_exact") is not None else str(a.get("raw") or "")
+    """The cohorts a document says it applies to: 113 學年度起入學、110 學年度入學."""
+    said = [f"{a['cohort_from']} 學年度起入學" if a.get("cohort_from") is not None else
+            f"{a['cohort_exact']} 學年度入學" if a.get("cohort_exact") is not None else str(a.get("raw") or "")
             for a in applies]
     return "、".join(dict.fromkeys(x for x in said if x))
 
 
 def trace_text(report: dict, chunks: int = 3) -> str:
-    """The report as the command prints it, in Simplified Chinese; the first chunks of the document's chunks."""
+    """The report as the command prints it; the first chunks of the document's chunks. Its own frame stays in
+    Simplified Chinese, the command line's (CLAUDE.md); the words it shares with the 檢視台 page are Traditional."""
     r = report["resolved"]
     out = [f"追踪  {report['ref'] or '（空白）'}"]
     if r["via"] == "alias":
@@ -573,7 +602,7 @@ def trace_text(report: dict, chunks: int = 3) -> str:
         d = lib["doc"]
         tier = "背景" if d.get("tier") == "background" else "主料"
         lines = [f"{d['doc_id']}　{KINDS.get(d['kind_class'], d['kind_class'])}　{tier}　标题「{d['title']}」　{d['chars']:,} 字"]
-        day = f"{d['ident_date']}（{DATE_KINDS.get(d['ident_kind'], d['ident_kind'])}）" if d["ident_date"] else "没有日期"
+        day = f"{d['ident_date']}（{ident_words(d, lib['dates'])}）" if d["ident_date"] else "没有日期"
         lines.append(f"日期 {day}" + "".join(
             f"；{DATE_KINDS.get(x['kind'], x['kind'])} {x['date']}「{x['raw']}」来自{x['source']}" for x in lib["dates"]))
         unit = [f"单位 {d['unit']}"] + ([f"组别 {d['grp']}"] if d.get("grp") else [])

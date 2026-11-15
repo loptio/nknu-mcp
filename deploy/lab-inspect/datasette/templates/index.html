@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{#- The home page. Owner 11-15: 「连有几个表 怎么连的 每个表和字段代表什么都还不知道」, then of the panels 「字太雜了…沒有很
+    人性化的讓人看到」, then of this round 「頁面廢話太多了」「我想看原始數據長什麼樣子，有幾個欄位」「找網站的時候有點費勁」. So,
+    【Claude】: first what one comes here to do, with no sentence around it: find a site (one box over every site,
+    templates/_sitefind.html), find a document by its title, open a table as it is; then the official library as a
+    map (its tables as boxes in four framed groups, the joins as lines, a bar in each box for how many rows it
+    holds) with one panel beside it for the table that was clicked: its columns by name, each one's meaning floating
+    over it (owner 11-15: 「想缩短文字 但又想保留细节导致不上不下的」, and 資料總覽's floating words as the way). The data
+    comes from plugins/guide.py, the meanings from metadata.yaml, the look from static/tc.css. -#}
+{% from "_sitefind.html" import finder %}
+
+{% block title %}{{ metadata.title or "Datasette" }}{% endblock %}
+
+{% block body_class %}index{% endblock %}
+
+{% block content %}
+<div class="home">
+{% if guide %}
+{%- set base = urls.database(guide.database) %}
+<div class="start">
+  <section class="card find">
+    <h3>網站<span>{{ guide.sites|length }} 個</span><a href="{{ base }}/sites_overview" data-tip="每個網站的文件數、資料截至、沒抓到的網頁和檔案">明細</a></h3>
+    {{ finder(guide.sites, base ~ "/site_docs?site=", base ~ "/site_undated_why?site=") }}
+  </section>
+  <div class="side">
+    <form class="card do" action="{{ base }}/find_title" method="get">
+      <h3>找文件</h3>
+      <div class="row"><input type="text" name="words" placeholder="標題裡的字，繁體簡體都可以" aria-label="標題裡的字" required><button>找</button></div>
+    </form>
+    <section class="card do raw">
+      <h3>原始資料<a href="{{ base }}?_show_hidden=1#tables" data-tip="連同章節、小段、索引這些平常用不到的表">全部 {{ guide.tables|length }} 張</a></h3>
+      <div class="tbls">
+      {%- for t in guide.tables if not t.hidden %}
+        <a href="{{ urls.table(guide.database, t.name) }}" data-tip="{{ t.description }}"><b>{{ t.zh }}</b><span>{{ "{:,}".format(t.count) }} 列 · {{ t.columns|length }} 欄</span></a>
+      {%- endfor %}
+      </div>
+    </section>
+  </div>
+</div>
+
+<h2 class="sec">表的關係圖</h2>
+<div class="atlas">
+<div class="card mapbox">
+<svg class="map" viewBox="0 0 {{ guide.map_w }} {{ guide.map_h }}" role="img" aria-label="表的關係圖：每張表和它們怎麼連">
+{%- for r in guide.regions %}
+  <g class="region"><rect x="{{ r.x }}" y="{{ r.y }}" width="{{ r.w }}" height="{{ r.h }}" rx="14"/>
+    <text x="{{ r.x + 14 }}" y="{{ r.y + 19 }}">{{ r.caption }}</text></g>
+{%- endfor %}
+{%- for e in guide.edges %}
+  {%- if e.self %}
+  <path class="edge" data-from="{{ e.from }}" data-to="{{ e.to }}" d="M {{ e.x1 + guide.w / 2 - 6 }} {{ e.y1 - 12 }} c 42 -16 42 40 0 24" data-tip="{{ (zh_tables or {}).get(e.from) }}的 {{ e.label }} 連到同一張表"></path>
+  {%- else %}
+  <line class="edge" data-from="{{ e.from }}" data-to="{{ e.to }}" x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}" data-tip="{{ (zh_tables or {}).get(e.from) }}的 {{ e.label }} 連到{{ (zh_tables or {}).get(e.to) }}"></line>
+  {%- endif %}
+{%- endfor %}
+{%- for t in guide.tables %}
+  <a href="#t-{{ t.name }}" data-table="{{ t.name }}" data-tip-h="{{ t.zh }}" data-tip="{{ t.description }}"><g class="box{% if t.name == 'docs' %} main{% endif %}">
+    <rect class="b" x="{{ t.x - guide.w / 2 }}" y="{{ t.y - guide.h / 2 }}" width="{{ guide.w }}" height="{{ guide.h }}" rx="10"/>
+    <text class="zh" x="{{ t.x - guide.w / 2 + 12 }}" y="{{ t.y - 6 }}">{{ t.zh }}</text>
+    <text class="en" x="{{ t.x - guide.w / 2 + 12 }}" y="{{ t.y + 11 }}">{{ t.name }}</text>
+    <text class="n" x="{{ t.x + guide.w / 2 - 12 }}" y="{{ t.y - 6 }}" text-anchor="end">{{ "{:,}".format(t.count) }}</text>
+    <rect class="track" x="{{ t.x - guide.w / 2 + 12 }}" y="{{ t.y + 17 }}" width="{{ guide.w - 24 }}" height="3" rx="1.5"/>
+    <rect class="amt" x="{{ t.x - guide.w / 2 + 12 }}" y="{{ t.y + 17 }}" width="{{ ((guide.w - 24) * t.share)|round(1) }}" height="3" rx="1.5"/>
+  </g></a>
+{%- endfor %}
+</svg>
+<p class="mapkey"><span><i class="amt"></i>列數</span></p>
+</div>
+
+<aside class="card insp" aria-live="polite">
+{%- for t in guide.tables %}
+<section class="tbl{% if t.name == 'docs' %} on{% endif %}" id="t-{{ t.name }}" data-table="{{ t.name }}">
+  <div class="h"><h3>{{ t.zh }} <code>{{ t.name }}</code></h3><span class="n">{{ "{:,}".format(t.count) }} 列 · {{ t.columns|length }} 欄</span></div>
+  {%- if t.description %}<p class="d">{{ t.description }}</p>{% endif %}
+  {%- if t.near %}
+  <div class="joins"><span class="lab">相連</span>{% for j in t.near %}<a href="#t-{{ j.table }}" data-table="{{ j.table }}">{{ j.zh }}</a>{% endfor %}</div>
+  {%- endif %}
+  <p><a class="btn primary" href="{{ urls.table(guide.database, t.name) }}">打開這張表</a></p>
+  <table class="cols"><tbody>
+  {%- for c in t.columns %}
+    <tr><th{% if c.rest %} data-tip-h="{{ c.short or c.name }}" data-tip="{{ c.rest }}"{% endif %}>{{ c.short or c.name }}</th><td><code>{{ c.name }}</code></td></tr>
+  {%- endfor %}
+  </tbody></table>
+</section>
+{%- endfor %}
+</aside>
+</div>
+{% endif %}
+
+{%- if databases|length > 1 %}
+<p class="dbs">{% for database in databases %}
+  {%- set about = (metadata.databases or {}).get(database.name) or {} %}
+  <a class="btn" href="{{ urls.database(database.name) }}">{{ about.get("title") or database.name }} <code>{{ database.name }}</code></a>
+{%- endfor %}</p>
+{%- endif %}
+</div>
+
+<script>
+// The map and the panel beside it are one selection: a box, or a join in the panel, picks a table; the panel shows
+// it and the map marks it and what it joins. Without this script the panel still shows 文件, and a box's link the
+// table it names (:target).
+(() => {
+  const boxes = [...document.querySelectorAll('.map a[data-table]')];
+  const edges = [...document.querySelectorAll('.map .edge')];
+  const panels = [...document.querySelectorAll('.insp .tbl')];
+  if (!boxes.length) return;
+  const select = (name, keep) => {
+    if (!panels.some(p => p.dataset.table === name)) return;
+    const near = new Set([name]);
+    for (const e of edges) {
+      const on = e.dataset.from === name || e.dataset.to === name;
+      e.classList.toggle('on', on);
+      if (on) { near.add(e.dataset.from); near.add(e.dataset.to); }
+    }
+    for (const b of boxes) {
+      b.classList.toggle('on', b.dataset.table === name);
+      b.classList.toggle('far', !near.has(b.dataset.table));
+    }
+    for (const p of panels) p.classList.toggle('on', p.dataset.table === name);
+    const panel = document.querySelector('.insp');
+    if (panel) panel.scrollTop = 0;
+    if (!keep) history.replaceState(null, '', '#t-' + name);
+  };
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[data-table]');
+    if (a) { e.preventDefault(); select(a.dataset.table); }
+  });
+  const fromHash = () => { const m = /^#t-(.+)$/.exec(decodeURIComponent(location.hash)); select(m ? m[1] : 'docs', true); };
+  addEventListener('hashchange', fromHash);
+  fromHash();
+})();
+</script>
+<script src="{{ urls.path('/static/sitefind.js') }}"></script>
+{% endblock %}

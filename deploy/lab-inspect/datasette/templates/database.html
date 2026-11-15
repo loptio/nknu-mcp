@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{#- One database (Datasette 0.65.5's database.html, in the owner's words and order 【Claude】): the ready-made queries
+    first, as cards by what they are about (a query's `group` in metadata.yaml); then the tables as cards with their
+    Chinese names (zh_tables: plugins/guide.py); the SQL box last and folded, for the day it is wanted. -#}
+
+{% block title %}{{ database }}{% endblock %}
+
+{% block extra_head %}
+{{- super() -}}
+{% include "_codemirror.html" %}
+{% endblock %}
+
+{% block body_class %}db db-{{ database|to_css_class }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ metadata.title or database }}{% if metadata.title %} <code>{{ database }}</code>{% endif %}{% if private %} 🔒{% endif %}</h1>
+</div>
+
+{% if queries %}
+    <h2 class="sec" id="queries">常用查詢</h2>
+    {%- set seen = namespace(groups=[]) %}
+    {%- for query in queries %}{% if query.group not in seen.groups %}{% set seen.groups = seen.groups + [query.group] %}{% endif %}{% endfor %}
+    {%- for group in seen.groups %}
+    {%- if group %}<h3 class="grp">{{ group }}</h3>{% endif %}
+    <div class="cards">
+        {%- for query in queries if query.group == group %}
+        <a class="card q" href="{{ urls.query(database, query.name) }}{% if query.fragment %}#{{ query.fragment }}{% endif %}">
+            <b>{{ query.title or query.name }}</b>
+        </a>
+        {%- endfor %}
+    </div>
+    {%- endfor %}
+{% endif %}
+
+{% if tables %}
+<h2 class="sec" id="tables">原始資料</h2>
+<div class="cards t">
+{%- macro card(table) %}
+{% if show_hidden or not table.hidden %}
+    <a class="card tb{% if table.hidden %} hid{% endif %}" href="{{ urls.table(database, table.name) }}"{% if (table_about or {}).get(table.name) %} data-tip="{{ table_about[table.name] }}"{% endif %}>
+        <b>{{ (zh_tables or {}).get(table.name) or table.name }}</b>{% if (zh_tables or {}).get(table.name) %} <code>{{ table.name }}</code>{% endif %}
+        <span class="n">{% if table.count is none %}很多列{% else %}{{ "{:,}".format(table.count) }} 列{% endif %} · {{ table.columns|length }} 欄</span>
+    </a>
+{% endif %}
+{%- endmacro %}
+{#- in the map's order (the documents first), then whatever the map does not name -#}
+{% for name in zh_tables or {} %}{% for table in tables if table.name == name %}{{ card(table) }}{% endfor %}{% endfor %}
+{% for table in tables if table.name not in (zh_tables or {}) %}{{ card(table) }}{% endfor %}
+</div>
+{% endif %}
+
+{% if hidden_count and not show_hidden %}
+    <p class="more"><a href="{{ urls.database(database) }}?_show_hidden=1">其他 {{ "{:,}".format(hidden_count) }} 張表</a></p>
+{% endif %}
+
+{% if views %}
+    <h2 class="sec" id="views">檢視</h2>
+    <ul class="bullets">
+        {% for view in views %}
+            <li><a href="{{ urls.database(database) }}/{{ view.name|urlencode }}">{{ view.name }}</a>{% if view.private %} 🔒{% endif %}</li>
+        {% endfor %}
+    </ul>
+{% endif %}
+
+{% if allow_execute_sql %}
+<details class="card sqlbox">
+    <summary>自己寫 SQL</summary>
+    <form class="sql" action="{{ urls.database(database) }}" method="get">
+        <p><textarea id="sql-editor" name="sql">{% if tables %}select * from {{ tables[0].name|escape_sqlite }}{% else %}select sqlite_version(){% endif %}</textarea></p>
+        <p>
+            <button id="sql-format" type="button" hidden>整理格式</button>
+            <input type="submit" value="執行">
+        </p>
+    </form>
+</details>
+{% endif %}
+
+{% if attached_databases %}
+    <div class="message-info">
+        <p>這個連線還接著下面這些資料庫，可以跨庫查：</p>
+        <ul class="bullets">
+            {% for db_name in attached_databases %}
+                <li><strong>{{ db_name }}</strong> - <a href="?sql=select+*+from+[{{ db_name }}].sqlite_master+where+type='table'">tables</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+{% endif %}
+
+{% include "_codemirror_foot.html" %}
+
+{% endblock %}

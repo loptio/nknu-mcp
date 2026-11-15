@@ -15,14 +15,24 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from datetime import date
 
+from opencc import OpenCC
+
 from nknu.ops.lookup import Resolved, columns, has_table, resolve
 from nknu.retrieval.hybrid import HybridConfig, hybrid_search
-from nknu.retrieval.search import TOP_N, W_BM25, W_COHORT, W_COVERAGE, W_PERIOD, RankConfig
+from nknu.retrieval.search import BACKGROUND_SLOTS, TOP_N, W_BM25, W_COHORT, W_COVERAGE, W_PERIOD, RankConfig
 
 _IN_MAX = 500  # ids per IN (...) query
-WHY = {"copy": "另一个网址的同一份", "format": "同一份的另一种格式", "duplicate": "重复的纪录"}  # doc_alias.why
+WHY = {"copy": "另一個網址的同一份", "format": "同一份的另一種格式", "duplicate": "重複的紀錄"}  # doc_alias.why
 TIERS = ("主料", "背景")
 NOT_FOUND, NO_CANDIDATE, NOT_IN_HEAD, RANKED, IN_TOP = "not_found", "no_candidate", "not_in_head", "ranked", "in_top"
+_TW = OpenCC("s2tw")
+
+
+def _shown(text: str) -> str:
+    """Text our own system wrote in Simplified, as the 檢視台 page shows it: the keyword index's tokens (textnorm folds
+    them to Simplified: 化學系 is read as 化学、学系) and a model's error (hybrid.py). Converted for display only: the
+    report keeps the text itself (the owner 11-15: 「可视化dashboard全部换繁体字」)."""
+    return _TW.convert(text)
 
 
 def _rows(conn: sqlite3.Connection, sql: str, ids: list[str]) -> Iterator[tuple]:
@@ -136,30 +146,33 @@ def _follow(conn: sqlite3.Connection, res: Resolved, view: _View, limit: int) ->
     """Where one followed document stopped, in words."""
     raw, config = view.raw, view.config
     entry = {"ref": res.ref, "doc_id": res.doc_id, "via": res.via, "why": res.why, "verdict": NOT_FOUND, "words": "",
-             "row": None}
+             "row": None, "about": None}
     if res.doc_id is None:
-        entry["words"] = "库里没有这一份：文件编号、并掉的编号、网址都对不上。"
+        entry["words"] = "庫裡沒有這一份：文件編號、併掉的編號、網址都對不上。"
         return entry
-    merged = f"这个编号并进了 {res.doc_id}（{WHY.get(res.why, res.why)}），下面看的是留下来的那一份。" if res.via == "alias" else ""
+    # what the document is (about_docs), also for one no path brought: its row is None, and a page that names it by
+    # its id alone says nothing to the owner (the third round of 11-15)
+    entry["about"] = view.about.get(res.doc_id)
+    merged = f"這個編號併進了 {res.doc_id}（{WHY.get(res.why, res.why)}），下面看的是留下來的那一份。" if res.via == "alias" else ""
     place = view.place.get(res.doc_id)
     if place is None:
         entry["verdict"] = NO_CANDIDATE
         if raw["mode"] == "empty":
-            entry["words"] = merged + "这个问题没有可以搜的词，所以没有任何候选。"
+            entry["words"] = merged + "這個問題沒有可以搜的詞，所以沒有任何候選。"
             return entry
         own, units = doc_tokens(conn, res.doc_id)
         topic, tokens = raw["keyword"]["topic"], raw["keyword"]["tokens"]
         entry["token_hit"] = any(t in own or t in units for t in tokens)
         entry["topic_hit"] = any(t in own for t in topic) if topic else None
-        by_vectors = {"used": "向量也没有把它排进候选。", "failed": "这次向量没跑成，只有关键词在找。",
-                      "off": "这次没有用向量。"}[view.vectors]
+        by_vectors = {"used": "向量也沒有把它排進候選。", "failed": "這次向量沒跑成，只有關鍵字在找。",
+                      "off": "這次沒有用向量。"}[view.vectors]
         if not entry["token_hit"]:
-            words = "它的小段里没有这个问题的任何一个词，关键词找不到它；" + by_vectors
+            words = "它的小段裡沒有這個問題的任何一個詞，關鍵字找不到它；" + by_vectors
         elif topic and not entry["topic_hit"]:
-            words = (f"它只对上了单位名或学期这类词，没有对上讲什么的词（{'、'.join(topic)}），所以没进候选；"
+            words = (f"它只對上了單位名或學期這類詞，沒有對上講什麼的詞（{_shown('、'.join(topic))}），所以沒進候選；"
                      + by_vectors)
         else:
-            words = "它对得上词，但没排进候选：关键词每个问题只留最好的那些份。" + by_vectors
+            words = "它對得上詞，但沒排進候選：關鍵字每個問題只留最好的那些份。" + by_vectors
         entry["words"] = merged + words
         return entry
     row = view.row(res.doc_id)
@@ -167,23 +180,23 @@ def _follow(conn: sqlite3.Connection, res: Resolved, view: _View, limit: int) ->
     tier = 1 if row["background"] else 0
     where = []
     if row["keyword"]:
-        where.append(f"关键词第 {row['keyword']['rank']} 名")
+        where.append(f"關鍵字第 {row['keyword']['rank']} 名")
     if row["dense"]:
         where.append(f"向量第 {row['dense']['rank']} 名")
     if row["fused"] is not None:  # no fused order when no model took part (the keyword order alone)
-        where.append(f"合起来在{TIERS[tier]}里第 {row['fused']} 名")
+        where.append(f"合起來在{TIERS[tier]}裡第 {row['fused']} 名")
     if place <= limit:
         entry["verdict"] = IN_TOP
-        entry["words"] = merged + f"在前 {limit} 名里：第 {place} 名（{'，'.join(where)}）。"
+        entry["words"] = merged + f"在前 {limit} 名裡：第 {place} 名（{'，'.join(where)}）。"
     elif row["rerank"] is None and raw["rerank"] is not None:
         head = config.rerank_background if tier else config.rerank_docs
         entry["verdict"] = NOT_IN_HEAD
-        entry["words"] = merged + (f"进了候选，没进重排名额：{'，'.join(where)}，重排只读{TIERS[tier]}的前 {head} 份。"
-                                   f"最后第 {place} 名。")
+        entry["words"] = merged + (f"進了候選，沒進重排名額：{'，'.join(where)}，重排只讀{TIERS[tier]}的前 {head} 份。"
+                                   f"最後第 {place} 名。")
     else:
         entry["verdict"] = RANKED
-        how = f"重排分 {row['rerank']['rel']:.2f}，" if row["rerank"] else "这次没有重排，"
-        entry["words"] = merged + f"{'，'.join(where)}；{how}最后第 {place} 名（这次只看前 {limit} 名）。"
+        how = f"重排分 {row['rerank']['rel']:.2f}，" if row["rerank"] else "這次沒有重排，"
+        entry["words"] = merged + f"{'，'.join(where)}；{how}最後第 {place} 名（這次只看前 {limit} 名）。"
     return entry
 
 
@@ -222,7 +235,8 @@ def explain_search(conn: sqlite3.Connection, query: str, *, today: date, aliases
                    "final": len(raw["final"])},
         "weights": {"coverage": W_COVERAGE, "bm25": W_BM25, "period": W_PERIOD, "cohort": W_COHORT,
                     "rerank": config.w_rerank, "first": config.w_first, "valid_decay": config.valid_decay,
-                    "scope_factor": config.scope_factor, "rerank_docs": config.rerank_docs,
+                    "scope_factor": config.scope_factor, "background_factor": config.background_factor,
+                    "background_slots": BACKGROUND_SLOTS, "top_n": TOP_N, "rerank_docs": config.rerank_docs,
                     "rerank_background": config.rerank_background, "topic_required": rank.topic_required},
         "limit": limit,
         "rows": [view.row(d) for d in shown],
@@ -262,35 +276,48 @@ def _line(row: dict) -> str:
 def found_words(report: dict) -> str:
     """How many candidates each path brought, saying of each path what really happened to it."""
     c = report["counts"]
-    parts = [f"关键词 {c['keyword']} 份"]
+    parts = [f"關鍵字 {c['keyword']} 份"]
     if report["vectors"] == "used":
         parts.append(f"向量 主料 {c['dense'][0]}＋背景 {c['dense'][1]} 份")
     else:
-        parts.append("向量没跑成" if report["vectors"] == "failed" else "没有用向量")
+        parts.append("向量沒跑成" if report["vectors"] == "failed" else "沒有用向量")
     if report["order"] == "reranked":
-        parts.append(f"进重排 主料 {c['head'][0]}＋背景 {c['head'][1]} 份")
-    return "候选：" + "　".join(parts) + f"　共 {c['final']} 份"
+        parts.append(f"進重排 主料 {c['head'][0]}＋背景 {c['head'][1]} 份")
+    return "候選：" + "　".join(parts) + f"　共 {c['final']} 份"
+
+
+def background_words(w: dict) -> str:
+    """How background documents (journals, exam papers, minutes) take their places among the primary ones: spec
+    2026-11-16 §四 (search.mixed), or the fixed places of before when the factor is 0 (search.tiered). 0.8 and 2 of 10
+    are the library's own settings, read from the report."""
+    if w.get("background_factor"):
+        return (f"背景文件（學報、考題、會議紀錄）總分×{w['background_factor']:g} 後和主料一起排，"
+                f"前 {w['top_n']} 名最多 {w['background_slots']} 份。")
+    return "背景文件不和主料比分，固定排在主料後面的位置。"
 
 
 def order_words(report: dict) -> str:
     """What the order of the results is, by what ran: the formula only when a rerank shaped it (review 11-15: the
     formula was printed over a keyword order, and a failed vector search was not said)."""
     w = report["weights"]
-    failed = f"向量没跑成（{report['dense_error']}）" if report["dense_error"] else ""
+    failed = f"向量沒跑成（{_shown(report['dense_error'])}）" if report["dense_error"] else ""
     if report["order"] == "reranked":
-        formula = (f"排序：总分＝(对题×{w['rerank']:g}＋学期＋届别＋新旧) × 还有效 × 对口 ＋ 单位。"
-                   f"还有效：每过一个学年 ×{w['valid_decay']:g}；对口：系所自己的文件、问题没点名系所时 ×{w['scope_factor']:g}。")
-        return formula + (f"{failed}，候选只有关键词找到的。" if failed else "")
+        formula = (f"排序：總分＝(對題×{w['rerank']:g}＋學期＋屆別＋新舊) × 還有效 × 對口 ＋ 單位。"
+                   f"還有效：每過一個學年 ×{w['valid_decay']:g}；對口：系所自己的文件、問題沒點名系所時 ×{w['scope_factor']:g}。"
+                   + background_words(w))
+        return formula + (f"{failed}，候選只有關鍵字找到的。" if failed else "")
     if report["mode"] == "keyword":
-        return "排序：只有关键词（没有用向量和重排模型）。"
-    rerank = f"重排没跑成（{report['rerank_error']}）" if report["rerank_error"] else "没有重排"
+        return "排序：只有關鍵字（沒有用向量和重排模型）。"
+    rerank = f"重排沒跑成（{_shown(report['rerank_error'])}）" if report["rerank_error"] else "沒有重排"
     if report["order"] == "fused":
-        return f"排序：{rerank}，用的是关键词和向量合起来的顺序。"
-    return f"排序：{rerank}，{failed or '向量没有找到东西'}：用的是关键词的顺序。"
+        return f"排序：{rerank}，用的是關鍵字和向量合起來的順序。"
+    return f"排序：{rerank}，{failed or '向量沒有找到東西'}：用的是關鍵字的順序。"
 
 
 def explain_text(report: dict) -> str:
-    """The report as the command prints it, in Simplified Chinese."""
+    """The report as the command prints it. Its own frame stays in Simplified Chinese, the command line's (CLAUDE.md);
+    the sentences it shares with the 檢視台 search page (found_words, order_words, a followed document's words) are
+    Traditional, as the page shows them (the owner 11-15: 「可视化dashboard全部换繁体字」)."""
     u = report["understood"]
     out = [f"问题：{report['query']}"]
     if report["mode"] == "empty":

@@ -8,10 +8,11 @@ import json
 from dataclasses import replace
 
 import pytest
+from opencc import OpenCC
 
-from nknu.ops.explain import explain_search, explain_text
+from nknu.ops.explain import explain_search, explain_text, found_words, order_words
 from nknu.ops.lookup import resolve
-from nknu.retrieval.hybrid import HybridConfig
+from nknu.retrieval.hybrid import HybridConfig, hybrid_search
 from tests.ops.library import SETTINGS, models, search
 from tests.retrieval.test_hybrid import FakeEmbedder
 from tests.retrieval.test_search import TODAY
@@ -72,7 +73,7 @@ def test_a_followed_document_outside_the_reranked_head(db):
     report = _explain(db, "停修", config=config, limit=2, follow=["dx"])
     entry = report["follow"][0]
     assert entry["verdict"] == "not_in_head" and entry["row"]["in_head"] is False and entry["row"]["rerank"] is None
-    assert entry["row"]["fused"] > 2 and "没进重排" in entry["words"] and "2 份" in entry["words"]
+    assert entry["row"]["fused"] > 2 and "沒進重排" in entry["words"] and "2 份" in entry["words"]
 
 
 def test_a_followed_document_reranked_but_below_the_results(db):
@@ -87,7 +88,7 @@ def test_a_followed_document_with_none_of_the_questions_words_is_no_candidate(db
     config = HybridConfig(dense=False)
     entry = _explain(db, "停修", config=config, follow=["lib"])["follow"][0]
     assert entry["verdict"] == "no_candidate" and entry["row"] is None
-    assert entry["token_hit"] is False and "没有这个问题的任何一个词" in entry["words"]
+    assert entry["token_hit"] is False and "沒有這個問題的任何一個詞" in entry["words"]
 
 
 def test_a_followed_document_with_the_units_name_alone_has_no_topic_word(db):
@@ -95,14 +96,14 @@ def test_a_followed_document_with_the_units_name_alone_has_no_topic_word(db):
     db.scope("crest", ["化學系"], publisher="化學系")
     entry = _explain(db, "化學系 停修", config=HybridConfig(dense=False), follow=["crest"])["follow"][0]
     assert entry["verdict"] == "no_candidate" and entry["token_hit"] is True and entry["topic_hit"] is False
-    assert "讲什么的词" in entry["words"] and "停修" in entry["words"]
+    assert "講什麼的詞" in entry["words"] and "停修" in entry["words"]
 
 
 def test_a_merged_copys_id_follows_the_document_kept_for_it(db):
     db.conn.execute("INSERT INTO doc_alias(alias, doc_id, why) VALUES ('dcopy', 'd3', 'copy')")
     entry = _explain(db, "停修", follow=["dcopy"])["follow"][0]
     assert entry["doc_id"] == "d3" and entry["via"] == "alias" and entry["why"] == "copy"
-    assert entry["verdict"] == "in_top" and "并进了 d3" in entry["words"]
+    assert entry["verdict"] == "in_top" and "併進了 d3" in entry["words"]
 
 
 def test_a_followed_address_finds_its_document(db):
@@ -114,7 +115,7 @@ def test_a_followed_address_finds_its_document(db):
 def test_a_reference_the_library_does_not_have_is_said_in_words(db, ref):
     entry = _explain(db, "停修", follow=[ref])["follow"][0]
     assert entry["verdict"] == "not_found" and entry["doc_id"] is None and entry["row"] is None
-    assert "库里没有" in entry["words"]
+    assert "庫裡沒有" in entry["words"]
 
 
 @pytest.mark.parametrize("query", ["!!!", "", "   "])
@@ -134,7 +135,7 @@ def test_without_models_it_is_the_keyword_order_and_no_row_was_reranked(db):
     report = _explain(db, "停修", "keywords only")
     assert report["mode"] == "keyword" and report["ranking"] == "keyword" and report["rows"]
     assert all(r["rerank"] is None and r["dense"] is None for r in report["rows"])
-    assert "只有关键词" in explain_text(report)
+    assert "只有關鍵字" in explain_text(report)
 
 
 def test_a_reranker_that_cannot_be_used_is_said(db):
@@ -154,11 +155,11 @@ def test_a_reranker_that_cannot_be_used_is_said(db):
 def test_the_text_names_the_three_factors_and_has_a_line_per_row(db):
     report = _explain(db, "停修", follow=["dx", "nothing-like-this"])
     text = explain_text(report)
-    for word in ("对题", "还有效", "对口", "读成", "候选"):
+    for word in ("對題", "還有效", "對口", "读成", "候選"):
         assert word in text
     for row in report["rows"]:
         assert row["title"] in text
-    assert "追的文件" in text and "库里没有" in text
+    assert "追的文件" in text and "庫裡沒有" in text
     assert "['" not in text and "词 停修" in text  # words as the owner reads them, not as a program prints a list
 
 
@@ -227,38 +228,38 @@ def test_a_failed_vector_search_is_said_and_no_document_is_told_the_vectors_pass
     report = _with(db, "停修", NoMemory(), models()["reranker"], follow=["dq"])  # dq: only the vectors find it
     assert "no memory" in report["dense_error"] and report["vectors"] == "failed" and report["order"] == "reranked"
     text = explain_text(report)
-    assert "向量没跑成" in text and "向量 主料" not in text
+    assert "向量沒跑成" in text and "向量 主料" not in text
     entry = report["follow"][0]
     assert entry["verdict"] == "no_candidate"
-    assert "向量没跑成" in entry["words"] and "向量也没有把它排进候选" not in entry["words"]
+    assert "向量沒跑成" in entry["words"] and "向量也沒有把它排進候選" not in entry["words"]
 
 
 def test_with_both_models_failing_the_order_is_said_to_be_the_keyword_order(db):
     report = _with(db, "停修", NoMemory(), NoModel())
     assert report["order"] == "keyword" and report["ranking"] == "keyword"
     text = explain_text(report)
-    assert "用的是关键词的顺序" in text and "合起来的顺序" not in text and "进重排" not in text and "对题×" not in text
+    assert "用的是關鍵字的順序" in text and "合起來的順序" not in text and "進重排" not in text and "對題×" not in text
     assert report["counts"]["head"] == [0, 0]
 
 
 def test_a_failed_rerank_over_working_vectors_is_the_fused_order(db):
     report = _with(db, "停修", models()["embedder"], NoModel())
     assert report["order"] == "fused" and report["vectors"] == "used"
-    assert "用的是关键词和向量合起来的顺序" in explain_text(report)
+    assert "用的是關鍵字和向量合起來的順序" in explain_text(report)
 
 
 def test_in_keyword_mode_a_followed_document_is_given_no_fused_place(db):
     report = _explain(db, "停修", "keywords only", limit=2, follow=["dx"])
     assert report["vectors"] == "off" and report["order"] == "keyword"
     words = report["follow"][0]["words"]
-    assert "None" not in words and "合起来" not in words and "关键词第" in words
+    assert "None" not in words and "合起來" not in words and "關鍵字第" in words
     assert "None" not in explain_text(report)
 
 
 def test_without_a_rerank_the_formula_is_not_printed(db):
     report = _explain(db, "停修", "dense only")
     text = explain_text(report)
-    assert report["order"] == "fused" and "对题×" not in text and "没有重排" in text and "进重排" not in text
+    assert report["order"] == "fused" and "對題×" not in text and "沒有重排" in text and "進重排" not in text
     assert report["counts"]["head"] == [0, 0] and all(r["in_head"] is False for r in report["rows"])
 
 
@@ -271,4 +272,75 @@ def test_the_keyword_place_is_within_its_tier_as_fusion_counts_it(db):
 
 def test_in_the_results_names_how_many_were_asked_for(db):
     entry = _explain(db, "停修", limit=3, follow=["d3"])["follow"][0]
-    assert entry["verdict"] == "in_top" and "前 3 名" in entry["words"] and "回传" not in entry["words"]
+    assert entry["verdict"] == "in_top" and "前 3 名" in entry["words"] and "回傳" not in entry["words"]
+
+
+# ---------------------------------------------------------------- the owner 11-15: 「可视化dashboard全部换繁体字」
+
+_TW = OpenCC("s2tw")
+_SHAPES = {
+    "reranked, a term named": lambda db: _explain(db, "115-1 停修", follow=["dcopy", "d3", "nothing", "lib"]),
+    "outside the reranked head": lambda db: _explain(
+        db, "停修", config=replace(SETTINGS["the owner's defaults"][0], rerank_docs=2), limit=2, follow=["dx"]),
+    "reranked below the results": lambda db: _explain(db, "停修", limit=2, follow=["dx"]),
+    "a unit's name and no topic word": lambda db: _explain(db, "化學系 選課", config=HybridConfig(dense=False),
+                                                         follow=["dept", "lib"]),
+    "keywords only": lambda db: _explain(db, "停修", "keywords only", limit=2, follow=["dx"]),
+    "no rerank": lambda db: _explain(db, "停修", "dense only", follow=["dx"]),
+    "the vectors failed": lambda db: _with(db, "停修", NoMemory(), models()["reranker"], follow=["dq"]),
+    "both models failed": lambda db: _with(db, "停修", NoMemory(), NoModel()),
+    "the rerank failed": lambda db: _with(db, "停修", models()["embedder"], NoModel()),
+    "nothing to search for": lambda db: _explain(db, "!!!", follow=["d3"]),
+    "no match": lambda db: _explain(db, "宿舍", config=HybridConfig(dense=False)),
+}
+
+
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_what_the_page_shows_is_traditional_and_the_command_prints_it_in_its_own_frame(db, shape):
+    """Every sentence the 檢視台 search page shows (found_words, order_words, a followed document's words): nothing is
+    left that OpenCC would turn into Traditional, a model's error (hybrid.py writes it in Simplified) included. The
+    library's made-up titles are Traditional already. The command prints the same sentences as they are, inside its
+    own frame, which stays in Simplified (the command line's, CLAUDE.md)."""
+    db.conn.execute("INSERT INTO doc_alias(alias, doc_id, why) VALUES ('dcopy', 'd3', 'copy')")
+    db.doc("lib", "圖書館開放時間", "週一至週五上午八時開館")
+    report = _SHAPES[shape](db)
+    shown = [entry["words"] for entry in report["follow"]]
+    if report["mode"] != "empty":
+        shown += [found_words(report), order_words(report)]
+    for text in shown:
+        assert _TW.convert(text) == text, text
+    printed = explain_text(report)
+    assert printed.startswith("问题：") and all(text in printed for text in shown)
+
+
+def test_the_words_the_index_folds_to_simplified_are_shown_in_traditional_on_the_page(db):
+    """textnorm folds the question's words to Simplified to match them (化學系 is read as 化学、学系): the report keeps
+    them so, the page's sentence shows them in Traditional, and the command's own (Simplified) frame prints them as the
+    index has them."""
+    report = _explain(db, "化學系 選課", config=HybridConfig(dense=False), follow=["dept"])
+    assert report["understood"]["topic"] == ["选课"] and "化学" in report["understood"]["words"]
+    entry = report["follow"][0]
+    assert entry["verdict"] == "no_candidate" and entry["token_hit"] is True and entry["topic_hit"] is False
+    assert "講什麼的詞（選課）" in entry["words"]
+    text = explain_text(report)
+    assert "词 化学、学系、选课" in text and "讲什么的词 选课" in text and "講什麼的詞（選課）" in text
+
+
+def test_a_models_error_is_shown_in_traditional_and_the_report_keeps_it_as_written(db):
+    config, rank = SETTINGS["the owner's defaults"]
+    raw: dict = {}
+    hybrid_search(db.conn, "停修", today=TODAY, aliases=[], config=config, rank=rank, embedder=NoMemory(),
+                  reranker=NoModel(), explain=raw)
+    report = _with(db, "停修", NoMemory(), NoModel())
+    for key in ("dense_error", "rerank_error"):
+        assert report[key] == raw[key] and f"（{_TW.convert(raw[key])}）" in order_words(report)
+
+
+def test_background_words_follow_the_library_settings():
+    # spec 2026-11-16 §四: background documents stand among the primary ones at ×0.8, at most 2 of the first 10
+    from nknu.ops.explain import background_words
+
+    mixed = background_words({"background_factor": 0.8, "top_n": 10, "background_slots": 2})
+    assert "總分×0.8" in mixed and "前 10 名最多 2 份" in mixed
+    assert "固定排在主料後面" in background_words({"background_factor": 0.0, "top_n": 10, "background_slots": 2})
+    assert "固定排在主料後面" in background_words({})  # a report written before the factor existed

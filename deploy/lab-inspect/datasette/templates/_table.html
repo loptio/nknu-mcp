@@ -1,0 +1,41 @@
+{#- The rows (Datasette 0.65.5's _table.html): a column is headed by its short Chinese name where its meaning gives
+    one; the column's own name and the rest of its meaning float over the header (owner 11-15: 「想缩短文字 但又想保留
+    细节导致不上不下的」; column_names: plugins/guide.py, from metadata.yaml). The attributes Datasette's table.js reads
+    are kept. -#}
+{% if display_rows %}
+<div class="table-wrapper">
+    <table class="rows-and-columns">
+        <thead>
+            <tr>
+                {% for column in display_columns %}
+                    {%- set about = (column_names or {}).get(column.name) or {} %}
+                    {%- set meaning = column.description or about.get("meaning") or "" %}
+                    <th {% if meaning %}data-column-description="{{ meaning }}" {% endif %}data-tip-h="{{ column.name }}"{% if about.get("rest") %} data-tip="{{ about.get("rest") }}"{% endif %} class="col-{{ column.name|to_css_class }}" scope="col" data-column="{{ column.name }}" data-column-type="{{ column.type.lower() }}" data-column-not-null="{{ column.notnull }}" data-is-pk="{% if column.is_pk %}1{% else %}0{% endif %}">
+                        {%- set label %}{% if about.get("short") %}<span class="zh">{{ about.get("short") }}</span>{% elif column.name == "Link" %}<span class="zh">這一列</span>{% else %}<span class="zh">{{ column.name }}</span>{% endif %}{% endset %}
+                        {% if not column.sortable %}
+                            {{ label }}
+                        {% else %}
+                            {% if column.name == sort %}
+                                <a href="{{ fix_path(path_with_replaced_args(request, {'_sort_desc': column.name, '_sort': None, '_next': None})) }}" rel="nofollow">{{ label }}<span class="dir">▼</span></a>
+                            {% else %}
+                                <a href="{{ fix_path(path_with_replaced_args(request, {'_sort': column.name, '_sort_desc': None, '_next': None})) }}" rel="nofollow">{{ label }}{% if column.name == sort_desc %}<span class="dir">▲</span>{% endif %}</a>
+                            {% endif %}
+                        {% endif %}
+                    </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in display_rows %}
+            <tr>
+                {% for cell in row %}
+                    <td class="col-{{ cell.column|to_css_class }} type-{{ cell.value_type }}"><div class="c">{{ cell.value }}</div></td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+    <p class="zero-results">沒有資料</p>
+{% endif %}

@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{#- One table (Datasette 0.65.5's table.html, in the owner's words 【Claude】): its Chinese name, how many rows and
+    columns, then the columns as a row of chips (owner 11-15: 「我想挑選我感興趣的欄位看（默認就顯示一些比較重要的欄位）…
+    為什麼我找不到怎麼用？」): a filled chip is a column that is shown, a click switches it, and a wide table opens on
+    the few that matter (plugins/columns.py gives `pick`). A column's own name and meaning float over its chip and
+    its header, not a paragraph (owner 11-15, of 資料總覽's floating words: 「鼠标放在某个什么才出现悬浮窗来详细解释」).
+    The filter and the sort name a column by its Chinese name and a comparison in words (op_words: plugins/guide.py);
+    what a table is defined by (its SQL) and the download's other shapes are left off the page: the SQL stays one
+    click away. The names Datasette's table.js and its forms rely on are kept. -#}
+
+{% block title %}{{ (zh_tables or {}).get(table) or table }} · {{ database }}{% endblock %}
+
+{% block extra_head %}
+{{- super() -}}
+<script src="{{ urls.static('table.js') }}" defer></script>
+<script>DATASETTE_ALLOW_FACET = {{ datasette_allow_facet }};</script>
+<style>
+@media only screen and (max-width: 576px) {
+{% for column in display_columns -%}
+    .rows-and-columns td:nth-of-type({{ loop.index }}):before { content: "{{ column.name|escape_css_string }}"; }
+{% endfor %}}
+</style>
+{% endblock %}
+
+{% block body_class %}table db-{{ database|to_css_class }} table-{{ table|to_css_class }}{% endblock %}
+
+{% block crumbs %}
+{{ crumbs.nav(request=request, database=database) }}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ metadata.title or (zh_tables or {}).get(table) or table }} <code>{{ table }}</code>{% if is_view %} （檢視）{% endif %}{% if private %} 🔒{% endif %}</h1>
+    {% if filtered_table_rows_count or filtered_table_rows_count == 0 %}<span class="count">{{ "{:,}".format(filtered_table_rows_count) }} 列{% if pick %} · {{ pick.total }} 欄{% endif %}{% if human_description_en %}<small>　{{ human_description_en|replace(" sorted by ", "　排序：")|replace("sorted by ", "排序：")|replace(" descending", "（大的在前）")|replace("where ", "條件：")|replace(" and ", "、")|replace("search matches ", "搜尋：") }}</small>{% endif %}</span>{% endif %}
+</div>
+
+{% if pick %}
+<div class="pick" aria-label="要看哪些欄位">
+    <span class="lab">欄位 <b>{{ pick.shown }}</b> / {{ pick.total }}</span>
+    {%- for c in pick.columns %}
+    {%- set about = (column_names or {}).get(c.name) or {} %}
+    {%- if c.key %}<span class="chip on key" data-tip-h="{{ c.name }}" data-tip="{{ about.get("rest") or "" }}{{ "\n" if about.get("rest") }}編號欄，一直顯示">{{ about.get("short") or c.name }}</span>
+    {%- else %}<a class="chip{% if c.shown %} on{% endif %}" href="{{ c.url }}" rel="nofollow" data-tip-h="{{ c.name }}"{% if about.get("rest") %} data-tip="{{ about.get("rest") }}"{% endif %}>{{ about.get("short") or c.name }}</a>
+    {%- endif %}
+    {%- endfor %}
+    <span class="sets">
+    {%- if pick.default_url %}<a href="{{ pick.default_url }}"{% if pick.by_default %} aria-current="true"{% endif %} data-tip="只顯示常用的幾欄">重要的</a>{% endif %}
+    <a href="{{ pick.all_url }}"{% if pick.shown == pick.total %} aria-current="true"{% endif %} data-tip="{{ pick.total }} 欄全部顯示">全部</a>
+    </span>
+</div>
+{% endif %}
+
+<form class="filters" action="{{ urls.table(database, table) }}" method="get">
+    {% if supports_search %}
+        <div class="search-row"><label for="_search">搜尋：</label><input id="_search" type="search" name="_search" value="{{ search }}"></div>
+    {% endif %}
+    {% for column, lookup, value in filters.selections() %}
+        <div class="filter-row">
+            <div class="select-wrapper">
+                <select name="_filter_column_{{ loop.index }}">
+                    <option value="">（拿掉這個條件）</option>
+                    {% for c in filter_columns %}
+                          <option value="{{ c }}"{% if c == column %} selected{% endif %}>{{ ((column_names or {}).get(c) or {}).get("short") or c }}</option>
+                    {% endfor %}
+                </select>
+            </div><div class="select-wrapper filter-op">
+                <select name="_filter_op_{{ loop.index }}">
+                    {% for key, display, no_argument in filters.lookups() %}
+                        <option value="{{ key }}{% if no_argument %}__1{% endif %}"{% if key == lookup %} selected{% endif %}>{{ (op_words or {}).get(key) or display }}</option>
+                    {% endfor %}
+                </select>
+            </div><input type="text" name="_filter_value_{{ loop.index }}" class="filter-value" value="{{ value }}">
+        </div>
+    {% endfor %}
+    <div class="filter-row">
+        <div class="select-wrapper">
+            <select name="_filter_column">
+                <option value="">篩選欄位…</option>
+                {% for column in filter_columns %}
+                      <option value="{{ column }}">{{ ((column_names or {}).get(column) or {}).get("short") or column }}</option>
+                {% endfor %}
+            </select>
+        </div><div class="select-wrapper filter-op">
+            <select name="_filter_op">
+                {% for key, display, no_argument in filters.lookups() %}
+                    <option value="{{ key }}{% if no_argument %}__1{% endif %}"{% if key == lookup %} selected{% endif %}>{{ (op_words or {}).get(key) or display }}</option>
+                {% endfor %}
+            </select>
+        </div><input type="text" name="_filter_value" class="filter-value" placeholder="要比對的值">
+        {% if is_sortable %}
+            <div class="select-wrapper small-screen-only">
+                <select name="_sort" id="sort_by">
+                    <option value="">排序…</option>
+                    {% for column in display_columns %}
+                        {% if column.sortable %}
+                            <option value="{{ column.name }}"{% if column.name == sort or column.name == sort_desc %} selected{% endif %}>照{{ ((column_names or {}).get(column.name) or {}).get("short") or column.name }}排</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <label class="sort_by_desc small-screen-only"><input type="checkbox" name="_sort_by_desc"{% if sort_desc %} checked{% endif %}> 大的在前</label>
+        {% endif %}
+        {% for key, value in form_hidden_args %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <input type="submit" value="套用">
+    </div>
+</form>
+
+{% if extra_wheres_for_ui %}
+<div class="extra-wheres">
+    <h3>另外還有 {{ extra_wheres_for_ui|length }} 個條件</h3>
+    <ul>
+    {% for extra_where in extra_wheres_for_ui %}
+        <li><code>{{ extra_where.text }}</code> [<a href="{{ extra_where.remove_url }}">拿掉</a>]</li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if suggested_facets %}
+    {% include "_suggested_facets.html" %}
+{% endif %}
+
+{% if facets_timed_out %}
+    <p class="facets-timed-out">這幾欄的統計算太久，沒算完：{{ ", ".join(facets_timed_out) }}</p>
+{% endif %}
+
+{% if facet_results %}
+    {% include "_facet_results.html" %}
+{% endif %}
+
+{% include custom_table_templates %}
+
+{% if next_url %}
+     <p class="pager"><a class="btn primary" href="{{ next_url }}">下一頁 →</a></p>
+{% endif %}
+
+<script>
+// The menu a column's header opens (Datasette's table.js builds it in English) in the page's words 【Claude】. table.js
+// builds it when the page is ready; 'load' comes after that.
+addEventListener('load', () => {
+  const WORDS = {'dropdown-sort-asc': '由小到大排', 'dropdown-sort-desc': '由大到小排', 'dropdown-facet': '統計這一欄',
+    'dropdown-hide-column': '不顯示這一欄', 'dropdown-show-all-columns': '顯示全部欄位', 'dropdown-not-blank': '只看這一欄有值的列'};
+  for (const [cls, word] of Object.entries(WORDS)) {
+    for (const a of document.querySelectorAll('.dropdown-menu a.' + cls)) a.textContent = word;
+  }
+});
+</script>
+
+<div class="tools">
+{% if query.sql and allow_execute_sql %}
+    <a class="not-underlined" href="{{ urls.database(database) }}?{{ {'sql': query.sql}|urlencode|safe }}{% if query.params %}&amp;{{ query.params|urlencode|safe }}{% endif %}" data-tip="這一頁用的 SQL，可以改了再查"><span class="underlined">看 SQL</span></a>
+{% endif %}
+    <span class="export-links">下載：{% if display_rows %}<a href="{{ url_csv }}{% if settings.allow_csv_stream %}&amp;_stream=on{% endif %}" data-tip="篩選出的列全部存成 CSV">CSV</a> · {% endif %}{% for name, url in renderers.items() %}<a href="{{ url }}">{{ name|upper }}</a>{{ " · " if not loop.last }}{% endfor %}</span>
+</div>
+
+{% endblock %}

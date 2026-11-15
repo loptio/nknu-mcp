@@ -1,0 +1,10 @@
+{#- What a page says of itself: the description only (the library has no licence or source lines to print). -#}
+{% if metadata.description_html or metadata.description %}
+    <div class="metadata-description">
+        {% if metadata.description_html %}
+            {{ metadata.description_html|safe }}
+        {% else %}
+            {{ metadata.description }}
+        {% endif %}
+    </div>
+{% endif %}

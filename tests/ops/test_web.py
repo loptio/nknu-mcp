@@ -81,7 +81,7 @@ def test_without_explain_the_api_gives_the_mcp_answer(lib):
 def test_the_search_page_shows_every_part(lib):
     page = lib.get("/search", params={"q": "停修", "doc": "dx"})
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
-    for word in ("对题", "还有效", "对口", "115學年度第一學期線上申請停修", "讲什么的词", "追的文件", "/trace?ref=d3"):
+    for word in ("對題", "還有效", "對口", "115學年度第一學期線上申請停修", "查詢詞", "指定的文件", "/trace?ref=d3"):
         assert word in page.text, word
     assert page.headers["cache-control"] == "no-store"
 
@@ -110,7 +110,7 @@ def test_the_questions_are_offered_and_their_gold_is_followed(db, tmp_path):
         home = client.get("/search").text
         assert "/search?qid=Q01" in home and "/search?qid=N01" in home and "qid=Q02" not in home
         page = client.get("/search", params={"qid": "Q01"}).text
-        assert "标准答案" in page and "學生選課應行注意事項" in page
+        assert "標準答案" in page and "學生選課應行注意事項" in page
         report = client.get("/api/search", params={"qid": "Q01"}).json()
         assert report["query"] == "停修" and [f["doc_id"] for f in report["follow"]] == ["dx", "d3"]
         assert client.get("/search", params={"qid": "Q99"}).status_code == 200
@@ -136,14 +136,14 @@ def test_the_trace_api_is_the_trace_itself(site):
 def test_the_trace_page_shows_the_five_steps(site):
     page = site.get("/trace", params={"ref": NOTICE_URL})
     assert page.status_code == 200
-    for word in ("① 抓取", "② 导出", "③ 转文字", "④ 建库", "⑤ 检索", "115-1 停修公告", "公告頁日期欄", "註冊組",
+    for word in ("① 抓取", "② 匯出", "③ 轉文字", "④ 建庫", "⑤ 搜尋", "115-1 停修公告", "公告頁日期欄", "註冊組",
                  "申請人：王OO。", "http://viewer.test/page?id=80", "/file?"):
         assert word in page.text, word
 
 
 def test_the_trace_page_of_what_the_library_left_out(site):
     page = site.get("/trace", params={"ref": PAGER_URL}).text
-    assert "没进库" in page and "列表的翻页" in page
+    assert "沒進庫" in page and "列表的翻頁" in page
 
 
 def test_an_empty_trace_page_is_the_form(site):
@@ -198,10 +198,63 @@ def test_main_refuses_a_database_that_is_not_there(tmp_path, capsys):
     assert "找不到" in capsys.readouterr().err
 
 
-def test_the_followed_documents_share_one_table(lib):
+def test_every_followed_document_is_one_row_and_a_ruler_before_the_rows_says_where_they_stand(lib):
+    """The third round of 11-15: a followed document is one of the rows (marked, wherever it stopped) instead of a
+    second list; above the rows a verdict and a ruler say where they all stand; a document the library lacks is said
+    so, not dropped."""
     page = lib.get("/search", params={"q": "停修", "doc": "dx d3 none"}).text
-    assert page.count("<table>") == 2  # the followed documents, then the results
-    assert page.count("<td colspan='12'>") == 3
+    assert page.index("指定的文件") < page.index("class='ruler") < page.index("class='rhead'")
+    assert page.count("id='r-dx'") == 1 and page.count("id='r-d3'") == 1  # once each, not once per list
+    assert page.count("class='star'") == 2  # the two the library holds are marked in their rows
+    assert "href='#r-d3'" in page and "href='#r-dx'" in page  # the ruler's markers lead to their rows
+    assert "庫裡沒有</span>" in page and "庫裡沒有這一份" in page
+
+
+def test_a_result_is_a_bar_of_its_scores_parts_and_names_only_what_moved_it(lib):
+    page = lib.get("/search", params={"q": "停修"}).text
+    assert "<details class='row" in page and "class='bar'" in page and "class='calc'" in page
+    notes = [part.split("</span></span>")[0] for part in page.split("class='bnotes'>")[1:]]
+    assert notes and not any("×1.00" in n or "+0.00" in n for n in notes)  # a part that changed nothing is not named
+    assert "還有效 ×0." in "".join(notes)  # last year's notices are: the discount is said under their bars
+
+
+def test_a_test_question_says_first_where_its_gold_answer_stands(db, tmp_path):
+    questions = tmp_path / "eval"
+    questions.mkdir()
+    (questions / "core20.json").write_text(json.dumps([{"id": "Q01", "question": "停修"}]), encoding="utf-8")
+    (questions / "noanswer22.json").write_text("[]", encoding="utf-8")
+    gold = tmp_path / "gold.json"
+    gold.write_text(json.dumps({"Q01": {"docs": ["dx"]}}), encoding="utf-8")
+    with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
+        listed = client.get("/search").text
+        assert "<b>Q01</b>停修</span>" in listed  # the question's words, not its code alone
+        page = client.get("/search", params={"qid": "Q01"}).text
+    assert "標準答案在第" in page or "沒有標準答案" in page
+    assert "<select name='qid'" in page and "<option value='Q01' selected>" in page
+
+
+def test_words_that_are_no_id_find_documents_by_title(site):
+    page = site.get("/trace", params={"ref": "停修"}).text
+    assert "標題含「停修」的文件" in page and "/trace?ref=" in page and "① 抓取" not in page
+    none = site.get("/trace", params={"ref": "沒有這幾個字"}).text
+    assert "沒有標題含「沒有這幾個字」的文件" in none
+
+
+def test_the_top_bar_links_the_other_panels_when_told_where_they_are(db, tmp_path):
+    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY,
+                         overview_url="http://127.0.0.1:18879", tables_url="http://127.0.0.1:18001")
+    with TestClient(app, base_url=BASE) as client:
+        page = client.get("/search").text
+    assert "href='http://127.0.0.1:18879'" in page and "href='http://127.0.0.1:18001'" in page
+    assert "aria-current='page'>搜尋測試" in page and ">資料庫<" in page and "翻庫" not in page
+    assert "data-tip='每個網站收了多少、缺多少'" in page  # what each panel is floats over its name
+
+
+def test_a_trace_opens_with_the_five_steps_state(site):
+    page = site.get("/trace", params={"ref": NOTICE_URL}).text
+    strip = page[page.index("<ol class='steps'>"):page.index("</ol>")]
+    assert strip.count("<li>") == 5 and strip.count("<a class='ok'") == 5 and "第 1 名" in strip
+    assert page.index("<h1>115-1 停修公告</h1>") < page.index("<ol class='steps'>")  # the document itself first
 
 
 def test_an_error_inside_is_said_and_never_a_bare_500(site, monkeypatch):
@@ -212,14 +265,14 @@ def test_an_error_inside_is_said_and_never_a_bare_500(site, monkeypatch):
     api = site.get("/api/trace", params={"ref": NOTICE_URL})
     assert api.status_code == 500 and "unhashable type" in api.json()["error"]
     page = site.get("/trace", params={"ref": NOTICE_URL})
-    assert page.status_code == 500 and "出错了" in page.text and "unhashable type" in page.text
+    assert page.status_code == 500 and "出錯了" in page.text and "unhashable type" in page.text
 
 
 def test_an_archived_page_can_also_be_opened_in_a_tab_of_its_own(site):
     """Beside the frame: the frame's content is another origin's to the page, so a link is the way that always works."""
     page = site.get("/trace", params={"ref": NOTICE_URL}).text
     assert "<iframe class='orig' sandbox src='/file?" in page
-    assert "target='_blank'>在新分页打开</a>" in page
+    assert "target='_blank'>新分頁打開</a>" in page
 
 
 # ---------------------------------------------------------------- after the review of 11-15
@@ -229,12 +282,12 @@ def test_the_search_page_says_what_ran_when_no_rerank_did(db, tmp_path):
 
     with _client(tmp_path / "t.db", tmp_path, config=HybridConfig(rerank=False)) as client:
         page = client.get("/search", params={"q": "停修", "doc": "dx"}).text
-    assert "没有重排" in page and "对题×" not in page and "进重排" not in page and "None" not in page
+    assert "沒有重排" in page and "對題×" not in page and "進重排" not in page and "None" not in page
 
 
 def test_a_merged_copy_on_another_site_is_shown_as_what_was_given(site):
     page = site.get("/trace", params={"ref": world.COPY_URL}).text
-    assert "①～③ 是你给的那一份" in page and "範例處公告欄" in page
+    assert "①～③ 是你給的那一份" in page and "範例處公告欄" in page
 
 
 def test_a_pdf_and_a_picture_sit_beside_their_text(site):
@@ -249,7 +302,7 @@ def test_a_pdf_and_a_picture_sit_beside_their_text(site):
 
 
 def test_the_cohort_is_on_the_trace_page(site):
-    assert "113 学年度起入学" in site.get("/trace", params={"ref": NOTICE_URL}).text
+    assert "113 學年度起入學" in site.get("/trace", params={"ref": NOTICE_URL}).text
 
 
 @pytest.mark.parametrize("limit", ["²", "-3", "9999999999999999999999", "1e3", ""])
@@ -313,10 +366,10 @@ def test_the_pages_warn_when_the_installed_copy_lags_the_pipelines_code(db, tmp_
                          pipeline_src=work / "src")
     with TestClient(app, base_url=BASE) as client:
         page = client.get("/search").text
-    assert "建库用的程序" in page and "nknu/content/build.py" in page and "重装" in page
+    assert "建庫的程式不一樣" in page and "nknu/content/build.py" in page and "重裝" in page  # the files float
     fresh = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(fresh, base_url=BASE) as client:
-        assert "建库用的程序" not in client.get("/search").text
+        assert "建庫的程式不一樣" not in client.get("/search").text
 
 
 def test_a_file_the_pack_replaced_is_fine_once_the_pipeline_has_the_packs_own_version(tmp_path):
@@ -325,3 +378,59 @@ def test_a_file_the_pack_replaced_is_fine_once_the_pipeline_has_the_packs_own_ve
     version the pack was made from alone, so the warning would have come up falsely)."""
     work, code = _installed(tmp_path, changed={"nknu/retrieval/hybrid.py": "HYBRID = 1\nRECORDER = 1\n"})
     assert web.install_state(code, work / "src")["drift"] == []
+
+
+# ---------------------------------------------------------------- in Traditional Chinese (owner 11-15)
+
+def test_the_pages_are_in_traditional_chinese(lib):
+    """Owner 11-15: 「可视化dashboard全部换繁体字」. The pages say so to the browser and ask for Traditional fonts first."""
+    for page in (lib.get("/").text, lib.get("/search", params={"q": "停修"}).text, lib.get("/trace").text):
+        assert "<html lang='zh-Hant-TW'>" in page and '"PingFang TC","Microsoft JhengHei","Noto Sans CJK TC"' in page
+        assert "zh-Hans" not in page and "PingFang SC" not in page
+
+
+def test_what_the_crawl_and_the_export_wrote_is_shown_in_traditional_chinese(site):
+    """The manifest's Simplified values are converted where a page shows them; the report keeps them as written."""
+    notice = site.get("/trace", params={"ref": NOTICE_URL}).text
+    assert "<dt>日期來源</dt><dd>詳細頁的日期欄</dd>" in notice
+    pager = site.get("/trace", params={"ref": PAGER_URL}).text
+    assert "<small>網頁 · 列表翻頁</small>" in pager and "<dt>頁別</dt><dd>列表翻頁</dd>" in pager
+    assert "分類：default(列表翻頁)" in pager
+    assert site.get("/api/trace", params={"ref": PAGER_URL}).json()["export"]["row"]["页别"] == "列表翻页"
+    banner = site.get("/trace", params={"ref": world.MENU_URL}).text
+    assert "<dt>結果</dt><dd><span class='pill warn'>沒抓到</span> <small>（HTTP 404）</small></dd>" in banner
+    assert "<dt>類型</dt><dd>圖片</dd>" in banner
+
+
+def test_a_test_question_is_shown_in_traditional_chinese_and_searched_as_written(db, tmp_path):
+    """The list and the picker show a question in Traditional characters; the search box keeps, and the search runs,
+    the question as its file has it."""
+    questions = tmp_path / "eval"
+    questions.mkdir()
+    (questions / "core20.json").write_text(json.dumps([{"id": "Q01", "question": "怎么申请停修"}]), encoding="utf-8")
+    (questions / "noanswer22.json").write_text("[]", encoding="utf-8")
+    gold = tmp_path / "gold.json"
+    gold.write_text(json.dumps({"Q01": {"docs": ["dx"]}}), encoding="utf-8")
+    with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
+        listed = client.get("/search").text
+        page = client.get("/search", params={"qid": "Q01"}).text
+        report = client.get("/api/search", params={"qid": "Q01"}).json()
+    assert "<b>Q01</b>怎麼申請停修</span>" in listed and "怎么申请停修" not in listed
+    assert "Q01　怎麼申請停修</option>" in page and "value='怎么申请停修'" in page
+    assert report["query"] == "怎么申请停修"
+
+
+def test_the_words_the_index_folds_to_simplified_are_shown_in_traditional(lib):
+    """The keyword index reads 化學系 選課 as 化学、学系、选课: the words the page shows the question was read as are
+    in Traditional, as the explanation's sentences are, and say which of them a candidate must hold (選課: what the
+    question is about) and which only add (the unit's name); the search box keeps the question and the report keeps
+    the index's words."""
+    page = lib.get("/search", params={"q": "化學系 選課"}).text
+    read = page.split("<div class='words'>")[1].split("</div>")[0]
+    assert [w.split(">")[1] for w in read.split("</span>")[:3]] == ["化學", "學系", "選課"]
+    assert read.count("class='w plain'") == 2 and read.count("class='w must'") == 1
+    assert "class='w must' data-tip='講什麼的詞：候選文件至少要有一個'>選課</span>" in read
+    assert "化学" not in read and "学系" not in read and "选课" not in read
+    assert "value='化學系 選課'" in page
+    report = lib.get("/api/search", params={"q": "化學系 選課"}).json()
+    assert "化学" in report["understood"]["words"] and report["understood"]["topic"] == ["选课"]
