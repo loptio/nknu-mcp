@@ -93,10 +93,11 @@ def test_a_page_got_tonight_for_the_first_time_is_new(world):
 
 
 def test_a_page_read_again_is_changed_or_the_same_by_its_text(world):
-    a = _answer(world, f"https://{SITE}/a.aspx", _html("<p>期限 11/20</p><td>10</td>"))
+    views = "<table><tr><td>瀏覽</td><td>{}</td></tr></table>"
+    a = _answer(world, f"https://{SITE}/a.aspx", _html("<p>期限 11/20</p>" + views.format(10)))
     b = _answer(world, f"https://{SITE}/b.aspx", _html("<p>期限 11/20</p>"))
     since = time.time()
-    _answer(world, f"https://{SITE}/a.aspx", _html("<p>期限 11/20</p><td>12</td>"))  # a counter only
+    _answer(world, f"https://{SITE}/a.aspx", _html("<p>期限 11/20</p>" + views.format(12)))  # a counter only
     _answer(world, f"https://{SITE}/b.aspx", _html("<p>期限 11/30</p>"))
     night = _night(world, since)
     assert (_change(night, a), _change(night, b)) == ("same", "changed")
@@ -147,6 +148,7 @@ def test_review_writes_the_change_list_and_the_status(world, capsys):
     world.f.meta(update.NIGHT_KEY, repr(time.time()))  # put-back's: the night starts
     _answer(world, f"https://{SITE}/a.aspx", _html("<p>乙</p>"))
     new = _answer(world, f"https://{SITE}/b.aspx", _html("<p>丙</p>"))
+    _ran(world)
     world.f.close()
     assert update.main(["--dir", str(world.root), "review"]) == 0
     status = json.loads((world.root / "reports" / "update-status.json").read_text(encoding="utf-8"))
@@ -185,14 +187,20 @@ def _fake_python(tmp_path: Path, fail_at: str | None) -> Path:
 def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_path, fail_at):
     py = _fake_python(tmp_path, fail_at)
     (tmp_path / "archive").mkdir()
-    env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups")}
+    env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups"),
+           "LOCKS": str(tmp_path / "locks")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    if fail_at is None:
-        assert got.returncode == 0 and steps == ["backup", "put-back", "sites", "run", "review"]
-    else:
-        assert got.returncode == 1 and steps[-1] == "fail" and fail_at in steps
-        assert steps.index(fail_at) == len(steps) - 2  # nothing after the failed step but the note of it
+    want = {None: ["backup", "put-back", "sites", "run", "review"],
+            "put-back": ["backup", "put-back", "fail"],
+            "run": ["backup", "put-back", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
+    assert got.returncode == (0 if fail_at is None else 1) and steps == want
+
+
+def _ran(world, reason: str = "finished") -> None:
+    """Tonight's run as the crawler writes it: run_start, then run_end."""
+    world.f.event("info", "run_start", json.dumps({"sites": [SITE]}))
+    world.f.event("info", "run_end", json.dumps({"reason": reason, "pending": 0}))
 
 
 def _main(world, *argv) -> int:
@@ -214,6 +222,7 @@ def test_a_night_is_counted_once(world, capsys):
     a = _answer(world, f"https://{SITE}/a.aspx", _html("<p>甲</p>"))
     world.f.meta(update.NIGHT_KEY, repr(time.time()))
     _answer(world, f"https://{SITE}/a.aspx", _html("<p>乙</p>"))
+    _ran(world)
     assert _main(world, "review") == 0 and _main(world, "review") == 0
     assert world.f.q("SELECT changes FROM page_watch WHERE url_id=?", (a,))[0]["changes"] == 1
     assert "已经算过" in capsys.readouterr().out
@@ -221,7 +230,7 @@ def test_a_night_is_counted_once(world, capsys):
 
 def test_the_status_names_the_runs_end(world):
     world.f.meta(update.NIGHT_KEY, repr(time.time() - 5))
-    world.f.event("info", "run_end", json.dumps({"reason": "finished", "pending": 0}))
+    _ran(world)
     assert _main(world, "review") == 0
     status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
     assert status["run_end"]["reason"] == "finished" and status["failed_step"] is None and status["counts"] == {}
@@ -246,6 +255,7 @@ def test_the_status_carries_each_sites_last_look_and_what_put_back_took(world):
     world.f.meta(crawler_mod.UPDATE_SITES_KEY, json.dumps([SITE]))
     assert _main(world, "put-back", "--today", "2026-11-20") == 0
     _answer(world, f"https://{SITE}/a.aspx", _html("<p>甲</p>"))
+    _ran(world)
     assert _main(world, "review") == 0
     status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
     assert status["put_back"] == dict.fromkeys(update.BATCHES, 0)

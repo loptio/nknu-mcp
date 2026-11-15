@@ -1367,7 +1367,7 @@ class Chains:
             look = self._looking(list_id) if pages >= 1 and only is None else None
             if pages >= MAX_PAGES:
                 ended = "max_pages"
-            elif (look is not None and pages >= look["furthest"]
+            elif (look is not None and not look["whole"] and pages >= look["furthest"]
                   and not self._news(list_id, pr, base or list_row["url"], look["started"])):
                 ended = SEEN_PAGE  # nothing new on this page: the next is not pressed (design §7.2)
             else:
@@ -1408,12 +1408,14 @@ class Chains:
         else:
             self.f.x("UPDATE listwalk SET ended_by=NULL, ok=0 WHERE list_id=?", (list_id,))
 
-    def look(self, list_id: int) -> bool:
+    def look(self, list_id: int, *, whole: bool = False) -> bool:
         """A look at a list walked by button (Task 3 of stage 1): its first pages read again, the next pressed while a
         page brings news (_news), the record of its last whole walk kept (list_look: the listwalk row and the list
         page's page_res, put back at any end but a whole walk). Only on a list whose walk ended (not walking, not with
         no end), with no press waiting and its page got or failed (a walk cut off is resume()'s to finish), and none
-        already open. Returns whether it opened."""
+        already open. whole (stage 2's monthly walk, plan check wf_2249ba4d-a90): every page pressed, news or not; an
+        end short of a whole walk keeps the last record as any look's does, and a list shrunk past max(10, 10%) is a
+        warning (_whole, design §7.5). Returns whether it opened."""
         lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (list_id,))
         row = self.f.row_by_id(list_id)
         if (not lw or lw[0]["ended_by"] in (None, "walking") or row is None or row["state"] not in ("done", "failed")
@@ -1424,10 +1426,11 @@ class Chains:
         epoch = (self.f.q("SELECT max(epoch) FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
                           (list_id,))[0][0] or 0) + 1  # the next GET's (_new_epoch)
         res = [dict(r) for r in self.f.q("SELECT * FROM page_res WHERE page_id=?", (list_id,))]
-        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, epoch_from, saved_walk, saved_res) VALUES "
-                 "(?,?,?,?,?,?)", (list_id, LOOK, self.clock(), epoch, json.dumps([dict(lw[0])], ensure_ascii=False),
-                                   json.dumps(res, ensure_ascii=False)))
-        self.restart_chain(list_id, "look", walk=False)
+        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, epoch_from, saved_walk, saved_res, whole) "
+                 "VALUES (?,?,?,?,?,?,?)", (list_id, LOOK, self.clock(), epoch,
+                                            json.dumps([dict(lw[0])], ensure_ascii=False),
+                                            json.dumps(res, ensure_ascii=False), int(whole)))
+        self.restart_chain(list_id, "whole walk" if whole else "look", walk=False)
         return True
 
     def _reopen_look(self, list_id: int) -> bool:
@@ -1528,13 +1531,14 @@ class Chains:
         return len(stale)
 
     def look_get(self, page_id: int, *, started: float | None = None, saved_walk: str | None = None,
-                 after: int | None = None) -> bool:
+                 after: int | None = None, whole: bool = False) -> bool:
         """A look at a page of a list paged by GET (Task 4 of stage 1): the page put back to be fetched again; the
         group's listwalk is not written while the look is open (get_walk), and comes back as saved unless the looked
         pages came back well. A page that brings news puts the next page back the same way (_after_get_page). Only on
         a page whose group's walk ended, got or failed, with no look open in its group. started, saved_walk: a look
         going on to the next page keeps the first page's; after: the page whose look hands over to this one (its
-        own open look does not count). Returns whether it opened."""
+        own open look does not count); whole (stage 2's monthly walk): every page in turn, news or not. Returns
+        whether it opened."""
         row = self.f.row_by_id(page_id)
         group, _edges = self._group(page_id)
         marks = ",".join("?" * len(group))
@@ -1548,10 +1552,11 @@ class Chains:
         res = [dict(r) for r in self.f.q("SELECT * FROM page_res WHERE page_id=?", (page_id,))]
         epoch = (self.f.q("SELECT max(epoch) FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
                           (page_id,))[0][0] or 0) + 1  # the page's own presses (WebIdx rows) of before stay theirs
-        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, epoch_from, saved_walk, saved_res) VALUES "
-                 "(?,?,?,?,?,?)", (page_id, LOOK_GET, self.clock() if started is None else started, epoch,
-                                   saved_walk if saved_walk is not None else json.dumps(walks, ensure_ascii=False),
-                                   json.dumps(res, ensure_ascii=False)))
+        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, epoch_from, saved_walk, saved_res, whole) "
+                 "VALUES (?,?,?,?,?,?,?)", (page_id, LOOK_GET, self.clock() if started is None else started, epoch,
+                                            saved_walk if saved_walk is not None else json.dumps(walks,
+                                                                                                 ensure_ascii=False),
+                                            json.dumps(res, ensure_ascii=False), int(whole)))
         self.f.put_back(page_id, "look_get")
         return True
 
@@ -1562,10 +1567,12 @@ class Chains:
         look = self._looking(row["id"], LOOK_GET)
         if look is None:
             return
-        nxt = self._next_get_page(row["id"]) if self._get_news(row["id"], look["started"], pr, row["url"]) else None
+        whole = bool(look["whole"])  # a monthly whole walk reads every page in turn
+        nxt = (self._next_get_page(row["id"]) if whole or self._get_news(row["id"], look["started"], pr, row["url"])
+               else None)
         self.f.x("UPDATE list_look SET pages=1 WHERE list_id=?", (row["id"],))
         if nxt is not None and self.look_get(nxt, started=look["started"], saved_walk=look["saved_walk"],
-                                             after=row["id"]):
+                                             after=row["id"], whole=whole):
             self._close_look(row["id"], "went_on", whole=True)
             return
         self._close_look(row["id"], SEEN_PAGE, whole=True)

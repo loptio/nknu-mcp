@@ -244,10 +244,12 @@ CREATE TABLE IF NOT EXISTS list_row(list_id INTEGER NOT NULL, ident TEXT NOT NUL
 -- look: mode look (a list walked by button: list_id its list page) or look_get (a page of a list paged by GET); when it
 -- started (news is what came since), its first epoch (the look's presses), its own count of pages and rows, the
 -- furthest page it reached, how and when it ended (seen_page: a page with nothing new), and what it saved to put back
--- unless it walked the list whole (saved_walk: the listwalk rows as JSON; saved_res: the page's page_res)
+-- unless it walked the list whole (saved_walk: the listwalk rows as JSON; saved_res: the page's page_res); whole: a
+-- monthly whole walk (stage 2), which reads on past a page with nothing new, its record kept unless it ends whole
 CREATE TABLE IF NOT EXISTS list_look(list_id INTEGER PRIMARY KEY, mode TEXT NOT NULL, started REAL NOT NULL,
   ended_at REAL, epoch_from INTEGER, pages INTEGER NOT NULL DEFAULT 0, rows INTEGER, claimed INTEGER,
-  furthest INTEGER NOT NULL DEFAULT 0, ended_by TEXT, saved_walk TEXT, saved_res TEXT, note TEXT);
+  furthest INTEGER NOT NULL DEFAULT 0, ended_by TEXT, saved_walk TEXT, saved_res TEXT, note TEXT,
+  whole INTEGER NOT NULL DEFAULT 0);
 -- what each page's answers came to night by night (periodic updates, stage 2: watch.night): the fingerprint of its
 -- last good answer (watch.fingerprint; a file's sha256), when it was last checked and last changed, how many nights in
 -- a row it changed, and since when (and how many times in a row) it answered as gone

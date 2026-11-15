@@ -12,29 +12,39 @@ cli.py until the owner names the time (11-16: 「动 cli.py…动手前先和我
 - go-live: holds run.lock; reads every list row the archive holds into list_row (postback.backfill_list_rows) and
   names the round-one sites as under update (crawler.UPDATE_SITES_KEY: their run caps). Once, before the first night.
 
-- review: holds run.lock; the night's change list (watch.night: each row fetched since put-back against the answer it
-  replaced) once per night (meta update:night_reviewed), in one transaction: reports/changes-<night>.csv and
-  reports/update-status.json (counts, alarms, the sites whose export is due, the run's end). The export is listed,
-  never run (the owner's timing, 11-16).
+- review: holds run.lock; the change list (watch.night) of every night not yet reviewed (from FROM_KEY: a night whose
+  run or review never ended is reviewed with the next), once (meta update:night_reviewed), in one transaction:
+  reports/changes-<night>.csv and reports/update-status.json (counts, alarms, the sites whose export is due, the
+  lists whose walk ended short, each site's last answer, tonight's run end). Exit 3 when tonight's run did not end
+  finished or waiting (db_error, disk_low, a kill: no run_end), the status file saying so. The export is listed,
+  never run (the owner's timing, 11-16). An alarmed site's re-fetched rows go back the next night (AGAIN_KEY).
 - sites: the update sites as one comma list (what the nightly script gives `archive run --sites`).
-- fail --step X: the status file says the night stopped at step X (the nightly script, research/crawler_lab_2026-11-04/
-  nightly_update.sh, on a failing step).
+- fail --step X: the status file says the night stopped at step X, kept with tonight's review when there is one (the
+  nightly script, research/crawler_lab_2026-11-04/nightly_update.sh, on a failing step).
 
 Only round-one sites. A list left out is counted with its reason: a walk cut off with presses waiting is resume()'s to
-finish, a look still open waits for its end, a walk with no end waits for its monthly whole walk.
+finish, a look still open waits for its end.
 
 Stage 2 (plan 2026-11-16-update-stage-2 Task 3, design §7.3): shares keyed on the day's number (date.toordinal, Asia/
 Taipei) and the row id, so a share is the same whichever night computes it and every share comes every WEEK or MONTH
 days whatever the month's length 【Claude: the plan said weekday and day of month; February would skip two shares】:
-- walks: the lists of tonight's monthly share walked whole (a list walked by button: restart_chain from its GET; a
-  list paged by GET: every page put back), taken out of tonight's looks; a walk with no end too, on its day. Their
-  row counts before are kept (meta update:walks_before) for the review's shrink warning (design §7.5).
+- walks, walks_get: the lists of tonight's monthly share walked whole, as a whole look (postback.Chains.look and
+  look_get with whole: every page read, news or not; an end short of a whole walk keeps the last record, a list
+  shrunk past max(10, 10%) a warning: design §7.5), taken out of tonight's looks; a whole walk that ended short is
+  walked again the next night (plan check wf_2249ba4d-a90: the first way, a restart from the GET, set the record to
+  walking before any answer and lost the list for good on a failed first page).
+- redo, redo_get: a list with no end (walking, or none) every night: it has no record to lose, so it starts again
+  from its GET (restart_chain), or every page of its GET group is put back.
 - recent: the pages list rows link whose row date (export.bare_date) is within RECENT_DAYS, one share a week.
-- standing: the standing pages (answered 200, not a list or a list's page, not a home or seed, not a platform detail
-  page, not a page a list row links), one share a week; every night on DAILY_SITES in DAILY_PERIODS (speed-up rule 2);
-  every other night when changed at their last OFTEN_CHANGES checks (rule 3, page_watch).
-- follow (rule 1): what the lists and notices that changed since the last night's start link: standing pages, and
-  files under a changed notice; not what a home links (a menu: its weekly turn is enough) 【Claude】.
+- standing: the standing pages (a page that answered a good 200 once: the row or a url_version copy, whatever it
+  answers now; not a list or a list's page, not a home or seed, not a platform detail page, not a page a list row
+  links), one share a week (once the school deleted it, page_watch.gone 2 or more, one share a month); every night
+  on DAILY_SITES in DAILY_PERIODS (speed-up rule 2); every other night when changed at their last OFTEN_CHANGES
+  checks (rule 3, page_watch).
+- follow (rule 1): what the notices that changed since the last night's start link in their own text (watch.
+  content_links from the answer in the archive; not their menu, not what a home links): standing pages and files
+  【Claude】. Lists are no source: their rows bring their details back (list_row).
+- again: the rows of a site the last review held (watch.Night.again).
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -60,7 +71,10 @@ HOME_SOURCES = ("site_home", "extra", "sitemap_aspx")
 NIGHT_KEY = "update:night_started"  # put-back's time: the night's review takes what was fetched since
 REVIEWED_KEY = "update:night_reviewed"  # the night_started a review has counted (page_watch counts each night once)
 PUT_KEY = "update:night_put_back"  # what put-back took tonight, per batch (the status file's put_back)
-WALKS_KEY = "update:walks_before"  # tonight's whole walks: list id -> its rows before (the shrink warning)
+FROM_KEY = "update:review_from"  # the start of the oldest night not reviewed: the review's window
+AGAIN_KEY = "update:again"  # the rows of the sites the last review held: back the next night
+RUN_OK = ("finished", "waiting")  # a run's end that leaves the night whole (crawler run_end)
+WALK_DONE = ("last_page", "no_rows_ok", "seen_page", "went_on", "retried")  # a whole look's end that is no failure
 WEEK, MONTH = 7, 30  # the shares (design §7.3)
 RECENT_DAYS = 30  # design §7.3: the notices of the last 30 days, by the date their list row writes
 OFTEN_CHANGES = 2  # rule 3: changed at its last two checks (10-24: 「最近两次都有变动的改成 2 天一次」)
@@ -71,11 +85,10 @@ OFTEN_GAP_S = 42 * 3600  # rule 3's two days: a check two nights ago a little la
 DAILY_PERIODS = (("01-20", "03-10"), ("08-01", "09-30"))
 DAILY_SITES = frozenset({"c.nknu.edu.tw/aca", "sso.nknu.edu.tw/web/592", "sso.nknu.edu.tw/web/595",
                          "sso.nknu.edu.tw/web/596", "sso.nknu.edu.tw/web/600"})
-SHRINK_MIN, SHRINK_SHARE = 10, 0.1  # design §7.5: a whole walk short of the last by max(10 rows, 10%): a warning
 STATUS = "update-status.json"
 TAIPEI = ZoneInfo("Asia/Taipei")
-SAY = {"new": "新的", "changed": "改了", "same": "没变", "not_seen": "这次没看到", "not_got": "没拿到",
-       "deleted": "学校删了", "back": "回来了"}
+SAY = {"new": "新的", "changed": "改了", "same": "没变", "no_answer": "这次没回话", "not_seen": "这次没看到",
+       "not_got": "没拿到", "deleted": "学校删了", "back": "回来了"}
 
 
 @dataclass
@@ -83,17 +96,20 @@ class Tonight:
     looks: list[int] = field(default_factory=list)  # list pages of lists walked by button
     looks_get: list[int] = field(default_factory=list)  # the first page of each list paged by GET
     homes: list[int] = field(default_factory=list)  # home and seed pages (and where a 3xx of one leads)
-    walks: list[int] = field(default_factory=list)  # lists walked by button, walked whole tonight (their list page)
-    walks_get: list[int] = field(default_factory=list)  # every page of the lists paged by GET walked whole tonight
+    walks: list[int] = field(default_factory=list)  # lists walked by button, walked whole tonight (a whole look)
+    walks_get: list[int] = field(default_factory=list)  # the first page of the GET lists walked whole tonight
+    redo: list[int] = field(default_factory=list)  # lists walked by button with no end: from their GET again
+    redo_get: list[int] = field(default_factory=list)  # every page of the GET lists with no end
     recent: list[int] = field(default_factory=list)  # pages of the last RECENT_DAYS' list rows, tonight's share
     standing: list[int] = field(default_factory=list)  # standing pages: tonight's share, rules 2 and 3
-    follow: list[int] = field(default_factory=list)  # rule 1: linked from a list or notice that changed
+    follow: list[int] = field(default_factory=list)  # rule 1: linked in the text of a notice that changed
+    again: list[int] = field(default_factory=list)  # the rows of the sites the last review held
     skipped: Counter = field(default_factory=Counter)  # lists left out tonight, by reason
-    why: Counter = field(default_factory=Counter)  # standing pages by why: week, daily, often
+    why: Counter = field(default_factory=Counter)  # standing pages by why: week, month (deleted), daily, often
 
     def ids(self) -> list[int]:
-        return [*self.looks, *self.looks_get, *self.homes, *self.walks, *self.walks_get, *self.recent, *self.standing,
-                *self.follow]
+        return [*self.looks, *self.looks_get, *self.homes, *self.walks, *self.walks_get, *self.redo, *self.redo_get,
+                *self.recent, *self.standing, *self.follow, *self.again]
 
 
 def _has(frontier: Frontier, table: str) -> bool:
@@ -134,6 +150,7 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
                   if _has(frontier, "list_look") else set())
     waiting = {r[0] for r in frontier.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
                                         "state IN ('pending', 'active')")}
+    looks = _ended_looks(frontier)
     walked: set[int] = set()
     # a list walked by button: its listwalk counts its rows (page_stored, _pager_answer); get_walk writes rows NULL
     for r in frontier.q("SELECT w.list_id, w.ended_by, u.owner_site, u.state FROM listwalk w JOIN url u ON u.id = "
@@ -149,10 +166,10 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
             t.skipped["look_open"] += 1
         elif r["list_id"] in waiting:
             t.skipped["presses_waiting"] += 1
-        elif r["list_id"] % MONTH == n % MONTH:
-            t.walks.append(r["list_id"])  # tonight's whole walk, a walk with no end too
         elif r["ended_by"] in (None, "walking"):
-            t.skipped["walk_unfinished"] += 1
+            t.redo.append(r["list_id"])  # no record to lose: from its GET again, every night until it ends
+        elif r["list_id"] % MONTH == n % MONTH or _short(looks, [r["list_id"]]):
+            t.walks.append(r["list_id"])  # tonight's whole walk, or the one that ended short the last time
         else:
             t.looks.append(r["list_id"])
     chains = postback.Chains(frontier, root)
@@ -179,17 +196,17 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
         ended = frontier.q(f"SELECT ended_by FROM listwalk WHERE list_id IN ({_in(group)})", sorted(group))
         if group & open_looks:
             t.skipped["look_open"] += 1
-        elif first % MONTH == n % MONTH:  # tonight's whole walk: every page the group knows, a walk with no end too
-            for i in sorted(group):
+        elif not ended or any(w[0] in (None, "walking") for w in ended):
+            for i in sorted(group):  # no record to lose: every page the group knows, every night until it ends
                 g = frontier.row_by_id(i)
                 if g is not None and g["kind"] == "page" and g["state"] in ("done", "failed") and g["owner_site"] in r1:
-                    t.walks_get.append(i)
-        elif not ended or any(w[0] in (None, "walking") for w in ended):
-            t.skipped["walk_unfinished"] += 1
+                    t.redo_get.append(i)
+        elif first % MONTH == n % MONTH or _short(looks, group):
+            t.walks_get.append(first)  # a whole look, handed over page by page
         else:
             t.looks_get.append(first)
-    # a home inside a GET pager group (an SSO unit site's) stays a home, but for its first page or a whole walk
-    taken = walked | set(t.looks_get) | set(t.walks_get)
+    # a home inside a GET pager group (an SSO unit site's) stays a home, but for its first page or a redo
+    taken = walked | set(t.looks_get) | set(t.walks_get) | set(t.redo_get)
     homes: list[int] = []
     for h in frontier.q(f"SELECT DISTINCT u.id, u.status, u.final_url, u.flags, u.owner_site FROM seed_src s "
                         f"JOIN url u ON "
@@ -211,12 +228,30 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
                 homes.append(to["id"])
             at = to
     t.homes = list(dict.fromkeys(homes))
-    _pages(frontier, t, chains, r1, walked | grouped, today, n, last_night, now)
+    _pages(frontier, root, t, chains, r1, walked | grouped, today, n, last_night, now)
     return t
 
 
-def _pages(frontier: Frontier, t: Tonight, chains: postback.Chains, r1: set[str], lists: set[int], today: date,
-           n: int, last_night: float | None, now: float) -> None:
+def _ended_looks(frontier: Frontier) -> dict[int, tuple[float, int, str | None]]:
+    """Each list page's last look that ended (list_look keeps one per page): (started, whole, ended_by)."""
+    if not _has(frontier, "list_look") or "whole" not in {c[1] for c in frontier.q("PRAGMA table_info(list_look)")}:
+        return {}
+    return {r[0]: (r[1], r[2], r[3]) for r in frontier.q("SELECT list_id, started, whole, ended_by FROM list_look "
+                                                          "WHERE ended_at IS NOT NULL")}
+
+
+def _short(looks: dict[int, tuple[float, int, str | None]], ids) -> bool:
+    """The newest look over these pages (a GET chain's looks share their start) was a whole walk that ended short of
+    a whole walk (an end not in WALK_DONE)."""
+    rows = [looks[i] for i in ids if i in looks]
+    if not rows:
+        return False
+    newest = max(r[0] for r in rows)
+    return any(r[1] and r[2] not in WALK_DONE for r in rows if r[0] == newest)
+
+
+def _pages(frontier: Frontier, root: Path, t: Tonight, chains: postback.Chains, r1: set[str], lists: set[int],
+           today: date, n: int, last_night: float | None, now: float) -> None:
     """The recent notices, the standing pages and rule 1's (the module's docstring); lists: every list page (walked
     by button or in a GET pager group, any site), never put back as a page here."""
     taken = set(t.ids()) | lists
@@ -229,8 +264,10 @@ def _pages(frontier: Frontier, t: Tonight, chains: postback.Chains, r1: set[str]
         linked |= {r[0] for r in frontier.q("SELECT u.id FROM list_row r JOIN url u ON u.url = r.href")}
     standing: dict[int, str] = {}
     notices: set[int] = set(linked)
-    for r in frontier.q("SELECT id, url, owner_site FROM url WHERE kind = 'page' AND tier IN (0, 1) AND state = 'done' "
-                        "AND status = 200 AND depth > 0 AND coalesce(page_role, '') != 'list'"):
+    good_once = ("status = 200 OR id IN (SELECT url_id FROM url_version WHERE status = 200 AND kind = 'page')"
+                 if _has(frontier, "url_version") else "status = 200")
+    for r in frontier.q("SELECT id, url, owner_site FROM url WHERE kind = 'page' AND tier IN (0, 1) AND state IN "
+                        f"('done', 'failed') AND depth > 0 AND coalesce(page_role, '') != 'list' AND ({good_once})"):
         if r["owner_site"] not in r1 or r["id"] in lists:
             continue
         if profiles.detail_of(r["url"]) is not None:
@@ -252,11 +289,16 @@ def _pages(frontier: Frontier, t: Tonight, chains: postback.Chains, r1: set[str]
     watched = _has(frontier, "page_watch")
     often = ({r["url_id"]: r["checked_at"] for r in frontier.q("SELECT url_id, checked_at FROM page_watch WHERE "
                                                                "changes >= ?", (OFTEN_CHANGES,))} if watched else {})
+    deleted = ({r[0] for r in frontier.q("SELECT url_id FROM page_watch WHERE gone >= 2")} if watched else set())
     daily = _daily(today)
     for i, site in standing.items():
         if i in taken:
             continue
-        if i % WEEK == n % WEEK:
+        if i in deleted:  # the school deleted it: once a month, to see it back
+            if i % MONTH != n % MONTH:
+                continue
+            t.why["month"] += 1
+        elif i % WEEK == n % WEEK:
             t.why["week"] += 1
         elif daily and site in DAILY_SITES:
             t.why["daily"] += 1
@@ -266,6 +308,11 @@ def _pages(frontier: Frontier, t: Tonight, chains: postback.Chains, r1: set[str]
             continue
         t.standing.append(i)
         taken.add(i)
+    for i in json.loads(frontier.meta(AGAIN_KEY) or "[]"):
+        row = frontier.row_by_id(i)
+        if row is not None and i not in taken and row["state"] in ("done", "failed") and row["owner_site"] in r1:
+            t.again.append(i)
+            taken.add(i)
     if last_night is None or not watched:
         return
     changed = [r[0] for r in frontier.q("SELECT url_id FROM page_watch WHERE changed_at >= ? ORDER BY url_id",
@@ -275,46 +322,53 @@ def _pages(frontier: Frontier, t: Tonight, chains: postback.Chains, r1: set[str]
         part = t.homes[i:i + 500]
         menu |= {r[0] for r in frontier.q(f"SELECT dst FROM link WHERE src IN ({_in(part)})", part)}
     for src in changed:
-        if src not in lists and src not in notices:
+        if src in lists or src not in notices:
             continue
-        for (dst,) in frontier.q("SELECT dst FROM link WHERE src = ? ORDER BY dst", (src,)):
+        got = frontier.row_by_id(src)
+        if got is None or got["warc"] is None or got["warc_offset"] is None:
+            continue
+        try:
+            url, _status, headers, body = postback.read_response(root, got["warc"], got["warc_offset"])
+        except (OSError, ValueError):
+            continue
+        for dst in watch.content_links(postback.as_text(body, headers.get("content-type")), url):
             if dst in menu:
                 continue
             row = chains._fetched_row(dst)
             if row is None or row["id"] in taken:
                 continue
-            if row["id"] in standing or (src not in lists and row["kind"] == "file" and row["state"] == "done"
-                                         and row["owner_site"] in r1):
+            if row["id"] in standing or (row["kind"] == "file" and row["state"] == "done" and row["owner_site"] in r1):
                 t.follow.append(row["id"])
                 taken.add(row["id"])
 
 
-BATCHES = ("looks", "looks_get", "walks", "walks_get", "homes", "recent", "standing", "follow", "not_opened")
+BATCHES = ("looks", "looks_get", "walks", "walks_get", "redo", "redo_get", "homes", "recent", "standing", "follow",
+           "again", "not_opened")
 
 
 def put_back(frontier: Frontier, root: Path, tonight: Tonight) -> Counter:
-    """Tonight's looks opened, whole walks started and pages put back (a look that does not open, a page not done or
-    failed, is counted not_opened). A whole walk of a list walked by button starts from its GET (restart_chain, a look
-    on it closed first); its rows before are kept for the review (WALKS_KEY)."""
+    """Tonight's looks and whole looks opened, lists with no end started again and pages put back (a look that does
+    not open, a page not done or failed, is counted not_opened). The rows the last review held are taken once."""
     chains = postback.Chains(frontier, root)
     got: Counter = Counter()
     for i in tonight.looks:
         got["looks" if chains.look(i) else "not_opened"] += 1
     for i in tonight.looks_get:
         got["looks_get" if chains.look_get(i) else "not_opened"] += 1
-    before: dict[str, int | None] = {}
     for i in tonight.walks:
-        w = frontier.q("SELECT rows FROM listwalk WHERE list_id = ?", (i,))
-        before[str(i)] = w[0][0] if w else None
-        chains.restart_chain(i, "update_walk", walk=True, keep_look=False)
-        got["walks"] += 1
-    frontier.meta(WALKS_KEY, json.dumps(before))
-    for name, ids, why in (("walks_get", tonight.walks_get, "update_walk"), ("homes", tonight.homes, "update_home"),
+        got["walks" if chains.look(i, whole=True) else "not_opened"] += 1
+    for i in tonight.walks_get:
+        got["walks_get" if chains.look_get(i, whole=True) else "not_opened"] += 1
+    for i in tonight.redo:
+        chains.restart_chain(i, "update: no end", walk=True, keep_look=False)
+        got["redo"] += 1
+    for name, ids, why in (("redo_get", tonight.redo_get, "update_redo"), ("homes", tonight.homes, "update_home"),
                            ("recent", tonight.recent, "update_recent"),
                            ("standing", tonight.standing, "update_standing"),
-                           ("follow", tonight.follow, "update_follow")):
+                           ("follow", tonight.follow, "update_follow"), ("again", tonight.again, "update_again")):
         for i in ids:
             got[name if frontier.put_back(i, why) else "not_opened"] += 1
+    frontier.x("DELETE FROM meta WHERE key = ?", (AGAIN_KEY,))
     return got
 
 
@@ -327,15 +381,16 @@ def _report(frontier: Frontier, t: Tonight) -> None:
                             f"({_in(part)})", part):
             queues[r[0]] += 1
     print(f"今晚要看：按按钮翻页的列表 {len(t.looks)} 个、按网址翻页的列表第 1 页 {len(t.looks_get)} 个、"
-          f"首页和起点 {len(t.homes)} 页；翻到底的列表 {len(t.walks)} 个、按网址翻页的整串 {len(t.walks_get)} 页；"
+          f"首页和起点 {len(t.homes)} 页；翻到底的列表 {len(t.walks)} 个、按网址翻页的 {len(t.walks_get)} 个；"
+          f"没有结尾、从头再翻的 {len(t.redo)} 个、按网址翻页的 {len(t.redo_get)} 页；"
           f"最近 {RECENT_DAYS} 天的公告 {len(t.recent)} 页；常设页 {len(t.standing)} 页（轮到的 {t.why['week']}、"
-          f"开学前后每天的 {t.why['daily']}、常改的 {t.why['often']}）；改了的列表和公告链到的 {len(t.follow)} 个；"
+          f"学校删了每月看一次的 {t.why['month']}、开学前后每天的 {t.why['daily']}、常改的 {t.why['often']}）；"
+          f"改了的公告内文链到的 {len(t.follow)} 个；上一晚整站警报、再看一次的 {len(t.again)} 个；"
           f"共 {len(ids)} 个网址（之后有新东西才会再多）")
     if queues:
         print("按服务器：" + "、".join(f"{q} {n}" for q, n in queues.most_common()))
     if t.skipped:
-        words = {"walk_unfinished": "上次翻页没有结尾（轮到它的那晚翻到底）",
-                 "presses_waiting": "还有按钮等着按（下次 run 开头接着翻）", "look_open": "上次的查看还没结束",
+        words = {"presses_waiting": "还有按钮等着按（下次 run 开头接着翻）", "look_open": "上次的查看还没结束",
                  "get_no_first_page": "认不出第 1 页", "first_page_waiting": "第 1 页还在等着抓",
                  "first_page_not_got": "第 1 页上次没抓到"}
         print("今晚不看的列表：" + "、".join(f"{words.get(k, k)} {n}" for k, n in t.skipped.most_common()))
@@ -354,16 +409,27 @@ def _write_status(root: Path, status: dict) -> Path:
     return out / STATUS
 
 
-def _run_end(frontier: Frontier, since: float) -> dict | None:
-    """The last run_end the night's run wrote (event.at is UTC ISO, as watch._iso writes it)."""
-    got = frontier.q("SELECT message FROM event WHERE code='run_end' AND at >= ? ORDER BY rowid DESC LIMIT 1",
-                     (watch._iso(since),))
+def _run_end(frontier: Frontier, night: float) -> dict | None:
+    """Tonight's run end: the first run_end after the first run_start since the night started (event.at is UTC ISO, as
+    watch._iso writes it); None when no run started, or none ended (a kill, a reboot)."""
+    start = frontier.q("SELECT rowid FROM event WHERE code='run_start' AND at >= ? ORDER BY rowid LIMIT 1",
+                       (watch._iso(night),))
+    if not start:
+        return None
+    got = frontier.q("SELECT message FROM event WHERE code='run_end' AND rowid > ? ORDER BY rowid LIMIT 1",
+                     (start[0][0],))
     if not got:
         return None
     try:
         return json.loads(got[0]["message"])
     except (TypeError, ValueError):
         return {"message": got[0]["message"]}
+
+
+def _short_ends(frontier: Frontier, night: float) -> list[dict]:
+    """The looks and whole walks that ended short tonight (postback._close_look's look_ended events)."""
+    return [{"url": r["url"], "why": r["message"]} for r in frontier.q(
+        "SELECT url, message FROM event WHERE code='look_ended' AND at >= ? ORDER BY rowid", (watch._iso(night),))]
 
 
 def _seen(frontier: Frontier) -> dict[str, str | None]:
@@ -379,16 +445,20 @@ def _seen(frontier: Frontier) -> dict[str, str | None]:
 
 
 def review(frontier: Frontier, root: Path, *, now: float | None = None) -> tuple[dict, bool]:
-    """The night's change list and status file (the module's docstring); (status, done now). A night counted already
-    is not counted again (page_watch's changes and gone would be counted twice): its status file is read back."""
+    """The change list and status file of the nights not yet reviewed (the module's docstring); (status, done now). A
+    night counted already is not counted again (page_watch's changes and gone would be counted twice): its status file
+    is read back."""
     raw = frontier.meta(NIGHT_KEY)
-    since = float(raw)
+    night_at = float(raw)
+    since = float(frontier.meta(FROM_KEY) or raw)
     now = time.time() if now is None else now
     if frontier.meta(REVIEWED_KEY) == raw and (root / "reports" / STATUS).is_file():
         return json.loads((root / "reports" / STATUS).read_text(encoding="utf-8")), False
     with write_first(frontier.conn, "review"):
         n = watch.night(frontier, root, since, now=now)
         frontier.meta(REVIEWED_KEY, raw)
+        if n.again:
+            frontier.meta(AGAIN_KEY, json.dumps(sorted(set(n.again))))
     name = f"changes-{datetime.fromtimestamp(since, TAIPEI):%Y%m%d-%H%M}.csv"
     (root / "reports").mkdir(parents=True, exist_ok=True)
     with (root / "reports" / name).open("w", encoding="utf-8", newline="") as fh:
@@ -396,10 +466,12 @@ def review(frontier: Frontier, root: Path, *, now: float | None = None) -> tuple
         w.writerow(("site", "url", "kind", "change", "previous_at"))
         for c in n.rows:
             w.writerow((c.site, c.url, c.kind, c.change, c.previous_at or ""))
-    status = {"started": _local(since), "reviewed": _local(now), "failed_step": None,
+    end = _run_end(frontier, night_at)
+    status = {"started": _local(since), "night_started": _local(night_at), "reviewed": _local(now),
+              "failed_step": None if end is not None and end.get("reason") in RUN_OK else "run",
               "counts": dict(sorted(n.counts().items())), "alarms": n.alarms, "sites_changed": n.sites_changed,
-              "changes_file": name, "run_end": _run_end(frontier, since),
-              "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"), "sites_seen": _seen(frontier),
+              "again": len(set(n.again)), "lists_short": _short_ends(frontier, night_at), "changes_file": name,
+              "run_end": end, "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"), "sites_seen": _seen(frontier),
               "export": "没有跑：导出的时机等用户定（11-16）；要导出的是 sites_changed"}
     _write_status(root, status)
     return status, True
@@ -410,9 +482,12 @@ def _say(status: dict) -> str:
     words = "、".join(f"{SAY[k]} {counts.get(k, 0)}" for k in SAY)
     alarms = status["alarms"]
     end = (status.get("run_end") or {}).get("reason")
+    short = status.get("lists_short") or []
     return (f"这一晚（{status['started']} 起）：{words}；有变动的网站 {len(status['sites_changed'])} 个"
             + (f"；警报 {len(alarms)} 个：" + "、".join(f"{k}（{v}）" for k, v in alarms.items()) if alarms else "")
+            + (f"；没翻完、照旧留着上一次的列表 {len(short)} 个" if short else "")
             + (f"；run 结束的原因 {end}" if end else "；这一晚没有 run 结束的纪录")
+            + ("（没有好好结束：状态档写停在 run）" if status.get("failed_step") == "run" else "")
             + f"；清单 reports/{status['changes_file']}")
 
 
@@ -445,7 +520,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     sites = _sites(a.sites)
     if a.action == "fail":
-        path = _write_status(root, {"failed_step": a.step or "?", "failed_at": _local(time.time())})
+        status: dict = {}
+        try:
+            f = Frontier(root / "frontier.db", readonly=True)
+            try:
+                night = f.meta(NIGHT_KEY)
+            finally:
+                f.close()
+            old = json.loads((root / "reports" / STATUS).read_text(encoding="utf-8"))
+            if night and old.get("night_started") == _local(float(night)):
+                status = old  # tonight's review is kept beside where the night stopped
+        except (OSError, ValueError, sqlite3.Error):
+            pass
+        path = _write_status(root, {**status, "failed_step": a.step or "?", "failed_at": _local(time.time())})
         print(f"状态档写了停在「{a.step}」：{path}")
         return 0
     if a.action == "sites":
@@ -490,20 +577,29 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
                 status, done = review(f, root)
                 print(("" if done else "这一晚已经算过了，照上次的：") + _say(status))
-                return 0
+                return 3 if status.get("failed_step") == "run" else 0
             if not f.meta(crawl_mod.UPDATE_SITES_KEY):
                 # list_row empty: every row news, every look a whole walk (review of 7f12e29..8474164)
                 print("还没做过 go-live（列表的每一行还没读进 list_row）：先跑 go-live，再放回", file=sys.stderr)
                 return 1
             last = f.meta(NIGHT_KEY)
-            f.meta(NIGHT_KEY, repr(time.time()))  # the night starts: its review takes what is fetched from now
+            start = repr(time.time())
+            # the review's window: from this night on, unless the last night was never reviewed (its run or review
+            # did not end: a reboot), whose rows the next review then takes too
+            if last is None or f.meta(REVIEWED_KEY) == last:
+                f.meta(FROM_KEY, start)
+            elif not f.meta(FROM_KEY):
+                f.meta(FROM_KEY, last)
+            f.meta(NIGHT_KEY, start)  # the night starts: its review takes what is fetched from now
             closed = postback.Chains(f, root).close_stale_looks()
             t = select(f, root, sites=sites, today=a.today, last_night=float(last) if last else None)
             got = put_back(f, root, t)
             f.meta(PUT_KEY, json.dumps({k: got.get(k, 0) for k in BATCHES}))
             _report(f, t)
-            print(f"放回去了：列表 {got['looks']} 个、按网址翻页的第 1 页 {got['looks_get']} 个、首页和起点 "
-                  f"{got['homes']} 页" + (f"；没放成 {got['not_opened']} 个" if got["not_opened"] else "")
+            print(f"放回去了：列表 {got['looks']} 个、按网址翻页的第 1 页 {got['looks_get']} 个、翻到底的 "
+                  f"{got['walks'] + got['walks_get']} 个、从头再翻的 {got['redo']} 个、其余的页 "
+                  f"{sum(got[k] for k in ('redo_get', 'homes', 'recent', 'standing', 'follow', 'again'))} 页"
+                  + (f"；没放成 {got['not_opened']} 个" if got["not_opened"] else "")
                   + (f"；结束了 {closed} 个上次没回来的查看" if closed else ""))
             return 0
         finally:

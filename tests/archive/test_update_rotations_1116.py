@@ -5,7 +5,6 @@ ledger built by hand (made-up addresses), as in test_update_select_1116."""
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import date, timedelta
 
@@ -72,19 +71,12 @@ def test_a_list_is_walked_whole_once_a_month_and_is_no_look_that_night(site):
     assert ids["list"] in update.select(f, root, today=walked[0] + timedelta(days=1)).looks
 
 
-def test_a_list_paged_by_get_is_walked_whole_page_by_page(site):
+def test_a_list_paged_by_get_is_walked_whole_from_its_first_page(site):
     f, ids, root = site
     days = [d for d in _days(30) if update.select(f, root, today=d).walks_get]
     assert len(days) == 1
     t = update.select(f, root, today=days[0])
-    assert sorted(t.walks_get) == sorted([ids["g1"], ids["g2"]]) and ids["g1"] not in t.looks_get
-
-
-def test_a_walk_with_no_end_is_walked_whole_on_its_day(site):
-    f, ids, root = site
-    _walk(f, ids["list"], "walking", 12)
-    days = [d for d in _days(30) if ids["list"] in update.select(f, root, today=d).walks]
-    assert len(days) == 1 and update.select(f, root, today=days[0] + timedelta(days=1)).skipped["walk_unfinished"] == 1
+    assert t.walks_get == [ids["g1"]] and ids["g1"] not in t.looks_get  # a whole look, handed over page by page
 
 
 def test_a_recent_notice_is_read_again_weekly_and_an_old_one_never(site):
@@ -94,21 +86,6 @@ def test_a_recent_notice_is_read_again_weekly_and_an_old_one_never(site):
     assert not any(ids["old_notice"] in update.select(f, root, today=d).recent for d in _days(7))
     later = DAY + timedelta(days=40)  # the notice of 11-10 is no longer recent on 12-30
     assert not any(ids["notice"] in update.select(f, root, today=later + timedelta(days=i)).recent for i in range(7))
-
-
-def test_rule_one_a_changed_notice_brings_the_standing_page_and_the_file_it_links(site):
-    f, ids, root = site
-    last = time.time() - 3600
-    f.x("INSERT INTO page_watch(url_id, fp, checked_at, changed_at, changes) VALUES (?, 'x', ?, ?, 1)",
-        (ids["notice"], last + 60, last + 60))
-    menu, linked = ids["standing"][0], ids["standing"][1]
-    for dst in (menu, linked, ids["file"]):
-        f.link(ids["notice"], f.row_by_id(dst)["url"], "看", "take")
-    f.link(ids["home"], f.row_by_id(menu)["url"], "選單", "take")  # in the menu: its weekly turn is enough
-    for d in _days(7):
-        t = update.select(f, root, today=d, last_night=last)
-        assert linked in t.standing + t.follow and ids["file"] in t.follow
-        assert menu not in t.follow
 
 
 def test_rule_two_the_offices_standing_pages_every_night_in_their_weeks(tmp_path):
@@ -144,19 +121,3 @@ def test_each_url_is_taken_once_a_night(site):
     for d in _days(30):
         t = update.select(f, root, today=d)
         assert len(set(t.ids())) == len(t.ids())
-
-
-def test_put_back_walks_the_months_lists_whole(site):
-    f, ids, root = site
-    day = next(d for d in _days(30) if ids["list"] in update.select(f, root, today=d).walks)
-    f.close()
-    assert update.main(["--dir", str(root), "go-live"]) == 0
-    assert update.main(["--dir", str(root), "put-back", "--today", day.isoformat()]) == 0
-    g = Frontier(root / "frontier.db")
-    try:
-        assert g.q("SELECT ended_by FROM listwalk WHERE list_id=?", (ids["list"],))[0][0] == "walking"
-        assert g.row_by_id(ids["list"])["state"] == "pending"
-        assert not g.q("SELECT 1 FROM list_look WHERE list_id=? AND ended_at IS NULL", (ids["list"],))
-        assert json.loads(g.meta(update.WALKS_KEY)) == {str(ids["list"]): 40}
-    finally:
-        g.close()

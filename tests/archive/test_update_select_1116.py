@@ -94,7 +94,8 @@ def test_tonight_takes_each_list_once_and_the_homes_apart(ledger):
     assert t.looks == [ids["list"]]
     assert t.looks_get == [ids["g1"]]  # the list paged by GET: its first page only
     assert sorted(t.homes) == sorted([ids["home"], ids["moved"], ids["moved_to"], ids["sitemap"]])
-    assert dict(t.skipped) == {"walk_unfinished": 1, "presses_waiting": 1}
+    assert dict(t.skipped) == {"presses_waiting": 1}
+    assert t.redo == [ids["walking"]]  # no end: from its GET again every night (stage 2's fix pass)
     assert len(set(t.ids())) == len(t.ids())  # disjoint
 
 
@@ -123,7 +124,8 @@ def test_put_back_opens_the_looks_and_puts_the_pages_back(ledger, capsys):
         looks = {r["list_id"]: r["mode"] for r in g.q("SELECT * FROM list_look WHERE ended_at IS NULL")}
         assert looks == {ids["list"]: "look", ids["g1"]: "look_get"}
         pending = {r["id"] for r in g.q("SELECT id FROM url WHERE state='pending'")}
-        assert pending == {ids["list"], ids["g1"], ids["home"], ids["moved"], ids["moved_to"], ids["sitemap"]}
+        assert pending == {ids["list"], ids["walking"], ids["g1"], ids["home"], ids["moved"], ids["moved_to"],
+                           ids["sitemap"]}
         assert g.row_by_id(ids["v1"])["state"] == "done" and g.row_by_id(ids["r2"])["state"] == "done"
     finally:
         g.close()
