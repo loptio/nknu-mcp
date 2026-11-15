@@ -96,6 +96,10 @@ REDIRECTS = (301, 302, 303, 307, 308)
 # presses that belong to no list's chain (never superseded by a new GET of their page, never started again from it, no
 # epoch of a walk): a file button's POST (click, §7.4) and a read of a data address (data, design §23 C1)
 SOLO_KINDS = ("click", "data")
+# periodic updates, stage 1 (design 2026-11-16 §7.2): a look's modes (list_look.mode) and its own end, a page with
+# nothing new whose next page is not pressed, never written to listwalk
+LOOK, LOOK_GET = "look", "look_get"
+SEEN_PAGE = "seen_page"
 FAIL_STATUSES = (408, 429)  # with the 5xx: a press that did not go through (the pager's 4xx too)
 _DATE = re.compile(r"\d{4}\s*[-./年]\s*\d{1,2}\s*[-./月]\s*\d{1,2}")
 _INT = re.compile(r"\s*(\d{1,4})\s*")
@@ -1254,6 +1258,7 @@ class Chains:
         has_pagers = bool(page.pagers) if page is not None else row["page_role"] == "list"
         if prof is None:
             ended = self.get_walk(row["id"]) if has_pagers else None
+            self._after_get_page(row)
             return Stored("list" if has_pagers else None, 0, ended)
         pr = read_page(prof, row["url"], html, site=site, list_url=row["url"], page=page, year=self._year())
         list_id = row["id"]
@@ -1264,12 +1269,13 @@ class Chains:
             if pr.walk in ("postback", "one_get"):
                 self._walk(list_id, site, prof.name, 1, pages=1, rows=len(pr.rows), claimed=pr.claimed,
                            ended="walking", note="no_warc")
-                self.f.x("UPDATE listwalk SET ended_by=NULL, ok=0 WHERE list_id=?", (list_id,))
+                self._no_end(list_id)
             nobody = tuple(dict.fromkeys((*pr.unplanned, *(button_key(p.target, p.argument)
                                                            for p in (*pr.presses, *([pr.next] if pr.next else []))))))
             return Stored("list" if pr.walk != "none" else None, 0, None, nobody, texts=pr.texts)
         redo = self._redo(list_id)
         if redo is not None:  # `retry download` put this list back for these downloads only (§23 A3)
+            self._close_look(list_id, "redo")
             return self._redo_stored(row, pr, redo, warc, warc_offset, has_pagers)
         epoch = self._new_epoch(list_id)
         n, ended = self._plan(list_id, epoch, pr, row, warc, warc_offset, pages=1)
@@ -1278,6 +1284,7 @@ class Chains:
                        ended=ended, note="")
         elif pr.walk == "get" or has_pagers:
             ended = self.get_walk(list_id)
+            self._after_get_page(row)
             if ended is None and pr.walk == "get" and not has_pagers:
                 # no pager at all: only one page (§7.5 step 7: rows > 0, or the list's own words for none), judged
                 # as one GET's list is; a link that looks like a page of a list (pager_candidates: a pager box nobody
@@ -1287,6 +1294,8 @@ class Chains:
                                  self._rows_unique(list_id))
                 self._walk(list_id, site, prof.name, epoch, pages=1, rows=len(pr.rows), claimed=pr.claimed,
                            ended=ended, note="one page")
+        if pr.walk == "none" and not has_pagers:
+            self._close_look(list_id, "no_list")  # a look whose list page shows no list: the walk's record stays
         return Stored("list" if pr.walk != "none" or has_pagers else None, n, ended, pr.unplanned,
                       content=pr.content and pr.walk == "none" and not has_pagers, texts=pr.texts)
 
@@ -1295,6 +1304,9 @@ class Chains:
         what an older reading wrote of it as a list goes, its listwalk (列表没翻完) and its page_role list (列表没核对).
         Only on that proof: a page whose answer came back without its grid (no row set at all) keeps what its last
         reading said (CLAUDE.md: 保留旧值). 【Claude 的执行办法】"""
+        if self._looking(page_id) is not None:  # one reading of a look proves nothing: the walk's record stays
+            self._close_look(page_id, "not_a_list")
+            return
         self.f.x("UPDATE url SET page_role=NULL WHERE id=? AND page_role='list'", (page_id,))
         self.f.x("DELETE FROM listwalk WHERE list_id=?", (page_id,))
 
@@ -1322,6 +1334,8 @@ class Chains:
         seen = set() if seen is None else seen
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
         host, queue = self._place(base or list_row["url"], list_row)
+        if pages >= 1 and only is None:  # a page of the list itself (not a detail's answer), walked (not a redo)
+            self._keep_rows(list_id, pr, base or list_row["url"], self.clock())
         entries = []
         for r in pr.rows:
             res_id = None
@@ -1347,8 +1361,12 @@ class Chains:
         if only is not None:  # the walk is not walked again: its end stays what it was
             pass
         elif pr.next is not None and pr.walk == "postback":
+            look = self._looking(list_id) if pages >= 1 and only is None else None
             if pages >= MAX_PAGES:
                 ended = "max_pages"
+            elif (look is not None and pages >= look["furthest"]
+                  and not self._news(list_id, pr, base or list_row["url"], look["started"])):
+                ended = SEEN_PAGE  # nothing new on this page: the next is not pressed (design §7.2)
             else:
                 aid = self._press(list_id, epoch, pr.next, site, pr, host, queue, warc, offset)
                 entries.append({"res_key": f"pb:pager:{pr.next.row_key}", "how": "postback", "role": "pager",
@@ -1363,6 +1381,232 @@ class Chains:
         for aid in done_details:
             n += self._detail_files(aid, list_id, epoch, list_row, redo=only is not None, left=left, seen=seen)
         return n, ended if pr.walk in ("postback", "one_get") else None
+
+    # ---- a look at a list (periodic updates, stage 1: design 2026-11-16 §7.2)
+    def _looking(self, list_id: int, mode: str = LOOK) -> sqlite3.Row | None:
+        got = self.f.q("SELECT * FROM list_look WHERE list_id=? AND mode=? AND ended_at IS NULL", (list_id, mode))
+        return got[0] if got else None
+
+    def _walk_row(self, list_id: int) -> sqlite3.Row | None:
+        """The walk's numbers so far (pages, rows, claimed): an open look's own, else listwalk's; None for neither."""
+        look = self._looking(list_id)
+        if look is not None:
+            return look
+        lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (list_id,))
+        return lw[0] if lw else None
+
+    def _no_end(self, list_id: int) -> None:
+        """A page stored with no WARC position: the walk claims no end (listwalk NULL); a look closes no_warc."""
+        if self._looking(list_id) is not None:
+            self._close_look(list_id, "no_warc")
+        else:
+            self.f.x("UPDATE listwalk SET ended_by=NULL, ok=0 WHERE list_id=?", (list_id,))
+
+    def look(self, list_id: int) -> bool:
+        """A look at a list walked by button (Task 3 of stage 1): its first pages read again, the next pressed while a
+        page brings news (_news), the record of its last whole walk kept (list_look: the listwalk row and the list
+        page's page_res, put back at any end but a whole walk). Only on a list whose walk ended (not walking, not with
+        no end), with no press waiting and its page got or failed (a walk cut off is resume()'s to finish), and none
+        already open. Returns whether it opened."""
+        lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (list_id,))
+        row = self.f.row_by_id(list_id)
+        if (not lw or lw[0]["ended_by"] in (None, "walking") or row is None or row["state"] not in ("done", "failed")
+                or self.f.q("SELECT 1 FROM list_look WHERE list_id=? AND ended_at IS NULL", (list_id,))
+                or self.f.q("SELECT 1 FROM action WHERE list_id=? AND kind NOT IN ('click', 'data') AND state IN "
+                            "('pending', 'active') LIMIT 1", (list_id,))):
+            return False
+        epoch = (self.f.q("SELECT max(epoch) FROM action WHERE list_id=? AND kind NOT IN ('click', 'data')",
+                          (list_id,))[0][0] or 0) + 1  # the next GET's (_new_epoch)
+        res = [dict(r) for r in self.f.q("SELECT * FROM page_res WHERE page_id=?", (list_id,))]
+        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, epoch_from, saved_walk, saved_res) VALUES "
+                 "(?,?,?,?,?,?)", (list_id, LOOK, self.clock(), epoch, json.dumps([dict(lw[0])], ensure_ascii=False),
+                                   json.dumps(res, ensure_ascii=False)))
+        self.restart_chain(list_id, "look", walk=False)
+        return True
+
+    def _news(self, list_id: int, pr: PageRead, base: str, started: float) -> int:
+        """The rows of a page that are news since a look started: read for the first time, or changed (list_row,
+        written by _keep_rows before this). Judged against the look's start, so a look started again (resume, a
+        failed press) still sees what its first pass saw."""
+        idents = list(dict.fromkeys((scope.canonical(r.href, base) if r.href else None) or f"key:{r.key}"
+                                    for r in pr.rows))
+        if not idents:
+            return 0
+        marks = ",".join("?" * len(idents))
+        return self.f.q(f"SELECT count(*) FROM list_row WHERE list_id=? AND ident IN ({marks}) AND (first_seen >= ? OR "
+                        "changed_at >= ?)", (list_id, *idents, started, started))[0][0]
+
+    def _whole(self, look: sqlite3.Row, list_id: int, pages: int, ended: str) -> bool:
+        """A look that reached the list's end is a whole walk (listwalk written) when it reached the pages the last
+        whole walk had, or rows within max(10, 10%) of its rows; a list that shrank more, or a page saying there is
+        nothing where the last walk had rows, is no whole walk (design §7.5: kept, and a warning)."""
+        saved = json.loads(look["saved_walk"] or "[]")
+        last = saved[0] if saved else {}
+        had = last.get("rows_unique") or 0
+        if ended == "no_rows_ok" and had > 0:
+            return False
+        if pages >= (last.get("pages") or 0):
+            return True
+        return self._rows_unique(list_id) >= had - max(10, had // 10)
+
+    def _close_look(self, list_id: int, ended: str, *, whole: bool = False, note: str = "") -> None:
+        """An open look (either mode) ends so. Unless it walked the list whole: the whole walk's listwalk rows and the
+        page's page_res it saved come back (tonight's entries stand, but the saved pager entries replace tonight's),
+        and the look's failed or mismatched presses no longer count (superseded, 'look: <reason>': not in
+        _may_restart, not in _press's two failures). Any end but seen_page and a whole walk is an event."""
+        got = self.f.q("SELECT * FROM list_look WHERE list_id=? AND ended_at IS NULL", (list_id,))
+        if not got:
+            return
+        lk = got[0]
+        self.f.x("UPDATE list_look SET ended_at=?, ended_by=?, note=coalesce(?, note) WHERE list_id=?",
+                 (self.clock(), ended, (note or "")[:300] or None, list_id))
+        if whole:
+            return
+        with self.f.lock:
+            for w in json.loads(lk["saved_walk"] or "[]"):
+                cols = list(w)
+                self.f.conn.execute(f"INSERT OR REPLACE INTO listwalk({', '.join(cols)}) VALUES "
+                                    f"({', '.join('?' * len(cols))})", tuple(w.values()))
+            saved = json.loads(lk["saved_res"] or "[]")
+            if saved:
+                self.f.conn.execute("DELETE FROM page_res WHERE page_id=? AND res_key LIKE 'pb:pager:%'", (list_id,))
+                self.f.add_page_res(list_id, saved)
+            self.f.conn.execute("UPDATE action SET state='superseded', reason='look: ' || coalesce(reason, '') WHERE "
+                                "list_id=? AND epoch >= ? AND kind NOT IN ('click', 'data') AND state IN ('failed', "
+                                "'mismatch')", (list_id, lk["epoch_from"] or 0))
+        if ended != SEEN_PAGE:
+            row = self.f.row_by_id(list_id)
+            self.f.event("warn", "look_ended", f"{lk['mode']} ended {ended}: the last whole walk's record kept"
+                         + (f" ({note})" if note else ""), row["host"] if row is not None else None,
+                         row["url"] if row is not None else None)
+
+    def close_stale_looks(self) -> int:
+        """Looks that cannot end by themselves (their page's GET never reached page_stored: a 404, a sign-in page, no
+        answer three times; its row neither pending nor active, no press waiting) end not_got:<state>/<status or
+        reason>, the whole walk's record kept. At each run's start and before a selection. Returns how many."""
+        n = 0
+        for lk in self.f.q("SELECT l.list_id, u.state, u.status, u.reason FROM list_look l JOIN url u ON u.id = "
+                           "l.list_id WHERE l.ended_at IS NULL AND u.state NOT IN ('pending', 'active')"):
+            if self.f.q("SELECT 1 FROM action WHERE list_id=? AND kind NOT IN ('click', 'data') AND state IN "
+                        "('pending', 'active') LIMIT 1", (lk["list_id"],)):
+                continue
+            self._close_look(lk["list_id"], f"not_got:{lk['state']}/{lk['status'] or lk['reason'] or ''}")
+            n += 1
+        return n
+
+    def look_get(self, page_id: int, *, started: float | None = None, saved_walk: str | None = None,
+                 after: int | None = None) -> bool:
+        """A look at a page of a list paged by GET (Task 4 of stage 1): the page put back to be fetched again; the
+        group's listwalk is not written while the look is open (get_walk), and comes back as saved unless the looked
+        pages came back well. A page that brings news puts the next page back the same way (_after_get_page). Only on
+        a page whose group's walk ended, got or failed, with no look open in its group. started, saved_walk: a look
+        going on to the next page keeps the first page's; after: the page whose look hands over to this one (its
+        own open look does not count). Returns whether it opened."""
+        row = self.f.row_by_id(page_id)
+        group, _edges = self._group(page_id)
+        marks = ",".join("?" * len(group))
+        walks = [dict(r) for r in self.f.q(f"SELECT * FROM listwalk WHERE list_id IN ({marks}) ORDER BY list_id",
+                                           sorted(group))]
+        if (row is None or row["state"] not in ("done", "failed") or not walks
+                or any(w["ended_by"] in (None, "walking") for w in walks)
+                or self.f.q(f"SELECT 1 FROM list_look WHERE ended_at IS NULL AND list_id IN ({marks}) AND list_id "
+                            f"IS NOT ? LIMIT 1", (*sorted(group), after))):
+            return False
+        res = [dict(r) for r in self.f.q("SELECT * FROM page_res WHERE page_id=?", (page_id,))]
+        self.f.x("INSERT OR REPLACE INTO list_look(list_id, mode, started, saved_walk, saved_res) VALUES (?,?,?,?,?)",
+                 (page_id, LOOK_GET, self.clock() if started is None else started,
+                  saved_walk if saved_walk is not None else json.dumps(walks, ensure_ascii=False),
+                  json.dumps(res, ensure_ascii=False)))
+        self.f.put_back(page_id, "look_get")
+        return True
+
+    def _after_get_page(self, row: sqlite3.Row) -> None:
+        """A page of a GET-paged list stored while a look is open on it: news (_get_news) puts the next page back and
+        the look goes on there; none closes it seen_page. The group's walk is written (get_walk) once no look is open
+        in it."""
+        look = self._looking(row["id"], LOOK_GET)
+        if look is None:
+            return
+        nxt = self._next_get_page(row["id"]) if self._get_news(row["id"], look["started"]) else None
+        self.f.x("UPDATE list_look SET pages=1 WHERE list_id=?", (row["id"],))
+        if nxt is not None and self.look_get(nxt, started=look["started"], saved_walk=look["saved_walk"],
+                                             after=row["id"]):
+            self._close_look(row["id"], "went_on", whole=True)
+            return
+        self._close_look(row["id"], SEEN_PAGE, whole=True)
+        self.get_walk(row["id"])
+
+    def _get_news(self, page_id: int, started: float) -> int:
+        """What a GET-paged list's page brings since a look started: links of the page to pages or files first
+        admitted since (whoever found them; a notice moved down from the page before is no news), and its rows read
+        changed (list_row, a page's own rows when its platform reads them). The page's pager links are not news."""
+        new = self.f.q("SELECT count(DISTINCT u.id) FROM link l JOIN url u ON u.url = l.dst WHERE l.src=? AND "
+                       "u.added_at >= ? AND u.kind IN ('page', 'file') AND u.id NOT IN (SELECT res_id FROM page_res "
+                       "WHERE page_id=? AND role='pager' AND res_id IS NOT NULL)", (page_id, started, page_id))[0][0]
+        changed = self.f.q("SELECT count(*) FROM list_row WHERE list_id=? AND changed_at >= ?",
+                           (page_id, started))[0][0]
+        return new + changed
+
+    def _next_get_page(self, page_id: int) -> int | None:
+        """The page after this one in its GET-paged list (get_walk's numbering: the one numbered one more, else where
+        its 「下一頁」 leads), or None."""
+        _group, edges = self._group(page_id)
+        num, nexts = _numbering(edges)
+        me = num.get(page_id)
+        if me is not None:
+            for dst, n in sorted(num.items()):
+                if n == me + 1:
+                    return dst
+        return next((dst for src, dst in nexts if src == page_id), None)
+
+    def _keep_rows(self, list_id: int, pr: PageRead, base: str, at: float, *, put_back: bool = True) -> int:
+        """Each row of a list page as read now, kept in list_row (periodic updates, stage 1: design 2026-11-16 §7.2): a
+        row never read is added; a row read before whose title, date or category differ is changed (changed_at) and,
+        with put_back, the detail its link names goes back to be fetched again when it was got (row_changed,
+        Frontier.put_back); first_seen and last_seen take in `at`. A row on the page twice (a pinned one) once.
+        Returns the rows changed."""
+        changed = 0
+        done: set[str] = set()
+        with self.f.lock:
+            c = self.f.conn
+            for r in pr.rows:
+                href = scope.canonical(r.href, base) if r.href else None
+                ident = href or f"key:{r.key}"
+                if ident in done:
+                    continue
+                done.add(ident)
+                old = c.execute("SELECT title, date, category FROM list_row WHERE list_id=? AND ident=?",
+                                (list_id, ident)).fetchone()
+                if old is None:
+                    c.execute("INSERT INTO list_row(list_id, ident, row_key, href, title, date, category, first_seen, "
+                              "last_seen) VALUES (?,?,?,?,?,?,?,?,?)",
+                              (list_id, ident, r.key, href, r.title, r.date, r.category, at, at))
+                    continue
+                moved = (old["title"], old["date"], old["category"]) != (r.title, r.date, r.category)
+                c.execute("UPDATE list_row SET row_key=?, href=?, title=?, date=?, category=?, "
+                          "first_seen=min(first_seen, ?), last_seen=max(last_seen, ?), "
+                          "changed_at=CASE WHEN ? THEN ? ELSE changed_at END WHERE list_id=? AND ident=?",
+                          (r.key, href, r.title, r.date, r.category, at, at, moved, at, list_id, ident))
+                if moved:
+                    changed += 1
+                    got = self._fetched_row(href) if (put_back and href) else None
+                    if got is not None:
+                        self.f.put_back(got["id"], "row_changed")
+        return changed
+
+    def _fetched_row(self, url: str) -> sqlite3.Row | None:
+        """The url row the crawler fetched for an address: its own, else the address in the one scheme its host
+        answers on (host.scheme_only, crawler._scheme_rewrite); a row moved to its other scheme (moved_scheme) gives
+        the row it moved to (its final_url)."""
+        row = self.f.row(url)
+        if row is None:
+            h = self.f.host((urlsplit(url).hostname or "").lower())
+            only = h["scheme_only"] if h is not None else None
+            if only and not url.startswith(f"{only}://"):
+                row = self.f.row(f"{only}{url[url.index('://'):]}")
+        if row is not None and row["state"] == "skipped" and row["reason"] == "moved_scheme" and row["final_url"]:
+            row = self.f.row(row["final_url"]) or row
+        return row
 
     def _detail_files(self, action_id: int, list_id: int, epoch: int, list_row, *, redo: bool = False,
                       left: list[str] | None = None, seen: set[int] | None = None) -> int:
@@ -1503,7 +1747,27 @@ class Chains:
 
     def _walk(self, list_id: int, site: str, profile: str, epoch: int, *, pages: int, rows: int | None,
               claimed: int | None, ended: str | None, note: str) -> None:
+        """The walk's state after a page (listwalk). While a look is open on the list (periodic updates, stage 1) it
+        is the look's (list_look): an end the walk reached whole writes listwalk as any walk and closes the look;
+        any other end closes it, listwalk and the page's page_res as the last whole walk left them."""
         ended = ended or "walking"
+        look = self._looking(list_id)
+        if look is not None:
+            self.f.x("UPDATE list_look SET pages=?, rows=?, claimed=?, furthest=max(furthest, ?) WHERE list_id=?",
+                     (pages, rows, claimed, pages, list_id))
+            if ended == "walking":
+                return
+            whole = ended in END_OK and self._whole(look, list_id, pages, ended)
+            if whole:
+                self._write_walk(list_id, site, profile, epoch, pages=pages, rows=rows, claimed=claimed, ended=ended,
+                                 note=note)
+            self._close_look(list_id, ended, whole=whole, note=note)
+            return
+        self._write_walk(list_id, site, profile, epoch, pages=pages, rows=rows, claimed=claimed, ended=ended,
+                         note=note)
+
+    def _write_walk(self, list_id: int, site: str, profile: str, epoch: int, *, pages: int, rows: int | None,
+                    claimed: int | None, ended: str, note: str) -> None:
         ok = None if ended == "walking" else int(ended in END_OK)
         self.f.x("INSERT OR REPLACE INTO listwalk(list_id, site, profile, epoch, pages, rows, rows_unique, claimed, "
                  "ended_by, ok, note, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1824,9 +2088,9 @@ class Chains:
         if prof is None or list_row is None:
             return out
         site = list_row["owner_site"] or scope.site_key(list_row["url"])
-        lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (action["list_id"],))
-        pages = (lw[0]["pages"] or 0) if lw else 0
-        rows = (lw[0]["rows"] or 0) if lw else 0
+        lw = self._walk_row(action["list_id"])  # the walk's numbers so far (an open look's own)
+        pages = (lw["pages"] or 0) if lw else 0
+        rows = (lw["rows"] or 0) if lw else 0
         pr = read_page(prof, a.url, html, site=site, list_url=list_row["url"], step=action["step"])
         self._unpressed(action["list_id"], pr.unplanned_at, pr.texts)
         want = action["step"]
@@ -1859,12 +2123,12 @@ class Chains:
             return out
         if warc is None or a.warc_offset is None:  # nothing to build the next forms from: no end is claimed
             self._walk_end(action, "walking", "no_warc")
-            self.f.x("UPDATE listwalk SET ended_by=NULL, ok=0 WHERE list_id=?", (action["list_id"],))
+            self._no_end(action["list_id"])
             return out
         _n, ended = self._plan(action["list_id"], action["epoch"], pr, list_row, warc, a.warc_offset,
                                pages=pages + 1, base=a.url)
         self._walk(action["list_id"], site, prof.name, action["epoch"], pages=pages + 1, rows=rows + len(pr.rows),
-                   claimed=pr.claimed if pr.claimed is not None else (lw[0]["claimed"] if lw else None),
+                   claimed=pr.claimed if pr.claimed is not None else (lw["claimed"] if lw else None),
                    ended=ended, note=note)
         return out
 
@@ -1950,6 +2214,11 @@ class Chains:
         out = Followup(action["list_id"], note=error)
         if action["kind"] in SOLO_KINDS:  # no chain's: nothing to start again from a GET
             return out
+        if action["kind"] == "pager" and self._looking(action["list_id"]) is not None:
+            # a look's page that did not come: the look ends, nothing starts again, and the press counts neither in
+            # the list's one restart nor in its page's two failures (_close_look)
+            self._close_look(action["list_id"], "post_failed", note=f"page {action['step']}: {error}")
+            return out
         if self._may_restart(action["list_id"]):
             self.restart_chain(action["list_id"], f"{action['kind']} {action['row_key'][:12]} failed: {error}")
             out.restart = True
@@ -1959,13 +2228,13 @@ class Chains:
         return out
 
     def _walk_end(self, action, ended: str, note: str) -> None:
-        """The walk of an action's list ends so, its counts as they stand."""
-        lw = self.f.q("SELECT * FROM listwalk WHERE list_id=?", (action["list_id"],))
+        """The walk of an action's list ends so, its counts as they stand (an open look's own)."""
+        lw = self._walk_row(action["list_id"])
         row = self._list_row(action)
         site = (row["owner_site"] if row is not None else None) or action["site"]
         self._walk(action["list_id"], site, (action["profile"] or "").partition("/")[0], action["epoch"],
-                   pages=lw[0]["pages"] if lw else 0, rows=lw[0]["rows"] if lw else None,
-                   claimed=lw[0]["claimed"] if lw else None, ended=ended, note=note)
+                   pages=(lw["pages"] or 0) if lw else 0, rows=lw["rows"] if lw else None,
+                   claimed=lw["claimed"] if lw else None, ended=ended, note=note)
 
     def _may_restart(self, list_id: int) -> bool:
         """One automatic start again per list (§7.5 step 8): true while only the newest epoch has a failed or
@@ -1974,10 +2243,16 @@ class Chains:
                      "('failed','mismatch')", (list_id,))[0][0]
         return n <= 1
 
-    def restart_chain(self, list_id: int, why: str, *, walk: bool = True) -> None:
+    def restart_chain(self, list_id: int, why: str, *, walk: bool = True, keep_look: bool = True) -> None:
         """The chain starts again from its GET (§7.5 steps 8, 9): its presses left are superseded, its list page's url
         row is pending again (reason chain_restart, prio 0); the GET's answer opens a new epoch (page_stored). walk
-        False (`retry download`): the list is not walked again, its listwalk row stays as it is."""
+        False (`retry download`): the list is not walked again, its listwalk row stays as it is. A look open on the
+        list (periodic updates, stage 1) goes on, counting its pages again from the GET, its start and the whole
+        walk's record kept (the automatic starts again: resume, a failed or mismatched press); keep_look False (a
+        person's retry) closes it first (retried), and the list is walked as asked."""
+        if not keep_look:
+            self._close_look(list_id, "retried")
+        looking = self._looking(list_id) is not None
         with self.f.lock:
             self.f.conn.execute("UPDATE action SET state='superseded', reason=? WHERE list_id=? AND kind NOT IN ('click', 'data') "
                                 "AND state IN ('pending','active')", (f"restart: {why}"[:200], list_id))
@@ -1985,7 +2260,10 @@ class Chains:
             # would fail for good on one timeout); one still waiting for its first answer keeps it
             self.f.conn.execute("UPDATE url SET state='pending', reason='chain_restart', prio=0, next_at=0, attempts="
                                 "CASE WHEN state='done' THEN 0 ELSE attempts END WHERE id=?", (list_id,))
-            if walk:
+            if looking:
+                self.f.conn.execute("UPDATE list_look SET pages=0, rows=NULL, note=? WHERE list_id=?",
+                                    (f"restart: {why}"[:200], list_id))
+            elif walk:
                 self.f.conn.execute("UPDATE listwalk SET ended_by='walking', ok=NULL, note=?, at=? WHERE list_id=?",
                                     (f"restart: {why}"[:200], self.clock(), list_id))
         row = self.f.row_by_id(list_id)
@@ -2026,7 +2304,7 @@ class Chains:
             self.f.x("UPDATE action SET state='superseded', reason='retried: ' || coalesce(reason, '') WHERE list_id=? "
                      "AND kind NOT IN ('click', 'data') AND state IN ('failed','mismatch')", (list_id,))
             self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{list_id}",))  # the whole walk, every press
-            self.restart_chain(list_id, f"retry {ended}")
+            self.restart_chain(list_id, f"retry {ended}", keep_look=False)
         return len(list_ids)
 
     def retry_post_failed(self, list_ids: Iterable[int] | None = None) -> int:
@@ -2072,7 +2350,7 @@ class Chains:
                     self.f.x("UPDATE action SET state='superseded', reason=substr('retried: ' || coalesce(reason, ''), "
                              "1, 200) WHERE id=?", (aid,))
             self.f.meta(f"{REDO_KEY}{list_id}", json.dumps(sorted(keys)))
-            self.restart_chain(list_id, f"retry download: {len(keys)}", walk=False)
+            self.restart_chain(list_id, f"retry download: {len(keys)}", walk=False, keep_look=False)
         return len(todo), sum(len(k) for k in todo.values())
 
     def _redo(self, list_id: int) -> frozenset[str] | None:
@@ -2155,7 +2433,7 @@ class Chains:
             todo[r["id"]].add(f"{MENU_KEY}{m.name}")
         for page_id in sorted(todo):
             self.f.x("DELETE FROM meta WHERE key=?", (f"{REDO_KEY}{page_id}",))
-            self.restart_chain(page_id, f"retry unpressed: {len(todo[page_id])}")
+            self.restart_chain(page_id, f"retry unpressed: {len(todo[page_id])}", keep_look=False)
         return len(todo), sum(len(keys) for keys in todo.values())
 
     def retry_clicks(self) -> int:
@@ -2293,25 +2571,8 @@ class Chains:
         rows = {r["id"]: r for r in self.f.q(
             f"SELECT id, url, state, status, kind, page_role, owner_site, reason FROM url WHERE id IN "
             f"({','.join('?' * len(group))})", sorted(group))}
-        num: dict[int, int] = {}
-        nexts = []
-        for src, dst, text in edges:
-            t = norm(text).strip("[]() ")
-            if t.isdigit() and dst not in num:
-                num[dst] = int(t)
-            elif any(w in t.lower() for w in links.NEXT_WORDS):
-                nexts.append((src, dst))
-        changed = True
-        while changed:
-            changed = False
-            for src, dst in nexts:
-                if src in num and dst not in num:
-                    num[dst] = num[src] + 1
-                    changed = True
+        num, nexts = _numbering(edges)
         sources = {s for s, _d, _t in edges}
-        for pid in sorted(sources):
-            if pid not in num and 1 not in num.values():
-                num[pid] = 1
 
         def stored(i: int) -> bool:
             r = rows.get(i)
@@ -2335,6 +2596,9 @@ class Chains:
             ended = "last_page"
         page_rows = [i for i in group if stored(i) and (rows[i]["page_role"] == "list" or i in sources)]
         n_pages = len([i for i in group if stored(i)])
+        if self.f.q(f"SELECT 1 FROM list_look WHERE mode=? AND ended_at IS NULL AND list_id IN "
+                    f"({','.join('?' * len(group))}) LIMIT 1", (LOOK_GET, *sorted(group))):
+            return ended  # a look is reading the list again: its walk is written once the look is done (stage 1)
         for i in page_rows:
             site = rows[i]["owner_site"] or ""
             prof = profiles.profile_for(rows[i]["url"])  # the platform the page is written on (gaps ② ③ of 11-08)
@@ -2366,6 +2630,76 @@ class Chains:
                         seen.add(x)
                         todo.append(x)
         return seen, edges
+
+
+def _epoch(stamp: str | None) -> float:
+    try:
+        return datetime.fromisoformat(stamp).timestamp() if stamp else 0.0
+    except ValueError:
+        return 0.0
+
+
+def backfill_list_rows(frontier: Frontier, root: Path,
+                       read: Callable[[str, int], tuple[str, int, dict[str, str], bytes]] | None = None) -> int:
+    """list_row for an archive walked before it (periodic updates, stage 1; the lab's ledger): every stored GET of a
+    list page and every pager answer its walk took (the page asked for, from this list: _pager_answer's own check),
+    read by the page's profile, oldest first, each row's times its answer's (url.fetched_at, action.done); nothing
+    is put back. Returns the rows list_row holds after."""
+    chains = Chains(frontier, root, read=read)
+    readings: list[tuple[float, int, int | None, str, int]] = []
+    for r in frontier.q("SELECT id, fetched_at, warc, warc_offset FROM url WHERE (page_role='list' OR id IN "
+                        "(SELECT list_id FROM listwalk)) AND state='done' AND status=200 AND warc IS NOT NULL AND "
+                        "warc_offset IS NOT NULL"):
+        readings.append((_epoch(r["fetched_at"]), r["id"], None, r["warc"], r["warc_offset"]))
+    for a in frontier.q("SELECT list_id, step, done, warc, warc_offset FROM action WHERE kind='pager' AND state='done' "
+                        "AND sniff='html' AND warc IS NOT NULL AND warc_offset IS NOT NULL"):
+        readings.append((a["done"] or 0.0, a["list_id"], a["step"], a["warc"], a["warc_offset"]))
+    for at, list_id, step, warc, offset in sorted(readings, key=lambda x: (x[0], x[1], x[2] or 0)):
+        lr = frontier.row_by_id(list_id)
+        prof = profiles.profile_for(lr["url"]) if lr is not None else None
+        if prof is None:
+            continue
+        try:
+            url, _status, headers, body = chains.read(warc, offset)
+        except (OSError, ValueError, StopIteration):
+            continue
+        site = lr["owner_site"] or scope.site_key(lr["url"])
+        html = as_text(body, headers.get("content-type"))
+        if step is None:
+            pr = read_page(prof, lr["url"], html, site=site, list_url=lr["url"])
+        else:
+            pr = read_page(prof, url, html, site=site, list_url=lr["url"], step=step)
+            took = pr.current == step or (pr.current is None and pr.pager_how == "next")
+            if answer_elsewhere(pr, url) is not None or not took:
+                continue  # an answer the walk did not take (another program's grid, another page shown)
+        chains._keep_rows(list_id, pr, url if step is not None else lr["url"], at, put_back=False)
+    return frontier.q("SELECT count(*) FROM list_row")[0][0]
+
+
+def _numbering(edges: Iterable[tuple[int, int, str]]) -> tuple[dict[int, int], list[tuple[int, int]]]:
+    """The page number of each page of a GET-paged list from its pager links (get_walk): a link's digit names the
+    page it leads to, a 「下一頁」 the page after its own, and a page that only links (a source) with no page 1 known is
+    page 1. Returns (numbers by url id, the 下一頁 links)."""
+    edges = list(edges)
+    num: dict[int, int] = {}
+    nexts = []
+    for src, dst, text in edges:
+        t = norm(text).strip("[]() ")
+        if t.isdigit() and dst not in num:
+            num[dst] = int(t)
+        elif any(w in t.lower() for w in links.NEXT_WORDS):
+            nexts.append((src, dst))
+    changed = True
+    while changed:
+        changed = False
+        for src, dst in nexts:
+            if src in num and dst not in num:
+                num[dst] = num[src] + 1
+                changed = True
+    for pid in sorted({s for s, _d, _t in edges}):
+        if pid not in num and 1 not in num.values():
+            num[pid] = 1
+    return num, nexts
 
 
 def later_get_pages(entries: Iterable[Mapping]) -> set[int]:

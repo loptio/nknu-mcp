@@ -12,7 +12,8 @@ page uses (page_res), the ASP.NET buttons pressed (action: POSTs only, the url t
 to its last page (listwalk), Drive items, the id probes, where each seed came from (seed_src), the run's facts
 (meta), what the browser check saw on each page it opened (js_page), each site's last reconciliation
 (reconcile_site), and a person's word that a row's result is the school's (review_mark); for the periodic updates,
-each answer a row held before a fetch could replace it (url_version, VERSIONS: kept apart). What a row came to is
+each answer a row held before a fetch could replace it (url_version) and each list row it read (list_row):
+UPDATE_TABLES, kept apart. What a row came to is
 never stored: each open builds the views url_result, action_result, page_resource and page_completeness from
 outcome.py (a read-only open, in its own temp schema), so every reader applies the same rules.
 """
@@ -216,18 +217,36 @@ CREATE INDEX IF NOT EXISTS drive_item_parent ON drive_item(parent_id);
 # standing: a later copy of the same answer comes after a fetch that got none, and may carry that fetch's marks on the
 # row (fetched_at cleared or now, a 3xx's status) 【Claude】. state, reason and attempts are the row's when it was set
 # aside, never its answer's result (which is worked out from the evidence: status, flags, kind, sniff …). Never
-# changed or deleted. Kept apart from TABLES: only the crawler writes it and no reader needs it yet (the export reads
-# it from stage 0b), so a read-only view of a frontier.db written before it opens as it did (_missing).
+# changed or deleted. UPDATE_TABLES is kept apart from TABLES: only the crawler writes its tables and no reader needs
+# them yet (the export reads them from stage 0b), so a read-only view of a frontier.db written before them opens as it
+# did (_missing).
 KEPT_COLS = ("state", "reason", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc", "warc_offset",
              "warc_len", "title", "flags", "fetched_at", "n_links", "n_postbacks", "kind", "page_role", "page_type",
              "sniff", "text_chars", "filename")
-VERSIONS = """
+UPDATE_TABLES = """
 CREATE TABLE IF NOT EXISTS url_version(
   id INTEGER PRIMARY KEY, url_id INTEGER NOT NULL, kept_at TEXT NOT NULL,
   state TEXT, reason TEXT, attempts INTEGER, status INTEGER, final_url TEXT, ctype TEXT, bytes INTEGER, sha256 TEXT,
   warc TEXT NOT NULL, warc_offset INTEGER NOT NULL, warc_len INTEGER, title TEXT, flags TEXT, fetched_at TEXT,
   n_links INTEGER, n_postbacks INTEGER, kind TEXT, page_role TEXT, page_type TEXT, sniff TEXT, text_chars INTEGER,
   filename TEXT, UNIQUE(url_id, warc, warc_offset));
+-- each row of a list as the crawler last read it (periodic updates, stage 1: design 2026-11-16 §7.2): a list page's id
+-- (a list walked by button: all its pages; a page of a list paged by GET: that page), the row's identity (its link,
+-- canonical; a row with no link: key:<row key>), what it said, when it was first and last read, and when its title,
+-- date or category last changed (a changed row's detail is fetched again: postback.Chains._keep_rows). Never deleted:
+-- a row gone from the list only stops being read (CLAUDE.md: a notice that left a list is never deleted)
+CREATE TABLE IF NOT EXISTS list_row(list_id INTEGER NOT NULL, ident TEXT NOT NULL, row_key TEXT, href TEXT, title TEXT,
+  date TEXT, category TEXT, first_seen REAL, last_seen REAL, changed_at REAL,
+  PRIMARY KEY(list_id, ident)) WITHOUT ROWID;
+-- a look at a list (periodic updates, stage 1: design 2026-11-16 §7.2, postback.Chains.look): its first pages read
+-- again until a page brings nothing new, the record of the list's last whole walk kept. One row per list, the last
+-- look: mode look (a list walked by button: list_id its list page) or look_get (a page of a list paged by GET); when it
+-- started (news is what came since), its first epoch (the look's presses), its own count of pages and rows, the
+-- furthest page it reached, how and when it ended (seen_page: a page with nothing new), and what it saved to put back
+-- unless it walked the list whole (saved_walk: the listwalk rows as JSON; saved_res: the page's page_res)
+CREATE TABLE IF NOT EXISTS list_look(list_id INTEGER PRIMARY KEY, mode TEXT NOT NULL, started REAL NOT NULL,
+  ended_at REAL, epoch_from INTEGER, pages INTEGER NOT NULL DEFAULT 0, rows INTEGER, claimed INTEGER,
+  furthest INTEGER NOT NULL DEFAULT 0, ended_by TEXT, saved_walk TEXT, saved_res TEXT, note TEXT);
 """
 _KEEP = (f"INSERT OR IGNORE INTO url_version(url_id, kept_at, {', '.join(KEPT_COLS)}) "
          f"SELECT id, ?, {', '.join(KEPT_COLS)} FROM url WHERE id = ? AND warc IS NOT NULL AND warc_offset IS NOT NULL")
@@ -361,8 +380,9 @@ def _missing(conn: sqlite3.Connection, schema: str = TABLES) -> list[tuple[str, 
 
 
 def _migrate(conn: sqlite3.Connection, schema: str = TABLES) -> None:
-    """Add the columns an older frontier.db lacks (tables are created by the schema itself: TABLES, VERSIONS). A column
-    that cannot be added (part of the key, or NOT NULL without a default) stops here, before any request goes out."""
+    """Add the columns an older frontier.db lacks (tables are created by the schema itself: TABLES, UPDATE_TABLES). A
+    column that cannot be added (part of the key, or NOT NULL without a default) stops here, before any request goes
+    out."""
     for table, col in _missing(conn, schema):
         if col is None:
             continue
@@ -397,11 +417,11 @@ class Frontier:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(TABLES)
-        self.conn.executescript(VERSIONS)  # the crawler's own table, never asked of a read-only view (_missing)
+        self.conn.executescript(UPDATE_TABLES)  # the crawler's own tables, never asked of a read-only view
         if new:  # made by this version: a round-1 archive (an old file opened here never becomes one)
             self.conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (ROUND_KEY, ROUND))
         _migrate(self.conn)
-        _migrate(self.conn, VERSIONS)  # a copy names every column (_KEEP): never one an older table lacks
+        _migrate(self.conn, UPDATE_TABLES)  # a copy names every column (_KEEP): never one an older table lacks
         self.conn.executescript(INDEXES)
         outcome.create_views(self.conn)
 
@@ -504,9 +524,17 @@ class Frontier:
                 self.activate(row["id"])
             return row
 
+    def put_back(self, uid: int, reason: str) -> bool:
+        """A row taken again for a fetch it already had (periodic updates, stage 1: a list row changed, a page looked at
+        again, a home page): pending, due now, and, when it was got, its tries start again (as postback.restart_chain:
+        the review of 4be5e34, Important 2). Only a row that was got or failed; False for any other (waiting, held,
+        left for round two, skipped by a rule)."""
+        return self.x("UPDATE url SET state='pending', reason=?, next_at=0, attempts=CASE WHEN state='done' THEN 0 "
+                      "ELSE attempts END WHERE id=? AND state IN ('done', 'failed')", (reason, uid)) > 0
+
     def activate(self, uid: int) -> None:
         """A row taken to be fetched: the answer it holds, when it holds one (put back to be fetched again), copied into
-        url_version first while every column still says it (VERSIONS), then the row active. next_for's way, and the
+        url_version first while every column still says it, then the row active. next_for's way, and the
         crawler's for the row it takes by hand (the other scheme's: crawler._move_scheme, _switch_scheme; review of
         4be5e34, Important 1): no row is fetched without passing here."""
         with self.lock:
@@ -515,7 +543,7 @@ class Frontier:
 
     def finish(self, uid: int, **cols) -> None:
         """The row's columns after a fetch (or a reading again: rejudge). When they move its pointer to another answer
-        (warc, warc_offset), the answer it held is copied into url_version first (VERSIONS): a row made active without
+        (warc, warc_offset), the answer it held is copied into url_version first: a row made active without
         next_for (the other scheme's row, crawler._move_scheme), or an answer put back (crawler._gsimg_reread_end)."""
         cols.setdefault("fetched_at", utc_now())
         sets = ", ".join(f"{k}=?" for k in cols)

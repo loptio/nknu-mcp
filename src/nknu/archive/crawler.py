@@ -1150,6 +1150,8 @@ class Crawler:
         chains = self.chains.resume(ids=self.only)
         if chains:
             log.info("%d lists start their walk again from their GET (left pressing by the last run)", chains)
+        if self.only is None and self.chains.close_stale_looks():  # periodic updates, stage 1: looks no answer ends
+            log.info("looks whose list page never came back closed, the last whole walks' records kept")
         # §7.6: no key, the googleapis queue waits (no failure); --only: the listed rows' reasons only
         google_api.hold_for_key(self.frontier, self.clock(), ids=self.only)
         self._skip_aliases()  # 11-03 P05: a row under a spelling canonical() now merges is never fetched
