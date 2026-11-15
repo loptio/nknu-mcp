@@ -11,9 +11,15 @@ localhost, [::1]): the lab's Docker container listens on 0.0.0.0, Docker forward
 it, and the Mac comes in through an SSH tunnel, as with the archive viewer. An archived page is shown under a policy
 that lets it load nothing.
 
+A third page, 網頁核查 (design docs/superpowers/specs/2026-11-16-page-check-design.md), shows one page of the crawler's
+archive as it was stored, its regions and its links, images and buttons coloured by the crawler's ledger (nknu.ops.
+pagecheck, nknu.ops.check_page). The archive (--archive: the folder holding frontier.db, whose url.warc paths start
+there) is read only; the stored page is served from here (/check/raw) under a policy that lets it load nothing but our
+own archived images (/check/res), so the browser never reaches a school server from it.
+
     python -m nknu.ops.web [--db research/pipeline_2026-11-02/aca.db] [--root .] [--host 127.0.0.1] [--port 8878]
                            [--viewer-url http://127.0.0.1:18877] [--questions DIR] [--gold FILE]
-                           [--no-dense] [--no-rerank]
+                           [--archive /crawl/archive] [--no-dense] [--no-rerank]
 """
 
 from __future__ import annotations
@@ -33,11 +39,13 @@ from urllib.parse import quote
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
+from nknu.ops import pagecheck
 from nknu.ops.board import Board
+from nknu.ops.check_page import check_body, empty_raw
 from nknu.ops.explain import explain_search
 from nknu.ops.look import e, icon, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
@@ -58,10 +66,16 @@ MAX_LIMIT = 50  # the most results a page or the API explains at once 【Claude�
 # what an archived page is shown under: it loads nothing and runs nothing (the archive viewer's PREVIEW_CSP)
 ARCHIVED_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; "
                 "frame-src 'none'; form-action 'none'; sandbox")
+# what 網頁核查's archived page is shown under (design section 四): nothing but our own images and its inline styles, in
+# a frame of this server's only; and an archived image, which may be an SVG, as a document that runs nothing
+CHECK_RAW_CSP = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'self'; "
+                 "form-action 'none'; base-uri 'none'")
+CHECK_RES_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
 TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
          ".gif": "image/gif", ".webp": "image/webp", ".txt": "text/plain; charset=utf-8"}
 OWN_CODE = "nknu/ops/"  # the tools' own package: never the pipeline's (install_state)
 STATE_SECONDS = 60.0  # how long an install state is kept before the two source trees are compared again 【Claude】
+CHECK_SECONDS, CHECK_KEEP = 120, 8  # a check kept this long, this many at most 【Claude】
 EXAMPLES = 5  # how many documents the trace form offers to start from 【Claude】
 
 
@@ -182,13 +196,15 @@ def examples(conn: sqlite3.Connection, questions: list[dict]) -> list[dict]:
 def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Path | None = None,
                gold: Path | None = None, config: HybridConfig | None = None, models: dict | None = None,
                today_fn: Callable[[], date] = today_tpe, code_root: Path | None = None,
-               pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "") -> Starlette:
+               pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "",
+               archive: Path | None = None) -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
     browser reaches the archive viewer ('' : no link); questions and gold: load_questions; config: the search's
     settings (None: the server's); models: embedder and reranker in place of the process's shared ones (tests);
     code_root and pipeline_src: the tree this code runs from (default: the running package's) and the pipeline's
     source (default: root / src), compared by install_state; overview_url and tables_url: where the owner's browser
-    reaches 资料总览 and Datasette, linked in the top bar with the archive viewer ('' : no link)."""
+    reaches 资料总览 and Datasette, linked in the top bar with the archive viewer ('' : no link); archive: the
+    crawler's archive folder (frontier.db and its WARC files) 網頁核查 reads, None: the page says it is not mounted."""
     db_path, root = Path(db_path), Path(root)
     links = (("資料總覽", overview_url), ("資料庫", tables_url), ("爬蟲存檔", viewer_url))
     code_root = Path(code_root) if code_root is not None else REPO_ROOT
@@ -370,6 +386,85 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return Response(data, media_type="application/octet-stream",
                         headers={**headers, "Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
 
+    def check_ref(request: Request) -> str:
+        p = request.query_params
+        return (p.get("url") or p.get("ref") or "").strip()
+
+    # one read-only ledger connection for every check and archived image, and the last few checks kept a short while:
+    # the panel and its frame (/check/raw) ask for the same check, which used to be made twice (the review of 11-16)
+    ledgers = pagecheck.LedgerCache(archive) if archive is not None else None
+    recent: dict[str, tuple[tuple, float, pagecheck.Check]] = {}
+    recent_lock = threading.Lock()
+
+    def page_checked(ref: str) -> pagecheck.Check:
+        try:
+            stamp = (ledgers.stamped() if ledgers is not None else None, db_path.stat().st_mtime_ns)
+        except OSError:
+            stamp = (None, None)
+        with recent_lock:
+            hit = recent.get(ref)
+            if hit is not None and hit[0] == stamp and time.monotonic() - hit[1] < CHECK_SECONDS:
+                return hit[2]
+        library = connect(db_path)
+        try:
+            got = pagecheck.check(archive, ref, library=library, ledgers=ledgers)
+        finally:
+            library.close()
+        with recent_lock:
+            recent.pop(ref, None)
+            recent[ref] = (stamp, time.monotonic(), got)
+            while len(recent) > CHECK_KEEP:
+                recent.pop(next(iter(recent)))
+        return got
+
+    def check_panel(request: Request) -> Response:
+        """網頁核查 (design section 一): the box, and for an address or a document id its check."""
+        ref = check_ref(request)
+        summary = page_checked(ref).summary if ref else None
+        conn = connect(db_path)
+        try:
+            return shell(f"{ref} · 網頁核查" if ref else "網頁核查", check_body(summary, value=ref), db_info(conn),
+                         tab="check", links=links)
+        finally:
+            conn.close()
+
+    def check_raw(request: Request) -> Response:
+        """The archived page made safe (pagecheck.Marked.html), for the panel's frame."""
+        got = page_checked(check_ref(request))
+        page = got.html or empty_raw(got.summary.get("state_words", ""))
+        return Response(page, media_type="text/html; charset=utf-8",
+                        headers={"Content-Security-Policy": CHECK_RAW_CSP, "X-Content-Type-Options": "nosniff",
+                                 "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
+    def check_res(request: Request) -> Response:
+        """An archived image's bytes, its type read from them; nothing else (404)."""
+        found = pagecheck.archived_image(archive, request.query_params.get("u", ""), ledgers=ledgers)
+        if found is None:
+            return PlainTextResponse("not found", status_code=404, headers={"X-Content-Type-Options": "nosniff"})
+        body, kind = found
+        return Response(body, media_type=kind,
+                        headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": CHECK_RES_CSP,
+                                 "Cache-Control": "private, max-age=3600"})
+
+    def check_api(request: Request) -> Response:
+        return JSONResponse(page_checked(check_ref(request)).summary)
+
+    def check_go(request: Request) -> Response:
+        """Where the live window goes for what the address box was given (design section 三): a document id or an
+        address without its scheme resolved here, as /check resolves it, then sent on to the school (302); nothing to
+        open: 204, the window stays where it is. The browser lets the box's submit steer the window to this address,
+        never to an answer that comes later."""
+        library = connect(db_path)
+        try:
+            url, _doc = pagecheck.resolve_ref(check_ref(request), library)
+        finally:
+            library.close()
+        target = pagecheck.live_url(pagecheck.press_label(url)[0])
+        if not target:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        return RedirectResponse(target, status_code=302,
+                                headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
     def guarded(endpoint: Callable[[Request], Response], api: bool) -> Callable[[Request], Response]:
         """endpoint, whose failure is said in words (as JSON for the commands, as a page for the owner) and logged
         whole: one odd record never leaves the owner with a bare 500."""
@@ -395,7 +490,12 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/api/search", guarded(search_api, True), methods=["GET"]),
               Route("/api/trace", guarded(trace_api, True), methods=["GET"]),
               Route("/api/board", guarded(board_api, True), methods=["GET"]),
-              Route("/file", guarded(original, True), methods=["GET"])]
+              Route("/file", guarded(original, True), methods=["GET"]),
+              Route("/check", guarded(check_panel, False), methods=["GET"]),
+              Route("/check/raw", guarded(check_raw, True), methods=["GET"]),
+              Route("/check/res", guarded(check_res, True), methods=["GET"]),
+              Route("/check/go", guarded(check_go, True), methods=["GET"]),
+              Route("/api/check", guarded(check_api, True), methods=["GET"])]
     app = Starlette(routes=routes)
     app.add_middleware(LocalOnly)
     return app
@@ -415,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tables-url", default="", help="从你的浏览器看 Datasette 的网址（顶栏链过去）")
     ap.add_argument("--questions", type=Path, default=None, help="测试题的资料夹（research/eval_2026-11-01）")
     ap.add_argument("--gold", type=Path, default=None, help="标准答案的档（默认是测试题资料夹里的 gold_docs.json）")
+    ap.add_argument("--archive", default="",
+                    help="爬虫存档的资料夹（放 frontier.db 的那个；账本里的 WARC 路径从它算起，实验室是 /crawl/archive）；"
+                         "不给就是网页核查那一页说没有挂上存档")
     add_model_flags(ap)
     args = ap.parse_args(argv)
     if not args.db.is_file():
@@ -423,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     app = create_app(args.db, args.root, viewer_url=args.viewer_url, questions=args.questions, gold=args.gold,
                      overview_url=args.overview_url, tables_url=args.tables_url,
-                     config=config_from(args))
+                     config=config_from(args), archive=Path(args.archive) if args.archive else None)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

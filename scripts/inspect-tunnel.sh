@@ -5,15 +5,20 @@ set -euo pipefail
 
 HOST="${NKNU_LAB_HOST:-nknu-lab}"
 FORWARDS=(-L 18001:127.0.0.1:8001 -L 18766:127.0.0.1:8766 -L 18878:127.0.0.1:8878)
-# 爬虫检视器（逐份追踪第一步会链过去）：已经另外开着隧道就不重复开
+# 资料总览（deploy/lab-overview）：已经另外开着隧道就不重复开
+if ! nc -z 127.0.0.1 18879 >/dev/null 2>&1; then
+  FORWARDS+=(-L 18879:127.0.0.1:8879)
+fi
+# 爬虫检视器（文件追踪第一步会链过去）：已经另外开着隧道就不重复开
 if ! nc -z 127.0.0.1 18877 >/dev/null 2>&1; then
   FORWARDS+=(-L 18877:127.0.0.1:8877)
 fi
 
 cat <<'EOF'
 正在连实验室电脑。连上以后（没有报错、停在这里就是连上了；Ctrl+C 结束）：
-  翻库里的表（Datasette）   http://127.0.0.1:18001
-  检视台（搜索试验台、逐份追踪） http://127.0.0.1:18878
+  资料库（Datasette）       http://127.0.0.1:18001
+  检视台（搜索测试、文件追踪、网页核查） http://127.0.0.1:18878
+  资料总览（每分钟自己更新）   http://127.0.0.1:18879
   爬虫检视器              http://127.0.0.1:18877
   MCP Inspector：另开一个终端机跑
       npx @modelcontextprotocol/inspector --server-url http://127.0.0.1:18766/mcp --transport http

@@ -517,7 +517,9 @@ def kind_tag(kind: str | None, words: dict[str, str]) -> str:
 
 # the two tools: (key, address, name, what it does, floating over the name)
 TOOLS = (("search", "/search", "搜尋測試", "問一個問題，看搜尋怎麼找、怎麼排"),
-         ("trace", "/trace", "文件追蹤", "挑一份文件，看它從抓取到搜尋的每一步"))
+         ("trace", "/trace", "文件追蹤", "挑一份文件，看它從抓取到搜尋的每一步"),
+         # design docs/superpowers/specs/2026-11-16-page-check-design.md section 一 (owner 11-16)
+         ("check", "/check", "網頁核查", "看存檔裡的一頁：哪些連結、圖片、按鈕抓到了，哪些沒有；旁邊開真實網頁對照"))
 # the other panels in the top bar, by name (nknu.ops.web.create_app gives their addresses): what each is
 PANEL_TIPS = {"資料總覽": "每個網站收了多少、缺多少", "資料庫": "庫裡的每張表：篩選、找網站、看沒日期的原因",
               "爬蟲存檔": "爬蟲抓下來的網頁原樣"}

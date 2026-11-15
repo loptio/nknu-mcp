@@ -89,13 +89,22 @@ services:
     ports:
       - "127.0.0.1:8766:8766"
 
-  # 检视台：搜索测试和文件追踪两页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
+  # 检视台：搜索测试、文件追踪、网页核查三页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
+  # 网页核查读爬虫的账本和 WARC（设计 docs/superpowers/specs/2026-11-16-page-check-design.md 第四节），两个都只读挂载：
+  # 账本在磁碟区 nknu-crawl 的 /crawl/archive/frontier.db，WARC 在 D:\nknu-crawl\warc（爬虫看板也是这样挂）。
+  # 磁碟区是只读的，账本的 -wal、-shm 不在时程序改用 immutable=1 读（爬虫没在跑时这样读是对的）。
   ops:
     <<: *ours
+    volumes:
+      - nknu-work:/work:ro
+      - nknu-models:/models:ro
+      - nknu-crawl:/crawl:ro
+      - D:/nknu-crawl/warc:/crawl/archive/warc:ro
     command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
               "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
               "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
-              "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json"]
+              "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
+              "--archive", "/crawl/archive"]
     ports:
       - "127.0.0.1:8878:8878"
 
@@ -103,4 +112,6 @@ volumes:
   nknu-work:
     external: true
   nknu-models:
+    external: true
+  nknu-crawl:   # 爬虫的存档（只读挂给检视台）
     external: true

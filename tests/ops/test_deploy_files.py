@@ -102,6 +102,21 @@ def test_the_two_services_of_ours_listen_inside_the_container_only_for_docker():
     assert "--questions research/eval_2026-11-01 --gold research/pipeline_2026-11-02/gold_docs.json" in ops
 
 
+def test_only_the_page_check_reads_the_crawlers_archive_and_only_read_only():
+    """網頁核查 (design 2026-11-16-page-check-design.md section 四): the ledger's volume and the WARC folder, both
+    read-only, on the ops service alone, and the page is told where the archive is."""
+    compose = _compose()
+    services = compose["services"]
+    ops = services["ops"]["volumes"]
+    assert "nknu-crawl:/crawl:ro" in ops and "D:/nknu-crawl/warc:/crawl/archive/warc:ro" in ops
+    assert "nknu-work:/work:ro" in ops and "nknu-models:/models:ro" in ops
+    assert all(v.endswith(":ro") for v in ops)
+    for name in ("mcp", "datasette"):
+        assert not any("crawl" in v for v in services[name]["volumes"]), name
+    assert compose["volumes"]["nknu-crawl"] == {"external": True}
+    assert "--archive /crawl/archive" in " ".join(services["ops"]["command"])
+
+
 def test_datasette_is_pinned_and_reads_its_settings_from_the_volume():
     datasette = _compose()["services"]["datasette"]
     assert datasette["image"] == "datasetteproject/datasette:0.65.5"

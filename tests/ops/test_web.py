@@ -434,3 +434,10 @@ def test_the_words_the_index_folds_to_simplified_are_shown_in_traditional(lib):
     assert "value='化學系 選課'" in page
     report = lib.get("/api/search", params={"q": "化學系 選課"}).json()
     assert "化学" in report["understood"]["words"] and report["understood"]["topic"] == ["选课"]
+
+
+def test_the_trace_page_leads_to_the_page_check_of_its_address(site):
+    """design 2026-11-16-page-check-design.md section 一: a document with an address offers 「核查這一頁」."""
+    page = site.get("/trace", params={"ref": NOTICE_URL}).text
+    assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>文件追蹤" in page
+    assert ">網頁核查</a>" in page  # the third tab

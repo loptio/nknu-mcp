@@ -227,6 +227,10 @@ def _who(report: dict) -> str:
     if str(url or "").startswith(("http://", "https://")):
         addr += (f"<a class='url' href='{e(url)}' target='_blank' rel='noopener' data-tip='打開學校網站上的這一頁'>"
                  f"<span>{e(unquote(url))}</span>{icon('out', 11)}</a>")
+        # 網頁核查 (design 2026-11-16-page-check-design.md section 一): the archived page and its links' states; by
+        # the document's id, or its whole address, so a press's document (#按钮=…) is checked as that press's answer
+        addr += (f"<a class='btn' href='/check?{urlencode({'url': doc_id or url})}' "
+                 f"data-tip='看存檔裡的這一頁：哪些連結、圖片、按鈕抓到了'>{icon('search', 12)}核查這一頁</a>")
     if doc_id:
         addr += (f"<button class='btn mono' type='button' data-copy='{e(doc_id)}' data-tip='複製文件編號'>"
                  f"{icon('copy', 12)}{e(doc_id)}</button>")
