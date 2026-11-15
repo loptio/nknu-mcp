@@ -101,6 +101,17 @@ when that has a Han character (documents.own_titles' TITLE_LABEL, run with the o
 BuildReport.titles['label'] counts such files either way). Measured on the 111 sites of 11-15: 894 files so retitled,
 and one of the 33 questions out of the top ten for it (documents.own_titles says which), so it waits for the owner.
 
+Spec 2026-11-16 (docs/superpowers/specs/2026-11-16-data-fixes-design.md; the owner 11-16: 「可以，先写程序」), each with
+a switch that builds as before; the schema stays pipeline-8, meta gains date_spikes_json, cohort_expiry and
+file_row_dates:
+- §二, three rules on dates: a file takes the date of its own row on a file table (file_row_dates,
+  --no-file-row-dates; Document.row_date, ahead of its notice's date and the server's time); a day more than SPIKE_MIN
+  files of one site share as their server time dates none of them (date_spikes, --no-date-spikes; _date_spikes,
+  BuildReport.date_spikes); a document of one entry cohort alone goes out of date once that cohort has studied
+  COHORT_YEARS years (cohort_expiry, --no-cohort-expiry; _expires_alone's 'cohort_single', _own_year).
+- §五: a rebuild is not put in the place of the library in use when a site it built fell below half of that library's
+  documents for it (_collapsed, SwapHeld: the new library stays beside it as <name>.held.db; --force-swap).
+
 Plan 2026-11-14 T3, T4 and T6 (direction 2026-11-13 第 3、4、6 件), the first two each with a switch that builds as
 before:
 - A calendar event's date line (event_dates, --no-event-dates; _event_lines): docs.date_line holds the event's term
@@ -216,10 +227,11 @@ import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from nknu.archive.scope import site_key
 from nknu.content import ids, sites
@@ -367,7 +379,25 @@ VALIDITY_KEY = "validity_json"  # meta: BuildReport.validity as JSON (plan 2026-
 _FIXED_WORDS = re.compile(r"办法|要点|规则|须知|准则|细则|章程|规程|规定|注意事项|申请书|申请表|表单")
 # docs.expires's reasons as BuildReport.validity counts them (_expires_alone, _validity): why a document goes out of
 # date, and why it does not
-EXPIRES_WHY = ("event", "title_year", "notice", "dated_page", "parent")
+EXPIRES_WHY = ("event", "title_year", "cohort_single", "notice", "dated_page", "parent")
+# spec 2026-11-16 §二 【Claude】: more than this many files of one site with the same server day: the day the server
+# was moved or a folder copied (_date_spikes; a judgment, the measured days are far above or below it: 96 pairs hold
+# 21 to 326 files)
+SPIKE_MIN = 20
+# Only a shared day this recent is taken from its files (_date_spikes): one that would rank a file above an undated
+# one, 365 x ln 2 days by search.RankConfig's defaults (w_recent x exp(-days / tau_days) against w_recent x
+# no_date_factor: tau 365, factor 0.5; tests/content/test_dates_1116.py holds the two together). 【Claude, after the
+# first trial build of 11-16】: left undated, the 1,247 files of 教务处's days of 2021 (the day its site moved
+# platforms) gained the undated share, 0.15, over what a date of 2021 gives, 0.00, and two application forms passed
+# the rule that answers N10; an old shared day ranks its files below an undated one as it is, and stays.
+SPIKE_RECENT_DAYS = 253
+DATE_SPIKES_KEY = "date_spikes_json"  # meta: BuildReport.date_spikes as JSON
+# spec 2026-11-16 §二: the years a cohort normally studies 【Claude: the length of an undergraduate course, for every
+# level】; a document of one entry cohort alone belongs to the last of them (_single_cohort, _own_year)
+COHORT_YEARS = 4
+# spec 2026-11-16 §五 【Claude】: a rebuild is held back when a site it built has fewer than half the documents the
+# library in use holds for it, for a site of at least this many there (_collapsed, SwapHeld)
+GUARD_MIN = 20
 STAYS_WHY = ("undated", "fixed_words", "cohort", "standing_copy", "standing")
 SOURCES = ("totext", "fallback-1029", "none", "corpus")  # BuildReport.text_sources, in the order the CLI prints
 # the unit stage (addendum 2026-11-02 F, T7d)
@@ -480,6 +510,9 @@ class BuildReport:
     # site table gave; 'files', the platform's files that follow the notice they hang on; 'units', the units named
     # (unit -> documents)
     publishers: dict = field(default_factory=dict)
+    # spec 2026-11-16 §二 (_date_spikes): on, min, days (site and day pairs past SPIKE_MIN), documents (the files left
+    # undated) and by_site
+    date_spikes: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -585,6 +618,38 @@ def tier_of(doc_id: str, dtype: str, kind_raw: str = "", alumni: bool = True) ->
     return BACKGROUND if alumni and alumni_page(kind_raw) else PRIMARY
 
 
+class SwapHeld(Exception):
+    """A rebuild that did not take the place of the library in use (spec 2026-11-16 §五): held, where the new library
+    was put instead; sites, (site, documents in the library in use, documents in the new one) of each site that
+    fell below half."""
+
+    def __init__(self, held: Path, sites: list[tuple[str, int, int]]) -> None:
+        self.held, self.sites = held, sites
+        shown = "；".join(f"{site} {before:,} → {after:,}" for site, before, after in sites[:5])
+        super().__init__(f"新库没有换上：{len(sites)} 个网站的文件数不到现在这份库的一半（{shown}"
+                         f"{' 等' if len(sites) > 5 else ''}）。新库留在 {held}，现在的库没动；"
+                         "看过确认要换，加 --force-swap 重建。")
+
+
+def _collapsed(old: Path, new: Path) -> list[tuple[str, int, int]]:
+    """The sites the new library built (its sites table) that hold fewer than half the documents the library at old
+    holds for them, where that one holds GUARD_MIN or more: (site, before, after). [] when there is no library at
+    old, or it cannot be read as one of this shape (a database before docs.site, a file that is no database): there
+    is nothing to compare, and nothing a comparison could keep."""
+    if not old.is_file():
+        return []
+    try:
+        with closing(sqlite3.connect(f"file:{quote(str(old))}?mode=ro", uri=True)) as a, \
+                closing(sqlite3.connect(f"file:{quote(str(new))}?mode=ro", uri=True)) as b:
+            before = dict(a.execute("SELECT site, COUNT(*) FROM docs GROUP BY site"))
+            after = dict(b.execute("SELECT site, COUNT(*) FROM docs GROUP BY site"))
+            built = [r[0] for r in b.execute("SELECT site FROM sites ORDER BY site")]
+    except sqlite3.Error:
+        return []
+    return [(site, before[site], after.get(site, 0)) for site in built
+            if before.get(site, 0) >= GUARD_MIN and after.get(site, 0) * 2 < before[site]]
+
+
 def _protected(out: Path, export_dir: Path | Sequence[Path]) -> bool:
     """The exports (one, or every input's: plan 2026-11-08 T4), ./data, archive*/ and the skeleton's folder are never
     written."""
@@ -607,7 +672,8 @@ def _server_dates(path: Path | None, today: date, warnings: list[str]) -> dict[s
     return {u: d for u, d in load_server_dates(Path(path)).items() if EARLIEST <= d <= today + AHEAD}
 
 
-def _facts(d: Document, parent: Document | None, event: Event | None, server: dict[str, date]) -> list[DateFact]:
+def _facts(d: Document, parent: Document | None, event: Event | None, server: dict[str, date],
+           row_dates: bool = True) -> list[DateFact]:
     """A document's dates. A notice: the date it states (its date field, 公告頁日期欄; its list row's, 列表上的日期:
     sub-step 4; else the date the export read in its page's words, 網頁上寫的日期: plan 2026-11-08 T3) and the periods
     its body writes. An attachment: its notice's date, the server's time. An event: its days. A page: the date the
@@ -618,7 +684,10 @@ def _facts(d: Document, parent: Document | None, event: Event | None, server: di
     field, or its list row's), and keeps 網頁上寫的日期 when the export read it in the words of the notice's page, so
     one step down a date read from a page's words is never shown as a notice's own field (plan 2026-11-08 T3 review).
     Its server time is its export row's 最后修改时间 (Document.server_date: sub-step 4, spec 2026-11-08 §二 3), else
-    server_dates.json's day of its address (an export made before 3c33a79, which has no such column)."""
+    server_dates.json's day of its address (an export made before 3c33a79, which has no such column).
+    spec 2026-11-16 §二 (row_dates; the build's file_row_dates, --no-file-row-dates): ahead of both, the date on the
+    file's own row of a file table (Document.row_date, source 列表上的日期), which the export's platform rule read:
+    the first by IDENTITY_ORDER, so that is the day the file is shown and ranked by."""
     if d.kind_class == "notice":
         own = [DateFact("published", d.added, d.added_raw, d.added_source or FIELD_SOURCE)] if d.added else []
         return own + extract_periods(d.text)
@@ -626,6 +695,8 @@ def _facts(d: Document, parent: Document | None, event: Event | None, server: di
         return [DateFact("published", d.page_date, d.page_date_raw, d.page_date_source or PAGE_SOURCE)]
     if d.kind_class == "attachment":
         out = []
+        if row_dates and d.row_date:
+            out.append(DateFact("published", d.row_date, d.row_date_raw, LIST_SOURCE))
         if parent is not None and parent.kind_class == "notice" and parent.added:
             source = PAGE_SOURCE if parent.added_source == PAGE_SOURCE else INHERITED_SOURCE
             out.append(DateFact("inherited", parent.added, parent.added_raw, source))
@@ -716,12 +787,13 @@ def _typed(d: Document) -> str:
             or (doc_type(d.old_title, "", "", d.kind_class) if d.old_title else ""))
 
 
-def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date]) -> list[_Row]:
+def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date],
+          row_dates: bool = True) -> list[_Row]:
     by_id = {d.doc_id: d for d in docs}
     out = []
     for d in docs:
         event = events.get(d.doc_id)
-        facts = _facts(d, by_id.get(d.parent_id or ""), event, server)
+        facts = _facts(d, by_id.get(d.parent_id or ""), event, server, row_dates)
         term = _term(d, event)
         more: tuple[Term, ...] = ()
         if event is not None and event.days:  # plan 2026-11-14 T2: a recurring event's instances in other terms
@@ -729,6 +801,44 @@ def _rows(docs: list[Document], events: dict[str, Event], server: dict[str, date
         out.append(_Row(d, facts, identity_date(facts), term.ay if term else None, term.sem if term else None,
                         _cohorts(d), _typed(d), terms=more))
     return out
+
+
+def _date_spikes(rows: list[_Row], on: bool = True, today: date | None = None) -> dict:
+    """spec 2026-11-16 §二 (the build's date_spikes, --no-date-spikes): a day on which more than SPIKE_MIN files of one
+    site have the same server time, and which is recent enough to rank them above undated files (within
+    SPIKE_RECENT_DAYS of today; every such day without today), dates none of them. Counted over the attachments whose
+    identity date is the server's time, by site and day, in distinct addresses (the address before #: an archive's
+    members carry their archive's time and are one upload); every such document of a day past the count loses its
+    server date and is undated (its other facts stay; identity_date again). Before the copies are merged, so a
+    merged document never keeps a copy's spike day. Returns BuildReport.date_spikes: on, min, recent_days, days
+    (site and day pairs), documents, by_site, and old_days and old_documents, the shared days too old to matter and
+    their files, which keep their date. Why: on the official library of 11-15, 4,817 of the 12,552 files dated by the server's time stood on 96
+    such days (lis.nknu.edu.tw: 326 on 2026-10-22, the day its files were moved); of those whose title names a year,
+    67% carried a day two or more academic years after it, against 18% elsewhere; 4,364 of them name no year and never
+    expire, so that day was all that made them recent."""
+    report = {"on": on, "min": SPIKE_MIN, "recent_days": SPIKE_RECENT_DAYS, "days": 0, "documents": 0, "by_site": {},
+              "old_days": 0, "old_documents": 0}
+    if not on:
+        return report
+    days: dict[tuple[str, date], dict[str, list[_Row]]] = {}
+    for r in rows:
+        if r.doc.kind_class == "attachment" and r.ident is not None and r.ident.kind == "server":
+            days.setdefault((r.doc.site, r.ident.date), {}).setdefault(r.doc.url.split("#", 1)[0], []).append(r)
+    by_site: Counter[str] = Counter()
+    for (site, day), files in days.items():
+        if len(files) <= SPIKE_MIN:
+            continue
+        if today is not None and (today - day).days >= SPIKE_RECENT_DAYS:
+            report["old_days"] += 1
+            report["old_documents"] += sum(len(group) for group in files.values())
+            continue
+        report["days"] += 1
+        for r in (r for group in files.values() for r in group):
+            r.facts = [f for f in r.facts if f.kind != "server"]
+            r.ident = identity_date(r.facts)
+            by_site[site] += 1
+    report["documents"], report["by_site"] = sum(by_site.values()), dict(sorted(by_site.items()))
+    return report
 
 
 def _retitle(rows: list[_Row], on: bool, labels: bool = False) -> dict:
@@ -793,7 +903,15 @@ def _year_notes_a_rule(title: str) -> bool:
     return word is not None and at is not None and word.start() < at
 
 
-def _expires_alone(r: _Row, parent_expires: bool) -> tuple[bool, str]:
+def _single_cohort(r: _Row) -> int | None:
+    """The latest entry cohort of a document that states cohorts and none of them onwards (「X學年度入學適用」, never
+    「X學年度起入學」), else None (spec 2026-11-16 §二)."""
+    if not r.cohorts or any(onwards for _, onwards, _ in r.cohorts):
+        return None
+    return max(ay for ay, _, _ in r.cohorts)
+
+
+def _expires_alone(r: _Row, parent_expires: bool, cohort_expiry: bool = True) -> tuple[bool, str]:
     """(whether a document goes out of date, why), its merged copies aside (plan 2026-11-14 T6; direction 2026-11-13
     第 6 件: 「会过期的文件，按结构认，不按网站写规则：公告正文；有发布日期的帖子和新闻；标了学期或学年的文件；行事历事件；旧公告
     的附件」 and 「不会过期的：常设网页；没日期的文件；规章和表单」). The first that holds, the reason one of EXPIRES_WHY
@@ -810,6 +928,11 @@ def _expires_alone(r: _Row, parent_expires: bool) -> tuple[bool, str]:
       注意事項」 (the trap of question Q07, which the next term's notice replaces), 「110學年度大學部新生報到須知」, and
       the notices of 停修 hold 規定 in a bracket; with the final stage's date bonus gone (hybrid, valid_decay) they
       would no longer rank by their term at all】;
+    - it states one entry cohort alone, none onwards (_single_cohort; spec 2026-11-16 §二, cohort_expiry: the build's
+      --no-cohort-expiry skips this line): it expires ('cohort_single'), dated or not and whatever fixed word its title
+      holds 【Claude: a rule 「105學年度入學適用」 is that cohort's alone】, with the year that cohort ends its
+      COHORT_YEARS years (_own_year). The design: 「那一届读满四年以后算会过期…写『起』的照旧不过期」. Why: the table
+      of 98 entrants ranked above the one of 111 and later (question Q17), its file being the newer upload;
     - no identity date: it does not ('undated');
     - its title holds a fixed word of rules and forms (_FIXED_WORDS): it does not ('fixed_words');
     - it states an entry cohort (「X學年度起入學適用」: its applies_to rows, _cohorts): it does not ('cohort'), valid
@@ -826,6 +949,8 @@ def _expires_alone(r: _Row, parent_expires: bool) -> tuple[bool, str]:
         return True, "event"
     if r.ay is not None:
         return (False, "fixed_words") if _year_notes_a_rule(d.title) else (True, "title_year")
+    if cohort_expiry and _single_cohort(r) is not None:
+        return True, "cohort_single"
     if r.ident is None:
         return False, "undated"
     if _fixed_words(d.title):
@@ -841,19 +966,24 @@ def _expires_alone(r: _Row, parent_expires: bool) -> tuple[bool, str]:
     return False, "standing"
 
 
-def _own_year(r: _Row) -> int | None:
+def _own_year(r: _Row, cohort_expiry: bool = True) -> int | None:
     """The ROC academic year a document belongs to by itself (plan 2026-11-14 T6: docs.valid_ay): a calendar event's
     last day's (a merged recurring event's last instance's: its event_end fact); else the year its title names
-    (period_ay), else its identity date's (the year turns on 1 August: terms.current_term), else None."""
+    (period_ay), else, for a document of one entry cohort alone, the last year that cohort studies (spec 2026-11-16
+    §二; not with cohort_expiry off), else its identity date's (the year turns on 1 August: terms.current_term), else
+    None."""
     if r.doc.kind_class == "event":
         last = next((f.date for f in r.facts if f.kind == "event_end"), None)
         return current_term(last).ay if last is not None else None
     if r.ay is not None:
         return r.ay
+    # spec 2026-11-16 §二: one entry cohort alone: the last of the COHORT_YEARS years it studies (98 -> 101)
+    if cohort_expiry and (cohort := _single_cohort(r)) is not None:
+        return cohort + COHORT_YEARS - 1
     return current_term(r.ident.date).ay if r.ident is not None else None
 
 
-def _validity(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
+def _validity(rows: list[_Row], copies: Mapping[str, list[_Row]], cohort_expiry: bool = True) -> dict:
     """Each kept document's docs.expires and docs.valid_ay into its row, and BuildReport.validity (plan 2026-11-14 T6,
     the build's part; hybrid.validity reads the two columns). rows: the documents kept, with their final titles
     (after _retitle); copies: _merge_copies' (kept id -> the documents merged into it).
@@ -899,7 +1029,7 @@ def _validity(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
     sources: Counter[str] = Counter()
     for r in sorted(rows, key=lambda r: r.doc.kind_class == "attachment"):  # stable: the parents first
         members = [r, *copies.get(r.doc.doc_id, ())]
-        verdicts = [_expires_alone(m, parent_expires(m)) for m in members]
+        verdicts = [_expires_alone(m, parent_expires(m), cohort_expiry) for m in members]
         shown = [firm(m, *v) for m, v in zip(members, verdicts, strict=True)]
         expires, reason = verdicts[0]
         if any(shown):
@@ -912,10 +1042,12 @@ def _validity(rows: list[_Row], copies: Mapping[str, list[_Row]]) -> dict:
         if r.doc.kind_class == "attachment" and any(map(parent_expires, members)):
             hung.append(r)
         r.expires, why[r.doc.doc_id] = expires, reason
-        own = _own_year(r)
-        r.valid_ay = max((y for y in map(_own_year, members) if y is not None), default=None)
+        own = _own_year(r, cohort_expiry)
+        r.valid_ay = max((y for y in (_own_year(m, cohort_expiry) for m in members) if y is not None), default=None)
+        single = cohort_expiry and r.ay is None and _single_cohort(r) is not None
         sources["event" if r.doc.kind_class == "event" else "copy" if r.valid_ay != own
-                else "title" if r.ay is not None else "date" if r.ident is not None else "none"] += 1
+                else "title" if r.ay is not None else "cohort" if single
+                else "date" if r.ident is not None else "none"] += 1
     reasons: dict[str, Counter[str]] = {}
     for r in rows:
         reasons.setdefault(r.doc.kind_class, Counter())[why[r.doc.doc_id]] += 1
@@ -1973,7 +2105,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                 unit_words: bool = True, unit_in_vectors: bool = False, copy_rule: str = COPY_TEXT,
                 merge_recurring: bool = True, alumni_background: bool = True, event_dates: bool = True,
                 own_titles: bool = True, platform_twins: bool = True, stated_units: bool = True,
-                label_titles: bool = False, copy_names: bool = True) -> BuildReport:
+                label_titles: bool = False, copy_names: bool = True, date_spikes: bool = True,
+                cohort_expiry: bool = True, file_row_dates: bool = True, force_swap: bool = False) -> BuildReport:
     """One database from inputs, each (corpus.json, the export folder it was assembled from), in order (plan
     2026-11-08 T4; the module docstring). Read every input first (a broken one stops the build before anything is
     written), then write out + '.tmp' and move it over out. today (default: Asia/Taipei today) bounds the server dates
@@ -2074,7 +2207,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     server = _server_dates(server_dates, today or today_tpe(), warnings)
     by_event = {"e" + ev.id: ev for ev in events}
     twinned: dict = {}  # the owner, 11-14 23:55: what the platform twins joined (_merge_copies' seen)
-    rows, copies = _merge_copies(_rows(docs, by_event, server), _file_digest(first.export, records), excluded,
+    # spec 2026-11-16 §二: a file's own list row dates it (file_row_dates); then the days too many files share are
+    # taken from them (date_spikes), before any copy is merged
+    all_rows = _rows(docs, by_event, server, file_row_dates)
+    spikes = _date_spikes(all_rows, date_spikes, today or today_tpe())
+    rows, copies = _merge_copies(all_rows, _file_digest(first.export, records), excluded,
                                  copy_rule, alumni_background, units, platform_twins, twinned, copy_names)
     docs = [r.doc for r in rows]
     # plan 2026-11-14 T2's report first: it names the kept documents by the titles they were merged under
@@ -2083,7 +2220,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     ranked = _rank_dates(rows, copies)  # plan 2026-11-14 T2, completed: the date each merged document ranks by
     titled = _retitle(rows, own_titles, label_titles)  # plan 2026-11-14 T4: before anything below reads a title
     dated = _event_lines(rows, by_event, event_dates)  # plan 2026-11-14 T3
-    valid = _validity(rows, copies)  # plan 2026-11-14 T6
+    valid = _validity(rows, copies, cohort_expiry)  # plan 2026-11-14 T6; spec 2026-11-16 §二 (cohort_expiry)
     scope = unit_scope(docs, units) if units is not None else None
     _set_unit_words(rows, units, unit_words, _applies(scope))
     id_aliases = _aliases(rows, copies)  # doc_alias (not config/aliases.yaml, the synonym groups)
@@ -2169,6 +2306,10 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             "label_titles": "on" if own_titles and label_titles else "off",
             "copy_names": "on" if copy_names else "off",
             PUBLISHERS_KEY: json.dumps(published, ensure_ascii=False),
+            # spec 2026-11-16 §二: the three date rules; hybrid reads cohort_expiry (validity's cohort_step)
+            DATE_SPIKES_KEY: json.dumps(spikes, ensure_ascii=False),
+            "cohort_expiry": "on" if cohort_expiry else "off", "cohort_years": str(COHORT_YEARS),
+            "file_row_dates": "on" if file_row_dates else "off",
             DEDUPE_KEY: json.dumps(dedupe, ensure_ascii=False),
             # plan 2026-11-14 T3, T4, T6: whether the events' passages carry their date line (docs.date_line holds
             # it: embed reads that column for the reranker's passages and never for the vectors, so the value is
@@ -2189,6 +2330,12 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
         _write(tmp, rows, meta, counts, scope, id_aliases, site_rows, alumni_background)
         if embed:
             vectors = _embed(tmp, embedder, vec_cache, unit=unit_words and unit_in_vectors)
+        # spec 2026-11-16 §五: a site fallen below half of what the library in use holds for it keeps that library in
+        # place (the new one stays beside it); force_swap, --force-swap, puts the new one in whatever it holds
+        if not force_swap and (gone := _collapsed(out, tmp)):
+            held = out.with_name(f"{out.stem}.held{out.suffix}")
+            os.replace(tmp, held)
+            raise SwapHeld(held, gone)
         os.replace(tmp, out)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -2204,7 +2351,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                        passage={"version": PASSAGE_VERSION, "unit_words": unit_words,
                                 "unit_in_vectors": unit_words and unit_in_vectors,
                                 "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF},
-                       dedupe=dedupe, event_dates=dated, titles=titled, validity=valid, publishers=published)
+                       dedupe=dedupe, event_dates=dated, titles=titled, validity=valid, publishers=published,
+                       date_spikes=spikes)
 
 
 def _progress_to_stderr() -> Callable[[], None]:
@@ -2376,6 +2524,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="网页给附件的叫法是同一网站 20 份以上附件共用的（「檔案連結」「公文」）不当标题，档名有汉字的改回用档名"
                          "（11-15 做的，默认不开：量过，111 站 894 份标题更具体，但 33 题里「學號」那题从第 4 掉到第 15 名，"
                          "等用户定）")
+    ap.add_argument("--force-swap", action="store_true",
+                    help=f"某个网站的文件数不到现在这份库的一半（现在至少 {GUARD_MIN} 份）时照样换库；默认不换，新库留在旁边的 "
+                         "<名字>.held.db、退出码 3（设计稿 2026-11-16 第五节）")
+    ap.add_argument("--no-date-spikes", action="store_true",
+                    help=f"同一个网站、同一天超过 {SPIKE_MIN} 份附件的档案时间相同时，照旧拿这一天当日期（设计稿 2026-11-16 第二节："
+                         "默认把这种扎堆的日子当成搬服务器、整批复制的日子，这些附件算无日期）")
+    ap.add_argument("--no-cohort-expiry", action="store_true",
+                    help="只写某一届（「X學年度入學適用」，没有「起」）的文件照旧不会过期（设计稿 2026-11-16 第二节：默认那一届"
+                         f"读满 {COHORT_YEARS} 年后算会过期）")
+    ap.add_argument("--no-file-row-dates", action="store_true",
+                    help="档案表格里按钮下载的档案不读它那一行的日期，照旧只继承所属公告的日期或用服务器档案时间"
+                         "（设计稿 2026-11-16 第二节「加一条」）")
     ap.add_argument("--no-copy-names", action="store_true",
                     help="合并副本时不把被合掉那份的各个链接叫法带到留下的那份，只带它的标题和档名，照 11-15 以前（用来对照）")
     ap.add_argument("--no-own-titles", action="store_true",
@@ -2402,7 +2562,12 @@ def main(argv: list[str] | None = None) -> int:
                              alumni_background=not args.no_alumni_background, event_dates=not args.no_event_dates,
                              own_titles=not args.no_own_titles, platform_twins=not args.no_platform_twins,
                              stated_units=not args.no_stated_units, label_titles=args.label_titles,
-                             copy_names=not args.no_copy_names)
+                             copy_names=not args.no_copy_names, date_spikes=not args.no_date_spikes,
+                             cohort_expiry=not args.no_cohort_expiry, file_row_dates=not args.no_file_row_dates,
+                             force_swap=args.force_swap)
+    except SwapHeld as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

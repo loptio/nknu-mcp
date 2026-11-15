@@ -101,8 +101,9 @@ NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程�
                        "仍然沒有，請告訴使用者：目前收錄的資料裡查無相關內容，不要推測。")
 # addendum M2 (owner 11-08): background material comes after the primary documents (search.py step 3); 教务处's
 # old 校刊 and 校訊 named since owner 11-09 (blueprint item 17, 「照建议定」: build._PAPER_DIRS)
-NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題），"
-                   "排在主要文件後面；需要時再看。")
+# spec 2026-11-16 §四: no longer 「排在主要文件後面；需要時再看」, a background document now stands where its score puts it
+# (search.mixed)
+NOTE_BACKGROUND = "【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題）。"
 # plan 2026-11-08 T1: each copy carries its own id, which read answers with the kept document (NOTE_ALIAS). Plan
 # 2026-11-14 T2: the build merges documents of one text whatever their titles, so the note says the content is the same
 # (the plan's 「內容相同」) and no longer the title; that a title may differ is said too 【Claude】. NOTE_COPIES_NO_ID,

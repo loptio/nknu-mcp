@@ -164,7 +164,8 @@ def test_embed_chunks_writes_one_vector_per_chunk(tmp_path):
     # 11-08 (main session): the vectors hold the passages without their unit lines unless asked (unit=True), so
     # vec_passage says version 1, the text they hold
     assert meta == {"vec_model": "fake/embed", "vec_revision": "0" * 40, "vec_dim": "16", "vec_dtype": "float16",
-                    "vec_count": str(n), "vec_passage": "1", "vec_built_at": meta["vec_built_at"]}
+                    "vec_count": str(n), "vec_passage": "1", "vec_built_at": meta["vec_built_at"],
+                    "vec_max_seq": "512"}  # spec 2026-11-16 §三: this fake has no max_seq, an embedder of before
     assert meta["vec_built_at"].startswith("20") and meta["vec_built_at"].endswith("+08:00")
     assert (stats.chunks, stats.cached, stats.model, stats.revision) == (n, 0, "fake/embed", "0" * 40)
     assert stats.encoded == len(emb.texts) == len(set(emb.texts)) and stats.seconds >= 0

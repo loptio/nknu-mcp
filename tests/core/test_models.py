@@ -39,7 +39,9 @@ def test_pins():
     assert (models.EMBED_ID, models.EMBED_REVISION) == ("BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181")
     assert (models.RERANK_ID, models.RERANK_REVISION) == ("BAAI/bge-reranker-v2-m3",
                                                           "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e")
-    assert (models.EMBED_DIM, models.MAX_SEQ, models.BATCH) == (1024, 512, 16)
+    assert (models.EMBED_DIM, models.BATCH) == (1024, 16)
+    # spec 2026-11-16 §三: both models read 1024 tokens (512 before: what an old vector was cut at)
+    assert (models.BASE_SEQ, models.EMBED_MAX_SEQ, models.RERANK_MAX_SEQ) == (512, 1024, 1024)
 
 
 def test_pipeline_extra_pins():
@@ -76,13 +78,13 @@ def test_loaders_are_offline_and_pinned(monkeypatch):
     assert type(model).__name__ == "SentenceTransformer" and model.name == "BAAI/bge-m3"
     assert model.kwargs["revision"] == models.EMBED_REVISION and model.kwargs["local_files_only"] is True
     assert model.kwargs["device"] == "mps" and str(model.kwargs["model_kwargs"]["dtype"]) == "torch.float16"
-    assert model.max_seq_length == 512
+    assert model.max_seq_length == 1024 and emb.max_seq == 1024
     assert (emb.model_id, emb.revision, emb.dim, emb.device) == (models.EMBED_ID, models.EMBED_REVISION, 1024, "mps")
     rr = models.load_reranker("cpu")
     model = built[-1]
     assert type(model).__name__ == "CrossEncoder" and model.name == "BAAI/bge-reranker-v2-m3"
     assert model.kwargs["revision"] == models.RERANK_REVISION and model.kwargs["local_files_only"] is True
-    assert model.kwargs["max_length"] == 512 and model.kwargs["device"] == "cpu"
+    assert model.kwargs["max_length"] == 1024 and model.kwargs["device"] == "cpu"
     assert "float16" not in str(model.kwargs.get("model_kwargs"))
     assert (rr.model_id, rr.revision, rr.device) == (models.RERANK_ID, models.RERANK_REVISION, "cpu")
     assert asked == [(models.EMBED_ID, models.EMBED_REVISION), (models.RERANK_ID, models.RERANK_REVISION)]

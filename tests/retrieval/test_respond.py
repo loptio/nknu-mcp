@@ -52,8 +52,8 @@ NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程�
 COVERAGE_OCR = ("目前只收高師大教務處網站（c.nknu.edu.tw/aca）的公開網頁、公告附件（含壓縮檔裡的文件）、網頁上的圖片與"
                 "教務處行事曆（2023 年起），資料截至 2026-10-27；另有 3 個網頁、43 個附件沒抓到；"
                 "掃描檔和圖片的文字是程式辨識（OCR）的，可能有錯字；無法轉成文字的檔案只能依標題找到。其他單位與系所網站尚未收錄。")
-NOTE_BACKGROUND = ("【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題），"
-                   "排在主要文件後面；需要時再看。")  # addendum M2; minutes named first since 11-08 10:16 (M9)
+# addendum M2; minutes named first since 11-08 10:16 (M9); spec 2026-11-16 §四 took out where they stand
+NOTE_BACKGROUND = "【系統】background 為 true 的是背景資料（會議紀錄、壓縮檔裡的文件、學報、舊校刊和校訊、歷屆考題）。"
 # the copies here list no id, as a build before plan 2026-11-08 T1 wrote them: they keep the notes of then
 # (respond.NOTE_*_NO_ID); a build since lists ids and says so (tests/content/test_ids_1108.py)
 NOTE_FORMATS = ("【系統】copies 中有 format 的是同一份文件的其他格式：各有自己的網址和格式，沒有自己的日期；"

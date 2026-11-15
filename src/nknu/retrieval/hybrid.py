@@ -42,7 +42,9 @@ scores: the serving path never calls a text-generating model.
    head's best ("max", the 11-04 build's setting), its score becomes w_rerank * relevance + adjustments + scope, and
    its chunks are ordered by the reranker's scores. In each tier the head is sorted as search_docs sorts and the other
    documents follow in RRF order. A failure leaves the RRF order and the keyword scores.
-7. search.tiered over the two tiers, then top_hits (search.py): the first limit documents, each its own hit.
+7. The two tiers in one order, then top_hits (search.py): the first limit documents, each its own hit. Reranked: the
+   two heads by search.mixed (spec 2026-11-16 §四, background_factor), then the rest of each tier; else, and with
+   background_factor 0, search.tiered's fixed places.
 
 Plan 2026-11-14 T6 to T8 (direction 2026-11-13 第一节: useful = on the topic x still valid x right audience) adds three
 settings; with all three off every score is the one of before to the bit. Since the owner's word of 11-14 the validity
@@ -88,12 +90,14 @@ from nknu.retrieval.search import (
     W_COVERAGE,
     KeywordPool,
     RankConfig,
+    _cohort_docs,
     _Doc,
     adjustments,
     by_tier,
     doc_rows,
     keyword_pool,
     mark_background,
+    mixed,
     sort_docs,
     tiered,
     top_hits,
@@ -163,13 +167,21 @@ class HybridConfig:
     # last year's at 0.85 and left the top 3 they answered from; counted from the end of the academic year instead
     # of from its own date, a notice of 13 months ago was still at 0.96. On since the owner's defaults of 11-14
     valid_named_step: bool = True
+    # spec 2026-11-16 §四 (the owner 11-16, 「可以，先写程序」 on the design; the design's section 七 item 3 changes the
+    # owner's 11-08 「8 份主料＋2 份背景」): a reranked background document's score times this stands among the primary
+    # documents' scores (search.mixed), at most BACKGROUND_SLOTS of them among the first TOP_N. 0.8 【Claude: a
+    # judgment, not fitted to the 33 questions; with it 2 of the 33 get a journal article or minutes among their first
+    # three, and 72 of 100 background documents asked for by their own title pass the third primary one】. 0: the
+    # fixed places of before (search.tiered), which keyword-only ranking keeps in any case
+    background_factor: float = 0.8
 
     def __post_init__(self) -> None:
         if self.rerank_norm not in NORMS:
             raise ValueError(f"rerank_norm must be one of {NORMS}, not {self.rerank_norm!r}")
-        for name in ("scope_factor", "valid_decay"):  # a discount: 85 for 0.85 would turn the order over
+        # a discount: 85 for 0.85 would turn the order over
+        for name, off in (("scope_factor", 1), ("valid_decay", 1), ("background_factor", 0)):
             if not 0.0 <= getattr(self, name) <= 1.0:
-                raise ValueError(f"{name} must be from 0 to 1 (1: off), not {getattr(self, name)!r}")
+                raise ValueError(f"{name} must be from 0 to 1 ({off}: off), not {getattr(self, name)!r}")
 
 
 def rrf(rankings: list[list[str]], k: int) -> dict[str, float]:
@@ -360,8 +372,27 @@ def _off(conn: sqlite3.Connection, query: str, ids: list[str], config: HybridCon
         return set()
 
 
+def _one_cohort(conn: sqlite3.Connection, ids: list[str], years: int) -> set[str]:
+    """The documents of ids that go out of date for their one entry cohort (spec 2026-11-16 §二, the build's
+    'cohort_single', read back): they state a cohort and none onwards (applies_to: a cohort_exact row, no cohort_from
+    row), their title names no term or year (docs.period_ay: that would be why they expire, and comes first in the
+    build), and their year is the one that cohort gives, its last of years years (docs.valid_ay = cohort + years - 1).
+    The last two keep out a notice of 「111學年度」 that names the 111 entrants and a file that expires with the notice
+    it hangs on: found on the trial library of 11-16, where two notices of 2023 lost their discount for a question
+    naming the 111 cohort and pushed the answer down two places (Q15)."""
+    out: set[str] = set()
+    for i in range(0, len(ids), _IN_MAX):
+        part = ids[i : i + _IN_MAX]
+        out.update(r[0] for r in conn.execute(
+            "SELECT a.doc_id FROM applies_to a JOIN docs d ON d.doc_id = a.doc_id WHERE a.doc_id IN ("
+            + ",".join("?" * len(part)) + ") AND d.period_ay IS NULL GROUP BY a.doc_id "
+            "HAVING MAX(a.cohort_exact IS NOT NULL) = 1 AND MAX(a.cohort_from IS NOT NULL) = 0 "
+            "AND d.valid_ay = MAX(a.cohort_exact) + ? - 1", (*part, years)))
+    return out
+
+
 def validity(conn: sqlite3.Connection, ids: list[str], today: date, decay: float, *,
-             smooth: bool = False, named_step: bool = False) -> dict[str, float] | None:
+             smooth: bool = False, named_step: bool = False, cohort_step: int = 0) -> dict[str, float] | None:
     """Plan 2026-11-14 T6 (direction 2026-11-13 第 6 件, 「还有效」): doc_id -> decay ** (the academic years from the
     document's own, docs.valid_ay, to today's), for the documents of ids that go out of date (docs.expires = 1), have
     a year and are of an earlier year than today's. Every other document counts 1 and is left out: one that does not
@@ -373,7 +404,11 @@ def validity(conn: sqlite3.Connection, ids: list[str], today: date, decay: float
     named_step (HybridConfig.valid_named_step), with smooth: a document whose title names its term or year
     (docs.period_ay is set; an event's always is) keeps the whole step for each academic year past, and any other
     falls by its own age, decay ** (days since the date it ranks by / 365): docs.rank_date, the latest among it and
-    its merged copies, else its identity date; a document of this academic year too, so nothing drops on 1 August."""
+    its merged copies, else its identity date; a document of this academic year too, so nothing drops on 1 August.
+    cohort_step (spec 2026-11-16 §二; _valid gives it for a library whose meta says cohort_expiry on: the years a
+    cohort studies, meta cohort_years; 0: off), with the two: a document that expires for its one entry cohort
+    (_one_cohort) keeps the whole step too, from the year the build gave it, the last that cohort studies, and not the
+    age of its file: the table of 98 entrants was put up again in 2025."""
     columns = {r[1] for r in conn.execute("PRAGMA table_info(docs)")}
     if not {"expires", "valid_ay"} <= columns:
         return None
@@ -381,12 +416,13 @@ def validity(conn: sqlite3.Connection, ids: list[str], today: date, decay: float
     dated = "COALESCE(rank_date, ident_date)" if "rank_date" in columns else "ident_date"
     out: dict[str, float] = {}
     ids = list(dict.fromkeys(ids))
+    stepped = _one_cohort(conn, ids, cohort_step) if cohort_step and smooth and named_step else set()
     for i in range(0, len(ids), _IN_MAX):
         part = ids[i : i + _IN_MAX]
         for doc_id, ay, named, day in conn.execute(
                 f"SELECT doc_id, valid_ay, period_ay, {dated} FROM docs WHERE expires = 1 AND valid_ay IS NOT NULL"
                 f" AND doc_id IN ({','.join('?' * len(part))})", part):
-            if smooth and named_step and named is None and day:  # by its own age
+            if smooth and named_step and named is None and doc_id not in stepped and day:  # by its own age
                 if (days := (today - date.fromisoformat(day[:10])).days) > 0:
                     out[doc_id] = decay ** (days / 365)
             elif isinstance(ay, int) and ay < now:
@@ -404,8 +440,21 @@ def _valid(conn: sqlite3.Connection, head: list[str], pool: KeywordPool, today: 
     if config.valid_decay == 1.0 or not pool.recent:
         return None
     try:
-        return validity(conn, head, today, config.valid_decay, smooth=config.valid_smooth,
-                        named_step=config.valid_named_step)
+        # spec 2026-11-16 §二: only a library built with the single-cohort rule (meta cohort_expiry on) has documents
+        # that expire for their cohort; any other is read exactly as before
+        try:
+            said = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('cohort_expiry', 'cohort_years')"))
+        except sqlite3.Error:  # a database without a meta table: one of before
+            said = {}
+        step = int(said.get("cohort_years") or 0) if said.get("cohort_expiry") == "on" else 0
+        out = validity(conn, head, today, config.valid_decay, smooth=config.valid_smooth,
+                       named_step=config.valid_named_step, cohort_step=step)
+        if step and out and pool.cohorts:
+            # the design: 「问题点名了届别时不打折」: the documents that expire for that cohort, and only those (a
+            # notice of its year keeps the discount of its age whatever cohort it names)
+            for doc_id in _cohort_docs(conn, sorted(_one_cohort(conn, list(out), step)), list(pool.cohorts)):
+                out.pop(doc_id, None)
+        return out
     except Exception:
         log.exception("读不了 docs.expires、docs.valid_ay：这次不按学年打折，照旧加新旧分")
         return None
@@ -637,7 +686,12 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
             if dense_of.get(d):
                 docs[d].ranked = list(dict.fromkeys(_keyword_chunks(docs[d]) + dense_of[d]))
         parts.append((sort_docs(docs[d] for d in head) if reranked else []) + [docs[d] for d in rest])
-    ordered = tiered(*parts)
+    if reranked and config.background_factor > 0:  # spec 2026-11-16 §四: the two reranked heads by one measure
+        cut = [len(h) for h in heads]
+        ordered = (mixed(parts[0][: cut[0]], parts[1][: cut[1]], config.background_factor)
+                   + parts[0][cut[0]:] + parts[1][cut[1]:])
+    else:
+        ordered = tiered(*parts)
     ranking = "hybrid" if dense_of or reranked else "keyword"
     if explain is not None:
         explain.update(final=[d.doc_id for d in ordered], ranking=ranking)

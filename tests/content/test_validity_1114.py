@@ -272,7 +272,9 @@ def test_the_report_counts_what_expires_and_what_each_clue_kept(built):
     assert json.loads(conn.execute("SELECT value FROM meta WHERE key = 'validity_json'").fetchone()[0]) == report.validity
     said = {reason for reasons in report.validity["why"].values() for reason in reasons}
     assert said <= {*build.EXPIRES_WHY, *build.STAYS_WHY}
-    assert (build.EXPIRES_WHY, build.STAYS_WHY) == (("event", "title_year", "notice", "dated_page", "parent"),
+    # cohort_single: spec 2026-11-16 §二 (a document of one entry cohort alone; tests/content/test_dates_1116.py)
+    assert (build.EXPIRES_WHY, build.STAYS_WHY) == (("event", "title_year", "cohort_single", "notice", "dated_page",
+                                                     "parent"),
                                                     ("undated", "fixed_words", "cohort", "standing_copy", "standing"))
 
 

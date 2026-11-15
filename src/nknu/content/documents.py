@@ -280,6 +280,12 @@ class Document:
     page_date: date | None = None
     page_date_raw: str = ""
     page_date_source: str = ""  # the source of page_date (_stated): dates.PAGE_SOURCE, or LIST_SOURCE (sub-step 4)
+    # attachments only (spec 2026-11-16 §二, the crawler session's finding of 11-16): the date on the file's own row of
+    # a file table (the export's 日期来源 列表上的日期 on the row of a file a button downloaded: SSO unit sites and
+    # department sites list files with a name, a category and a date, and no notice stands between the list and the
+    # file to inherit from); None for any other file, and in an export that gives files no such date
+    row_date: date | None = None
+    row_date_raw: str = ""
     # every document (sub-step 4, spec 2026-11-08 §二 3): the server's time of its file (_server_day: the export's
     # 最后修改时间), which dates an attachment only (owner 11-01: a file inherits its page's date, else the server's
     # time; a page is never dated by it); None without one
@@ -796,12 +802,15 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         elif cls == "notice" and stated:
             added, added_raw, added_source = stated
         page_date, page_raw, page_source = stated if cls == "page" and stated else (None, "", "")
+        # spec 2026-11-16 §二: a file's own list row, the one export rule trusted for it (never a page's words)
+        row = _stated(r) if cls == "attachment" and r.date_source == LIST_ROW else None
         d = Document(doc_id="d" + r.id, kind_class=cls, kind_raw=r.kind, title=title, url=r.url,
                      unit=sites.unit_for(r.url, r.site or site), grp=m.group if m else "", parent_id=None,
                      parent_title="", linktext=_link_text(r.linktext),
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
-                     page_date_source=page_source, server_date=_server_day(r), source=r.source, formats=r.formats,
+                     page_date_source=page_source, row_date=row[0] if row else None,
+                     row_date_raw=row[1] if row else "", server_date=_server_day(r), source=r.source, formats=r.formats,
                      site=r.site or site, categories=_categories(r.list_category),
                      # whatever kind its own address makes it: a notice, a page, or a short link another site
                      # writes for the platform's notice (50 of the 2,040 stated rows of 11-15: 外站:reurl.cc, a link)

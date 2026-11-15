@@ -42,7 +42,7 @@ import numpy as np
 
 from nknu.content.documents import LINK_SEP
 from nknu.content.numbering import strip_decor
-from nknu.core.models import BATCH
+from nknu.core.models import BASE_SEQ, BATCH
 from nknu.core.timeutil import TAIPEI
 
 # meta vec_passage: what passage() writes; changing passage() means a new version. "2" (plan 2026-11-08 T4): the unit
@@ -121,9 +121,19 @@ def passage(title: str, parent_title: str, linktext: str, heading: str, header: 
     return "\n".join(parts)
 
 
-def vec_key(model_id: str, revision: str, text: str) -> str:
-    """The cache key of text's vector under one model revision."""
-    return hashlib.sha256(f"{model_id}@{revision}\n{text}".encode()).hexdigest()
+# spec 2026-11-16 §三 【Claude】: a text of this many characters or fewer is inside BASE_SEQ tokens whatever the window
+# (the tokenizer gives a character one piece at most, and one more at the start of a run), so the vector an embedder of
+# a wider window computes for it is the one of before, and its cache key stays; only a longer text's key names the
+# window. A rebuild after the window widened so encodes the long passages alone.
+SAFE_CHARS = 500
+
+
+def vec_key(model_id: str, revision: str, text: str, window: int = BASE_SEQ) -> str:
+    """The cache key of text's vector under one model revision and the tokens the embedder reads (window: BASE_SEQ,
+    512, is the key of every build before spec 2026-11-16 §三; another window is part of the key of a text longer than
+    SAFE_CHARS only)."""
+    model = f"{model_id}@{revision}" if window == BASE_SEQ or len(text) <= SAFE_CHARS else f"{model_id}@{revision}@{window}"
+    return hashlib.sha256(f"{model}\n{text}".encode()).hexdigest()
 
 
 def to_blob(vec: np.ndarray) -> bytes:
@@ -188,7 +198,8 @@ def encode_cached(embedder, texts: list[str], *, cache: VecCache | None = None,
     distinct texts the cache lacks (a cached entry of the wrong size counts as lacking), and their vectors go into the
     cache. RuntimeError when the embedder returns another shape or a value float16 cannot hold."""
     dim = int(embedder.dim)
-    keys = [vec_key(embedder.model_id, embedder.revision, t) for t in texts]
+    window = int(getattr(embedder, "max_seq", BASE_SEQ))  # spec 2026-11-16 §三; an embedder of before: 512
+    keys = [vec_key(embedder.model_id, embedder.revision, t, window) for t in texts]
     found = cache.get(keys) if cache is not None and keys else {}
     have = {k: v for k, v in found.items() if len(v) == dim * VEC_DTYPE.itemsize}
     cached = sum(k in have for k in keys)
@@ -261,7 +272,7 @@ def chunk_passages(conn: sqlite3.Connection, chunk_ids: list[int]) -> dict[int, 
 def embed_chunks(conn: sqlite3.Connection, embedder, *, cache: VecCache | None = None,
                  batch_size: int = BATCH, unit: bool = False) -> EmbedStats:
     """One vector per chunk in chunk_vecs (chunks without text too: their passage is their document's titles), and the
-    meta keys vec_model, vec_revision, vec_dim, vec_dtype, vec_count, vec_built_at and vec_passage (PASSAGE_VERSION;
+    meta keys vec_model, vec_revision, vec_dim, vec_dtype, vec_count, vec_built_at, vec_max_seq and vec_passage (PASSAGE_VERSION;
     "1" for a database without unit lines, whose passages are version 1's), replacing what was there in one
     transaction: a failure leaves the database as it was (conn in Python's default transaction mode), while the cache
     keeps every finished round. Passages go to the embedder in rounds of EMBED_CHUNK, batch_size at a time; progress
@@ -294,7 +305,9 @@ def embed_chunks(conn: sqlite3.Connection, embedder, *, cache: VecCache | None =
         meta = {"vec_model": embedder.model_id, "vec_revision": embedder.revision, "vec_dim": str(int(embedder.dim)),
                 "vec_dtype": "float16", "vec_count": str(done),
                 "vec_built_at": datetime.now(TAIPEI).isoformat(timespec="seconds"),
-                "vec_passage": PASSAGE_VERSION if unit and _has_unit_line(conn) else "1"}
+                "vec_passage": PASSAGE_VERSION if unit and _has_unit_line(conn) else "1",
+                # spec 2026-11-16 §三: the tokens the embedder read of each passage (512 in every build before)
+                "vec_max_seq": str(int(getattr(embedder, "max_seq", BASE_SEQ)))}
         conn.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", meta.items())
         conn.commit()
     except BaseException:

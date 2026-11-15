@@ -150,13 +150,18 @@ def test_rerank_head_takes_each_tier_apart(db):
     for i in range(15):
         member(db, f"da{100 + i}m1", f"停修會議紀錄{i:02}", "停修 停修 停修")
     rr = FakeReranker({"停修會議紀錄07": 0.99, "停修公告41": 0.9, "停修會議紀錄12": 1.0})
-    r = db.hybrid("停修", limit=75, reranker=rr, config=HybridConfig(dense=False), rank=TIER)
+    # background_factor 0: the fixed places this plan gave background documents (spec 2026-11-16 §四 made them compete
+    # by default; the default order is asserted at the end and in test_mixed_1116)
+    r = db.hybrid("停修", limit=75, reranker=rr, config=HybridConfig(dense=False, background_factor=0.0), rank=TIER)
     ((_, passages),) = rr.calls
     titles = {p.split("\n")[0] for p in passages}
     assert len([t for t in titles if "公告" in t]) == 50 and len([t for t in titles if "會議紀錄" in t]) == 10
     # 會議紀錄12 is not among the first 10 background documents: never scored; p41's 0.9 outranks the other primary ones
     assert _ids(r)[:TOP_N] == ["p41", "p00", "p01", "p02", "p03", "p04", "p05", "p06", "da107m1", "da100m1"]
     assert r.hits[0].score == pytest.approx(3 * 0.9) and r.best_rerank == pytest.approx(0.99)
+    now = db.hybrid("停修", limit=75, reranker=rr, config=HybridConfig(dense=False), rank=TIER)
+    # 3 x 0.99 x 0.8 = 2.376 stands behind p41's 2.7 and ahead of the primary documents the reranker gave 0
+    assert _ids(now)[:TOP_N] == ["p41", "da107m1", "p00", "p01", "p02", "p03", "p04", "p05", "p06", "p07"]
 
 
 # ---------------------------------------------------------------- M2: the response

@@ -35,7 +35,18 @@ from nknu.core.timeutil import iso_now
 
 EMBED_ID, EMBED_REVISION, EMBED_DIM = "BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181", 1024
 RERANK_ID, RERANK_REVISION = "BAAI/bge-reranker-v2-m3", "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
-MAX_SEQ, BATCH = 512, 16
+BATCH = 16
+# spec 2026-11-16 §三 (the owner pasted another AI's remark, which measurements bore out): both models take up to 8,192
+# tokens (their configs: max_position_embeddings 8194; bge-m3's card: 「long documents of up to 8192 tokens」), and
+# the 512 this module set until 11-16 (the cards' example value; no other reason was recorded) cut the chunk itself
+# off 13.5% of the passages that start inside a table, whose title, link names and header row filled the window.
+# 1024 【Claude】: the fee table's passage is 773 tokens, 2048 scored the same on it, and the reranker's time per
+# question did not change (median 1.55 s -> 1.56 s over the 33 questions). BASE_SEQ: the window every vector of
+# before was computed in, which the vector cache needs to know (embed.vec_key). Set the two back to 512 for the
+# behaviour of before.
+BASE_SEQ = 512
+EMBED_MAX_SEQ = 1024
+RERANK_MAX_SEQ = 1024
 PINS = ((EMBED_ID, EMBED_REVISION), (RERANK_ID, RERANK_REVISION))
 # bge-m3 ships pytorch_model.bin, the reranker model.safetensors; `check` wants one of them beside config.json
 WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
@@ -148,9 +159,10 @@ class Embedder:
     instance run one at a time."""
 
     def __init__(self, model, *, device: str = "cpu", model_id: str = EMBED_ID, revision: str = EMBED_REVISION,
-                 dim: int = EMBED_DIM) -> None:
+                 dim: int = EMBED_DIM, max_seq: int = EMBED_MAX_SEQ) -> None:
         self.model, self.device = model, device
         self.model_id, self.revision, self.dim = model_id, revision, dim
+        self.max_seq = max_seq  # the tokens it reads of a text: part of a long text's cache key (embed.vec_key)
         self._lock = threading.Lock()
 
     def encode(self, texts: list[str], *, batch_size: int = BATCH) -> np.ndarray:
@@ -190,28 +202,28 @@ class Reranker:
 
 
 def load_embedder(device: str | None = None) -> Embedder:
-    """bge-m3 at EMBED_REVISION from local files only, MAX_SEQ tokens; any failure is ModelUnavailable."""
+    """bge-m3 at EMBED_REVISION from local files only, EMBED_MAX_SEQ tokens; any failure is ModelUnavailable."""
     _require_cached(EMBED_ID, EMBED_REVISION)
     try:
         st, torch = _st(), _torch()
         device = device or pick_device()
         model = st.SentenceTransformer(EMBED_ID, revision=EMBED_REVISION, device=device, local_files_only=True,
                                        model_kwargs=_dtype(torch, device))
-        model.max_seq_length = MAX_SEQ
+        model.max_seq_length = EMBED_MAX_SEQ
     except Exception as exc:
         raise _load_failed(EMBED_ID, EMBED_REVISION, exc) from exc
     return Embedder(model, device=device)
 
 
 def load_reranker(device: str | None = None) -> Reranker:
-    """bge-reranker-v2-m3 at RERANK_REVISION from local files only, MAX_SEQ tokens per (query, passage) pair; any
+    """bge-reranker-v2-m3 at RERANK_REVISION from local files only, RERANK_MAX_SEQ tokens per (query, passage) pair; any
     failure is ModelUnavailable."""
     _require_cached(RERANK_ID, RERANK_REVISION)
     try:
         st, torch = _st(), _torch()
         device = device or pick_device()
         model = st.CrossEncoder(RERANK_ID, revision=RERANK_REVISION, device=device, local_files_only=True,
-                                max_length=MAX_SEQ, model_kwargs=_dtype(torch, device))
+                                max_length=RERANK_MAX_SEQ, model_kwargs=_dtype(torch, device))
     except Exception as exc:
         raise _load_failed(RERANK_ID, RERANK_REVISION, exc) from exc
     return Reranker(model, device=device)

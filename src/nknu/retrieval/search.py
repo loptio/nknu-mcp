@@ -355,6 +355,30 @@ def by_tier(ordered: list[_Doc]) -> list[_Doc]:
     return tiered([d for d in ordered if not d.background], [d for d in ordered if d.background])
 
 
+def mixed(main: list[_Doc], background: list[_Doc], factor: float) -> list[_Doc]:
+    """spec 2026-11-16 §四 (hybrid.HybridConfig.background_factor): the order of two reranked parts, each in score
+    order, where a background document stands by its score times factor among the primary documents' scores (on equal
+    values the primary one first; within a part the part's own order). At most BACKGROUND_SLOTS background documents
+    stand among the first TOP_N: one past that waits behind them, ahead of whatever scored less. No document's own
+    score changes. Why: by tiered, a background document asked for by name (an exam paper, a form inside an archive,
+    an alumni page) came ninth although it scored above every primary document: 91 of 100 on the official library of
+    11-15 (research/pipeline_2026-11-02/etl_review_1115/check.md)."""
+    def weight(d):
+        return d.score * factor if d.background else d.score
+
+    merged = sorted([*main, *background], key=weight, reverse=True)  # stable: main first on equal values
+    top: list[_Doc] = []
+    later: list[_Doc] = []
+    held = 0
+    for d in merged:
+        if len(top) < TOP_N and not (d.background and held >= BACKGROUND_SLOTS):
+            top.append(d)
+            held += bool(d.background)
+        else:
+            later.append(d)
+    return top + later
+
+
 def _recency(rank: RankConfig, day: str | None, today: date) -> float:
     if not day:
         return rank.w_recent * rank.no_date_factor
