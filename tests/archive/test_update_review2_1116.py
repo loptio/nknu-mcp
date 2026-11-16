@@ -374,9 +374,10 @@ def test_the_selection_takes_the_sites_go_live_named(tmp_path):
 
 def test_a_stop_before_the_run_starts_no_run(tmp_path):
     py = _fake_python(tmp_path, None)
-    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "warc").mkdir(parents=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "b"),
-           "LOCKS": str(tmp_path / "locks"), "STOP_AFTER": "put-back"}
+           "LOCKS": str(tmp_path / "locks"), "STOP_AFTER": "put-back",
+           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
     # the fake python sends the script a TERM when it is asked for put-back (a person's docker stop)
     py.write_text(py.read_text().replace('exit 0\n', '[ "$step" = "$STOP_AFTER" ] && kill -TERM $PPID\nexit 0\n'))
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)

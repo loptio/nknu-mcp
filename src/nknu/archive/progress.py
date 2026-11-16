@@ -1098,6 +1098,64 @@ def card_state(card: Card, nums: dict[str, dict], work: dict[str, dict], env: di
     return _state("waiting", words, "none", tip)
 
 
+# ---------------------------------------------------------------- periodic updates (the top line's last mark)
+
+# the nightly script (research/crawler_lab_2026-11-04/nightly_update.sh) and update.py's keys and status file: pinned
+# equal by tests/archive/test_update_nightfix_1116.py (progress imports nothing of update.py, which pulls the export in)
+UPDATE_SITES_KEY = "update:sites"
+UPDATE_NIGHT_KEY = "update:night_started"
+UPDATE_REVIEWED_KEY = "update:night_reviewed"
+UPDATE_STATUS = "update-status.json"
+UPDATE_LATE_S = 26 * 3600  # one night a day: past this, one was missed 【Claude】
+UPDATE_SAY = {"new": "新的", "changed": "改了", "same": "没变", "no_answer": "这次没回话", "not_seen": "这次没看到",
+              "not_got": "没拿到", "deleted": "学校删了", "still_gone": "还是删了", "back": "回来了"}
+
+
+def update_state(conn: sqlite3.Connection, root: Path, now: float) -> dict | None:
+    """The nightly update as one mark of the top line (11-16, after the first real night: 「漏跑的晚上也没有任何提醒」,
+    the owner: 「先修这三件」): None before go-live (no meta update:sites); red when the last night stopped at a step
+    (status file failed_step) or held a site by an alarm; yellow when no night started for more than UPDATE_LATE_S
+    (the computer off, Docker not started, the schedule stopped: nothing else would say it); 在跑 while tonight's
+    review is not written; else green with the last night's time, its counts in the hover text. words, color, tip."""
+    if conn.execute("SELECT 1 FROM meta WHERE key = ?", (UPDATE_SITES_KEY,)).fetchone() is None:
+        return None
+    meta = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM meta WHERE key IN (?, ?)",
+                                              (UPDATE_NIGHT_KEY, UPDATE_REVIEWED_KEY))}
+    try:
+        night = float(meta[UPDATE_NIGHT_KEY]) if meta.get(UPDATE_NIGHT_KEY) else None
+    except ValueError:
+        night = None
+    try:
+        status = json.loads((root / "reports" / UPDATE_STATUS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {}
+    status = status if isinstance(status, dict) else {}
+    when = fmt_clock(night, now) if night is not None else None
+    if status.get("failed_step"):
+        at = status.get("failed_at") or status.get("started") or when or "?"
+        return {"color": "red", "words": "定期更新没跑完",
+                "tip": f"上一晚（{at}）停在「{status['failed_step']}」" + (f"：{status['note']}" if status.get("note")
+                                                                       else "") + "；细节在存档的 update.log"}
+    alarms = status.get("alarms") or {}
+    if alarms:
+        return {"color": "red", "words": f"定期更新警报 {len(alarms)} 站",
+                "tip": "这几站这一晚不导出，学校恢复以前每晚再看：" + "；".join(f"{k}（{v}）" for k, v in alarms.items())}
+    if night is None:
+        return {"color": "none", "words": "定期更新还没跑过", "tip": "已经 go-live，还没跑过一晚"}
+    late = now - night
+    if late > UPDATE_LATE_S:
+        gap = f"{int(late // 3600)} 小时" if late < 2 * 86400 else f"{int(late // 86400)} 天"
+        return {"color": "yellow", "words": f"定期更新 {gap}没跑",
+                "tip": f"上一晚 {when} 开始；电脑关着、Docker 没开、排程停了，都会这样"}
+    if meta.get(UPDATE_REVIEWED_KEY) != meta.get(UPDATE_NIGHT_KEY):
+        return {"color": "none", "words": "定期更新在跑", "tip": f"{when} 开始，变动清单还没算"}
+    counts = status.get("counts") or {}
+    said = "、".join(f"{UPDATE_SAY.get(k, k)} {n:,}" for k, n in counts.items() if n)
+    changed = status.get("sites_changed") or []
+    return {"color": "green", "words": f"定期更新 {when}",
+            "tip": f"上一晚 {when} 开始：{said or '什么都没看'}；有变动的网站 {len(changed)} 个（还没导出）"}
+
+
 # ---------------------------------------------------------------- the run (§1.1 top line, §2.5 rule 2)
 
 def _run_state(conn: sqlite3.Connection, now: float, running: str | None, stop_file: bool,
@@ -2231,6 +2289,7 @@ class Dashboard:
                 running, stop = self._running()
                 self._main = snapshot(conn, now, tracker=self.tracker, slow=self.slow, running=running,
                                       stop_file=stop)
+                self._main["update"] = update_state(conn, self.root, now)
             except (FileNotFoundError, OutdatedFrontier, sqlite3.Error) as exc:
                 self._close_conn()
                 return {"at": now, "problem": _problem(exc, self.db)}

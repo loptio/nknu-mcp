@@ -14,7 +14,8 @@ run changed.
   then kept none: the answer was copied on a night that got no answer) its newest copy. A row whose pointer is still
   that answer was taken but not answered (no_answer: its page_watch left as it was). Otherwise new (a first answer),
   changed or same (a page by its fingerprint, a redirect by where it leads, a file by its sha256, a list page by its
-  rows: list_row read first or changed since, never its text), not_seen (no good answer this time: kept, never a
+  rows: list_row read first or changed since, and by its own text, list_print: outside its grid, or whole when its
+  rows say nothing; never the rows' own text), not_seen (no good answer this time: kept, never a
   deletion), deleted (gone in outcome's sense, a 404/410 or a gone or looks-gone flag, twice at least 24 h apart:
   design §7.5; a word in the report, the archive keeps every answer), back (a good answer after a bad one). The
   presses of new rows done since (a detail or a download: a row's done press is never pressed again) are new rows of
@@ -128,6 +129,35 @@ def fingerprint(html: str, url: str) -> str:
     return hashlib.sha256("\n".join(text_lines(html, url)).encode("utf-8")).hexdigest()
 
 
+def list_print(html: str, url: str, site: str | None = None) -> str | None:
+    """A list page's own text as a fingerprint (the first real night, 11-16: a teacher's page, teachercorner.aspx, is a
+    list of one file row with the teacher's fields outside its grid, and a teacher list's rows hold no title, date or
+    category; neither could say it changed, wf_9c6e1448-2cc; the owner: 「先修这三件」): the content area without the
+    platform's grid (its rows are list_row's to judge: their counters and their order never count), or with it when
+    every row the platform reads says nothing (no title, date or category). None when no platform reads its rows: it
+    is judged by its rows alone. Measured on the lab's 194 list pages answered twice: rows the same, text the same on
+    every one; on all 2,969 list pages no counter left in the text (research/crawler_lab_2026-11-04/night_1116/
+    listprint_1116.out, listcensus_1116.out)."""
+    prof = profiles.profile_for(url)
+    if prof is None:
+        return None
+    try:
+        pr = postback.read_page(prof, url, html, site=site or scope.site_key(url), list_url=url)
+    except Exception:  # noqa: BLE001 - a page its reader cannot take is judged by its rows, never the night's end
+        return None
+    rows = next((r for r in prof.rows if r.name == pr.rowset), None)
+    if rows is None:
+        return None
+    if pr.rows and all(not (r.title or r.date or r.category) for r in pr.rows):
+        lines = text_lines(html, url)
+    else:
+        tree = LexborHTMLParser(html)
+        for node in tree.css(rows.grid):
+            node.decompose()
+        lines = text_lines(tree.html or "", url)
+    return "list:" + hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------- the night's review
 
 BAD_FLAGS = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirect", "error_page", "empty_detail",
@@ -192,8 +222,9 @@ def _iso(t: float) -> str:
     return datetime.fromtimestamp(t, UTC).isoformat(timespec="seconds")
 
 
-def _print(root: Path, r) -> str | None:
-    """A page's fingerprint read back from the WARC (a redirect's target; a file's sha256)."""
+def _print(root: Path, r, *, as_list: bool = False, site: str | None = None) -> str | None:
+    """A page's fingerprint read back from the WARC (a redirect's target; a file's sha256); as_list: a list page's
+    (list_print)."""
     if _redirect(r):
         return f"redirect:{r['final_url']}"
     if r["kind"] != "page":
@@ -202,7 +233,8 @@ def _print(root: Path, r) -> str | None:
         url, _status, headers, body = postback.read_response(root, r["warc"], r["warc_offset"])
     except (OSError, ValueError):
         return None
-    return fingerprint(postback.as_text(body, headers.get("content-type")), url)
+    html = postback.as_text(body, headers.get("content-type"))
+    return list_print(html, url, site) if as_list else fingerprint(html, url)
 
 
 def _before(frontier: Frontier, uid: int, since: float):
@@ -278,7 +310,7 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
         is_list = (r["id"] in lists and r["kind"] == "page" and not _redirect(r)
                    and bool(frontier.q(f"SELECT 1 FROM list_row WHERE list_id IN ({','.join('?' * len(group))}) "
                                        f"LIMIT 1", group)))  # a list whose rows no platform reads: by its text
-        fp_now = None if is_list or not now_good else _print(root, r)
+        fp_now = _print(root, r, as_list=is_list, site=site) if now_good else None
         gone_now = answered and not now_good and _gone(r)
         gone = (w["gone"] if w else 0) + 1 if gone_now else 0
         gone_at = ((w["gone_at"] if w and w["gone_at"] else now) if gone_now else None)
@@ -288,7 +320,10 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
             if not good(prev):
                 change = "back"
             elif is_list:
-                change = "changed" if _news(frontier, group, r["id"], since) else "same"
+                # by its text only when both answers read as a list (an answer its reader could not take: rows alone)
+                fp_prev = _print(root, prev, as_list=True, site=site) if fp_now is not None else None
+                text_moved = fp_prev is not None and fp_now != fp_prev
+                change = "changed" if _news(frontier, group, r["id"], since) or text_moved else "same"
             else:
                 change = "same" if fp_now == _print(root, prev) else "changed"
         elif gone_now and gone >= 2 and now - gone_at >= GONE_AGAIN_S:

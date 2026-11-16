@@ -186,9 +186,10 @@ def _fake_python(tmp_path: Path, fail_at: str | None) -> Path:
 @pytest.mark.parametrize("fail_at", [None, "put-back", "run"])
 def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_path, fail_at):
     py = _fake_python(tmp_path, fail_at)
-    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "warc").mkdir(parents=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups"),
-           "LOCKS": str(tmp_path / "locks")}
+           "LOCKS": str(tmp_path / "locks"),
+           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
     want = {None: ["backup", "put-back", "sites", "run", "review"],

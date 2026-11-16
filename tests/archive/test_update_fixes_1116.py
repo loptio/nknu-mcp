@@ -384,9 +384,10 @@ def test_fail_keeps_the_nights_review(w2):
 
 def test_the_script_reviews_a_night_whose_run_failed(tmp_path):
     py = _fake_python(tmp_path, "run")
-    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "warc").mkdir(parents=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "b"),
-           "LOCKS": str(tmp_path / "locks")}
+           "LOCKS": str(tmp_path / "locks"),
+           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
     assert got.returncode == 1 and steps == ["backup", "put-back", "sites", "run", "review", "fail"]
@@ -394,10 +395,11 @@ def test_the_script_reviews_a_night_whose_run_failed(tmp_path):
 
 def test_a_paused_night_touches_nothing(tmp_path):
     py = _fake_python(tmp_path, None)
-    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "warc").mkdir(parents=True)
     (tmp_path / "archive" / "update.pause").write_text("")
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "b"),
-           "LOCKS": str(tmp_path / "locks")}
+           "LOCKS": str(tmp_path / "locks"),
+           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     assert got.returncode == 0 and not (tmp_path / "calls.log").exists()
 

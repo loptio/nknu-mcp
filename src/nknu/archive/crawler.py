@@ -1380,9 +1380,18 @@ class Crawler:
         s = self.plan.site(site) if site else None
         return s is not None and s.round == "1" and (self.sites is None or site in self.sites)
 
+    def _reconciled_here(self, site: str | None) -> bool:
+        """Whether this run reconciles the site as it finishes: a round-1 site of the run, unless it is under periodic
+        update (UPDATE_SITES_KEY): the nightly change list (watch.night) stands in for it there. On the whole school a
+        night's reconcile re-read every page of every site it touched, about 1.5–3 h, and services' was thrown away at
+        the 600 s join (the check of the first real night, wf_9c6e1448-2cc; the owner 11-16: 「先修这三件」); a person's
+        `nknu archive reconcile` still reconciles any site."""
+        return (self.reconcile_sources is not None and self._round1_site(site)
+                and site not in self._update_sites)
+
     def _worked_on(self, site: str | None) -> None:
         """A row or a press of this site is being handled: the site is to be reconciled (again) once it finishes."""
-        if self.reconcile_sources is not None and self._round1_site(site):
+        if self._reconciled_here(site):
             with self._site_lock:
                 self._to_reconcile.add(site)
                 self._reconciled_now.discard(site)
@@ -1395,7 +1404,7 @@ class Crawler:
         have = {r[0] for r in self.frontier.q("SELECT site FROM reconcile_site")}
         sites = self.sites if self.sites is not None else {s.site for s in self.plan.sites.values() if s.round == "1"}
         with self._site_lock:
-            self._to_reconcile |= {s for s in sites if s not in have and self._round1_site(s)}
+            self._to_reconcile |= {s for s in sites if s not in have and self._reconciled_here(s)}
 
     def _beat(self) -> None:
         """meta run:alive_at, at most once per ALIVE_S: when the main loop last went round, so the dashboard tells a run

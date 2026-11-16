@@ -660,6 +660,9 @@ def home_html(snap: dict) -> str:
     if run.get("other") is not None:  # run.lock held by jscheck, reconcile, seed, retry …: never 在跑 (review 11-04)
         top.append(f"<span class='dim' title='{_e(run['tip'])}'>另有程序在跑</span>")
     top += [f"{_bar(t['share'], t['left'] == 0)}{_e(t['pct'])}", _err(snap["errors"], "/progress/log")]
+    u = snap.get("update")  # the nightly update (progress.update_state): absent before go-live
+    if u:
+        top.append(_mark(u["color"], u["words"], tip=u["tip"]))
     if snap["polite"]["hard"]:  # design §2.6: shown only when broken (the owner 11-04: 「礼貌也不需要显示」)
         top.append(f"<a class='c-red' href='/progress/log#polite'>礼貌 ✗ {snap['polite']['hard']:,}</a>")
     if snap.get("only"):
