@@ -17,7 +17,7 @@ cli.py until the owner names the time (11-16: 「动 cli.py…动手前先和我
   reports/changes-<night>.csv and reports/update-status.json (counts, alarms, the sites whose export is due, the
   lists whose walk ended short, each site's last answer, tonight's run end). Exit 3 when tonight's run did not end
   finished or waiting (db_error, disk_low, a kill: no run_end), the status file saying so. The export is listed,
-  never run (the owner's timing, 11-16). An alarmed site's re-fetched rows go back the next night (AGAIN_KEY).
+  never run (the owner's timing, 11-16). An alarmed site's rows go back every night until let go (watch.HELD_KEY).
 - sites: the update sites as one comma list (what the nightly script gives `archive run --sites`).
 - fail --step X: the status file says the night stopped at step X, kept with tonight's review when there is one (the
   nightly script, research/crawler_lab_2026-11-04/nightly_update.sh, on a failing step).
@@ -44,7 +44,7 @@ days whatever the month's length 【Claude: the plan said weekday and day of mon
 - follow (rule 1): what the notices that changed since the last night's start link in their own text (watch.
   content_links from the answer in the archive; not their menu, not what a home links): standing pages and files
   【Claude】. Lists are no source: their rows bring their details back (list_row).
-- again: the rows of a site the last review held (watch.Night.again).
+- again: the rows of a site the review holds (watch.HELD_KEY): every night until a review lets them go.
 """
 
 from __future__ import annotations
@@ -71,10 +71,13 @@ HOME_SOURCES = ("site_home", "extra", "sitemap_aspx")
 NIGHT_KEY = "update:night_started"  # put-back's time: the night's review takes what was fetched since
 REVIEWED_KEY = "update:night_reviewed"  # the night_started a review has counted (page_watch counts each night once)
 PUT_KEY = "update:night_put_back"  # what put-back took tonight, per batch (the status file's put_back)
-FROM_KEY = "update:review_from"  # the start of the oldest night not reviewed: the review's window
-AGAIN_KEY = "update:again"  # the rows of the sites the last review held: back the next night
+FROM_KEY = "update:review_from"  # where the next review's window opens: the last review's end, or a night's start
+REVIEWED_TO = "update:reviewed_to"  # the end of the window the last review counted (its clock)
 RUN_OK = ("finished", "waiting")  # a run's end that leaves the night whole (crawler run_end)
-WALK_DONE = ("last_page", "no_rows_ok", "seen_page", "went_on", "retried")  # a whole look's end that is no failure
+# a whole look's ends that did not reach the list's end (a page that did not come, a list page read as no list):
+# walked whole again the next night. Any other end (last_page, no_rows_ok, mismatch:*, max_pages, ...) reached the
+# list's end as its walks do: next month (review of 4a5754d: a list that always ends mismatch:page was walked nightly)
+SHORT_ENDS = ("post_failed", "pager_left", "no_list", "not_a_list", "no_warc")
 WEEK, MONTH = 7, 30  # the shares (design §7.3)
 RECENT_DAYS = 30  # design §7.3: the notices of the last 30 days, by the date their list row writes
 OFTEN_CHANGES = 2  # rule 3: changed at its last two checks (10-24: 「最近两次都有变动的改成 2 天一次」)
@@ -145,7 +148,11 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
     today = today or datetime.now(TAIPEI).date()
     now = time.time() if now is None else now
     n = today.toordinal()
-    r1 = update_keys(frontier) if sites is None else set(sites)
+    if sites is not None:
+        r1 = set(sites)
+    else:  # the sites go-live named (the run fetches these: `update sites`), else round one's
+        named = frontier.meta(crawl_mod.UPDATE_SITES_KEY)
+        r1 = set(json.loads(named)) if named else update_keys(frontier)
     open_looks = ({r[0] for r in frontier.q("SELECT list_id FROM list_look WHERE ended_at IS NULL")} - set(closable)
                   if _has(frontier, "list_look") else set())
     waiting = {r[0] for r in frontier.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
@@ -168,7 +175,7 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
             t.skipped["presses_waiting"] += 1
         elif r["ended_by"] in (None, "walking"):
             t.redo.append(r["list_id"])  # no record to lose: from its GET again, every night until it ends
-        elif r["list_id"] % MONTH == n % MONTH or _short(looks, [r["list_id"]]):
+        elif r["list_id"] % MONTH == n % MONTH or _short(looks, r["list_id"]):
             t.walks.append(r["list_id"])  # tonight's whole walk, or the one that ended short the last time
         else:
             t.looks.append(r["list_id"])
@@ -201,7 +208,7 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
                 g = frontier.row_by_id(i)
                 if g is not None and g["kind"] == "page" and g["state"] in ("done", "failed") and g["owner_site"] in r1:
                     t.redo_get.append(i)
-        elif first % MONTH == n % MONTH or _short(looks, group):
+        elif first % MONTH == n % MONTH or _short(looks, first):
             t.walks_get.append(first)  # a whole look, handed over page by page
         else:
             t.looks_get.append(first)
@@ -240,14 +247,14 @@ def _ended_looks(frontier: Frontier) -> dict[int, tuple[float, int, str | None]]
                                                           "WHERE ended_at IS NOT NULL")}
 
 
-def _short(looks: dict[int, tuple[float, int, str | None]], ids) -> bool:
-    """The newest look over these pages (a GET chain's looks share their start) was a whole walk that ended short of
-    a whole walk (an end not in WALK_DONE)."""
-    rows = [looks[i] for i in ids if i in looks]
-    if not rows:
+def _short(looks: dict[int, tuple[float, int, str | None]], list_id: int) -> bool:
+    """The list page's last look was a whole walk that ended short of the list's end (SHORT_ENDS, or its page not
+    got). For a GET list, its first page's: a later page that always fails waits for next month's walk."""
+    got = looks.get(list_id)
+    if got is None or not got[1]:
         return False
-    newest = max(r[0] for r in rows)
-    return any(r[1] and r[2] not in WALK_DONE for r in rows if r[0] == newest)
+    end = got[2] or ""
+    return end in SHORT_ENDS or end.startswith("not_got")
 
 
 def _pages(frontier: Frontier, root: Path, t: Tonight, chains: postback.Chains, r1: set[str], lists: set[int],
@@ -264,8 +271,9 @@ def _pages(frontier: Frontier, root: Path, t: Tonight, chains: postback.Chains, 
         linked |= {r[0] for r in frontier.q("SELECT u.id FROM list_row r JOIN url u ON u.url = r.href")}
     standing: dict[int, str] = {}
     notices: set[int] = set(linked)
-    good_once = ("status = 200 OR id IN (SELECT url_id FROM url_version WHERE status = 200 AND kind = 'page')"
-                 if _has(frontier, "url_version") else "status = 200")
+    clean = " AND ".join(f"instr(',' || coalesce(flags, '') || ',', ',{f},') = 0" for f in sorted(watch.BAD_FLAGS))
+    good_once = (f"(status = 200 AND {clean}) OR id IN (SELECT url_id FROM url_version WHERE status = 200 AND kind = "
+                 f"'page' AND {clean})" if _has(frontier, "url_version") else f"status = 200 AND {clean}")
     for r in frontier.q("SELECT id, url, owner_site FROM url WHERE kind = 'page' AND tier IN (0, 1) AND state IN "
                         f"('done', 'failed') AND depth > 0 AND coalesce(page_role, '') != 'list' AND ({good_once})"):
         if r["owner_site"] not in r1 or r["id"] in lists:
@@ -308,7 +316,7 @@ def _pages(frontier: Frontier, root: Path, t: Tonight, chains: postback.Chains, 
             continue
         t.standing.append(i)
         taken.add(i)
-    for i in json.loads(frontier.meta(AGAIN_KEY) or "[]"):
+    for i in (json.loads(frontier.meta(watch.HELD_KEY) or "null") or {"ids": []})["ids"]:
         row = frontier.row_by_id(i)
         if row is not None and i not in taken and row["state"] in ("done", "failed") and row["owner_site"] in r1:
             t.again.append(i)
@@ -348,7 +356,7 @@ BATCHES = ("looks", "looks_get", "walks", "walks_get", "redo", "redo_get", "home
 
 def put_back(frontier: Frontier, root: Path, tonight: Tonight) -> Counter:
     """Tonight's looks and whole looks opened, lists with no end started again and pages put back (a look that does
-    not open, a page not done or failed, is counted not_opened). The rows the last review held are taken once."""
+    not open, a page not done or failed, is counted not_opened)."""
     chains = postback.Chains(frontier, root)
     got: Counter = Counter()
     for i in tonight.looks:
@@ -368,7 +376,6 @@ def put_back(frontier: Frontier, root: Path, tonight: Tonight) -> Counter:
                            ("follow", tonight.follow, "update_follow"), ("again", tonight.again, "update_again")):
         for i in ids:
             got[name if frontier.put_back(i, why) else "not_opened"] += 1
-    frontier.x("DELETE FROM meta WHERE key = ?", (AGAIN_KEY,))
     return got
 
 
@@ -385,7 +392,7 @@ def _report(frontier: Frontier, t: Tonight) -> None:
           f"没有结尾、从头再翻的 {len(t.redo)} 个、按网址翻页的 {len(t.redo_get)} 页；"
           f"最近 {RECENT_DAYS} 天的公告 {len(t.recent)} 页；常设页 {len(t.standing)} 页（轮到的 {t.why['week']}、"
           f"学校删了每月看一次的 {t.why['month']}、开学前后每天的 {t.why['daily']}、常改的 {t.why['often']}）；"
-          f"改了的公告内文链到的 {len(t.follow)} 个；上一晚整站警报、再看一次的 {len(t.again)} 个；"
+          f"改了的公告内文链到的 {len(t.follow)} 个；整站警报压着、再看一次的 {len(t.again)} 个；"
           f"共 {len(ids)} 个网址（之后有新东西才会再多）")
     if queues:
         print("按服务器：" + "、".join(f"{q} {n}" for q, n in queues.most_common()))
@@ -427,7 +434,7 @@ def _run_end(frontier: Frontier, night: float) -> dict | None:
 
 
 def _short_ends(frontier: Frontier, night: float) -> list[dict]:
-    """The looks and whole walks that ended short tonight (postback._close_look's look_ended events)."""
+    """The looks and whole walks that ended short in the window (postback._close_look's look_ended events)."""
     return [{"url": r["url"], "why": r["message"]} for r in frontier.q(
         "SELECT url, message FROM event WHERE code='look_ended' AND at >= ? ORDER BY rowid", (watch._iso(night),))]
 
@@ -445,35 +452,44 @@ def _seen(frontier: Frontier) -> dict[str, str | None]:
 
 
 def review(frontier: Frontier, root: Path, *, now: float | None = None) -> tuple[dict, bool]:
-    """The change list and status file of the nights not yet reviewed (the module's docstring); (status, done now). A
-    night counted already is not counted again (page_watch's changes and gone would be counted twice): its status file
-    is read back."""
+    """The change list and status file of the nights not yet reviewed (the module's docstring); (status, done now).
+    The change list and the status are written before the night is counted (one transaction: a review that cannot
+    write them counts nothing, the next one counts it). A night counted already is not counted again (page_watch's
+    changes and gone would be counted twice): its status file is read back."""
     raw = frontier.meta(NIGHT_KEY)
     night_at = float(raw)
     since = float(frontier.meta(FROM_KEY) or raw)
     now = time.time() if now is None else now
-    if frontier.meta(REVIEWED_KEY) == raw and (root / "reports" / STATUS).is_file():
-        return json.loads((root / "reports" / STATUS).read_text(encoding="utf-8")), False
+    out = root / "reports"
+    if frontier.meta(REVIEWED_KEY) == raw:
+        try:
+            old = json.loads((out / STATUS).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        if old.get("night_started") != _local(night_at) or "counts" not in old:
+            raise RuntimeError("这一晚已经算过了，可是状态档不是这一晚的：变动清单在 reports/changes-*.csv")
+        return old, False
+    out.mkdir(parents=True, exist_ok=True)
+    name = f"changes-{datetime.fromtimestamp(since, TAIPEI):%Y%m%d-%H%M}.csv"
     with write_first(frontier.conn, "review"):
         n = watch.night(frontier, root, since, now=now)
+        with (out / name).open("w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(("site", "url", "kind", "change", "previous_at"))
+            for c in n.rows:
+                w.writerow((c.site, c.url, c.kind, c.change, c.previous_at or ""))
+        end = _run_end(frontier, night_at)
+        status = {"started": _local(since), "night_started": _local(night_at), "reviewed": _local(now),
+                  "failed_step": None if end is not None and end.get("reason") in RUN_OK else "run",
+                  "counts": dict(sorted(n.counts().items())), "alarms": n.alarms, "sites_changed": n.sites_changed,
+                  "held": len(n.again), "lists_short": _short_ends(frontier, since), "changes_file": name,
+                  "run_end": end, "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"),
+                  "sites_seen": _seen(frontier), "export": "没有跑：导出的时机等用户定（11-16）；要导出的是 sites_changed"}
+        part = out / (STATUS + ".part")
+        part.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
         frontier.meta(REVIEWED_KEY, raw)
-        if n.again:
-            frontier.meta(AGAIN_KEY, json.dumps(sorted(set(n.again))))
-    name = f"changes-{datetime.fromtimestamp(since, TAIPEI):%Y%m%d-%H%M}.csv"
-    (root / "reports").mkdir(parents=True, exist_ok=True)
-    with (root / "reports" / name).open("w", encoding="utf-8", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(("site", "url", "kind", "change", "previous_at"))
-        for c in n.rows:
-            w.writerow((c.site, c.url, c.kind, c.change, c.previous_at or ""))
-    end = _run_end(frontier, night_at)
-    status = {"started": _local(since), "night_started": _local(night_at), "reviewed": _local(now),
-              "failed_step": None if end is not None and end.get("reason") in RUN_OK else "run",
-              "counts": dict(sorted(n.counts().items())), "alarms": n.alarms, "sites_changed": n.sites_changed,
-              "again": len(set(n.again)), "lists_short": _short_ends(frontier, night_at), "changes_file": name,
-              "run_end": end, "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"), "sites_seen": _seen(frontier),
-              "export": "没有跑：导出的时机等用户定（11-16）；要导出的是 sites_changed"}
-    _write_status(root, status)
+        frontier.meta(REVIEWED_TO, repr(now))
+    part.replace(out / STATUS)
     return status, True
 
 
@@ -528,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 f.close()
             old = json.loads((root / "reports" / STATUS).read_text(encoding="utf-8"))
-            if night and old.get("night_started") == _local(float(night)):
+            if a.step not in ("backup", "put-back") and night and old.get("night_started") == _local(float(night)):
                 status = old  # tonight's review is kept beside where the night stopped
         except (OSError, ValueError, sqlite3.Error):
             pass
@@ -575,7 +591,11 @@ def main(argv: list[str] | None = None) -> int:
                 if not f.meta(NIGHT_KEY):
                     print("还没放回过（put-back）：没有这一晚可以算", file=sys.stderr)
                     return 1
-                status, done = review(f, root)
+                try:
+                    status, done = review(f, root)
+                except RuntimeError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
                 print(("" if done else "这一晚已经算过了，照上次的：") + _say(status))
                 return 3 if status.get("failed_step") == "run" else 0
             if not f.meta(crawl_mod.UPDATE_SITES_KEY):
@@ -584,16 +604,20 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             last = f.meta(NIGHT_KEY)
             start = repr(time.time())
-            # the review's window: from this night on, unless the last night was never reviewed (its run or review
-            # did not end: a reboot), whose rows the next review then takes too
-            if last is None or f.meta(REVIEWED_KEY) == last:
-                f.meta(FROM_KEY, start)
-            elif not f.meta(FROM_KEY):
-                f.meta(FROM_KEY, last)
-            f.meta(NIGHT_KEY, start)  # the night starts: its review takes what is fetched from now
             closed = postback.Chains(f, root).close_stale_looks()
             t = select(f, root, sites=sites, today=a.today, last_night=float(last) if last else None)
             got = put_back(f, root, t)
+            # the review's windows follow one another: the next opens where the last review ended (what a person's
+            # run fetched in the day is in it); a night never reviewed (its run or review did not end) keeps its
+            # window open, so the next review takes both. Written once tonight's rows are back (rule 1's last night
+            # stays the last night's if put-back stops midway)
+            if last is None:
+                f.meta(FROM_KEY, start)
+            elif f.meta(REVIEWED_KEY) == last:
+                f.meta(FROM_KEY, f.meta(REVIEWED_TO) or start)
+            elif not f.meta(FROM_KEY):
+                f.meta(FROM_KEY, last)
+            f.meta(NIGHT_KEY, start)  # the night: its run_end, rule 1's last night for tomorrow
             f.meta(PUT_KEY, json.dumps({k: got.get(k, 0) for k in BATCHES}))
             _report(f, t)
             print(f"放回去了：列表 {got['looks']} 个、按网址翻页的第 1 页 {got['looks_get']} 个、翻到底的 "

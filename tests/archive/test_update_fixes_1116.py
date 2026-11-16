@@ -23,7 +23,6 @@ from nknu.archive import postback, update, watch
 from nknu.archive.frontier import Frontier
 from tests.archive.test_crawler_round1 import settle
 from tests.archive.test_postback import SSO_LIST, World, fx
-from tests.archive.test_update_rotations_1116 import DAY as DAY0
 from tests.archive.test_update_rotations_1116 import _days, _row
 from tests.archive.test_update_select_1116 import R1, _site, _url, _walk
 from tests.archive.test_update_stage1_1116 import (
@@ -189,17 +188,6 @@ def test_rule_one_leaves_out_what_the_home_links_on_a_page_with_no_template(worl
     assert all(menu not in update.select(world.f, world.root, today=d, last_night=last).follow for d in _days(7))
 
 
-def test_the_rows_an_alarm_held_go_back_the_next_night_once(site):
-    f, ids, root = site
-    held = ids["standing"][:2]
-    f.meta(update.AGAIN_KEY, json.dumps(held))
-    for d in _days(3):
-        t = update.select(f, root, today=d)
-        assert sorted(t.again) == sorted(held) and not set(held) & set(t.standing)
-    update.put_back(f, root, update.select(f, root, today=DAY0))
-    assert f.meta(update.AGAIN_KEY) is None and update.select(f, root, today=DAY0).again == []
-
-
 # ---------------------------------------------------------------- the fingerprint keeps every number but counters
 
 def _same(a: str, b: str) -> bool:
@@ -309,7 +297,7 @@ def test_five_pages_gone_bad_hold_the_site_its_watch_and_bring_them_back_the_nex
     for i in ids[:5]:
         _answer(w2, w2.f.row_by_id(i)["url"], "<html><body>系統維護中</body></html>", status=503)
     n = watch.night(w2.f, w2.root, since, now=time.time())
-    assert SITE in n.alarms and n.sites_changed == [] and sorted(n.again) == sorted(ids[:5])
+    assert SITE in n.alarms and n.sites_changed == [] and set(ids[:5]) <= set(n.again)
     assert {i: tuple(w2.f.q("SELECT * FROM page_watch WHERE url_id=?", (i,))[0]) for i in ids[:5]} == \
         {i: before[i] for i in ids[:5]}
 
@@ -318,6 +306,7 @@ def test_a_list_page_is_judged_by_its_rows_not_its_text(w2):
     url = f"https://{SITE}/list.htm"
     uid = _answer(w2, url, _html("<p>公告 一（點閱 10）</p>"))
     _walk(w2.f, uid, "last_page", 1)
+    _row(w2.f, uid, f"https://{SITE}/n1.htm", "2026-11-01")  # its rows are read (first seen long ago)
     since = time.time()
     _answer(w2, url, _html("<p>公告 一（點閱 11）</p>"))
     assert _change(watch.night(w2.f, w2.root, since, now=time.time()), uid) == "same"

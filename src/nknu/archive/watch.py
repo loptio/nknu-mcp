@@ -28,6 +28,7 @@ run changed.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
@@ -47,7 +48,7 @@ _NUMBER = re.compile(r"[\d,.\s]+")
 
 
 _COUNTER_ATTR = re.compile(r"counter|(?:read|click|hit|view|visit|browse|download)s?_?(?:count|num|times)", re.IGNORECASE)
-_COUNTER_WORD = r"(?:觀看|瀏覽|點閱|點擊|點選|閱讀|人氣|下載)(?:次數|人次|數)?"
+_COUNTER_WORD = r"(?:(?:觀看|瀏覽|點閱|點擊|點選|閱讀|人氣|下載)(?:次數|人次|數)?|(?i:views?|hits?|clicks?|reads?))"
 _COUNTER_LINE = re.compile(rf"{_COUNTER_WORD}[:]?\d[\d,]*(?:次|人次)?")
 _COUNTER_LABEL = re.compile(rf"{_COUNTER_WORD}[:]?")
 
@@ -134,7 +135,8 @@ BAD_FLAGS = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirec
 GONE_FLAGS = frozenset({"soft404", "gone_page", "gone_id", "gone_redirect"})
 GONE_AGAIN_S = 24 * 3600  # a second gone answer at least this long after the first is the school's deletion
 ALARM_SHARE, ALARM_MIN, SAME_BODY_MIN = 0.3, 5, 5
-CHANGES = ("new", "changed", "same", "no_answer", "not_seen", "not_got", "deleted", "back")
+CHANGES = ("new", "changed", "same", "no_answer", "not_seen", "not_got", "deleted", "still_gone", "back")
+HELD_KEY = "update:held"  # an alarmed site's rows: {"since": the alarm night's window start, "ids": [...]}
 
 
 @dataclass(frozen=True)
@@ -163,8 +165,11 @@ def _flags(r) -> set[str]:
 
 
 def _redirect(r) -> bool:
-    return (r["status"] is not None and 300 <= r["status"] < 400 and bool(r["final_url"])
-            and not _flags(r) & BAD_FLAGS)
+    """An answer that sends the reader on: a 3xx, or a page moving by script or refresh (js_redirect), to an address."""
+    moves = (r["status"] is not None and 300 <= r["status"] < 400) or "js_redirect" in _flags(r)
+    # a url_version copy holds no address of its own (sqlite3.Row: `in` would look at the values)
+    own = r["url"] if "url" in r.keys() else None  # noqa: SIM118
+    return moves and bool(r["final_url"]) and r["final_url"] != own and not _flags(r) & BAD_FLAGS
 
 
 def good(r) -> bool:
@@ -201,12 +206,23 @@ def _print(root: Path, r) -> str | None:
 
 
 def _before(frontier: Frontier, uid: int, since: float):
-    """The answer a row held when the window opened (the module's docstring)."""
+    """The answer a row held when the window opened (the module's docstring); None when its first answer came inside
+    the window (a copy of an answer fetched in a later second than the window's start is the window's own)."""
     got = frontier.q("SELECT * FROM url_version WHERE url_id=? AND kept_at >= ? ORDER BY kept_at, id LIMIT 1",
                      (uid, since))
     if not got:
         got = frontier.q("SELECT * FROM url_version WHERE url_id=? ORDER BY kept_at DESC, id DESC LIMIT 1", (uid,))
+    if got and got[0]["fetched_at"] is not None and got[0]["fetched_at"] > _iso(since):
+        got = frontier.q("SELECT * FROM url_version WHERE url_id=? AND fetched_at <= ? ORDER BY fetched_at DESC, "
+                         "kept_at DESC, id DESC LIMIT 1", (uid, _iso(since)))
     return got[0] if got else None
+
+
+def _good_once(frontier: Frontier, uid: int, w) -> bool:
+    """The row had a good answer once: a fingerprint watched, or a good copy."""
+    if w is not None and w["fp"] is not None:
+        return True
+    return any(good(c) for c in frontier.q("SELECT * FROM url_version WHERE url_id=?", (uid,)))
 
 
 def list_pages(frontier: Frontier) -> set[int]:
@@ -219,18 +235,35 @@ def list_pages(frontier: Frontier) -> set[int]:
     return ids
 
 
+def _news(frontier: Frontier, group: list[int], uid: int, since: float) -> int:
+    """A list page's news since: its rows read first (and on no other page of its list before) or changed."""
+    marks = ",".join("?" * len(group))
+    return frontier.q(f"SELECT count(*) FROM list_row r WHERE r.list_id = ? AND (r.changed_at >= ? OR (r.first_seen >= "
+                      f"? AND NOT EXISTS (SELECT 1 FROM list_row o WHERE o.ident = r.ident AND o.list_id IN ({marks}) "
+                      f"AND o.first_seen < ?)))", (uid, since, since, *group, since))[0][0]
+
+
 def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
     """The night's review (the module's docstring)."""
     since_iso = _iso(since)
     out = Night()
     stats: dict[str, dict] = defaultdict(lambda: {"n": 0, "bad": 0, "bodies": Counter()})
     lists = list_pages(frontier)
+    chains = postback.Chains(frontier, root)
     probe = {r[0]: r[1] for r in frontier.q("SELECT host, probe_sha FROM host WHERE probe_sha IS NOT NULL")}
-    watched: list[tuple] = []  # (site, prev, the page_watch values)
-    for r in frontier.q("SELECT * FROM url WHERE fetched_at >= ? AND state IN ('done', 'failed') ORDER BY id",
-                        (since_iso,)):
-        prev = _before(frontier, r["id"], since)
+    held_raw = json.loads(frontier.meta(HELD_KEY) or "null")
+    held = set(held_raw["ids"]) if held_raw else set()
+    held_since = held_raw["since"] if held_raw else since
+    watched: list[tuple] = []  # (site, the page_watch values)
+    reviewed: dict[int, str] = {}  # url id -> site
+    rows = frontier.q("SELECT * FROM url WHERE (fetched_at >= ? AND state IN ('done', 'failed')) OR (state IN "
+                      "('pending', 'active') AND id IN (SELECT url_id FROM url_version WHERE kept_at >= ?)) ORDER BY id",
+                      (since_iso, since))
+    for r in rows:
         site = r["owner_site"] or r["site"]
+        reviewed[r["id"]] = site
+        # a row an alarm held is judged against the answer before that alarm's night
+        prev = _before(frontier, r["id"], held_since if r["id"] in held else since)
         if prev is not None and (prev["warc"], prev["warc_offset"]) == (r["warc"], r["warc_offset"]):
             out.rows.append(Change(r["id"], site, r["url"], r["kind"], "no_answer", prev["fetched_at"]))
             if good(prev):
@@ -239,10 +272,14 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
             continue
         seen = frontier.q("SELECT * FROM page_watch WHERE url_id=?", (r["id"],))
         w = seen[0] if seen else None
-        now_good = r["state"] == "done" and good(r)
-        is_list = r["id"] in lists and r["kind"] == "page" and not _redirect(r)
+        answered = r["state"] != "failed"
+        now_good = answered and good(r)
+        group = sorted(chains._group(r["id"])[0]) if r["id"] in lists else [r["id"]]
+        is_list = (r["id"] in lists and r["kind"] == "page" and not _redirect(r)
+                   and bool(frontier.q(f"SELECT 1 FROM list_row WHERE list_id IN ({','.join('?' * len(group))}) "
+                                       f"LIMIT 1", group)))  # a list whose rows no platform reads: by its text
         fp_now = None if is_list or not now_good else _print(root, r)
-        gone_now = r["state"] == "done" and not now_good and _gone(r)
+        gone_now = answered and not now_good and _gone(r)
         gone = (w["gone"] if w else 0) + 1 if gone_now else 0
         gone_at = ((w["gone_at"] if w and w["gone_at"] else now) if gone_now else None)
         if prev is None:
@@ -251,25 +288,26 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
             if not good(prev):
                 change = "back"
             elif is_list:
-                news = frontier.q("SELECT count(*) FROM list_row WHERE list_id=? AND (first_seen >= ? OR changed_at "
-                                  ">= ?)", (r["id"], since, since))[0][0]
-                change = "changed" if news else "same"
+                change = "changed" if _news(frontier, group, r["id"], since) else "same"
             else:
                 change = "same" if fp_now == _print(root, prev) else "changed"
         elif gone_now and gone >= 2 and now - gone_at >= GONE_AGAIN_S:
-            change = "deleted"
+            said = w is not None and w["gone"] >= 2 and (w["checked_at"] or 0) - (w["gone_at"] or 0) >= GONE_AGAIN_S
+            change = ("still_gone" if said else "deleted") if _good_once(frontier, r["id"], w) else "not_seen"
         else:
             change = "not_seen"
         if prev is not None and good(prev):
             s = stats[site]
             s["n"] += 1
             s["bad"] += int(not now_good)
-            if change == "changed" and r["kind"] == "page" and not is_list and r["sha256"] != probe.get(r["host"]):
+            # one body over many pages that answered anew (a maintenance page), lists too; the host's not-found aside
+            if (now_good and r["kind"] == "page" and not _redirect(r) and r["sha256"] != prev["sha256"]
+                    and r["sha256"] != probe.get(r["host"])):
                 s["bodies"][r["sha256"]] += 1
         changes = ((w["changes"] if w else 0) + 1) if change == "changed" else (0 if change == "same" else
                                                                                  (w["changes"] if w else 0))
-        watched.append((site, prev, (r["id"], fp_now, now, now if change in ("new", "changed", "back") else None,
-                                     changes, gone_at, gone)))
+        watched.append((site, (r["id"], fp_now, now, now if change in ("new", "changed", "back") else None,
+                               changes, gone_at, gone)))
         out.rows.append(Change(r["id"], site, r["url"], r["kind"], change, prev["fetched_at"] if prev else None))
     for a in frontier.q("SELECT a.id, a.kind, a.row_key, u.url, coalesce(u.owner_site, u.site) AS site FROM action a "
                         "JOIN url u ON u.id = a.list_id WHERE a.state = 'done' AND a.kind IN ('detail', 'download') "
@@ -280,17 +318,20 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
         if s["bad"] >= ALARM_MIN and s["bad"] / s["n"] >= ALARM_SHARE:
             out.alarms[site] = f"{s['bad']} of {s['n']} pages read again did not come back well"
         elif s["bodies"] and max(s["bodies"].values()) >= SAME_BODY_MIN:
-            out.alarms[site] = f"{max(s['bodies'].values())} pages changed to one identical body"
-    for site, prev, values in watched:
-        if site in out.alarms:
-            if prev is not None:
-                out.again.append(values[0])
-            continue
-        frontier.x("INSERT INTO page_watch(url_id, fp, checked_at, changed_at, changes, gone_at, gone) VALUES "
-                   "(?,?,?,?,?,?,?) ON CONFLICT(url_id) DO UPDATE SET fp=coalesce(excluded.fp, fp), "
-                   "checked_at=excluded.checked_at, changed_at=coalesce(excluded.changed_at, changed_at), "
-                   "changes=excluded.changes, gone_at=excluded.gone_at, gone=excluded.gone", values)
-    out.again += [c.url_id for c in out.rows if c.change == "no_answer" and c.site in out.alarms]
+            out.alarms[site] = f"{max(s['bodies'].values())} pages answered one identical body"
+    for site, values in watched:
+        if site not in out.alarms:
+            frontier.x("INSERT INTO page_watch(url_id, fp, checked_at, changed_at, changes, gone_at, gone) VALUES "
+                       "(?,?,?,?,?,?,?) ON CONFLICT(url_id) DO UPDATE SET fp=coalesce(excluded.fp, fp), "
+                       "checked_at=excluded.checked_at, changed_at=coalesce(excluded.changed_at, changed_at), "
+                       "changes=excluded.changes, gone_at=excluded.gone_at, gone=excluded.gone", values)
+    # an alarmed site's rows, new ones too, are held: back the next night, judged against the answer before the alarm;
+    # held rows not read tonight stay held; the rest are let go
+    out.again = sorted({i for i, site in reviewed.items() if site in out.alarms} | (held - set(reviewed)))
+    if out.again:
+        frontier.meta(HELD_KEY, json.dumps({"since": min(held_since, since), "ids": out.again}))
+    else:
+        frontier.x("DELETE FROM meta WHERE key = ?", (HELD_KEY,))
     out.sites_changed = sorted({c.site for c in out.rows if c.change in ("new", "changed", "deleted", "back")}
                                - set(out.alarms))
     return out
