@@ -111,6 +111,24 @@ def test_each_step_is_logged_with_its_time(tmp_path):
 
 
 @needs_script
+def test_a_night_ends_when_only_resting_servers_are_left(tmp_path):
+    """The first whole-school night (11-16): elecnas stopped connecting; a server that answered this archive before is
+    only given up after CONN_GIVE_UP_ANSWERED tries (about a day), each rest shorter than `archive run`'s own end wait
+    (1800 s), so the night would have run on into the next day and the next night would not have started. The night's
+    run ends once nothing comes due sooner than a server's rest; those rows wait for the next night (run_end
+    "waiting", which the review counts as a whole night)."""
+    py = _fake_python(tmp_path, None)
+    got = subprocess.run(["bash", str(SCRIPT)], check=False, env=_env(tmp_path, py), capture_output=True, text=True)
+    assert got.returncode == 0
+    run_line = next(line for line in (tmp_path / "calls.log").read_text().splitlines() if line.startswith("run "))
+    words = run_line.split()
+    assert "--end-wait" in words, run_line
+    wait = float(words[words.index("--end-wait") + 1])
+    assert 0 < wait < min(mod.CONN_PAUSE_S, mod.SERVER_REST_S)
+    assert "waiting" in update.RUN_OK
+
+
+@needs_script
 def test_nightly_backups_are_named_apart_and_only_they_are_pruned(tmp_path):
     """BACKUPS pointed at D:\\nknu-crawl\\backup would have pruned the hand-made backup frontier-…-before-night-1116.db
     (the glob was frontier-*.db): the night's are nightly-*.db, and only those are pruned."""
