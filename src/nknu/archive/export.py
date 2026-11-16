@@ -816,6 +816,20 @@ def _kept_good(conn: sqlite3.Connection, ids) -> dict[int, list[dict]]:
     return dict(out)
 
 
+# a page that held at least SHRUNK_FROM characters of its own and now holds fewer than SHRUNK_TO is no good this time
+# (the export batch's review, F3: a one-off maintenance or error page at night) 【Claude】
+SHRUNK_FROM, SHRUNK_TO = 200, 30
+
+
+def _shrunk(row: dict, kept: dict) -> bool:
+    """Whether this time's answer of a web page holds next to nothing where its last good answer held much (the
+    crawler's text_chars of each), a list that says it has no row (no_rows) never."""
+    now, before = row.get("text_chars"), kept.get("text_chars")
+    flags = set((row.get("flags") or "").split(","))
+    return (row.get("kind") == "page" and "no_rows" not in flags and now is not None and before is not None
+            and before >= SHRUNK_FROM and now < SHRUNK_TO)
+
+
 def _expected_file(r: dict) -> bool:
     return (r.get("kind0") or r.get("kind")) in outcome._EXPECTED_FILE
 
@@ -2230,14 +2244,22 @@ class Writer:
             return False
         detail = it.type == PAGE and _detail(it.url, self.site)
         if row["result"] == "redirect":
+            if detail:
+                # a notice sent elsewhere (its host's root, a not-found page, a list) is how a school deletes one:
+                # never covered with its old copy; its landing stays in sight (NOTICE_MOVED; the review, F1)
+                return False
             end, _nowhere = self.s.landing.get(rid, (None, None))
             to = self.s.rows.get(end) if end is not None else None
             if to is not None and to["result"] in GOOD_RESULTS and not outcome.school_home(to["url"]):
                 return False  # a page moved: it shares the page it lands on, as before
         elif row["result"] in GOOD_RESULTS:
             # only a notice detail page is no good for being empty (update.md §5 item 3): a list the school emptied
-            # (「共0筆」) is its answer now (T8 on the lab, 11-16)
-            if not detail or it.source is None or not self._empty_notice(it, it.source[0], it.source[1]):
+            # (「共0筆」) is its answer now (T8 on the lab, 11-16). Any other page that now holds next to nothing where
+            # it held much (a one-off maintenance page at night, when no thin step runs: the review, F3) is no good too
+            if detail:
+                if it.source is None or not self._empty_notice(it, it.source[0], it.source[1]):
+                    return False
+            elif not _shrunk(row, kept[0]):
                 return False
         pick = next((k for k in kept if not detail or not self._empty_notice(it, k["warc"], k["warc_offset"])), None)
         if pick is None:

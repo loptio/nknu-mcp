@@ -489,7 +489,7 @@ def review(frontier: Frontier, root: Path, *, now: float | None = None) -> tuple
                   "counts": dict(sorted(n.counts().items())), "alarms": n.alarms, "sites_changed": n.sites_changed,
                   "held": len(n.again), "lists_short": _short_ends(frontier, since), "changes_file": name,
                   "run_end": end, "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"),
-                  "sites_seen": _seen(frontier), "export": "没有跑：导出的时机等用户定（11-16）；要导出的是 sites_changed"}
+                  "sites_seen": _seen(frontier), "export": None}  # the seen step writes it after the export
         part = out / (STATUS + ".part")
         part.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
         frontier.meta(REVIEWED_KEY, raw)
@@ -527,11 +527,37 @@ def _sites(raw: str | None) -> set[str] | None:
 SEEN_WORDS = {"ok": "导了", "failed": "导出失败", "alarm": "警报压着", "unanswered": "连不上", "same": "没变动"}
 
 
-def export_list(status: dict) -> list[str]:
-    """The sites tonight's export takes (design §7.4: the nightly script tells the export which): those the change
-    list says changed, none an alarm holds (§7.5: an alarmed site is not exported tonight)."""
+OWED = "export-owed.json"  # the sites changed and not exported yet (the review's F6): reports/, beside the status
+
+
+def _owed(root: Path) -> list[str]:
+    try:
+        got = json.loads((root / "reports" / OWED).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [s for s in got if isinstance(s, str)] if isinstance(got, list) else []
+
+
+def _write_owed(root: Path, sites) -> None:
+    path = root / "reports" / OWED
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".new")
+    part.write_text(json.dumps(sorted(set(sites)), ensure_ascii=False), encoding="utf-8")
+    part.replace(path)
+
+
+def owe(root: Path, sites) -> None:
+    """The sites a night's review found changed join those owed an export (the review's F6: a night whose export did
+    not happen, or a site whose export failed, is exported on a later night, never forgotten)."""
+    _write_owed(root, set(_owed(root)) | set(sites))
+
+
+def export_list(status: dict, owed: list[str] | None = None) -> list[str]:
+    """The sites tonight's export takes (design §7.4: the nightly script tells the export which): those owed an export
+    (owe: changed tonight or on a night whose export did not happen) and those the change list says changed, none
+    an alarm holds tonight (§7.5: an alarmed site is not exported tonight; it stays owed)."""
     held = set(status.get("alarms") or {})
-    return [s for s in status.get("sites_changed") or [] if s not in held]
+    return sorted(s for s in set(owed or []) | set(status.get("sites_changed") or []) if s not in held)
 
 
 def _results(path: Path | None) -> dict[str, str]:
@@ -544,11 +570,21 @@ def _results(path: Path | None) -> dict[str, str]:
     return out
 
 
-def seen_rows(status: dict, results: dict[str, str]) -> list[tuple[str, str, str]]:
+def _previous_seen(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    return {x.split("\t")[0]: x.split("\t")[1] for x in lines if x.count("\t") >= 2}
+
+
+def seen_rows(status: dict, results: dict[str, str], previous: dict[str, str] | None = None) \
+        -> list[tuple[str, str, str]]:
     """seen.tsv's rows, by site key (export batch T7; design §7.5 「每站最后一次看过」): the site, its last answer in
     Taipei time (YYYY-MM-DD HH:MM; '' when it never answered), and what tonight did: an alarm held it, its export
     failed, it was exported, it did not answer tonight (its last answer is older than tonight's start), or it did not
-    change."""
+    change. A site an alarm held or whose export failed keeps the time the previous seen.tsv gave it (the review's
+    F5: the export the content stage holds of it is that night's, not tonight's)."""
     night = status.get("night_started")
     start = datetime.fromisoformat(night) if night else None
     alarms = set(status.get("alarms") or {})
@@ -563,7 +599,10 @@ def seen_rows(status: dict, results: dict[str, str]) -> list[tuple[str, str, str
             what = "unanswered"
         else:
             what = "same"
-        rows.append((site, when.strftime("%Y-%m-%d %H:%M") if when else "", SEEN_WORDS[what]))
+        shown = when.strftime("%Y-%m-%d %H:%M") if when else ""
+        if what in ("alarm", "failed"):
+            shown = (previous or {}).get(site, "")
+        rows.append((site, shown, SEEN_WORDS[what]))
     return rows
 
 
@@ -604,14 +643,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"读不到这一晚的状态档（{type(exc).__name__}）：先跑 review", file=sys.stderr)
             return 1
         if a.action == "export-list":
-            print("\n".join(export_list(status)))
+            print("\n".join(export_list(status, _owed(root))))
             return 0
         if a.out is None:
             print("seen 要 --out", file=sys.stderr)
             return 1
         results = _results(a.results)
-        _write_seen(a.out, seen_rows(status, results))
-        print(f"写了 {a.out}：{len(status.get('sites_seen') or {})} 个网站")
+        _write_seen(a.out, seen_rows(status, results, _previous_seen(a.out)))
+        done = {s for s, w in results.items() if w in ("ok", "unchanged")}
+        left = sorted(set(_owed(root)) - done)
+        _write_owed(root, left)
+        # the night's export in the status file (the review's F8: the dashboard's mark and a person read it there)
+        status["export"] = {"at": _local(time.time()), "exported": sorted(s for s, w in results.items() if w == "ok"),
+                            "unchanged": sorted(s for s, w in results.items() if w == "unchanged"),
+                            "failed": sorted(s for s, w in results.items() if w not in ("ok", "unchanged")),
+                            "owed": left}
+        _write_status(root, status)
+        print(f"写了 {a.out}：{len(status.get('sites_seen') or {})} 个网站；还欠导出 {len(left)} 个")
         return 0
     if a.action == "fail":
         status: dict = {}
@@ -687,6 +735,8 @@ def main(argv: list[str] | None = None) -> int:
                 except RuntimeError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
+                if done:
+                    owe(root, status.get("sites_changed") or [])  # until exported (the review's F6)
                 print(("" if done else "这一晚已经算过了，照上次的：") + _say(status))
                 return 3 if status.get("failed_step") == "run" else 0
             if not f.meta(crawl_mod.UPDATE_SITES_KEY):

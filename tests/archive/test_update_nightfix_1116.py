@@ -184,10 +184,10 @@ def test_the_dashboard_says_nothing_of_updates_before_go_live(arch):
 def test_a_good_night_is_one_green_mark_with_its_counts_in_the_hover(arch):
     f, _ids, root = arch
     _night(f, root, ago=3600, failed_step=None, alarms={}, counts={"new": 4, "changed": 4, "same": 28},
-           sites_changed=["c.nknu.edu.tw/aca"])
+           sites_changed=["c.nknu.edu.tw/aca"], export={"exported": ["c.nknu.edu.tw/aca"], "failed": [], "owed": []})
     u = snap_of(root)["update"]
     assert u["color"] == "green" and u["words"].startswith("定期更新 ")
-    assert "新的 4" in u["tip"] and "有变动的网站 1 个" in u["tip"]
+    assert "新的 4" in u["tip"] and "有变动的网站 1 个" in u["tip"] and "导了 1 个" in u["tip"]
     assert u["words"] in visible(home_html(snap_of(root)))
 
 
@@ -227,6 +227,22 @@ def test_a_night_still_running_says_so(arch):
     f.meta(update.REVIEWED_KEY, repr(NOW - 86400))
     u = snap_of(root)["update"]
     assert (u["color"], u["words"]) == ("none", "定期更新在跑")
+
+
+def test_a_reviewed_night_still_exporting_says_it_runs(arch):
+    """The export batch's review, F8: green only once the night's export is written in the status file."""
+    f, _ids, root = arch
+    _night(f, root, ago=600, failed_step=None, alarms={}, counts={"same": 9}, export=None)
+    u = snap_of(root)["update"]
+    assert (u["color"], u["words"]) == ("none", "定期更新在跑") and "导出" in u["tip"]
+
+
+def test_a_night_whose_export_failed_for_a_site_is_red_and_names_it(arch):
+    f, _ids, root = arch
+    _night(f, root, ago=600, failed_step=None, alarms={}, counts={"same": 9},
+           export={"exported": [], "failed": ["c.nknu.edu.tw/aca"], "owed": ["c.nknu.edu.tw/aca"]})
+    u = snap_of(root)["update"]
+    assert (u["color"], u["words"]) == ("red", "定期更新导出失败 1 站") and "c.nknu.edu.tw/aca" in u["tip"]
 
 
 def test_the_dashboard_reads_the_keys_update_writes():

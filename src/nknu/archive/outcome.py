@@ -193,6 +193,18 @@ def school_home(url: str | None) -> bool:
 NOT_FOUND_PATHS = ("/nodata.html", "/404.php")
 
 
+def not_found_url(url: str | None) -> bool:
+    """Whether this address is one of a school host's not-found pages (NOT_FOUND_PATHS; _not_found_sql, the same
+    rule): a school host, no query, its path ending in one of them."""
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return (host.endswith("." + SCHOOL_DOMAIN) and not parts.query
+            and any(parts.path.lower().endswith(x) for x in NOT_FOUND_PATHS))
+
+
 def _not_found_sql(u: str) -> str:
     """SQL: url row `u` is one of a school host's not-found pages (NOT_FOUND_PATHS)."""
     rest = f"lower(substr({u}.url, instr({u}.url, '://') + 3))"

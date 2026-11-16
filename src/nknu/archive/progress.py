@@ -1149,11 +1149,19 @@ def update_state(conn: sqlite3.Connection, root: Path, now: float) -> dict | Non
                 "tip": f"上一晚 {when} 开始；电脑关着、Docker 没开、排程停了，都会这样"}
     if meta.get(UPDATE_REVIEWED_KEY) != meta.get(UPDATE_NIGHT_KEY):
         return {"color": "none", "words": "定期更新在跑", "tip": f"{when} 开始，变动清单还没算"}
+    export = status.get("export")
+    if not isinstance(export, dict):  # the export batch's review, F8: green only once the night's export is written
+        return {"color": "none", "words": "定期更新在跑", "tip": f"{when} 开始，变动清单算好了，还在导出"}
+    failed = export.get("failed") or []
+    if failed:
+        return {"color": "red", "words": f"定期更新导出失败 {len(failed)} 站",
+                "tip": "这几站这一晚没导出，下一晚再导（存档的 reports/export-owed.json）：" + "、".join(failed[:12])}
     counts = status.get("counts") or {}
     said = "、".join(f"{UPDATE_SAY.get(k, k)} {n:,}" for k, n in counts.items() if n)
     changed = status.get("sites_changed") or []
     return {"color": "green", "words": f"定期更新 {when}",
-            "tip": f"上一晚 {when} 开始：{said or '什么都没看'}；有变动的网站 {len(changed)} 个（还没导出）"}
+            "tip": f"上一晚 {when} 开始：{said or '什么都没看'}；有变动的网站 {len(changed)} 个，"
+                   f"导了 {len(export.get('exported') or [])} 个"}
 
 
 # ---------------------------------------------------------------- the run (§1.1 top line, §2.5 rule 2)

@@ -39,7 +39,7 @@ from pathlib import Path
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import postback, profiles, scope
+from nknu.archive import outcome, postback, profiles, scope
 from nknu.archive.frontier import Frontier
 
 _DROP = "script, style, noscript, template"
@@ -162,7 +162,9 @@ def list_print(html: str, url: str, site: str | None = None) -> str | None:
 
 BAD_FLAGS = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirect", "error_page", "empty_detail",
                        "bad_link"})
-GONE_FLAGS = frozenset({"soft404", "gone_page", "gone_id", "gone_redirect"})
+# an emptied notice (empty_detail: how c.nknu shows one the school deleted, the rule of 11-09) is gone too, so that
+# twice a day apart it is the school's deletion (the export batch's review, F4)
+GONE_FLAGS = frozenset({"soft404", "gone_page", "gone_id", "gone_redirect", "empty_detail"})
 GONE_AGAIN_S = 24 * 3600  # a second gone answer at least this long after the first is the school's deletion
 ALARM_SHARE, ALARM_MIN, SAME_BODY_MIN = 0.3, 5, 5
 CHANGES = ("new", "changed", "same", "no_answer", "not_seen", "not_got", "deleted", "still_gone", "back")
@@ -202,20 +204,31 @@ def _redirect(r) -> bool:
     return moves and bool(r["final_url"]) and r["final_url"] != own and not _flags(r) & BAD_FLAGS
 
 
+def _dead_end(r) -> bool:
+    """An answer that sends the reader to its host's root page or to a school not-found page (outcome.not_found_url):
+    how schools delete a notice (tecs: 130 rows to nodata.html in round one), never a page moved. A root page sent to
+    a root page (http to https) is no such answer (the export batch's review, F1)."""
+    moves = (r["status"] is not None and 300 <= r["status"] < 400) or "js_redirect" in _flags(r)
+    own = r["url"] if "url" in r.keys() else None  # noqa: SIM118
+    to = r["final_url"]
+    return (moves and bool(to) and to != own and not outcome.school_home(own)
+            and (outcome.school_home(to) or outcome.not_found_url(to)))
+
+
 def good(r) -> bool:
     """An answer stored well: a redirect to somewhere (judged by where), or 200 with no sign-in, not-found or error
     page, a page that is HTML and a file that is not."""
     if r["warc"] is None or r["warc_offset"] is None or _flags(r) & BAD_FLAGS:
         return False
     if _redirect(r):
-        return True
+        return not _dead_end(r)
     if r["status"] != 200:
         return False
     return (r["sniff"] == "html") if r["kind"] == "page" else (r["sniff"] != "html")
 
 
 def _gone(r) -> bool:
-    return r["status"] in (404, 410) or bool(_flags(r) & GONE_FLAGS)
+    return r["status"] in (404, 410) or bool(_flags(r) & GONE_FLAGS) or _dead_end(r)
 
 
 def _iso(t: float) -> str:

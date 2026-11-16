@@ -237,6 +237,8 @@ DOOR_WINDOW_S = 120.0  # a door (scheme, port) of a server that answers on anoth
 # the flags of a kept answer that make it no good for keeping a page's resources (_good_before: export batch T1b)
 KEEP_RES_BAD = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirect", "error_page", "empty_detail",
                           "thin"})
+# the flags of this time's answer under which a page good before keeps its resources (_page: export batch T1b)
+KEEP_RES_NOW = frozenset({"empty_detail", "gone_page", "gone_redirect", "gone_id"})
 END_WAIT_S = 600.0  # B1: a run whose soonest row is due later than this ends, leaving its rows for the next run
 # C0 (design §11): `archive run --end-wait`'s own default, longer than the fixed 15-minute rest of a server (and the
 # pause of one that does not connect), so that one such rest never ends a long run nobody watches 【Claude 的执行办法】
@@ -3823,7 +3825,9 @@ class Crawler:
         entries, n = self._parts(row, page, uid, html=text, warc=cols.get("warc"), warc_offset=snap.warc_offset)
         entries += self._data_entries(row, text, cols.get("warc"), snap.warc_offset)  # design §23 C1
         keys = {e["res_key"] for e in entries}
-        if "empty_detail" not in flags or not self._good_before(uid):  # a page good before keeps what it linked (T1b)
+        # a page good before keeps what it linked when this answer is a deleted notice's (export batch T1b; the review:
+        # c.nknu's 「404: File not found」 gone_page and a script sent to a not-found page, gone_redirect, too)
+        if not set(flags) & KEEP_RES_NOW or not self._good_before(uid):
             self.frontier.set_page_res(uid, entries + [g for g in google if g["res_key"] not in keys])
         google_api.resync(self.frontier, uid)  # a folder or calendar read meanwhile brings what it holds
         # design §8.3: the page's type and its signs, after its page_res (a click it cannot press is read from it)

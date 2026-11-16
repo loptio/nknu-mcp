@@ -52,7 +52,10 @@ def _crawl_twice(tmp_path, second: str):
     return f, uid, before
 
 
-@pytest.mark.parametrize("second", [EMPTY, LOGIN], ids=["empty_template", "sign_in"])
+FNF = "<html><head><title>404: File not found</title></head><body>404: File not found</body></html>"
+
+
+@pytest.mark.parametrize("second", [EMPTY, LOGIN, FNF], ids=["empty_template", "sign_in", "file_not_found"])
 def test_a_page_good_before_keeps_its_resources_when_this_time_is_no_good(tmp_path, second):
     f, uid, before = _crawl_twice(tmp_path, second)
     assert any("form5.pdf" in k for k in before)
