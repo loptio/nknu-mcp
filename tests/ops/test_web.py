@@ -240,12 +240,13 @@ def test_words_that_are_no_id_find_documents_by_title(site):
     assert "沒有標題含「沒有這幾個字」的文件" in none
 
 
-def test_the_top_bar_links_the_other_panels_when_told_where_they_are(db, tmp_path):
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY,
-                         overview_url="http://127.0.0.1:18879", tables_url="http://127.0.0.1:18001")
+def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
+    # since 11-17 every panel shows nknu/ops/theme/bar.py's bar: 檢視台's own pages by path, the others by address
+    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
         page = client.get("/search").text
-    assert "href='http://127.0.0.1:18879'" in page and "href='http://127.0.0.1:18001'" in page
+    assert "href='http://127.0.0.1:18879/'" in page and "href='http://127.0.0.1:18001/'" in page
+    assert "href='/trace'" in page and "href='/'" in page and "class='nk-bar'" in page
     assert "aria-current='page'>搜尋測試" in page and ">資料庫<" in page and "翻庫" not in page
     assert "data-tip='每個網站收了多少、缺多少'" in page  # what each panel is floats over its name
 
@@ -385,7 +386,7 @@ def test_a_file_the_pack_replaced_is_fine_once_the_pipeline_has_the_packs_own_ve
 def test_the_pages_are_in_traditional_chinese(lib):
     """Owner 11-15: 「可视化dashboard全部换繁体字」. The pages say so to the browser and ask for Traditional fonts first."""
     for page in (lib.get("/").text, lib.get("/search", params={"q": "停修"}).text, lib.get("/trace").text):
-        assert "<html lang='zh-Hant-TW'>" in page and '"PingFang TC","Microsoft JhengHei","Noto Sans CJK TC"' in page
+        assert "<html lang='zh-Hant-TW'>" in page and '"PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC"' in page
         assert "zh-Hans" not in page and "PingFang SC" not in page
 
 

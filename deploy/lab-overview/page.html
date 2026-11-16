@@ -15,34 +15,8 @@
      4.5:1 on the light surface, 5.2:1 on the dark), the dates line and its wash, the bars of the years, the list's small
      bars, ranked rows. One kind picked: that kind's own hue (the line is then that kind's).
    What is picked or switched on is ink, like a picked tile's ring: no data colour. */
-:root {
-  --bg: #f5f5f2; --surface: #ffffff; --ink: #161615; --ink2: #5c5b57; --ink3: #908e88; --line: #e7e6e0; --line2: #cfcec6;
-  --hover: rgba(22,22,21,.05); --press: rgba(22,22,21,.1);
-  --k0: #3578b8; --k1: #6ebbe8; --k2: #e1a948; --k3: #3ca17b; --k4: #d6d4cd; --on-w: #ffffff; --on-k: #131312;
-  --q0: #e5e6fc; --q1: #ccccf8; --q2: #b1b0ef; --q3: #9490e3; --q4: #736ace; --q5: #503ead; --qx: #f1f0eb;
-  --amt: var(--q4); /* how many: the dark theme's own --q4 below, by name */
-  --bad: #d55e00;
-  --font: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
-  --barh: 52px;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0e0e0d; --surface: #191918; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #86847d; --line: #2b2b29; --line2: #3d3d3a;
-    --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
-    --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
-    --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
-    --bad: #e2733a;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #0e0e0d; --surface: #191918; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #86847d; --line: #2b2b29; --line2: #3d3d3a;
-  --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
-  --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
-  --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
-  --bad: #e2733a;
-  color-scheme: dark;
-}
+/* colours, type and the panels' top bar: nknu/ops/theme/theme.css, put before this sheet by server.py (11-17) */
+:root { --barh: 52px; }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { background: var(--bg); color: var(--ink); font: 13px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
@@ -52,14 +26,12 @@ button { cursor: pointer; background: none; border: 0; padding: 0; text-align: i
 a { color: inherit; text-underline-offset: 2px; }
 h2, h3, h4 { margin: 0; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
-.app { max-width: 1440px; margin: 0 auto; padding-block: 0 28px;
-  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.app { max-width: var(--page); margin: 0 auto; padding-block: 0 28px; padding-inline: var(--gutter); }
 
 /* top bar */
 .topbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--bg); display: flex; align-items: center;
   justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 12px 0 10px; }
 .tb-l { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; min-width: 0; }
-.brand { font-size: 17px; font-weight: 700; letter-spacing: .01em; }
 .crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 13px; min-width: 0; color: var(--ink3); }
 .crumbs button { padding: 2px 7px; border-radius: 7px; color: var(--ink2); }
 .crumbs button:hover { background: var(--hover); color: var(--ink); }
@@ -150,7 +122,7 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .tile.sel::after { box-shadow: inset 0 0 0 3px var(--ink), inset 0 0 0 5px var(--surface); }
 .tile.sel { z-index: 2; }
 .tlab { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; font-size: 11px; line-height: 1.3; pointer-events: none; overflow: hidden; padding: 4px 4px 0 6px; }
-.tlab .tn { font-weight: 650; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lc, 1); overflow: hidden; word-break: break-all; }
+.tlab .tn { font-weight: 650; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lc, 1); overflow: hidden; word-break: break-all; text-wrap: balance; }
 .tlab .tv { opacity: .78; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tile.big .tlab { font-size: 13px; padding: 7px 6px 0 9px; }
 .ghead { position: absolute; height: 20px; display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden;
@@ -174,14 +146,14 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 @media (max-width: 640px) { .tm { height: 400px; } .dn { grid-template-columns: 118px minmax(0, 1fr); gap: 10px; } }
 
 /* inspector */
-.ih-t { font-size: 19px; font-weight: 650; line-height: 1.25; }
+.ih-t { font-size: 20px; font-weight: 650; line-height: 1.25; }
 .ih-s { color: var(--ink2); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
 .tag { display: inline-block; padding: 0 6px; border-radius: 5px; background: var(--hover); color: var(--ink2); font-size: 11px; margin-left: 6px; white-space: nowrap; }
 .dn { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; align-items: center; margin-top: 14px; }
 .dn svg { display: block; width: 100%; height: auto; }
 .dn-track { fill: none; stroke: var(--line); stroke-width: 22; }
 .dn path { cursor: pointer; transition: opacity .2s; }
-#dnV { font-size: 22px; font-weight: 650; fill: var(--ink); }
+#dnV { font-size: 20px; font-weight: 650; fill: var(--ink); }
 #dnL { font-size: 11px; fill: var(--ink3); }
 .kl { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
 .kl li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
@@ -229,7 +201,7 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
    (owner 11-15: 「幾份文件應該在右邊顯示更人性化」); in 各類型 the kinds' chips on the left, as the lines' legend */
 .ro { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 6px; min-height: 26px; }
 .ro-n { margin-left: auto; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
-.ro-v { font-size: 18px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.ro-v { font-size: 20px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .ro-u { color: var(--ink3); margin-left: 3px; font-size: 12px; }
 .ro-l { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .ro-k { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -253,14 +225,14 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .brush .selection { fill: var(--ink); fill-opacity: .08; stroke: var(--ink3); shape-rendering: crispEdges; }
 .brush .handle { fill: var(--ink2); rx: 2px; }
 .cal-h { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }
-.cal-h b { font-size: 15px; font-weight: 650; min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.cal-h b { font-size: 16px; font-weight: 650; min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
 .cal-h button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); text-align: center; color: var(--ink2); }
 .cal-h button:disabled { opacity: .3; cursor: default; }
 .cal-h .lg { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--ink3); font-size: 12px; }
 .cal-h .lg i { width: 11px; height: 11px; border-radius: 2px; background: var(--calc); display: inline-block; }
 .cal-w { overflow-x: auto; }
 #cal { display: block; }
-#cal text { fill: var(--ink3); font-size: 10px; }
+#cal text { fill: var(--ink3); font-size: 11px; }
 #cal rect { rx: 2px; cursor: pointer; }
 #cal rect.z { fill: var(--hover); }
 #cal rect.v { fill: var(--calc); }
@@ -293,7 +265,7 @@ tbody tr[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 0 var(--
 tr.grow td { padding-top: 10px; padding-bottom: 10px; background: var(--bg); border-top: 1px solid var(--line2); border-bottom: 1px solid var(--line2);
   font-weight: 650; color: var(--ink); }
 tr.grow:hover td { background: var(--press); }
-tr.grow td:first-child { font-size: 13.5px; }
+tr.grow td:first-child { font-size: 14px; }
 tr.grow .gn { display: flex; align-items: center; gap: 8px; min-width: 0; }
 tr.grow .gn::before { content: ""; flex: none; width: 5px; height: 5px; margin: 0 3px 0 2px; border-right: 1.5px solid var(--ink2); border-bottom: 1.5px solid var(--ink2);
   transform: rotate(-45deg); transition: transform .15s; }
@@ -343,7 +315,7 @@ tr.grow .pc { color: var(--ink); }
 /* tooltip */
 .tip { position: fixed; z-index: 60; pointer-events: none; max-width: 300px; padding: 8px 10px; border-radius: 10px; background: var(--surface);
   border: 1px solid var(--line2); box-shadow: 0 10px 28px rgba(0,0,0,.16); font-size: 12px; line-height: 1.45; }
-.tip h4 { font-size: 12.5px; font-weight: 650; margin-bottom: 2px; }
+.tip h4 { font-size: 13px; font-weight: 650; margin-bottom: 2px; }
 .tip p { margin: 0; color: var(--ink2); }
 .tip .mix { width: 100%; margin: 6px 0 4px; }
 .tip .tr { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); gap: 6px; align-items: center; margin-top: 2px; }
@@ -357,7 +329,7 @@ tr.grow .pc { color: var(--ink); }
 .tt-top > div:first-child { min-width: 0; }
 .tip .tt-s { color: var(--ink3); margin: 0; }
 .tt-n { flex: none; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.tt-n b { display: block; font-size: 12.5px; font-weight: 650; margin-bottom: 2px; }
+.tt-n b { display: block; font-size: 13px; font-weight: 650; margin-bottom: 2px; }
 .tt-n span { color: var(--ink2); }
 .tt-r { display: grid; grid-template-columns: 62px minmax(0, 1fr) var(--vw); gap: 8px; align-items: center; padding: 2.5px 0; color: var(--ink2); }
 .tt-r b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
@@ -371,7 +343,7 @@ tr.grow .pc { color: var(--ink); }
 
 <div class="app">
   <header class="topbar" id="bar">
-    <div class="tb-l"><span class="brand">資料總覽</span><nav class="crumbs" id="crumbs" aria-label="目前範圍"></nav><span class="live" id="live" role="status" hidden></span></div>
+    <div class="tb-l"><nav class="crumbs" id="crumbs" aria-label="目前範圍"></nav><span class="live" id="live" role="status" hidden></span></div>
     <div class="top-r">
       <span id="chips" style="display:contents"></span>
       <div class="seg" id="segMetric" role="group" aria-label="統計方式"><button data-v="docs">文件數</button><button data-v="chars" data-tip="按轉成文字後的字數算">字數</button></div>
@@ -462,16 +434,19 @@ const KN = ['公告', '一般網頁', '附件', '行事曆', '校外連結'];
 const KTIP = ['公告列表裡的一則消息，帶發佈日期', '公告以外的網頁：說明頁、規章頁、活動頁等', '網頁上掛的檔案：PDF、Word、Excel、圖片', '日曆裡的一個活動', '網頁裡指向校外網站的連結'];
 const FMT = ['PDF（有文字）', 'PDF（掃描檔，認字）', 'Word / Excel / PPT', '圖片（認字）', '其他'];
 const DSRC = ['網頁或公告上寫的日期', '跟所屬公告的日期', '伺服器上的檔案時間', '正文裡寫的期間', '下載表格那一行寫的日期'];
-// the build's own checks of each site (site_checks.json, written after each build): a reminder's name and what it means
+// the build's own checks of each site (site_checks.json, written after each build): a reminder's name and what it means.
+// The names say what is wrong from the reader's side, one concept one word; each was tried on a cold reader first (the
+// owner's rule for new names, 11-16). 【Claude】 redesign 2026-11-17 (research/dashboard_redesign_2026-11-17/diagnosis.md,
+// 資料總覽 ③); before it they were 沒有文件, 用標題搜不到, 同名標題, 開頭相同, 碎字附件, 整批檔案時間.
 const CK = {
-  none: ['沒有文件', '這個網站一份文件都沒收進庫'],
-  self: ['用標題搜不到', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
+  none: ['沒有文件進庫', '這個網站一份文件都沒收進庫'],
+  self: ['用標題找不回文件', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
   empty: ['網頁沒文字', '兩成以上的網頁轉成文字後是空的'],
-  same_title: ['同名標題', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
-  same_opening: ['開頭相同', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
-  fragments: ['碎字附件', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
+  same_title: ['多份文件同一標題', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
+  same_opening: ['選單混進正文', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
+  fragments: ['附件一字一行', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
 };
-const CK_SPIKE = ['整批檔案時間', '同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批複製時留下的），這些檔不拿這個時間當日期，算在「無日期」裡'];
+const CK_SPIKE = ['檔案時間整批相同', '同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批複製時留下的），這些檔不拿這個時間當日期，算在「無日期」裡'];
 const OUTN = ['抓到', '留到下一輪', '學校已刪除', '抓取失敗', '要登入', '待處理'];
 const OUTTIP = ['', '這一輪按規則先不抓，多數是要 JavaScript 才出現的內容和按鈕', '連結還在，但學校那邊已經沒有這個網頁或檔案', '連不上、被拒絕，或者回來的不是檔案', '要登入才看得到', '寫法特殊，這一輪還沒決定怎麼抓'];
 const OUTCLS = ['o-got', 'o-next', 'o-gone', 'o-fail', 'o-login', 'o-todo'];
@@ -638,6 +613,10 @@ function setBarH() { document.documentElement.style.setProperty('--barh', $('#ba
 const tm = { el: $('#tm'), tiles: new Map(), heads: [] };
 // the width of a name in em: CJK characters are one em wide, the rest a little over half
 const emW = t => { let w = 0; for (const ch of t) w += ch.charCodeAt(0) > 0x2e7f ? 1 : .58; return w; };
+// how many lines a tile's name gets: `per` characters fit a line, `room` lines fit the block, the name needs `need`;
+// 0 = no label (the hover card names the site). See the treemap's label code below for why.
+const labelLines = (per, room, need) => need <= 1 && per >= 1 && room >= 1 ? 1
+  : per >= 3 && need <= Math.min(room, per >= 8 ? 3 : 2) ? need : 0;
 function tmInit() {
   S0.forEach(s => {
     const el = document.createElement('div'); el.className = 'tile gone'; el.dataset.k = s.k;
@@ -702,12 +681,15 @@ function renderMap() {
       if (lens) st.setProperty('--fill', step < 0 ? 'var(--qx)' : 'var(--q' + step + ')');
       t.el.classList.toggle('inv', !!lens && step >= 4);
       t.el.classList.toggle('onw', !lens && c0.data.i === 0);
-      // the label sits on the largest block (on the whole tile under a lens); the name wraps to the lines it needs, and a
-      // name that would lose most of itself is left to the tooltip instead of being cut to two characters
+      // the label sits on the largest block (on the whole tile under a lens). A name is printed only where it reads as a
+      // name: whole, on at most two lines (three on a tile wide enough for 8 characters a line), at least 3 characters a
+      // line, the lines balanced (.tn text-wrap). Any other tile is left to the hover card: no name squeezed one
+      // character a line, none cut to 「原住民…」. 【Claude】 redesign 2026-11-17 (research/dashboard_redesign_2026-11-17/
+      // diagnosis.md, 資料總覽 ②)
       const whole = !!lens || tiny, bw = whole ? w : c0.x1 - c0.x0, bh = whole ? h : c0.y1 - c0.y0;
       const big = bw >= 150 && bh >= 72, fs = big ? 13 : 11, lh = fs * 1.3, aw = bw - (big ? 15 : 10), ah = bh - (big ? 10 : 6);
       const per = Math.floor(aw / fs + .08), room = Math.floor(ah / lh), need = per > 0 ? Math.ceil(t.em / per) : 99;
-      const lines = per >= 2 && need <= Math.min(room, 3) ? need : per >= 4 && room >= 1 ? Math.min(room, 2) : 0;
+      const lines = labelLines(per, room, need);
       const vtxt = lens ? (q == null ? '' : lens.lab(o.s)) : pct1(o.v, grand);
       const showV = lines > 0 && !!vtxt && (lines + 1) * lh <= ah && emW(vtxt) * fs <= aw;
       t.lab.style.display = lines ? '' : 'none';
@@ -789,8 +771,9 @@ function ckFig(k, c) {
     : k === 'same_title' ? fmt(c.st) + ' 份' : k === 'same_opening' ? fmt(c.so[0]) + '/' + fmt(c.so[1]) + ' 頁'
     : k === 'fragments' ? fmt(c.fr) + ' 份' : '';
 }
+const NEW_SUM = n => '<span data-tip="標了「新」的提醒：這次建庫才出現，上一次建庫時沒有">新出現 ' + n + ' 項</span>';
 function ckRow(name, tip, fig, isNew) {
-  return '<div class="ck" data-tip="' + esc(tip) + '"><span>' + name + (isNew ? '<span class="tag" data-tip="上一次建庫時還沒有這個提醒">新</span>' : '') + '</span><b>' + fig + '</b></div>';
+  return '<div class="ck" data-tip="' + esc(tip) + '"><span>' + name + (isNew ? '<span class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' : '') + '</span><b>' + fig + '</b></div>';
 }
 function checkRows(one, sc) {
   if (one) {
@@ -798,7 +781,7 @@ function checkRows(one, sc) {
     if (!c) return null;
     const rows = c.f.map(k => ckRow(CK[k][0], CK[k][1], ckFig(k, c), c.nw.includes(k)));
     if (c.sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1], fmt(c.sp) + ' 份', false));
-    return [rows.join(''), c.nw.length ? '新出現 ' + c.nw.length + ' 項' : ''];
+    return [rows.join(''), c.nw.length ? NEW_SUM(c.nw.length) : ''];
   }
   const rows = [];
   let fresh = 0;
@@ -811,7 +794,7 @@ function checkRows(one, sc) {
   }
   const sp = sum(sc.map(s => (s.ck && s.ck.sp) || 0));
   if (sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1], fmt(sp) + ' 份', false));
-  return rows.length ? [rows.join(''), fresh ? '新出現 ' + fresh + ' 項' : ''] : null;
+  return rows.length ? [rows.join(''), fresh ? NEW_SUM(fresh) : ''] : null;
 }
 function renderInsp() {
   const one = S.site ? byKey[S.site] : null, sc = scopeSites();
@@ -1122,7 +1105,7 @@ const COLS = [
   { k: 'mix', t: '類型' },
   { k: 'yr', t: '各年', tip: Y0 + ' 年及以前到 ' + Y1 + ' 年，每年的文件數（切到字數就是字數），每個網站按自己最多的一年畫滿' },
   { k: 'v', t: null, r: true },
-  { k: 'ud', t: '無日期', r: true, tip: '公告、網頁、附件裡沒有日期的比例' },
+  { k: 'ud', t: '無日期', r: true, tip: '公告、網頁、附件裡沒有日期的份數，按份數排（佔多少比例滑過去看）' },
   { k: 'miss', t: '未抓到', r: true, tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例；學校已刪除的不算' },
   { k: 'last', t: '最近更新', r: true, tip: '最新一份帶日期的文件是多久以前的；灰色的是一年以上沒更新' },
 ];
@@ -1210,7 +1193,9 @@ function cells(a, grand, hl) {
   const fresh = a.age == null ? '<span class="na">—</span>' : '<span class="pc' + (a.age > 365 ? ' old' : '') + '" data-tip="最新一份帶日期的文件：' + a.last + '">' + ago(a.age) + '</span>';
   return '<td class="' + c('mix') + '">' + (a.v ? mixBar(a.p) : '<span class="na">—</span>') + '</td><td class="' + c('yr') + '">' + spark(a.list) + '</td>' +
     '<td class="' + c('v') + ' r" data-tip="佔全部 ' + pct1(a.v, grand) + '">' + fmtVal(a.v) + '</td>' +
-    '<td class="' + c('ud') + ' r">' + ratio(a.b ? a.ud / a.b : null, pct(a.ud, a.b), '沒有日期的 ' + fmt(a.ud) + ' 份') + '</td>' +
+    // owner 11-17: 「我想看资料中没日期的文件数来排名网站…目前资料总览好像只能用百分比来排名」: the count shows and sorts,
+    // its share floats; bold from one half up as before
+    '<td class="' + c('ud') + ' r">' + ratio(a.b ? a.ud / a.b : null, fmt(a.ud), '沒有日期的 ' + fmt(a.ud) + ' 份，佔公告、網頁、附件的 ' + pct(a.ud, a.b)) + '</td>' +
     '<td class="' + c('miss') + ' r">' + ratio(a.got + a.miss ? a.miss / (a.got + a.miss) : null, pct(a.miss, a.miss + a.got), a.why || '都抓到了') + '</td><td class="' + c('last') + ' r">' + fresh + '</td>';
 }
 function renderList() {
@@ -1233,7 +1218,7 @@ function renderList() {
   }
   if (!S.site) listSeen = null;
   const grouped = S.sort === 'group' && S.grp === null, grand = grandTotal(), hl = S.lens ? LENS_COL[S.lens] : null;
-  const key = { v: r => r.v, mix: r => r.v, yr: r => r.v, ud: r => r.s.udShare == null ? -1 : r.s.udShare, last: r => r.s.age == null ? -1 : r.s.age, miss: r => r.s.missShare == null ? -1 : r.s.missShare }[S.sort] || (r => r.v);
+  const key = { v: r => r.v, mix: r => r.v, yr: r => r.v, ud: r => r.s.b ? r.s.ud : -1, last: r => r.s.age == null ? -1 : r.s.age, miss: r => r.s.missShare == null ? -1 : r.s.missShare }[S.sort] || (r => r.v);
   const dir = S.sort === 'group' ? -1 : S.dir;
   top.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || b.v - a.v; });
   const head = '<thead><tr>' + COLS.map(c => {

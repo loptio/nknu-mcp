@@ -3,13 +3,15 @@
 # 连得到；从 Mac 看要开 SSH 隧道（scripts/inspect-tunnel.sh）。给用户的步骤在同一个资料夹的 README.md。
 #   docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d            三个都开
 #   docker compose -f C:\nknu-transfer\inspect\compose.yaml ps               看状态
-#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart          换库、换程序以后
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart          换程序以后
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart datasette   换库以后（只重启它）
 #   docker compose -f C:\nknu-transfer\inspect\compose.yaml logs --tail 50 ops
 #   docker compose -f C:\nknu-transfer\inspect\compose.yaml down             全关（磁碟区不会动）
 # 程序和 Datasette 的设定装在磁碟区 nknu-work 的 /work/inspect-code（自己的一份，install.sh 装的：/work/src 抄一份、
 # 再盖上检视工具自己的档）。这样送检视工具的程序不会换掉建库用的 /work/src。换程序：pack.sh 打包、scp、install.sh、
 # restart（步骤在 README.md）。库被建库程序换掉以后，Datasette 还开着旧档（检视台和 MCP 服务每次都重新开库），
-# 所以换库以后也 restart 一次。
+# 所以换库以后只 restart datasette：整个 restart 会连 ops 一起重启、触发约 17 分钟的整轮网页核查，和爬虫抢 D 槽
+# （爬虫夜里跑的时段不重启 ops，11-16 两个 session 说好的）。
 # 写 $$ 才是一个 $：compose 会把 ${VAR} 换成呼叫者的环境变数。
 name: nknu-inspect
 
@@ -104,7 +106,14 @@ services:
               "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
               "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
               "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
-              "--archive", "/crawl/archive"]
+              "--archive", "/crawl/archive",
+              # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
+              # （11-16 在 ops 里实测都连得到）。mcp 是握手、每小时真的搜一次；datasette 看它开的是不是正式库；
+              # overview 看资料总览算的是哪一份库；http 只看有没有回应（爬虫看板每一页都要现算，不问页面）
+              "--watch", "搜尋服務（MCP）=mcp:http://mcp:8766/mcp",
+              "--watch", "資料庫=datasette:http://datasette:8001",
+              "--watch", "資料總覽=overview:http://host.docker.internal:8879",
+              "--watch", "爬蟲看板=http:http://host.docker.internal:8877/"]
     ports:
       - "127.0.0.1:8878:8878"
 

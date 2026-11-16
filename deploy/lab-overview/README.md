@@ -43,10 +43,10 @@
 
 ## 换程序
 
-1. 在 Mac 上把这个资料夹的五个档送过去（只经 SSH）：
+1. 在 Mac 上把这个资料夹的五个档、加上面板共用的样式和顶栏三个档（`src/nknu/ops/theme/`，11-17 起）送过去（只经 SSH）：
 
    ```bash
-   scp deploy/lab-overview/{server.py,overview_data.py,page.html,compose.yaml,README.md} nknu-lab:C:/nknu-transfer/overview/
+   scp deploy/lab-overview/{server.py,overview_data.py,page.html,compose.yaml,README.md} src/nknu/ops/theme/{theme.css,panels.json,bar.py} nknu-lab:C:/nknu-transfer/overview/
    ```
 
 2. 在实验室电脑上：`docker compose -f C:\nknu-transfer\overview\compose.yaml restart`

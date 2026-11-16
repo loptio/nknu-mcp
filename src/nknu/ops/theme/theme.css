@@ -1,0 +1,81 @@
+/* The one look of the panels (資料總覽, 檢視台, 資料庫): colours, type, the top bar. Every panel loads this file first
+   and adds only its own parts after it; nothing here is written again in a panel (tests/ops/test_theme.py checks).
+   Redesign of 2026-11-17 (research/dashboard_redesign_2026-11-17/diagnosis.md; owner: 「照这个顺序改」). 【Claude】
+
+   Colour has four jobs and no other:
+   - a document's kind: --k0 公告, --k1 一般網頁, --k2 附件, --k3 行事曆, --k4 校外連結 (資料總覽's validated set). Blue is
+     these two kinds of web page and nothing else (owner 11-15: 「藍色已經定義過是公告和一般網站了」);
+   - how many and how much is missing: the violet ramp --q0…--q5, and --amt (= --q4) for one series (owner 11-15:
+     「其他地方普遍用紫色來表達多和少」); --amt2 / --amt3 are its washes;
+   - a state: good / warn / bad (檢視台's validated set), only on a small mark that also carries an icon or a word, never
+     on a number or a large area, so that 留意's amber is not read as 附件;
+   - what acts or is picked: ink (--act), never a data colour.
+   Type: 11 / 12 / 13 / 14 / 16 / 20px (and 26px for one big figure); no half sizes.
+   Width: a page's content is at most --page wide with a 16px gutter, and the bar lines up with it.
+   Light --ink3 is darker than before 11-17 (#908e88 was 3.0:1 on the paper; #706e68 is 4.7:1). */
+
+:root {
+  --bg: #f5f5f2; --surface: #ffffff; --sunk: #f3f2ee; --ink: #161615; --ink2: #5c5b57; --ink3: #706e68;
+  --line: #e7e6e0; --line2: #cfcec6; --hover: rgba(22,22,21,.05); --press: rgba(22,22,21,.1); --mark2: rgba(22,22,21,.1);
+  --shadow: 0 1px 2px rgba(22,22,21,.05);
+  --k0: #3578b8; --k1: #6ebbe8; --k2: #e1a948; --k3: #3ca17b; --k4: #d6d4cd; --on-w: #ffffff; --on-k: #131312;
+  --q0: #e5e6fc; --q1: #ccccf8; --q2: #b1b0ef; --q3: #9490e3; --q4: #736ace; --q5: #503ead; --qx: #f1f0eb;
+  --amt: var(--q4); --amt2: rgba(115,106,206,.24); --amt3: rgba(115,106,206,.12); --on-amt: #ffffff;
+  --good: #348757; --good2: #71c38f; --warn: #c48d25; --bad: #a42d15;
+  --on-good: #ffffff; --on-good2: #131312; --on-warn: #131312; --on-bad: #ffffff;
+  --good-ink: #1d6b3e; --warn-ink: #8a5a00; --bad-ink: #a83a1f;
+  --good-bg: rgba(52,135,87,.12); --warn-bg: rgba(196,141,37,.16); --bad-bg: rgba(164,45,21,.1); --cut: rgba(164,45,21,.22);
+  --act: #161615; --on-act: #ffffff;
+  --page: 1440px; --gutter: max(16px, env(safe-area-inset-left, 0px));
+  --font: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang TC", "Microsoft JhengHei", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e0e0d; --surface: #191918; --sunk: #141413; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #8f8d86;
+    --line: #2b2b29; --line2: #3d3d3a; --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
+    --mark2: rgba(255,255,255,.13); --shadow: none;
+    --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
+    --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
+    --amt2: rgba(135,129,224,.32); --amt3: rgba(135,129,224,.16); --on-amt: #131312;
+    --good: #1e7546; --good2: #55a674; --warn: #c48225; --bad: #b54016;
+    --good-ink: #7fd0a2; --warn-ink: #e3b15a; --bad-ink: #f08c6c;
+    --good-bg: rgba(85,166,116,.17); --warn-bg: rgba(196,130,37,.2); --bad-bg: rgba(181,64,22,.22); --cut: rgba(240,140,108,.3);
+    --act: #f1f0ec; --on-act: #131312;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e0e0d; --surface: #191918; --sunk: #141413; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #8f8d86;
+  --line: #2b2b29; --line2: #3d3d3a; --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
+  --mark2: rgba(255,255,255,.13); --shadow: none;
+  --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
+  --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
+  --amt2: rgba(135,129,224,.32); --amt3: rgba(135,129,224,.16); --on-amt: #131312;
+  --good: #1e7546; --good2: #55a674; --warn: #c48225; --bad: #b54016;
+  --good-ink: #7fd0a2; --warn-ink: #e3b15a; --bad-ink: #f08c6c;
+  --good-bg: rgba(85,166,116,.17); --warn-bg: rgba(196,130,37,.2); --bad-bg: rgba(181,64,22,.22); --cut: rgba(240,140,108,.3);
+  --act: #f1f0ec; --on-act: #131312;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--act); outline-offset: 2px; border-radius: 4px; }
+
+/* the top bar: every page of every panel, the same row (nknu/ops/theme/bar.py writes it) */
+.nk-bar { display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap;
+  padding: 8px max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter)));
+  background: var(--bg); border-bottom: 1px solid var(--line); font: 13px/1.4 var(--font); }
+.nk-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; }
+/* :link / :visited and the bar's class in front: Datasette's app.css colours every `header a:link` */
+.nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link, .nk-bar .nk-tabs a:visited { display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 11px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap; }
+.nk-bar .nk-tabs a:hover { background: var(--hover); color: var(--ink); }
+.nk-bar .nk-tabs a[aria-current], .nk-bar .nk-tabs a[aria-current]:link, .nk-bar .nk-tabs a[aria-current]:visited {
+  background: var(--act); color: var(--on-act); font-weight: 650; }
+.nk-tabs .nk-sep { width: 1px; margin: 6px 6px; background: var(--line2); }
+.nk-tabs svg { flex: none; opacity: .7; }
+.nk-meta { margin-left: auto; color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 640px) { .nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link { padding: 5px 8px; } .nk-meta { margin-left: 0; } }

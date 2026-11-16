@@ -78,7 +78,9 @@
   <p><a class="btn primary" href="{{ urls.table(guide.database, t.name) }}">打開這張表</a></p>
   <table class="cols"><tbody>
   {%- for c in t.columns %}
-    <tr><th{% if c.rest %} data-tip-h="{{ c.short or c.name }}" data-tip="{{ c.rest }}"{% endif %}>{{ c.short or c.name }}</th><td><code>{{ c.name }}</code></td></tr>
+    {#- the name, then the column's code as a quieter second level (tc.css) -#}
+    <tr><th><span{% if c.rest %} data-tip-h="{{ c.short or c.name }}" data-tip="{{ c.rest }}"{% endif %}>{{ c.short or c.name }}</span>
+      {%- if c.short %}<code>{{ c.name }}</code>{% endif %}</th></tr>
   {%- endfor %}
   </tbody></table>
 </section>

@@ -14,6 +14,10 @@ import sqlite3
 import subprocess
 
 import pytest
+
+from nknu.ops.theme import bar as _theme
+
+THEME = _theme.theme_css()
 import yaml
 
 from nknu.content.schema import create_schema
@@ -302,8 +306,10 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     guide = _plugin("guide")
     ds = _Datasette(empty)
     table = _vars(guide, "table.html", ds, "aca", "docs")
-    assert [name for name, _, _ in table["panels"]] == ["資料總覽", "檢視台", "爬蟲存檔"]
-    assert all(about for _, _, about in table["panels"])  # what each panel is floats over its name
+    # since 11-17 the bar is the panels' one (nknu/ops/theme): 資料庫 marked, the others by their tunnel addresses
+    assert "aria-current='page'>資料庫</a>" in table["nk_bar"] and "http://127.0.0.1:18878/search" in table["nk_bar"]
+    assert "data-tip='每個網站收了多少、缺多少'" in table["nk_bar"]  # what each panel is floats over its name
+    assert "--k0:" in table["nk_theme"] and "--act:" in table["nk_theme"]
     assert table["zh_tables"]["docs"] == "文件" and table["value_words"]["kind_class"]["notice"] == "公告"
     assert table["column_names"]["kind_class"]["short"] == "類型" and "guide" not in table
     assert table["column_names"]["kind_class"]["rest"].startswith("公告 notice")  # what floats over the name
@@ -360,7 +366,7 @@ def test_the_two_plugins_agree_on_the_words_and_the_kinds_hues():
     assert set(guide.KIND_CLASS) == set(guide.WORDS["kind_class"])
     css = (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
     for cls in set(guide.KIND_CLASS.values()):
-        assert f".tag.{cls} i" in css and f"--{cls}:" in css, cls  # each kind's class has its hue, in the sheet
+        assert f".tag.{cls} i" in css and f"--{cls}:" in THEME, cls  # each kind's class has its hue (the shared theme)
 
 
 def test_every_canned_query_is_filed_and_every_parameter_has_its_name():
@@ -864,7 +870,7 @@ def test_the_panel_is_called_what_it_is_and_every_page_floats_its_detail_the_way
     from nknu.ops import look
 
     base = (KIT / "datasette" / "templates" / "base.html").read_text(encoding="utf-8")
-    assert ">資料庫</a>" in base and "urls.path('/static/tip.js')" in base
+    assert "{{ nk_bar|safe }}" in base and "urls.path('/static/tip.js')" in base
     assert _metadata()["title"] == "資料庫"
     tip = (KIT / "datasette" / "static" / "tip.js").read_text(encoding="utf-8")
     assert tip == look.TIP_JS and "data-tip-h" in tip and "textContent" in tip and "innerHTML" not in tip
@@ -899,3 +905,33 @@ def test_one_word_names_one_thing_on_every_panel():
     assert {"類型", "主料／背景", "原因", "怎麼辦", "頁面上的日期", "所屬文件"} <= named
     assert not named & {"種類", "主料還是背景", "為什麼", "為什麼沒有日期", "所屬的那一份", "哪一種", "從哪裡讀到的"}
 
+
+
+# ---------------------------------------------------------------- redesign 2026-11-17 (research/dashboard_redesign_2026-11-17)
+
+def test_the_list_of_sites_ends_on_a_whole_row_and_fades_while_more_wait_below():
+    """diagnosis.md 資料庫 ①: the box was 298px over rows of about 35px, so its 9th row was cut in half."""
+    css = (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
+    row = re.search(r"\.sitefind li \{[^}]*\bheight: (\d+)px;", css)
+    box = re.search(r"\.sitefind ol \{[^}]*max-height: calc\((\d+) \* (\d+)px\)", css)
+    assert row and box and box.group(2) == row.group(1) and "box-sizing: border-box" in row.group(0)
+    link = re.search(r"\.sitefind li a:link, \.sitefind li a:visited \{[^}]*\}", css).group(0)
+    assert "padding: 0;" in link and f"line-height: {int(row.group(1)) - 1}px" in link  # the row's rule is the 1px left
+    assert ".sitefind ol.more {" in css and "mask-image: linear-gradient" in css
+    script = (KIT / "datasette" / "static" / "sitefind.js").read_text(encoding="utf-8")
+    assert "classList.toggle('more'" in script and "addEventListener('scroll', hint" in script
+
+
+def test_the_table_panel_names_a_column_first_and_its_code_after_it_quieter():
+    """diagnosis.md 資料庫 ③: the codes (doc_id…) stood in a column of their own, as prominent as the names."""
+    jinja2 = pytest.importorskip("jinja2")
+    source = (KIT / "datasette" / "templates" / "index.html").read_text(encoding="utf-8")
+    start = source.index("{%- for c in t.columns %}")
+    loop = source[start:source.index("{%- endfor %}", start) + len("{%- endfor %}")]
+    rows = jinja2.Environment().from_string(loop).render(t={"columns": [
+        {"name": "doc_id", "short": "文件編號", "rest": "一份文件的編號"}, {"name": "x_raw", "short": "", "rest": ""}]})
+    assert '<th><span data-tip-h="文件編號" data-tip="一份文件的編號">文件編號</span><code>doc_id</code></th>' in rows
+    assert "<th><span>x_raw</span></th>" in rows and "<td" not in rows  # a column without a name is not named twice
+    css = (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
+    code = re.search(r"\.insp table\.cols th code \{[^}]*\}", css).group(0)
+    assert "font-size: 11px" in code and "var(--ink3)" in code and "var(--mono)" in code

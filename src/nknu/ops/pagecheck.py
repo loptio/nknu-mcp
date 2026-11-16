@@ -113,7 +113,28 @@ REASON_WORDS = {
     "tls": "加密連線失敗", "tls_cert": "憑證有問題", "dns": "查不到主機", "denied_dir": "目錄被拒", "has_login_box": "頁面上有登入框",
     "unhandled:never": "照規則不按", "unhandled:ignore": "照規則不按", "unhandled:unknown": "還沒決定按不按",
     "unhandled:unpressed": "沒按到", "dup": "", "queued": "", "scheme_switch": "",
+    # 11-16 evening: the codes the first whole sweep still showed as code on the site pages (api:notFound 70 rows,
+    # empty_detail 29, not_file:no_name:html 9, unhandled:google 6, net_RemoteProtocolError 2, …), in the reader's
+    # words (owner 11-16 on names that are code names: name from the reader's side) 【Claude】
+    "unhandled:google": "Google 連結還沒決定怎麼讀", "round2:unhandled": "還沒決定的寫法，第二輪",
+    "round2:google_published": "Google 發佈的文件，第二輪", "empty_detail": "內文區是空的",
+    "click:plain_href": "有一般連結可走，不用按", "click:shown_on_load": "一打開就顯示的分頁，不用按",
+    "select:auto": "網頁自己會選", "press_redirect": "按了被轉走", "restart": "重開時沒按完",
+    "conn_pause": "連不上，這台伺服器先暫停", "net_down": "學校網路斷了", "timeout": "等太久沒回應",
+    "connect": "連不上",
+    "not_file:empty_body": "應該是檔案，回來是空的", "not_file:redirect": "應該是檔案，卻被轉走",
+    "not_file:saying:gone_page": "學校說檔案不存在", "not_file:saying:bad_link": "學校說連結壞了",
+    "not_file:no_name:html": "應該是檔案，回來是網頁", "not_file:no_name": "應該是檔案，回來不是",
+    "not_file": "應該是檔案，回來不是",
+    "api:notFound": "Google 找不到（沒公開或已刪除）", "api:cannotDownloadFile": "Google 不給下載",
+    "api:downloadQuotaExceeded": "Google 下載次數用完", "api:automated_queries": "Google 擋了自動查詢",
+    "api:unreadable": "Google 的回答讀不懂", "api": "Google 讀不到",
+    "http_4xx": "學校回了別的錯誤", "http_5xx": "學校伺服器出錯",
 }
+# an HTTP status in words, the number after them 【Claude】
+HTTP_WORDS = {400: "學校說請求不對", 401: "學校要求登入", 403: "被拒絕", 404: "找不到", 405: "學校不收這種請求",
+              408: "等太久沒回應", 410: "已移除", 429: "太頻繁被擋", 500: "學校伺服器出錯", 502: "學校伺服器沒回應",
+              503: "學校伺服器忙", 504: "學校伺服器沒回應"}
 # what a list's or a form's buttons are, by the action kinds (outcome.ACTION_KINDS)
 ACTION_WORDS = {"pager": "翻頁", "detail": "按出公告", "download": "按出檔案", "click": "按鈕", "data": "資料"}
 _HTTP = re.compile(r"http_(\d{3})")
@@ -128,12 +149,16 @@ def reason_words(code: str | None) -> str:
     if code in REASON_WORDS:
         return REASON_WORDS[code]
     if m := _HTTP.fullmatch(code):
-        return f"HTTP {m.group(1)}"
+        status = int(m.group(1))
+        said = HTTP_WORDS.get(status) or ("學校伺服器出錯" if status >= 500 else "學校回了錯誤")
+        return f"{said}（{status}）"
+    if code.startswith("net_"):  # crawler.py: a transport error by its exception's name
+        return "連線中途出錯"
     head = code.split(":", 1)[0]
     for key in (code.rsplit(":", 1)[0], head):
         if REASON_WORDS.get(key):
             return REASON_WORDS[key]
-    return code
+    return RESULT_WORDS.get(code) or RESULT_WORDS.get(head) or code
 
 
 def bucket_of(result: str | None, reason: str | None = None) -> str:
@@ -1019,7 +1044,7 @@ img[data-b=look]{outline-color:#348757;box-shadow:0 0 0 6px #c48d25}
 .nk-noimg{display:inline-block;box-sizing:border-box;min-width:48px;min-height:32px;vertical-align:middle;
 background:repeating-linear-gradient(45deg,#f3f2ee 0 6px,#e7e6e0 6px 12px);border:1px solid #cfcec6}
 .nk-box{display:block;margin:6px 0;padding:10px 12px;border:1px solid #cfcec6;border-radius:6px;background:#f3f2ee;
-color:#5c5b57;font-size:12.5px;overflow-wrap:anywhere}
+color:#5c5b57;font-size:13px;overflow-wrap:anywhere}
 .nk-in{outline:1.5px dashed #161615;outline-offset:3px}.nk-files{outline:1.5px dashed #5c5b57;outline-offset:2px}
 .nk-out{background-color:rgba(120,118,112,.13)!important;color:#8d8b85!important}.nk-out img{opacity:.75}
 .nk-label{position:absolute;z-index:5;padding:1px 7px;border-radius:5px;background:#161615;color:#fff;font:600 11px/17px

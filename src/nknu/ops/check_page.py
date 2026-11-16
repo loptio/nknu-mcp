@@ -16,16 +16,56 @@ Every steer passes the same placement, so a window the owner closed comes back o
 the panel; a document id or an address without its scheme steers through our own /check/go, which answers with the
 school address it resolves to (the browser lets a click steer the window, not a later answer). The window keeps its
 opener: Chrome finds a named window again only through it (the review of 11-16 tried cutting it: the next steer opened
-a third window), so the panel tab's own risk from the school page is accepted (design section 三)."""
+a third window), so the panel tab's own risk from the school page is accepted (design section 三).
+
+Reached from a site's list (design section 六 3, nknu.ops.check_sites): a top line names the page's site (back to the
+site's page) and the page, with 「下一個有漏的頁 →」 when another page of the site misses something in its content area;
+a miss picked in the site's merged list opens its page with that item flashed (n)."""
 
 from __future__ import annotations
 
-from urllib.parse import unquote, urlencode
+import re
+from urllib.parse import unquote, urlencode, urlsplit
 
 from nknu.ops.look import e, icon, tw
 from nknu.ops.pagecheck import BUCKET_NAME, BUCKET_TIP, BUCKETS, STATES, WHATS, WHO_WORDS, live_url
 
 PROBLEMS_SHOWN = 300  # rows listed at most; the rest counted 【Claude】
+
+# a row's name when the item has no words of its own (11-16 evening: 204 rows of the site pages were all 「圖片」, one
+# like the other): what it is, then the file it points to, else its host 【Claude】
+TAG_WORDS = {"[iframe]": "內嵌框", "[frame]": "框架", "[embed]": "內嵌物件", "[object]": "內嵌物件"}
+NAMELESS = {"image": "圖片", "button": "按鈕"}
+_FILE_NAME = re.compile(r"\.[A-Za-z][A-Za-z0-9]{1,4}$")
+
+
+def file_part(target: str) -> str:
+    """What names an address shortly: its last piece that looks like a file name (in the query too, as the SSO's
+    attachedfile.aspx?cimagepath=…\\x.jpg), else its host; '' for no web address."""
+    if not live_url(target):
+        return ""
+    parts = urlsplit(target)
+    pieces = [p for p in re.split(r"[/\\?&=#;]", unquote(parts.path + "?" + parts.query)) if p.strip()]
+    for piece in reversed(pieces):
+        if _FILE_NAME.search(piece):
+            return piece.strip()
+    return parts.hostname or ""
+
+
+def item_name(p: dict) -> str:
+    """A link's, image's or button's name in the lists: its own words, else what it is and the file it points to."""
+    text = (p.get("text") or "").strip()
+    short = len(text) == 1 or (len(text) == 2 and text.isascii())  # 「D」「8」「12」, not a word as 辦法
+    if short and (what := dict(WHATS).get(p.get("what", ""))):
+        return f"{what}「{text}」"  # a button 「D」, a pager's 「8」: its words alone do not say what it is
+    first = (p.get("tip") or "").split("\n", 1)[0]
+    if not text and p.get("what") == "button" and first.startswith("按鈕（"):
+        return first  # 按鈕（按出檔案）: the item's own card says what kind of button it is
+    kind = TAG_WORDS.get(text) or ("" if text else NAMELESS.get(p.get("what", "")))
+    if kind:
+        part = file_part(p.get("target", ""))
+        return f"{kind} · {part}" if part else kind
+    return text or unquote(p.get("target", ""))
 WHAT_WORDS = dict(WHATS)
 # the warnings of design section 四, by pagecheck.caveats' keys: (a plain name, what it means)
 CAVEATS = {
@@ -51,12 +91,18 @@ READING = {"area": "讀平台設定的正文區", "nothing": "正文區對不上
            "body": "讀整頁，去掉頁首、選單、頁尾"}
 ZONE_SHORT = {"in": "正文區", "files": "附件區", "out": "選單等"}
 
+# Only the two panes of a checked page (the archived page beside its column) are wider than the panels' --page: the
+# archived page is a school page laid out for a desktop. The entry and a site's page keep the shared width (redesign
+# 2026-11-17, research/dashboard_redesign_2026-11-17/diagnosis.md: 「页宽不一」). 【Claude】
+WIDE_CSS = "main{max-width:1680px}"
 CHECK_CSS = """
-main{max-width:1680px}
 .chk-ask{align-items:stretch}form.ask.chk-ask button{background:var(--ink);color:var(--surface)}
 form.ask.chk-ask input:focus{outline-color:var(--ink2)}
 form.ask.chk-ask .live{background:var(--surface);color:var(--ink);border:1px solid var(--line2)}
 form.ask.chk-ask .live:hover{background:var(--hover);opacity:1}form.ask.chk-ask .live[disabled]{opacity:.45;cursor:default}
+form.ask.chk-ask .follow{background:var(--surface);color:var(--ink2);border:1px solid var(--line2);font-weight:500}
+form.ask.chk-ask .follow:hover{background:var(--hover);opacity:1}
+form.ask.chk-ask .follow[aria-pressed=true]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
 .chk-facts{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:12px 2px 0;font-size:13px;color:var(--ink2)}
 .chk-facts .url{min-width:0;max-width:min(100%,640px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 color:var(--ink3);font-size:12px}
@@ -76,7 +122,7 @@ color:var(--ink3);font-size:12px}
 .sw[data-b=gone]{border-bottom:0;background:linear-gradient(var(--c),var(--c)) center/100% 2px no-repeat}
 .sw[data-b=notlink]{border-bottom:1px solid var(--line2)}.sw[data-b=notlink]::after{display:none}
 table.legend2{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-table.legend2 th{font-size:11.5px;color:var(--ink3);font-weight:600;text-align:right;padding:0 0 5px 8px}
+table.legend2 th{font-size:12px;color:var(--ink3);font-weight:600;text-align:right;padding:0 0 5px 8px}
 table.legend2 th:first-child{text-align:left;padding-left:0}
 table.legend2 td{padding:4px 0 4px 8px;text-align:right;border-top:1px solid var(--line)}
 table.legend2 td:first-child{text-align:left;padding-left:0}
@@ -86,17 +132,24 @@ table.legend2 td.z{color:var(--ink3)}table.legend2 tr.sum td{font-weight:650;bor
 .probs li{display:flex;align-items:center;gap:6px;min-width:0}
 .prob{flex:1 1 auto;display:flex;align-items:center;gap:9px;min-width:0;padding:6px 8px;border:0;border-radius:8px;
 background:transparent;text-align:left;cursor:pointer;font-size:13px}.prob:hover{background:var(--hover)}
-.prob .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.prob small{margin-left:auto;padding-left:8px;color:var(--ink3);white-space:nowrap;font-size:11.5px}
+.prob .t{flex:0 1 auto;min-width:min(8em,45%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prob small{flex:0 2 auto;min-width:min(7em,38%);overflow:hidden;text-overflow:ellipsis;margin-left:auto;padding-left:8px;
+color:var(--ink3);white-space:nowrap;font-size:12px}
 .prob.lost{opacity:.5}
-.probs .go{flex:none;font-size:11.5px;color:var(--ink2);text-decoration:none;padding:3px 7px;border-radius:7px}
-.probs .go:hover{background:var(--hover);color:var(--ink)}
+.probs .go{flex:none;display:inline-flex;align-items:center;color:var(--ink3);text-decoration:none;padding:5px;
+border-radius:7px}.probs .go:hover{background:var(--hover);color:var(--ink)}
 .cav{display:flex;flex-wrap:wrap;gap:6px}
 .cav span{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;background:var(--warn-bg);
 color:var(--warn-ink);font-size:12px;font-weight:600}
 .cav span.plain{background:var(--hover);color:var(--ink2);font-weight:500}
-.verdict .pill{font-size:13.5px;padding:4px 12px}
+.verdict .pill{font-size:14px;padding:4px 12px}
 .chk-empty{margin-top:14px}
+.crumb{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:0 2px 12px;font-size:13px;color:var(--ink2);
+min-width:0}.crumb a{color:var(--ink2);text-decoration:none}.crumb a:hover{color:var(--ink);text-decoration:underline}
+.crumb .sep{color:var(--ink3)}.crumb .here{color:var(--ink);font-weight:600;min-width:0;max-width:min(100%,560px);
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crumb a.next{margin-left:auto;padding:3px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--surface);
+color:var(--ink);white-space:nowrap}.crumb a.next:hover{background:var(--hover);text-decoration:none}
 """
 
 # The panel's script (design section 三). The archived page runs no script of its own (its frame's sandbox has no
@@ -107,21 +160,26 @@ CHECK_JS = """
 (()=>{
 const NAME='nknu_live';
 const isWeb=u=>/^https?:\\/\\//i.test(u||'');
-const remembered=()=>{try{return sessionStorage.getItem('nk-live')==='1'}catch(_){return false}};
+// the school window follows the panel only while 「跟著跳」 is on (11-16 evening: off by default; the owner had to
+// switch between two windows at every click)
+const following=()=>{try{return sessionStorage.getItem('nk-follow')==='1'}catch(_){return false}};
 const feats=()=>{const w=Math.floor(screen.availWidth/2),h=screen.availHeight,l=(screen.availLeft||0)+w,
   t=screen.availTop||0;return 'popup,width='+w+',height='+h+',left='+l+',top='+t};
-const live=(ref,first)=>{if(!ref||!(first||remembered()))return;
+const live=(ref,first)=>{if(!ref||!(first||following()))return;
   const url=isWeb(ref)?ref:'/check/go?'+new URLSearchParams({ref:ref});
-  window.open(url,NAME,feats());
-  if(first)try{sessionStorage.setItem('nk-live','1')}catch(_){}};
+  window.open(url,NAME,feats())};
+const sw=document.querySelector('button[data-follow]');
+if(sw){const show=()=>sw.setAttribute('aria-pressed',following()?'true':'false');show();
+  sw.addEventListener('click',()=>{try{sessionStorage.setItem('nk-follow',following()?'0':'1')}catch(_){}show()})}
 const go=url=>{location.href='/check?'+new URLSearchParams({url:url})};
 const btn=document.querySelector('button[data-live]');
 if(btn)btn.addEventListener('click',()=>live(btn.getAttribute('data-live'),true));
 const form=document.getElementById('chk-ask');
-if(form)form.addEventListener('submit',()=>live(form.querySelector('input').value.trim(),false));
-document.querySelectorAll('a[data-live-href]').forEach(a=>a.addEventListener('click',()=>live(a.getAttribute('data-live-href'),false)));
-const frame=document.querySelector('iframe.chk-frame');
-if(!frame)return;
+// only an address or a document id (url:…, drive:…) steers the window; words typed to find pages never do
+const aPage=v=>isWeb(v)||/^[a-z0-9-]+(\\.[a-z0-9-]+){2,}(:\\d+)?(\\/|$)/i.test(v)||/^[a-z][a-z-]*:\\S/i.test(v);
+if(form)form.addEventListener('submit',()=>{const v=form.querySelector('input').value.trim();if(aPage(v))live(v,false)});
+document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[data-live-href]');
+  if(a&&!e.defaultPrevented)live(a.getAttribute('data-live-href'),false)});
 const tip=document.createElement('div');tip.className='tip';tip.hidden=true;tip.setAttribute('role','tooltip');
 document.body.append(tip);let cur=null;
 const fill=el=>{tip.textContent='';const h=el.getAttribute('data-tip-h'),t=el.getAttribute('data-tip');
@@ -136,8 +194,19 @@ const labels=doc=>{doc.querySelectorAll('.nk-label').forEach(x=>x.remove());
     if(!r.width&&!r.height)return;const s=doc.createElement('span');s.className='nk-label';
     s.textContent=el.getAttribute('data-nk-label');s.style.left=(r.left+win.scrollX)+'px';
     s.style.top=Math.max(0,r.top+win.scrollY-19)+'px';doc.body.append(s)})};
-const wire=()=>{const doc=frame.contentDocument;if(!doc||!doc.body||doc.body.dataset.nkWired)return;
-  doc.body.dataset.nkWired='1';labels(doc);
+const flash=(frame,n)=>{const doc=frame.contentDocument,el=doc&&doc.querySelector('[data-nk="'+n+'"]');
+  if(!el||!el.getClientRects().length)return false;
+  // only the frame's own page scrolls: scrollIntoView would scroll the panel (and the drawer) around the frame too
+  const win=doc.defaultView,r=el.getBoundingClientRect();
+  win.scrollTo({top:Math.max(0,r.top+win.scrollY-(win.innerHeight-r.height)/2),
+    left:Math.max(0,r.left+win.scrollX-(win.innerWidth-r.width)/2),behavior:'smooth'});
+  const box=frame.getBoundingClientRect();  // the page check's own frame, stacked out of sight on a narrow screen
+  if(!frame.classList.contains('dr-frame')&&(box.bottom<60||box.top>innerHeight-60))
+    frame.scrollIntoView({block:'start',behavior:'smooth'});
+  el.classList.remove('nk-flash');void el.offsetWidth;
+  el.classList.add('nk-flash');setTimeout(()=>el.classList.remove('nk-flash'),1800);return true};
+const wire=frame=>{const doc=frame.contentDocument;if(!doc||!doc.body||doc.body.dataset.nkWired)return;
+  doc.body.dataset.nkWired='1';labels(doc);const asked=frame.getAttribute('data-flash');if(asked)flash(frame,asked);
   doc.defaultView.addEventListener('resize',()=>labels(doc));
   doc.addEventListener('click',e=>{e.preventDefault();
     const el=e.target.closest('a[data-nk-href],area[data-nk-href]')||e.target.closest('[data-nk-href]');if(!el)return;
@@ -147,27 +216,33 @@ const wire=()=>{const doc=frame.contentDocument;if(!doc||!doc.body||doc.body.dat
     if(el!==cur){fill(el);cur=el}tip.hidden=!tip.childNodes.length;const r=frame.getBoundingClientRect();
     place(e.clientX+r.left,e.clientY+r.top)});
   doc.addEventListener('pointerleave',hide);doc.addEventListener('scroll',hide,true)};
-frame.addEventListener('load',wire);
-if(frame.contentDocument&&frame.contentDocument.readyState==='complete')wire();
+const hook=frame=>{frame.addEventListener('load',()=>wire(frame));
+  if(frame.contentDocument&&frame.contentDocument.readyState==='complete')wire(frame)};
+window.nkHook=hook;  // the site page's drawer hooks its own preview (check_sites.SITES_JS)
+const frame=document.querySelector('iframe.chk-frame:not(.dr-frame)');
+if(!frame)return;
+hook(frame);
 document.querySelectorAll('button.prob[data-n]').forEach(b=>b.addEventListener('click',()=>{
-  const doc=frame.contentDocument,el=doc&&doc.querySelector('[data-nk="'+b.getAttribute('data-n')+'"]');
-  if(!el||!el.getClientRects().length){b.classList.add('lost');return}
-  el.scrollIntoView({block:'center',behavior:'smooth'});el.classList.remove('nk-flash');void el.offsetWidth;
-  el.classList.add('nk-flash');setTimeout(()=>el.classList.remove('nk-flash'),1800)}));
+  if(!flash(frame,b.getAttribute('data-n')))b.classList.add('lost')}));
 })();
 """
 
 
-def check_form(value: str, url: str, *, focus: bool = True) -> str:
-    """The address box, its button and 「開真實網頁」 (disabled when there is no school address to open)."""
+def check_form(value: str, url: str, *, focus: bool = True, live: bool = True,
+               placeholder: str = "網址或文件編號") -> str:
+    """The address box, its button and 「開真實網頁」 (disabled when there is no school address to open; left out on
+    the entry, live=False, where no page is open yet)."""
     target = live_url(url)
-    live = (f"<button type='button' class='live' data-live='{e(target)}' data-tip='在螢幕右半邊開學校網站上的這一頁；"
-            "之後點存檔上的連結，它會跟著跳。那是學校現在的網頁，和存檔抓的時候可能不一樣'>"
-            f"{icon('out', 14)} 開真實網頁</button>" if target else
-            "<button type='button' class='live' disabled data-tip='先給一個網址'>開真實網頁</button>")
+    button = (f"<button type='button' class='live' data-live='{e(target)}' data-tip='在螢幕右半邊開學校網站上的這一頁。"
+              "那是學校現在的網頁，和存檔抓的時候可能不一樣'>"
+              f"{icon('out', 14)} 開真實網頁</button>" if target else
+              "<button type='button' class='live' disabled data-tip='先給一個網址'>開真實網頁</button>")
+    button += ("<button type='button' class='follow' data-follow aria-pressed='false' data-tip-h='跟著跳' "
+               "data-tip='開著時，在這裡換一頁，學校網頁的視窗也跟著換到那一頁；關著時只換這裡'>跟著跳</button>")
     return (f"<form class='ask chk-ask' id='chk-ask' action='/check' method='get'><label class='box'>{icon('search', 16)}"
-            f"<input name='url' value='{e(value)}' placeholder='網址或文件編號' aria-label='要核查的網頁'"
-            f"{' autofocus' if focus else ''}></label><button>核查</button>{live}</form>")
+            f"<input name='url' value='{e(value)}' placeholder='{e(placeholder)}' aria-label='要核查的網頁'"
+            " autocomplete='off'"
+            f"{' autofocus' if focus else ''}></label><button>核查</button>{button if live else ''}</form>")
 
 
 def _when(text: str | None) -> str:
@@ -252,18 +327,18 @@ def verdict_html(s: dict) -> str:
 
 
 def problems_html(problems: list[dict], empty: str) -> str:
-    """The links, images and buttons of one kind of problem, the content area's first; a click shows where it is,
-    「核查」 checks it."""
+    """The links, images and buttons of one kind of problem, the content area's first; a click shows where it is, the
+    arrow beside it checks what it points to (an icon, not the word 核查 on every row: redesign 2026-11-17)."""
     if not problems:
         return f"<div class='soft small'>{e(empty)}</div>"
     rows = []
     for p in problems[:PROBLEMS_SHOWN]:
-        name = p["text"] or ("圖片" if p["what"] == "image" else "按鈕" if p["what"] == "button" else unquote(p["target"]))
+        name = item_name(p)
         side = ZONE_SHORT[p["zone"]] + " · " + (p["reason"] or BUCKET_NAME[p["bucket"]])
         go = ""
         if live_url(p["target"]):
             go = (f"<a class='go' href='/check?{urlencode({'url': p['target']})}' data-live-href='{e(p['target'])}' "
-                  "data-tip='核查它指的那一頁'>核查</a>")
+                  f"aria-label='核查它指的那一頁' data-tip='核查它指的那一頁'>{icon('right', 14)}</a>")
         rows.append(f"<li><button type='button' class='prob' data-n='{p['n']}' data-tip-h='{e(BUCKET_NAME[p['bucket']])}' "
                     f"data-tip='{e(p['tip'])}'><i class='sw' data-b='{p['bucket']}'></i>"
                     f"<span class='t'>{e(name)}</span><small>{e(side)}</small></button>{go}</li>")
@@ -283,11 +358,28 @@ def caveats_html(s: dict) -> str:
     return f"<div class='cav'>{''.join(pills)}</div>" if pills else ""
 
 
-def check_body(s: dict | None, *, value: str = "") -> str:
-    """The page under the top bar: the box, then (for a page asked) its facts and the archived page with its column,
-    or what stands in its way said plainly."""
+def crumb_html(c: dict | None, fallback: str = "") -> str:
+    """The checked page's top line (design section 六 3): its site, back to the site's page, then the page; and
+    「下一個有漏的頁 →」 when another page of the site misses something in its content area. '' without a site."""
+    if not c or not c.get("site"):
+        return ""
+    here = c.get("name") or fallback
+    nxt = ""
+    if c.get("next"):
+        nxt = (f"<a class='next' href='/check?{urlencode({'url': c['next']})}' data-live-href='{e(c['next'])}' "
+               f"data-tip-h='下一個有漏的頁' data-tip='{e(c.get('next_name') or unquote(c['next']))}'>下一個有漏的頁 →</a>")
+    return (f"<nav class='crumb'><a href='/check?{urlencode({'site': c['site']})}'>{e(c.get('site_name') or c['site'])}"
+            f"</a><span class='sep'>›</span><span class='here'>{e(here)}</span>{nxt}</nav>")
+
+
+def check_body(s: dict | None, *, value: str = "", crumb: dict | None = None, flash: str = "") -> str:
+    """The page under the top bar: the site's line (crumb), the box, then (for a page asked) its facts and the
+    archived page with its column, or what stands in its way said plainly. flash: the number of an item the frame
+    flashes once it is drawn (a miss picked in a site's list)."""
     page_url = ((s or {}).get("page") or {}).get("url") or (s or {}).get("url", "")
-    body = f"<style>{CHECK_CSS}</style>" + check_form(value, page_url, focus=s is None)
+    fallback = (s or {}).get("title") or (unquote(page_url) if page_url else "")
+    wide = WIDE_CSS if s is not None and s.get("state") == "ok" else ""  # only the two panes are wide
+    body = f"<style>{wide}{CHECK_CSS}</style>" + crumb_html(crumb, fallback) + check_form(value, page_url, focus=s is None)
     if s is None:
         return body + f"<script>{CHECK_JS}</script>"
     body += _facts(s)
@@ -319,8 +411,9 @@ def check_body(s: dict | None, *, value: str = "") -> str:
                  f"{problems_html(look, '')}</section>")
     if cav := caveats_html(s):
         side += f"<section class='card pad'><h2>要注意</h2>{cav}</section>"
+    marked = f" data-flash='{e(flash)}'" if flash.isascii() and flash.isdigit() else ""
     return (body + "<div class='chk'><section class='card chk-page'>"
-            f"<iframe class='chk-frame' sandbox=\"allow-same-origin\" src='{e(raw)}' "
+            f"<iframe class='chk-frame' sandbox=\"allow-same-origin\" src='{e(raw)}'{marked} "
             f"title='存檔裡的這一頁'></iframe></section><aside class='chk-side'>{side}</aside></div>"
             f"<script>{CHECK_JS}</script>")
 

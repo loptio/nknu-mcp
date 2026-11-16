@@ -10,6 +10,9 @@
     const input = box.querySelector('input'), list = box.querySelector('ol'), none = box.querySelector('.none');
     const rows = [...list.children], keys = rows.map(r => norm(r.dataset.k).split('|'));
     let by = 'n';
+    // while rows wait below the box, its last row fades out: the list goes on (tc.css .more; redesign 2026-11-17)
+    const hint = () => list.classList.toggle('more', list.scrollTop + list.clientHeight < list.scrollHeight - 1);
+    list.addEventListener('scroll', hint, { passive: true });
     const run = () => {
       const q = norm(input.value), loose = /[^\x00-\x7f]/.test(q);
       const scored = rows.map((row, i) => {
@@ -21,6 +24,7 @@
       for (const s of scored) list.appendChild(s.row);
       none.hidden = scored.some(s => s.hit);
       list.scrollTop = 0;
+      hint();
     };
     input.addEventListener('input', run);
     input.addEventListener('keydown', e => {
@@ -36,6 +40,6 @@
         run();
       });
     }
-    if (input.value) run();
+    if (input.value) run(); else hint();
   }
 })();

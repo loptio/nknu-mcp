@@ -183,8 +183,10 @@ def test_images_buttons_and_the_unchecked_page(made):
     assert got["i-pic"]["bucket"] == "got" and got["i-logo"]["bucket"] == "rule" and got["i-lost"]["bucket"] == "missing"
     assert got["b-next"]["what"] == "button" and got["b-next"]["bucket"] == "got" and got["b-next"]["kind"] == "pager"
     assert got["b-sort"]["bucket"] == "rule"
-    # the page itself has no page type verdict (no browser check in round one): 抓到了, not 待判定
-    assert checked.summary["page"]["result"] == "unchecked" and checked.summary["page"]["bucket"] == "got"
+    # the page itself has no page type verdict (no browser check in round one) and no sign of JavaScript: since the
+    # export batch's write-off (the crawler session, 11-16, the owner's 「去吧」) its result is ok, 抓到了; only a page
+    # with js_hint stays unchecked, and goes to the next round
+    assert checked.summary["page"]["result"] == "ok" and checked.summary["page"]["bucket"] == "got"
     counts = checked.summary["counts"]
     # the styled div's background picture is a picture the crawler reads too (links._images): not in this ledger
     assert got["styled"]["what"] == "image" and got["styled"]["bucket"] == "missing"

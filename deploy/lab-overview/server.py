@@ -75,12 +75,31 @@ class Watch:
         self.done = sig
 
 
-# page.html is written like an Artifact page (no document skeleton of its own); this is the skeleton an Artifact gets
+# The panels' one look and top bar (redesign 2026-11-17, nknu/ops/theme): on the lab PC theme.css, panels.json and
+# bar.py are sent into this folder with the others (README.md 「换程序」); run from the repository, they are read where
+# they live. bar.py is standard library only, loaded by path (this server does not import the nknu package).
+HERE = Path(__file__).resolve().parent
+THEME_DIR = HERE if (HERE / "theme.css").exists() else HERE.parents[1] / "src" / "nknu" / "ops" / "theme"
+
+
+def _load_bar():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("nk_theme_bar", THEME_DIR / "bar.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_BAR = _load_bar()
+
+# page.html is written like an Artifact page (no document skeleton of its own); this is the skeleton an Artifact gets,
+# with the panels' theme first and their bar on top
 HEAD = ('<!doctype html><html lang="zh-Hant-TW"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         "<style>:root{color-scheme:light;padding-block:env(safe-area-inset-top,0px) env(safe-area-inset-bottom,0px)}"
         "body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>"
-        "</head><body>")
+        f"<style>{_BAR.theme_css(THEME_DIR)}</style>"
+        f"</head><body>{_BAR.bar('overview', 'overview', folder=THEME_DIR)}")
 
 
 def render(template: str, data: dict) -> bytes:

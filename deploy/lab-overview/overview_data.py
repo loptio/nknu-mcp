@@ -76,6 +76,8 @@ ROW_SLOT = 4
 CHECK_KINDS = ("none", "self", "empty", "same_title", "same_opening", "fragments")
 
 CATS = re.compile(r"類別：(.*)$")
+SERIES = "每週重複的行事曆（合成一個系列）"
+SERIES_MARK = "(重复系列)"  # nknu.content.documents.SERIES: the build's key for the weekly instances it folded
 COPIES = "重複或副本（同樣的內容只留一份）"  # one label for the copies the report excludes and the ones dedupe removed
 
 
@@ -167,6 +169,8 @@ def left_out(reason: str) -> str:
     recognises."""
     if "翻页" in reason or reason.startswith(("list:", "newslist", "album#")):
         return "列表頁和翻頁頁"
+    if reason.endswith(SERIES_MARK):  # 行事历(重复系列) holds 「重复」 too: the series first (found 11-16)
+        return SERIES
     if "重复" in reason or "副本" in reason:
         return COPIES
     if reason.startswith("行事历"):
@@ -472,9 +476,14 @@ def collect(root: Path, today: datetime.date | None = None, db: str = DB, report
         if isinstance(n, int):
             excluded[left_out(reason)] += n
     # documents the build merged into another one after assembly (pipeline-8): copies (its by_rule already counts the
-    # platform twins) and the weekly instances of a recurring calendar event folded into one series
+    # platform twins) and the weekly instances of a recurring calendar event folded into one series. A build that
+    # counts them in excluded itself (…(副本), 行事历(重复系列): every build since 11-14) is not counted twice (found
+    # 11-16: the page said 33,745 copies where the build had left out 14,980); only an older report adds them here
     dedupe = rep.get("dedupe") or {}
-    for part, label in (("copies", COPIES), ("recurring", "每週重複的行事曆（合成一個系列）")):
+    reasons = [r for r, n in (rep.get("excluded") or {}).items() if isinstance(n, int)]
+    for part, label, mark in (("copies", COPIES, "(副本)"), ("recurring", SERIES, SERIES_MARK)):
+        if any(r.endswith(mark) for r in reasons):
+            continue
         n = (dedupe.get(part) or {}).get("removed", 0) if isinstance(dedupe.get(part), dict) else 0
         if isinstance(n, int) and n:
             excluded[label] += n

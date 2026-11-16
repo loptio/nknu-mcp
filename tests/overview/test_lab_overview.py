@@ -160,6 +160,17 @@ def test_the_sites_left_for_round_two_and_what_the_build_left_out(root: Path) ->
                                    "重複或副本（同樣的內容只留一份）": 4, "每週重複的行事曆（合成一個系列）": 5}
 
 
+def test_what_the_build_counts_itself_is_not_counted_twice(root: Path) -> None:
+    # 11-16: a build since 11-14 counts its merged copies and folded series in excluded itself; the series' key holds
+    # 「重复」 too and was read as a copy, and dedupe's counts were added on top (33,745 shown for 14,980)
+    report = root / "research" / "pipeline_2026-11-02" / "build_report.json"
+    report.write_text(json.dumps({
+        "excluded": {"newsdetail(重复)": 2, "附件:pdf(副本)": 4, "行事历(重复系列)": 5},
+        "dedupe": {"copies": {"removed": 4}, "recurring": {"removed": 5}}}, ensure_ascii=False), encoding="utf-8")
+    d = data_mod.collect(root, today=TODAY)
+    assert dict(d["excluded"]) == {"重複或副本（同樣的內容只留一份）": 6, "每週重複的行事曆（合成一個系列）": 5}
+
+
 def test_the_owner_s_simplified_list_is_shown_in_traditional_and_the_school_s_own_text_as_written(root: Path) -> None:
     # the owner's site list writes most names, importance, platform and why in Simplified, some names as the school does
     (root / "config" / "archive_round1.json").write_text(json.dumps({"sites": [
@@ -262,3 +273,51 @@ def test_a_file_dated_by_its_own_table_row_is_a_date_source_of_its_own(root: Pat
     db.close()
     a = data_mod.collect(root, today=TODAY)["sites"][0]
     assert a["ds"] == [2, 0, 0, 0, 1] and a["dsc"] == [150, 0, 0, 0, 30]
+
+
+# ---------------------------------------------------------------- redesign 2026-11-17 (research/dashboard_redesign_2026-11-17)
+
+PAGE = (HERE / "page.html").read_text(encoding="utf-8")
+
+
+def _line(prefix: str) -> str:
+    """The page's one JS statement that starts with `prefix` (up to its closing semicolon)."""
+    start = PAGE.index(prefix)
+    return PAGE[start:PAGE.index(";\n", start) + 1]
+
+
+def test_a_tile_names_its_site_only_where_the_name_reads_whole() -> None:
+    """diagnosis.md 資料總覽 ②: small tiles printed their names one character a line (性別教/育研究/所) or cut to
+    「原住民…」. A name now gets at most two lines (three where a line holds 8 characters), at least 3 characters a
+    line, or no label at all (the hover card names it)."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    cases = [  # per (characters a line), room (lines that fit), need (lines the name needs) -> lines drawn
+        (6, 3, 1, 1), (2, 3, 1, 1), (1, 1, 1, 1), (4, 1, 1, 1), (4, 0, 1, 0),
+        (4, 3, 2, 2), (3, 3, 2, 2), (2, 4, 3, 0), (2, 4, 2, 0), (3, 3, 3, 0), (8, 3, 3, 3), (8, 2, 3, 0),
+        (5, 1, 2, 0), (0, 3, 99, 0)]
+    script = (_line("const labelLines =") + "\nconsole.log(JSON.stringify("
+              + json.dumps([c[:3] for c in cases]) + ".map(([p, r, n]) => labelLines(p, r, n))));")
+    got = json.loads(subprocess.run([node, "-e", script], check=True, capture_output=True, text=True).stdout)
+    assert got == [c[3] for c in cases]
+    assert "lines = labelLines(per, room, need)" in PAGE and "Math.min(room, 2) : 0" not in PAGE  # no clipped name
+    assert "text-wrap: balance" in _line(".tlab .tn {").replace("}", ";")  # two lines share the name evenly
+
+
+def test_the_build_s_reminders_say_what_is_wrong_in_plain_words() -> None:
+    """diagnosis.md 資料總覽 ③ and the owner's rule of 11-16 for new names (tried on a cold reader first)."""
+    names = {"none": "沒有文件進庫", "self": "用標題找不回文件", "empty": "網頁沒文字", "same_title": "多份文件同一標題",
+             "same_opening": "選單混進正文", "fragments": "附件一字一行"}
+    for key, name in names.items():
+        assert f"{key}: ['{name}', " in PAGE, key
+    assert "const CK_SPIKE = ['檔案時間整批相同', " in PAGE
+    assert set(names) == set(data_mod.CHECK_KINDS)  # every reminder the data carries has its name
+    code = PAGE.split("<script", 1)[1]
+    for old in ("'用標題搜不到'", "'同名標題'", "'開頭相同'", "'碎字附件'", "'整批檔案時間'"):
+        assert old not in code, old
+    assert 'class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' in PAGE  # 新 says since when
+    assert "新出現 ' + n + ' 項</span>" in PAGE and "'新出現 ' + c.nw.length" not in PAGE

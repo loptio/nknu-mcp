@@ -85,7 +85,7 @@ ACTIONS = {
     "不用管": ("ok", "學校本來就沒寫，或沒有地方可以拿到日期。"),
 }
 COUNT_COLUMNS = ("chars", "docs", "missing_pages", "missing_files", "deleted_notices", "under_read", "文件數", "字數",
-                 "份數", "沒抓到的網頁", "沒抓到的檔案", "學校刪掉的公告", "沒日期", "沒讀到字", "讀到的日期數")
+                 "份數", "沒抓到的網頁", "沒抓到的檔案", "學校刪掉的", "沒日期", "沒讀到字", "讀到的日期數")
 
 
 def short_link(value, column):

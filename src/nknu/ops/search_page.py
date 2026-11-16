@@ -88,14 +88,20 @@ def board_html(snapshot: dict | None) -> str:
     segs = "".join(f"<span class='seg g-{g}' data-n='{counts[g]}' style='flex-grow:{counts[g]}' "
                    f"data-tip='{e(GRADE_WORDS.get(g, '沒搜成'))}：{counts[g]} 題'>{counts[g]}</span>"
                    for g in grades.GRADES)
-    segs += (f"<span class='seg g-wait' data-n='{waiting}' style='flex-grow:{waiting}'>"
-             f"{f'還在算 {waiting} 題' if waiting else ''}</span>")
+    # While questions wait (after a library swap, each is searched again) the bar's rest is a calm striped part and the
+    # legend's row ends in how far the run has come, 正在重算 7 / 33; a waiting tile is an empty pending box. Before
+    # it said 還在算 26 題 on grey 「…」 squares, which read as broken. 【Claude】 redesign 2026-11-17
+    # (research/dashboard_redesign_2026-11-17/diagnosis.md, 搜尋測試 ①); the page's script (look.JS) keeps both current.
+    segs += (f"<span class='seg g-wait' data-n='{waiting}' style='flex-grow:{waiting}' "
+             f"data-tip='還在算：{waiting} 題'></span>")
     legend = "".join(f"<span><i class='g-{g}'></i>{e(GRADE_WORDS[g])}</span>" for g in GRADE_WORDS)
+    legend += (f"<span class='prog' data-prog data-tip='換庫或換日以後，{total} 道測試題各重搜一次；算好的題先顯示'"
+               f"{'' if waiting else ' hidden'}>正在重算 {total - waiting} / {total}</span>")
     tiles = []
     for item in snapshot["items"]:
-        mark = ("…" if item["grade"] == grades.WAIT else "!" if item["grade"] == grades.FAILED
+        mark = ("" if item["grade"] == grades.WAIT else "!" if item["grade"] == grades.FAILED
                 else str(item["rank"]) if item["rank"] else "—")
-        said = (f"標準答案第 {item['rank']} 名" if item["rank"] else "還在搜" if item["grade"] == grades.WAIT
+        said = (f"標準答案第 {item['rank']} 名" if item["rank"] else "還在算" if item["grade"] == grades.WAIT
                 else "這一題沒搜成" if item["grade"] == grades.FAILED else "標準答案沒排上")
         tiles.append(f"<a class='tile' href='/search?{urlencode({'qid': item['id']})}' data-q='{e(item['id'])}' "
                      f"data-grade='{e(item['grade'])}'><span class='g g-{e(item['grade'])}' data-tip='{e(said)}'>"

@@ -72,7 +72,7 @@ databases:
           missing_files: 沒抓到的檔案：這一輪沒抓下來的檔案數。
           docs: 文件數：收進庫的文件數。
           export: 匯出資料夾：建庫讀的那一份匯出。
-          deleted_notices: 學校刪掉的公告：學校刪掉、只剩空殼的公告數；這些不收。
+          deleted_notices: 學校刪掉的：學校刪掉、只剩空殼的公告數；11-16 以後建的庫也算爬蟲標「學校已刪除」的網頁和附件。這些都不收。
           under_read: 改讀整頁：正文區讀到的字太少、改讀整頁的網頁數。
       doc_alias:
         description: 被合併掉的文件編號，和它併進了哪一份（別的網址的同一份、同一份的另一種格式、重複的紀錄）。
@@ -186,7 +186,7 @@ databases:
         hide_sql: true
         sql: |-
           select name as "網站", unit as "單位", docs as "文件數", data_as_of as "資料截至",
-                 missing_pages as "沒抓到的網頁", missing_files as "沒抓到的檔案", deleted_notices as "學校刪掉的公告",
+                 missing_pages as "沒抓到的網頁", missing_files as "沒抓到的檔案", deleted_notices as "學校刪掉的",
                  'http://127.0.0.1:18001/aca/site_docs?site=' || site as "代號"
           from sites order by docs desc
       site_docs:

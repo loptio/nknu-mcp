@@ -26,12 +26,26 @@ except ImportError:  # the tests load this file where Datasette is not installed
         return fn
 
 
+def _theme_module():
+    """nknu/ops/theme/bar.py, loaded by path: the datasette service runs without the inspect copy's src on its
+    PYTHONPATH (compose.yaml gives it only to mcp and ops); bar.py is standard library only."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[4] / "src" / "nknu" / "ops" / "theme" / "bar.py"
+    spec = importlib.util.spec_from_file_location("nk_theme_bar", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+theme = _theme_module()
+
 DATABASE = "aca"
-# the other panels, as the owner's browser reaches them through scripts/inspect-tunnel.sh: (name, address, what it
-# is, floating over the name)
-PANELS = (("資料總覽", "http://127.0.0.1:18879", "每個網站收了多少、缺多少"),
-          ("檢視台", "http://127.0.0.1:18878", "搜尋測試和文件追蹤：看一次搜尋怎麼排、一份文件每一步怎麼走"),
-          ("爬蟲存檔", "http://127.0.0.1:18877", "爬蟲抓下來的網頁原樣"))
+# the panels' one top bar and look (nknu/ops/theme: the inspect copy's src is on PYTHONPATH, compose.yaml): this
+# panel's key and host are both 'tables' (redesign 2026-11-17)
+BAR = theme.bar("tables", "tables")
+THEME = theme.theme_css()
 # Datasette's words for a filter's comparisons -> the page's (templates/table.html)
 OPS = {"exact": "等於", "not": "不等於", "contains": "包含", "endswith": "結尾是", "startswith": "開頭是", "gt": "大於",
        "gte": "大於等於", "lt": "小於", "lte": "小於等於", "like": "像（like）", "notlike": "不像（not like）",
@@ -246,7 +260,7 @@ def column_names(datasette, database: str | None, table: str | None) -> dict[str
 def extra_template_vars(template, database, table, datasette):
     async def inner():
         titles = {name: (about or {}).get("title") or "" for name, about in (datasette.metadata("databases") or {}).items()}
-        out = {"panels": PANELS, "zh_tables": NAMES, "op_words": OPS, "value_words": WORDS, "param_names": PARAMS,
+        out = {"nk_bar": BAR, "nk_theme": THEME, "zh_tables": NAMES, "op_words": OPS, "value_words": WORDS, "param_names": PARAMS,
                "trace_url": TRACE, "column_names": column_names(datasette, database, table), "kind_classes": KIND_CLASS,
                "db_titles": titles}
         if template == "index.html":

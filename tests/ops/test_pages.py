@@ -238,23 +238,41 @@ def test_the_board_draws_what_is_still_waiting():
                           {"id": "Q02", "question": "<b>退选</b>", "rank": None, "grade": board.WAIT},
                           {"id": "Q03", "question": "校車", "rank": None, "grade": board.WAIT}]}
     page = search_page.board_html(snapshot)
-    assert " data-running" in page and "還在算 2 題" in page and page.count("data-grade='wait'") == 2
+    assert " data-running" in page and page.count("data-grade='wait'") == 2
+    # redesign 2026-11-17 (diagnosis.md 搜尋測試 ①): how far the re-run has come, and pending boxes, not grey 「…」
+    assert "data-prog" in page and ">正在重算 1 / 3</span>" in page and "還在算 2 題" not in page
+    assert "<span class='g g-wait' data-tip='還在算'></span>" in page and "…" not in page
     assert "&lt;b&gt;退選&lt;/b&gt;" in page and "<b>退" not in page  # a question's words are text, never markup
     assert search_page.board_html({**snapshot, "total": 0, "items": []}) == ""
 
 
+def test_a_finished_board_hides_its_progress_and_the_script_keeps_it_current():
+    snapshot = {"total": 1, "done": 1, "running": False, "limit": 10,
+                "counts": {board.FIRST: 1, board.TOP3: 0, board.TOP: 0, board.OUT: 0, board.FAILED: 0},
+                "items": [{"id": "Q01", "question": "停修", "rank": 1, "grade": board.FIRST}]}
+    page = search_page.board_html(snapshot)
+    assert "data-prog" in page and " hidden>正在重算 1 / 1</span>" in page and " data-running" not in page
+    # the poll fills the progress and gives a filled tile its own floating word (it kept 還在算 before)
+    assert "'正在重算 '+(s.total-waiting)+' / '+s.total" in look.JS and "g.setAttribute('data-tip',SAID(it))" in look.JS
+    assert "'…'" not in look.JS
+
+
 # ---------------------------------------------------------------- the home page
 
-def test_the_home_page_offers_both_tools_and_the_board(db, tmp_path):
+def test_the_home_page_is_the_pipeline_and_the_tools_keep_their_pages(db, tmp_path):
+    # owner 11-16: the home says whether every step of the pipeline is normal; the two tools that were the home
+    # keep their own pages, the scoreboard on the search's empty page
     folder, gold = _questions(tmp_path)
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
                          gold=gold)
     with TestClient(app, base_url=BASE) as client:
         home = client.get("/").text
+        search = client.get("/search").text
         page_of_trace = client.get("/trace").text
         _settled(client)
-    assert "action='/search'" in home and "action='/trace'" in home and "data-board='/api/board'" in home
-    assert "name='doc'" not in home  # one box a tool: what else it offers is on its own page
+    assert "aria-current='page'>流水線</a>" in home and "action='/search'" not in home
+    assert "action='/search'" in search and "data-board='/api/board'" in search
+    assert "action='/trace'" in page_of_trace
     assert "/trace?ref=d3" in page_of_trace  # there: a document to start from, a test question's gold answer
 
 
@@ -363,14 +381,11 @@ def test_the_pages_carry_their_own_style_and_script_and_load_nothing_from_elsewh
     assert not re.search(r"<(?:script|link|img)[^>]+(?:src|href)=['\"]https?://", page)  # nothing fetched from outside
 
 
-def test_both_themes_define_every_colour_the_pages_use():
-    light, dark = look.CSS.split("@media (prefers-color-scheme:dark){:root{")
-    dark = dark.split("}}")[0]
+def test_the_shared_theme_defines_every_colour_the_pages_use():
+    # the colours live in nknu/ops/theme/theme.css since the redesign of 11-17 (tests/ops/test_theme.py checks it)
+    defined = set(re.findall(r"(--[a-z0-9-]+):", look.THEME.split("}")[0]))
     used = set(re.findall(r"var\((--[a-z0-9-]+)\)", look.CSS + look.JS))
-    defined = set(re.findall(r"(--[a-z0-9-]+):", light.split("}")[0]))
     assert used <= defined, used - defined
-    colours = {v for v in defined if v not in ("--font", "--mono")}
-    assert colours <= set(re.findall(r"(--[a-z0-9-]+):", dark)), "a colour without its dark step"
 
 
 def test_a_documents_kind_is_an_icon_and_its_word_never_a_hue():
