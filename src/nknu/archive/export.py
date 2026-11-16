@@ -2218,8 +2218,8 @@ class Writer:
         """A row whose answer this time is no good, with a good answer this archive held before (Snap.kept): written
         with the latest good one (periodic updates: design 2026-11-16 §7.1; 2026-11-15 update.md §5, §6.1). No good
         this time: its result is none of GOOD_RESULTS (a rule's decision, NO_FALLBACK, aside; a redirect landing on a
-        good row shares that row's file as before), or a notice page whose areas are empty or that says it has no
-        data. Its file, 抓取时间, 最后修改时间, 大小, sha256, 格式 and 最后落地网址 are that answer's, 来源 says
+        good row shares that row's file as before), or a platform's notice detail page whose areas are empty or that
+        says it has no data (never a list: one the school emptied is its answer now). Its file, 抓取时间, 最后修改时间, 大小, sha256, 格式 and 最后落地网址 are that answer's, 来源 says
         ORIGIN_PREV, 备注 says what this time came to; its 结果, 分类 and 原因 stay this time's (the gap in sight). A
         kept answer that is itself an empty notice is passed over. False, the row written as before, otherwise."""
         if it.type not in (PAGE, FILE, IMAGE) or it.key[:1] != "u" or not it.key[1:].isdigit():
@@ -2228,16 +2228,18 @@ class Writer:
         kept, row = self.s.kept.get(rid), self.s.rows.get(rid)
         if not kept or row is None or row["result"] in NO_FALLBACK:
             return False
+        detail = it.type == PAGE and _detail(it.url, self.site)
         if row["result"] == "redirect":
             end, _nowhere = self.s.landing.get(rid, (None, None))
             to = self.s.rows.get(end) if end is not None else None
             if to is not None and to["result"] in GOOD_RESULTS and not outcome.school_home(to["url"]):
                 return False  # a page moved: it shares the page it lands on, as before
         elif row["result"] in GOOD_RESULTS:
-            if it.type != PAGE or it.source is None or not self._empty_notice(it, it.source[0], it.source[1]):
+            # only a notice detail page is no good for being empty (update.md §5 item 3): a list the school emptied
+            # (「共0筆」) is its answer now (T8 on the lab, 11-16)
+            if not detail or it.source is None or not self._empty_notice(it, it.source[0], it.source[1]):
                 return False
-        pick = next((k for k in kept if it.type != PAGE or not self._empty_notice(it, k["warc"], k["warc_offset"])),
-                    None)
+        pick = next((k for k in kept if not detail or not self._empty_notice(it, k["warc"], k["warc_offset"])), None)
         if pick is None:
             return False
         words, this_time = it.result_words(), it.fetched_at or "没有回应"

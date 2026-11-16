@@ -161,3 +161,25 @@ def test_a_row_once_good_always_has_its_latest_good_file(tmp_path, seq):
         assert versions["last"] in text
     else:
         assert "（第" not in text  # the first fetch's own page, the only good one
+
+
+def test_a_list_that_now_says_it_holds_nothing_is_taken_as_it_is(tmp_path):
+    """Only a notice detail page falls back when its answer is good but empty (update.md §5 item 3): a list the school
+    emptied (「搜尋結果：共0筆」, profiles.NEWS_NO_ROWS) is its answer now, never the old list's rows (the lab's T8
+    comparison of 11-16: news.nknu.edu.tw's unit lists)."""
+    from tests.archive.test_export_1027 import _add
+
+    url = "https://news.nknu.edu.tw/nknu_news/lastnewslist_dept.aspx?place=WB"
+    with_rows = "<html><body><form id='uForm'>搜尋結果：共2筆<table><tr><td>招生公告</td></tr></table></form></body></html>"
+    empty = "<html><body><form id='uForm'>搜尋結果：共0筆</form></body></html>"
+
+    def build(arch):
+        off, sha = arch.put("lst", url, "text/html; charset=utf-8", with_rows.encode())
+        arch.ids["lst"] = _add(arch.f, url=url, host="news.nknu.edu.tw", final_url=url, ctype="text/html",
+                               bytes=len(with_rows.encode()), sha256=sha, warc=arch.rel, warc_offset=off,
+                               sniff="html", page_type="t:ok")
+        _again(arch, "lst", body=empty)
+
+    _arch, _got, out, rows, _readme = _with(tmp_path, build)
+    r = rows[url]
+    assert r["来源"] == "" and "共0筆" in _content(out, r).decode("utf-8-sig")
