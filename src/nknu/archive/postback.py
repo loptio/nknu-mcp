@@ -2707,11 +2707,14 @@ def _epoch(stamp: str | None) -> float:
 
 
 def backfill_list_rows(frontier: Frontier, root: Path,
-                       read: Callable[[str, int], tuple[str, int, dict[str, str], bytes]] | None = None) -> int:
+                       read: Callable[[str, int], tuple[str, int, dict[str, str], bytes]] | None = None,
+                       counts: dict[str, int] | None = None) -> int:
     """list_row for an archive walked before it (periodic updates, stage 1; the lab's ledger): every stored GET of a
     list page and every pager answer its walk took (the page asked for, from this list: _pager_answer's own check),
     read by the page's profile, oldest first, each row's times its answer's (url.fetched_at, action.done); nothing
-    is put back. Returns the rows list_row holds after."""
+    is put back. Returns the rows list_row holds after. counts: "unread" adds the answers the archive could not give
+    back (11-16: a rehearsal's copy with no WARC read 0 rows and said nothing; a list unread is all news the first
+    night)."""
     chains = Chains(frontier, root, read=read)
     readings: list[tuple[float, int, int | None, str, int]] = []
     for r in frontier.q("SELECT id, fetched_at, warc, warc_offset FROM url WHERE (page_role='list' OR id IN "
@@ -2729,6 +2732,8 @@ def backfill_list_rows(frontier: Frontier, root: Path,
         try:
             url, _status, headers, body = chains.read(warc, offset)
         except (OSError, ValueError, StopIteration):
+            if counts is not None:
+                counts["unread"] = counts.get("unread", 0) + 1
             continue
         site = lr["owner_site"] or scope.site_key(lr["url"])
         html = as_text(body, headers.get("content-type"))

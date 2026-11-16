@@ -599,9 +599,12 @@ def main(argv: list[str] | None = None) -> int:
                         print("不是第一轮的网站键（打错了？）：" + "、".join(unknown) + "；什么都没做", file=sys.stderr)
                         return 1
                     keys = sorted(sites)
-                n = postback.backfill_list_rows(f, root)
+                miss: dict[str, int] = {}
+                n = postback.backfill_list_rows(f, root, counts=miss)
                 f.meta(crawl_mod.UPDATE_SITES_KEY, json.dumps(keys))
-                print(f"列表的每一行读进 list_row：{n} 行；{len(keys)} 个网站键进入定期更新（每晚的增长上限）")
+                print(f"列表的每一行读进 list_row：{n} 行；{len(keys)} 个网站键进入定期更新（每晚的增长上限）"
+                      + (f"；存档里读不到的列表页 {miss['unread']} 页（WARC 没挂上？读不到的列表，第一晚每一行都当新的）"
+                         if miss.get("unread") else ""))
                 return 0
             if a.action == "review":
                 if not f.meta(NIGHT_KEY):

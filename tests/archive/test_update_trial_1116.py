@@ -91,3 +91,19 @@ def test_a_list_with_no_first_page_counts_on_its_own_site_only(tmp_path):
         assert update.select(f, tmp_path, sites={A}, today=QUIET).skipped.get("get_no_first_page", 0) == 1
     finally:
         f.close()
+
+
+def test_go_live_says_how_many_stored_list_pages_it_could_not_read(tmp_path, capsys):
+    """The 11-16 rehearsal gave the ledger copy an empty warc folder: go-live read 0 list rows and said nothing of it
+    (postback.backfill_list_rows skips an answer it cannot read). A list unread is all news on the first night."""
+    cn = "c.nknu.edu.tw/x"
+    f = Frontier(tmp_path / "frontier.db")
+    try:
+        _site(f, cn, "1")
+        lst = _url(f, "/x/NewsList.aspx?gi=1", site=cn)  # a c.nknu list (its profile reads it); no WARC file there
+        f.x("INSERT INTO listwalk(list_id, site, profile, epoch, pages, rows, rows_unique, claimed, ended_by, ok, note, "
+            "at) VALUES (?, ?, 'cnknu', 1, 1, 3, 3, NULL, 'last_page', 1, NULL, 1)", (lst, cn))
+    finally:
+        f.close()
+    assert update.main(["--dir", str(tmp_path), "go-live"]) == 0
+    assert "读不到的列表页 1 页" in capsys.readouterr().out
