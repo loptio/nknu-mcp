@@ -11,6 +11,7 @@ cli.py until the owner names the time (11-16: 「动 cli.py…动手前先和我
   (Frontier.put_back).
 - go-live: holds run.lock; reads every list row the archive holds into list_row (postback.backfill_list_rows) and
   names the round-one sites as under update (crawler.UPDATE_SITES_KEY: their run caps). Once, before the first night.
+  With --sites, only those (a trial night on one small site, the owner 11-16: 「挑一个小站试一晚」).
 
 - review: holds run.lock; the change list (watch.night) of every night not yet reviewed (from FROM_KEY: a night whose
   run or review never ended is reviewed with the next), once (meta update:night_reviewed), in one transaction:
@@ -193,7 +194,11 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
         first = min((i for i, n in num.items() if n == 1), default=None)
         row = frontier.row_by_id(first) if first is not None else None
         if row is None:
-            t.skipped["get_no_first_page"] += 1
+            # counted on its own site's plan only (11-16: every site's plan said 「认不出第 1 页 3」)
+            owners = {r[0] for r in frontier.q(f"SELECT DISTINCT owner_site FROM url WHERE id IN ({_in(group)})",
+                                               sorted(group))}
+            if owners & r1:
+                t.skipped["get_no_first_page"] += 1
             continue
         if row["owner_site"] not in r1 or row["kind"] != "page":
             continue
@@ -528,7 +533,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--today", type=date.fromisoformat, default=None,
                     help="plan、put-back 用：当作哪一天挑（YYYY-MM-DD，台北日期；默认今天）")
     ap.add_argument("--sites", default=None,
-                    help="只挑这些网站键（逗号分隔，或 @档名：一行一个）；之后的 archive run 给同样的 --sites")
+                    help="只挑这些网站键（逗号分隔，或 @档名：一行一个）；之后的 archive run 给同样的 --sites。go-live 用："
+                         "只把这些网站列进定期更新（试一晚）")
     a = ap.parse_args(argv)
     root = a.dir
     if not (root / "frontier.db").is_file():
@@ -582,8 +588,18 @@ def main(argv: list[str] | None = None) -> int:
         f = Frontier(root / "frontier.db")
         try:
             if a.action == "go-live":
-                n = postback.backfill_list_rows(f, root)
                 keys = sorted(update_keys(f))
+                if sites is not None:
+                    # the first real night on one small site (the owner 11-16: 「挑一个小站试一晚」): only these are under
+                    # update, so the nightly script's put-back, sites and run take them alone, and a run's start lets go
+                    # of no other site's capped rows (_release_caps: every other site keeps the round's caps). A later
+                    # go-live without --sites names every round-one site
+                    unknown = sorted(sites - set(keys))
+                    if unknown:
+                        print("不是第一轮的网站键（打错了？）：" + "、".join(unknown) + "；什么都没做", file=sys.stderr)
+                        return 1
+                    keys = sorted(sites)
+                n = postback.backfill_list_rows(f, root)
                 f.meta(crawl_mod.UPDATE_SITES_KEY, json.dumps(keys))
                 print(f"列表的每一行读进 list_row：{n} 行；{len(keys)} 个网站键进入定期更新（每晚的增长上限）")
                 return 0
