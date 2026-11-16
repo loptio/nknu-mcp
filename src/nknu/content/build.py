@@ -111,6 +111,9 @@ file_row_dates:
   COHORT_YEARS years (cohort_expiry, --no-cohort-expiry; _expires_alone's 'cohort_single', _own_year).
 - §五: a rebuild is not put in the place of the library in use when a site it built fell below half of that library's
   documents for it (_collapsed, SwapHeld: the new library stays beside it as <name>.held.db; --force-swap).
+11-16, after the owner asked what tool the 「碎字」 PDFs need: none; documents.join_single_lines puts the runs of
+one-character lines right when the documents are built (single_lines, --no-single-lines; BuildReport.single_lines,
+meta single_lines_json).
 
 Plan 2026-11-14 T3, T4 and T6 (direction 2026-11-13 第 3、4、6 件), the first two each with a switch that builds as
 before:
@@ -513,6 +516,8 @@ class BuildReport:
     # spec 2026-11-16 §二 (_date_spikes): on, min, days (site and day pairs past SPIKE_MIN), documents (the files left
     # undated) and by_site
     date_spikes: dict = field(default_factory=dict)
+    # 11-16 (documents.join_single_lines): on, documents (those it changed), joined (lines joined away), dropped (marks)
+    single_lines: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -2106,7 +2111,8 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                 merge_recurring: bool = True, alumni_background: bool = True, event_dates: bool = True,
                 own_titles: bool = True, platform_twins: bool = True, stated_units: bool = True,
                 label_titles: bool = False, copy_names: bool = True, date_spikes: bool = True,
-                cohort_expiry: bool = True, file_row_dates: bool = True, force_swap: bool = False) -> BuildReport:
+                cohort_expiry: bool = True, file_row_dates: bool = True, force_swap: bool = False,
+                single_lines: bool = True) -> BuildReport:
     """One database from inputs, each (corpus.json, the export folder it was assembled from), in order (plan
     2026-11-08 T4; the module docstring). Read every input first (a broken one stops the build before anything is
     written), then write out + '.tmp' and move it over out. today (default: Asia/Taipei today) bounds the server dates
@@ -2197,7 +2203,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     first = read[0]
     # the school's deleted notices build_documents leaves out, per site (owner 11-09, blueprint item 15)
     deleted = Counter(r.site or first.info["site"] for r in records if deleted_notice(r))
-    docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"])
+    docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"],
+                                     single_lines=single_lines)
+    # 11-16 (documents.join_single_lines; --no-single-lines): the runs of one-character lines put right
+    joined = {"on": single_lines, "documents": sum(bool(d.lines_joined or d.marks_dropped) for d in docs),
+              "joined": sum(d.lines_joined for d in docs), "dropped": sum(d.marks_dropped for d in docs)}
     published = _stated_units(docs, units, stated_units)  # the owner, 11-15: before the copies are merged
     for kind, n in [*merged.items(), *repeated.items()]:
         excluded[kind] = excluded.get(kind, 0) + n
@@ -2308,6 +2318,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             PUBLISHERS_KEY: json.dumps(published, ensure_ascii=False),
             # spec 2026-11-16 §二: the three date rules; hybrid reads cohort_expiry (validity's cohort_step)
             DATE_SPIKES_KEY: json.dumps(spikes, ensure_ascii=False),
+            "single_lines_json": json.dumps(joined, ensure_ascii=False),
             "cohort_expiry": "on" if cohort_expiry else "off", "cohort_years": str(COHORT_YEARS),
             "file_row_dates": "on" if file_row_dates else "off",
             DEDUPE_KEY: json.dumps(dedupe, ensure_ascii=False),
@@ -2352,7 +2363,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                                 "unit_in_vectors": unit_words and unit_in_vectors,
                                 "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF},
                        dedupe=dedupe, event_dates=dated, titles=titled, validity=valid, publishers=published,
-                       date_spikes=spikes)
+                       date_spikes=spikes, single_lines=joined)
 
 
 def _progress_to_stderr() -> Callable[[], None]:
@@ -2524,6 +2535,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="网页给附件的叫法是同一网站 20 份以上附件共用的（「檔案連結」「公文」）不当标题，档名有汉字的改回用档名"
                          "（11-15 做的，默认不开：量过，111 站 894 份标题更具体，但 33 题里「學號」那题从第 4 掉到第 15 名，"
                          "等用户定）")
+    ap.add_argument("--no-single-lines", action="store_true",
+                    help="转出来一字一行的地方照原样留着（11-16：默认把连续的单字行接成一行、丢掉公文左边那条装订虚线的点；"
+                         "直排的标签转出来就是一字一行，字和顺序都对）")
     ap.add_argument("--force-swap", action="store_true",
                     help=f"某个网站的文件数不到现在这份库的一半（现在至少 {GUARD_MIN} 份）时照样换库；默认不换，新库留在旁边的 "
                          "<名字>.held.db、退出码 3（设计稿 2026-11-16 第五节）")
@@ -2564,7 +2578,7 @@ def main(argv: list[str] | None = None) -> int:
                              stated_units=not args.no_stated_units, label_titles=args.label_titles,
                              copy_names=not args.no_copy_names, date_spikes=not args.no_date_spikes,
                              cohort_expiry=not args.no_cohort_expiry, file_row_dates=not args.no_file_row_dates,
-                             force_swap=args.force_swap)
+                             force_swap=args.force_swap, single_lines=not args.no_single_lines)
     except SwapHeld as exc:
         print(str(exc), file=sys.stderr)
         return 3

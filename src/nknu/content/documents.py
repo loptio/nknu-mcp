@@ -286,6 +286,9 @@ class Document:
     # file to inherit from); None for any other file, and in an export that gives files no such date
     row_date: date | None = None
     row_date_raw: str = ""
+    # 11-16 (join_single_lines): the one-character lines joined away in text and the leader marks dropped from it
+    lines_joined: int = 0
+    marks_dropped: int = 0
     # every document (sub-step 4, spec 2026-11-08 §二 3): the server's time of its file (_server_day: the export's
     # 最后修改时间), which dates an attachment only (owner 11-01: a file inherits its page's date, else the server's
     # time; a page is never dated by it); None without one
@@ -327,6 +330,61 @@ def clean_text(s: str) -> str:
     s = _ZERO_WIDTH.sub("", s.replace("\r\n", "\n").replace("\r", "\n").replace("\f", "\n"))
     s = "\n".join(_HSPACE.sub(" ", line).strip() for line in s.split("\n"))
     return _BLANK_LINES.sub("\n\n", s).strip()
+
+
+# 11-16 (the owner: 「碎字pdf你现在去查原因和调查 来决定要用什么工具」; research/pipeline_2026-11-02/pdf_fragments_1116/):
+# join_single_lines' marks, the characters a dotted or bulleted line is drawn with, and how many of them in one run make
+# it a leader line 【Claude】
+_LEADERS = frozenset(".…‧·．-_─—~*●•‥")
+LEADER_RUN = 5
+_HAN = re.compile(r"[\u3400-\u9fff]")
+
+
+def join_single_lines(text: str) -> tuple[str, int, int]:
+    """(text with its runs of one-character lines put right, marks dropped, lines joined away). A run is consecutive
+    lines of one character each, blank lines between them aside. Its leader marks (_LEADERS) go when there are
+    LEADER_RUN or more of them, or when it is three or more lines of nothing else: the dotted binding line down the
+    left margin of an official letter (「…裝…訂…線…」), a poster's bullets. What is left becomes one line when it
+    holds two or more Han characters: a label set vertically in a chart or a form, which the converter gives one
+    character a line and in the right order (「進 / 階 / 英 / 文 / 2 / 學 / 分」). Any other run stays as it was (page
+    numbers, the options A to D), and so does every other line: table rows, headings and list items are never one
+    character. Text without such a run comes back as it was.
+    Why here and not in the conversion: the characters are all there and in order, so nothing needs reading again
+    (the conversion's cache holds weeks of work). On the 111 sites of 11-16, 1,031 attachments were more than a third
+    one-character lines; with this, 24 (posters and exam sheets, whose pictures the OCR read); 154,112 marks dropped
+    and 66,557 lines joined away in 3,984 documents."""
+    lines = text.split("\n")
+    out: list[str] = []
+    dropped = merged = 0
+    i = 0
+    while i < len(lines):
+        if len(lines[i].strip()) != 1:
+            out.append(lines[i])
+            i += 1
+            continue
+        chars, last, j = [], i, i
+        while j < len(lines) and len(one := lines[j].strip()) <= 1:
+            if one:
+                chars.append(one)
+                last = j
+            j += 1
+        marks = sum(ch in _LEADERS for ch in chars)
+        keep = [ch for ch in chars if ch not in _LEADERS] if marks >= LEADER_RUN or marks == len(chars) >= 3 else chars
+        join = sum(1 for ch in keep if _HAN.match(ch)) >= 2
+        if join:
+            out.append("".join(keep))
+            merged += len(keep) - 1
+        elif len(keep) != len(chars):
+            out.extend(part for ch in keep for part in (ch, ""))
+            if keep:
+                out.pop()
+        else:
+            out.extend(lines[i : last + 1])
+        dropped += len(chars) - len(keep)
+        i = last + 1
+    if not dropped and not merged:
+        return text, 0, 0
+    return _BLANK_LINES.sub("\n\n", "\n".join(out)).strip(), dropped, merged
 
 
 def _one_line(s: str) -> str:
@@ -752,7 +810,7 @@ def _context_title(named: list[tuple[date | None, str]]) -> str:
 
 
 def build_documents(records: list[Record], metas: dict[str, PageMeta], events: list[Event],
-                    site: str = "") -> tuple[list[Document], dict[str, int]]:
+                    site: str = "", single_lines: bool = True) -> tuple[list[Document], dict[str, int]]:
     """Documents in corpus order, then events; and the count of left-out records by kind. records: one per id
     (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A page the crawler
     marks 列表翻页 (blueprint item 22) and one the school answered with no data (Record.area_mark NO_DATA, the
@@ -791,7 +849,8 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
             continue
         m = metas.get(r.id) if cls == "notice" else None
         title = _one_line(m.title if m and m.title else r.title)
-        text = clean_text(r.text)
+        # 11-16: runs of one-character lines put right (single_lines; the build's --no-single-lines)
+        text, marks, joined = join_single_lines(clean_text(r.text)) if single_lines else (clean_text(r.text), 0, 0)
         if not title and not text:
             excluded[r.kind + BLANK] += 1
             continue
@@ -810,7 +869,8 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
                      page_date_source=page_source, row_date=row[0] if row else None,
-                     row_date_raw=row[1] if row else "", server_date=_server_day(r), source=r.source, formats=r.formats,
+                     row_date_raw=row[1] if row else "", lines_joined=joined, marks_dropped=marks,
+                     server_date=_server_day(r), source=r.source, formats=r.formats,
                      site=r.site or site, categories=_categories(r.list_category),
                      # whatever kind its own address makes it: a notice, a page, or a short link another site
                      # writes for the platform's notice (50 of the 2,040 stated rows of 11-15: 外站:reurl.cc, a link)
