@@ -68,6 +68,7 @@ from nknu.content.terms import Term, canonical_tokens, query_terms
 from nknu.core.textnorm import CJK, fts_query, norm_text, tokenize
 from nknu.retrieval.aliases import expand, synonyms, unit_spans
 from nknu.retrieval.types import DocHit, SearchResult, Understood
+from nknu.retrieval.unitfilter import UnitFilter
 
 TITLE_WEIGHT = 3.0
 CANDIDATES = 300  # documents per tier the vector path brings (hybrid's dense_candidates), PER_DOC chunks each;
@@ -127,8 +128,9 @@ _FTS = _fts_sql()
 # chunk and counted a topic word twice in bm25, so a document on the topic lost the chunks that only name the unit
 # and went to the reranker with other chunks than before. The direction asks it of the document and leaves the
 # score alone: 「讲什么的词至少对上一个，文件才进候选……进了候选的文件，这些词照样算进挑 300 份的那个分」.
-_FTS_TOPIC = _fts_sql(" WHERE c.doc_id IN (SELECT t.doc_id FROM chunks t WHERE t.chunk_id IN"
-                      " (SELECT rowid FROM chunk_fts WHERE chunk_fts MATCH ?))")
+_TOPIC_WHERE = ("c.doc_id IN (SELECT t.doc_id FROM chunks t WHERE t.chunk_id IN"
+                " (SELECT rowid FROM chunk_fts WHERE chunk_fts MATCH ?))")
+_FTS_TOPIC = _fts_sql(" WHERE " + _TOPIC_WHERE)
 # the topic is asked of a chunk's own words, never of its unit words (chunk_fts.unit_tokens): 工程 would admit every
 # page of 軟體工程與管理學系, the very unit-only match the setting leaves out (review 11-14). A column filter that names
 # the two columns every database has; one before pipeline-5 keeps its unit words among the title tokens
@@ -489,12 +491,15 @@ def _topic(rest: str, tokens: list[str], units: list[tuple[int, int]], others: l
 
 
 def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]],
-                 rank: RankConfig | None = None, explain: dict | None = None) -> KeywordPool:
+                 rank: RankConfig | None = None, explain: dict | None = None,
+                 only: UnitFilter | None = None) -> KeywordPool:
     """Steps 1 and 2: the FTS match and each document's score, added up exactly as search_docs always has (the float
     sums decide ties that the stable sorts and the 11-01 offline numbers rely on).
     explain (plan 2026-11-15 T1, the inspection tools: nknu.ops.explain): a dict that is given gets 'keyword': the
     tokens searched, the topic words, whether the date part applies, the best bm25, and each document's parts as they
-    were added (coverage, bm25, bm25_norm, period, cohort, date or None, score). Without it nothing changes."""
+    were added (coverage, bm25, bm25_norm, period, cohort, date or None, score). Without it nothing changes.
+    only (search(unit=...), design 2026-11-16-mcp-interface-design §二): the match keeps only the documents the unit
+    filter keeps, before the PER_DOC and POOL_DOCS limits; None: every document, the query as before to the letter."""
     q = query[:MAX_QUERY_CHARS]
     rank = rank if rank is not None else RankConfig()
     named = query_terms(q, today)
@@ -512,6 +517,13 @@ def keyword_pool(conn: sqlite3.Connection, query: str, *, today: date, aliases: 
         topic = _topic(named.rest, tokens, spans, synonyms(q, aliases, names, spans))
     if not tokens:
         rows = []
+    elif only is not None:
+        conds, extra = [only.where()], list(only.params)
+        if topic:
+            conds.insert(0, _TOPIC_WHERE)
+            extra.insert(0, _TOPIC_COLUMNS.format(fts_query(topic)))
+        rows = conn.execute(_fts_sql(" WHERE " + " AND ".join(conds)),
+                            (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens), *extra, PER_DOC, POOL_DOCS)).fetchall()
     elif topic:
         rows = conn.execute(_FTS_TOPIC, (TITLE_WEIGHT, rank.unit_weight, fts_query(tokens),
                                          _TOPIC_COLUMNS.format(fts_query(topic)), PER_DOC, POOL_DOCS)).fetchall()

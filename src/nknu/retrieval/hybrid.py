@@ -81,7 +81,7 @@ from nknu.content.embed import chunk_passages
 from nknu.content.terms import current_term, school_spelling
 from nknu.content.units import TEACHING_KINDS, Scope, Unit, detect, relation
 from nknu.core import models
-from nknu.retrieval import vectors
+from nknu.retrieval import unitfilter, vectors
 from nknu.retrieval.search import (
     CANDIDATES,
     PER_DOC,
@@ -103,6 +103,7 @@ from nknu.retrieval.search import (
     top_hits,
 )
 from nknu.retrieval.types import SearchResult
+from nknu.retrieval.unitfilter import UnitFilter
 
 log = logging.getLogger(__name__)
 
@@ -483,12 +484,13 @@ def _usable_index(conn: sqlite3.Connection, embedder, index) -> vectors.VectorIn
 
 
 def _dense(text: str, config: HybridConfig, embedder, index: vectors.VectorIndex,
-           tier: bool, explain: dict | None = None) -> list[tuple[int, float]]:
+           tier: bool, explain: dict | None = None, allow=None) -> list[tuple[int, float]]:
     """Step 4: (chunk_id, cosine), the primary documents' chunks then the background ones' (tier), each pool's
     documents by their nearest chunk, from index (_usable_index checked it); an index without its documents gives the
     dense_candidates nearest chunks as before 11-08. [] when dense_candidates is 0 or anything fails (a rerank then
     reads the keyword candidates alone); a failure is written into explain as 'dense_error' (plan 2026-11-15 T1,
-    review: an empty vector pool must not read as 「the vectors found nothing」)."""
+    review: an empty vector pool must not read as 「the vectors found nothing」). allow: a bool per document of the
+    index (unitfilter.allow_mask), None: all."""
     if config.dense_candidates <= 0:
         return []
     try:
@@ -497,10 +499,13 @@ def _dense(text: str, config: HybridConfig, embedder, index: vectors.VectorIndex
         if index.doc_of is None:
             return index.top(q, config.dense_candidates)
         if not tier or index.background is None:
-            return index.top_docs(q, PER_DOC, config.dense_candidates)
+            return index.top_docs(q, PER_DOC, config.dense_candidates, allow)
         sims = index.similarities(q)
-        return (index.top_docs(q, PER_DOC, config.dense_candidates, ~index.background, sims=sims)
-                + index.top_docs(q, PER_DOC, config.dense_candidates, index.background, sims=sims))
+        primary, back = ~index.background, index.background
+        if allow is not None:
+            primary, back = primary & allow, back & allow
+        return (index.top_docs(q, PER_DOC, config.dense_candidates, primary, sims=sims)
+                + index.top_docs(q, PER_DOC, config.dense_candidates, back, sims=sims))
     except models.ModelUnavailable as exc:  # expected while a model is missing: one line, not a traceback per query
         log.warning("向量模型不能用，这次不用向量：%s", exc)
         if explain is not None:
@@ -611,7 +616,8 @@ def _rerank(conn: sqlite3.Connection, text: str, head: list[str], docs: dict[str
 
 def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]], limit: int = TOP_N,
                   rank: RankConfig | None = None, config: HybridConfig | None = None, embedder=None, reranker=None,
-                  index: vectors.VectorIndex | None = None, explain: dict | None = None) -> SearchResult:
+                  index: vectors.VectorIndex | None = None, explain: dict | None = None,
+                  only: UnitFilter | None = None) -> SearchResult:
     """The module docstring's steps. embedder, reranker and index stand in for the process's shared ones (tests,
     offline runs). In step 3's cases no model, shared or given, is asked for; past them, the embedder encodes the
     query when there is a usable index, and the reranker scores the head when there is one.
@@ -622,11 +628,13 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
     'tiers' and 'heads' (primary, background: the fused orders and the reranked heads), 'rerank' (_rerank; None when
     none ran), 'final' (every document in the final order), 'config' and 'rank'; and, only when it happened,
     'dense_error' (_dense) and 'rerank_error' (_rerank): why a model's part is missing. Without it nothing changes:
-    the tests of tests/ops/test_recorder.py compare the two to the bit."""
+    the tests of tests/ops/test_recorder.py compare the two to the bit.
+    only (search(unit=...), design 2026-11-16-mcp-interface-design §二): both candidate paths keep only the documents
+    the unit filter keeps, before their limits (keyword_pool's query; the vector path's allow mask); None: as before."""
     config = config if config is not None else HybridConfig()
     rank = rank if rank is not None else RankConfig()
     limit = max(limit, 0)
-    pool = keyword_pool(conn, query, today=today, aliases=aliases, rank=rank, explain=explain)
+    pool = keyword_pool(conn, query, today=today, aliases=aliases, rank=rank, explain=explain, only=only)
     if explain is not None:
         explain.update(mode="empty", ranking="keyword", text=None, kw_order=[], kw_scores={}, off=[], bonus={},
                        dense=[], dense_docs={}, background=[], tiers=[[], []], heads=[[], []], rerank=None, final=[],
@@ -651,8 +659,12 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, today: date, aliases:
         return SearchResult(pool.query, pool.understood, top_hits(ordered, limit), pool.rows)
 
     text = school_spelling(pool.query, today)  # the one text bge-m3 and the reranker read
-    dense = _dense(text, config, embedder, index, pool.tier, explain) if index is not None else []
+    keep = unitfilter.allowed(conn, only) if only is not None and index is not None else None
+    allow = unitfilter.allow_mask(index.doc_ids, keep) if keep is not None and index.doc_of is not None else None
+    dense = _dense(text, config, embedder, index, pool.tier, explain, allow) if index is not None else []
     dense_of = _by_doc(conn, dense)
+    if keep is not None:  # an index without its documents could not be masked
+        dense_of = {d: cs for d, cs in dense_of.items() if d in keep}
     only_dense = doc_rows(conn, [d for d in dense_of if d not in pool.docs])
     if pool.tier:
         mark_background(conn, only_dense)

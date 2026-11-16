@@ -293,7 +293,7 @@ def test_a_database_without_doc_alias_answers_an_unknown_id_as_before(tmp_path):
 # the copies notes say so (review of T1); a build whose copies list no id keeps the old ones (test_respond.py).
 # Changed 11-14 on purpose (plan 2026-11-14 T2): copies need not share a title any more, only their content
 NOTE_COPIES = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
-               "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
+               "用 fetch 讀副本的 id 會得到這一筆。內容和該筆相同。")
 NOTE_FORMATS = "【系統】copies 中有 format 的是同一份文件的其他格式：各有自己的 id、網址和格式，沒有自己的日期；內容以該筆為準。"
 
 

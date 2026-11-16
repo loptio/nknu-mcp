@@ -24,13 +24,14 @@ from tests.retrieval.test_respond import ALIASES, TODAY, Tiny, hit, prose, resul
 # database of many sites, which clients keep the tool texts of while it is replaced: no unit, no site address, no
 # count or year; what a build holds is in each answer (coverage, data_as_of)
 SEARCH_DESCRIPTION = ("搜尋已收錄的高師大網站的公開網頁、公告、附件與行事曆，回傳學校原文、日期與出處。"
-                      "前 3 筆給全文（長文件給命中的章節和目錄），其餘給原文摘要。"
+                      "預設回 10 筆，每筆給命中處約 500 字的學校原文；要多一點或少一點原文用 detail，要更多筆用 limit，"
+                      "只看某個單位用 unit，要最新的用 sort。"
                       "query 請用繁體中文和台灣用語的關鍵字或問句"
                       "（例如用「軟體」不用「軟件」、用「資訊」不用「信息」）。"
                       "查不到或結果不對題時，請換幾個說法再查（同義詞、全稱或簡稱、學校公告的寫法），"
                       "不要只查一次就下結論。"
                       "收錄了哪些網站、資料截至何時，見每次回傳的 coverage 和 data_as_of。")
-READ_DESCRIPTION = ("用 search 回傳的 id 讀一份文件：part 留空讀全文（太長給目錄和開頭），part=節號讀某一節，"
+FETCH_DESCRIPTION = ("用 search 回傳的 id 讀一份文件：part 留空讀全文（太長給目錄和開頭），part=節號讀某一節，"
                     "part=toc 只看目錄。")
 # what an agent is told at the MCP handshake (plan 2026-11-02 T9, deliberate; was the main session's 11-01 wording;
 # plan 2026-11-08 T4, deliberate: no unit, no site address, no year)
@@ -96,15 +97,15 @@ def config_recorder(seen: list):
 async def test_server_tools_listed(db_path):
     async with Client(mcp_for(db_path, FakeSearch())) as c:
         tools = {t.name: t for t in await c.list_tools()}
-    assert sorted(tools) == ["read", "search"]
+    assert sorted(tools) == ["fetch", "search"]  # design 2026-11-16 §一: read is fetch since 11-17
     assert all(t.annotations.read_only_hint and t.annotations.open_world_hint is False for t in tools.values())
     assert all(t.output_schema is None for t in tools.values())
     assert tools["search"].description == SEARCH_DESCRIPTION
-    assert tools["read"].description == READ_DESCRIPTION
-    assert set(tools["search"].input_schema["properties"]) == {"query"}
+    assert tools["fetch"].description == FETCH_DESCRIPTION
+    assert set(tools["search"].input_schema["properties"]) == {"query", "detail", "limit", "unit", "sort"}
     assert tools["search"].input_schema["required"] == ["query"]
-    assert set(tools["read"].input_schema["properties"]) == {"id", "part"}
-    assert tools["read"].input_schema["required"] == ["id"]
+    assert set(tools["fetch"].input_schema["properties"]) == {"id", "part"}
+    assert tools["fetch"].input_schema["required"] == ["id"]
 
 
 async def test_server_instructions_at_handshake(db_path):
@@ -130,15 +131,15 @@ async def test_server_search_roundtrip(db_path):
 
 
 async def test_server_read_roundtrip(db_path):
-    r = await call(db_path, FakeSearch(), "read", {"id": "dp1"})
+    r = await call(db_path, FakeSearch(), "fetch", {"id": "dp1"})
     conn = sqlite3.connect(db_path)
     try:
         assert json.loads(r.content[0].text) == read_response(conn, "dp1", "", today=TODAY)
     finally:
         conn.close()
-    numbered = await call(db_path, FakeSearch(), "read", {"id": "dp1", "part": 0})  # a number for part is fine
+    numbered = await call(db_path, FakeSearch(), "fetch", {"id": "dp1", "part": 0})  # a number for part is fine
     assert not numbered.is_error and json.loads(numbered.content[0].text)["content"] == prose(500)
-    missing = json.loads((await call(db_path, FakeSearch(), "read", {"id": "dNOPE"})).content[0].text)
+    missing = json.loads((await call(db_path, FakeSearch(), "fetch", {"id": "dNOPE"})).content[0].text)
     assert missing["found"] is False and missing["notes"] == ["【系統】查無此 id"]
 
 
@@ -150,8 +151,8 @@ async def test_server_odd_query_is_not_an_error(db_path, query):
 
 @pytest.mark.parametrize(("tool", "args", "word"), [
     ("search", {"query": "停" * 301}, "query"),
-    ("read", {"id": "d" * 101}, "id"),
-    ("read", {"id": "dp1", "part": "1" * 21}, "part"),
+    ("fetch", {"id": "d" * 1001}, "id"),
+    ("fetch", {"id": "dp1", "part": "1" * 21}, "part"),
 ])
 async def test_server_argument_limits(db_path, tool, args, word):
     fake = FakeSearch()
@@ -161,7 +162,7 @@ async def test_server_argument_limits(db_path, tool, args, word):
     assert fake.calls == []
 
 
-@pytest.mark.parametrize(("tool", "args"), [("search", {}), ("read", {"part": "1"}), ("search", {"query": 5}),
+@pytest.mark.parametrize(("tool", "args"), [("search", {}), ("fetch", {"part": "1"}), ("search", {"query": 5}),
                                             ("search", {"query": "停修", "kind": "any"})])
 async def test_server_bad_arguments_short_error(db_path, tool, args):
     r = await call(db_path, FakeSearch(), tool, args)
@@ -172,7 +173,7 @@ async def test_server_bad_arguments_short_error(db_path, tool, args):
 
 async def test_server_unavailable_database(db_path):
     db_path.unlink()
-    for tool, args in (("search", {"query": "停修"}), ("read", {"id": "dp1"})):
+    for tool, args in (("search", {"query": "停修"}), ("fetch", {"id": "dp1"})):
         r = await call(db_path, FakeSearch(), tool, args)
         assert r.is_error and r.content[0].text == f"錯誤 unavailable：{MSG_UNAVAILABLE}"  # T9 (deliberate)
 
@@ -205,7 +206,7 @@ async def test_errors_say_failure_is_not_no_data(db_path):
     refused = await call(db_path, FakeSearch(), "search", {"query": "停" * 301})
     db_path.unlink()
     failures += [await call(db_path, FakeSearch(), tool, args)
-                 for tool, args in (("search", {"query": "停修"}), ("read", {"id": "dp1"}))]
+                 for tool, args in (("search", {"query": "停修"}), ("fetch", {"id": "dp1"}))]
     assert all(r.is_error and r.content[0].text.endswith("這次失敗不代表查無資料。") for r in failures)
     assert refused.is_error and "查無資料" not in refused.content[0].text
 
@@ -219,23 +220,24 @@ def test_tool_texts_hold_for_both_builds():
 
 def test_tool_texts_name_no_series():
     # owner 11-03: no series, so no tool text promises folded versions or a series id to read
-    for text in (server.SEARCH_DESCRIPTION, server.READ_DESCRIPTION, server.INSTRUCTIONS):
+    for text in (server.SEARCH_DESCRIPTION, server.FETCH_DESCRIPTION, server.INSTRUCTIONS):
         assert "系列" not in text and "收成一行" not in text and "s 開頭" not in text
 
 
 def test_tool_texts_name_no_unit_and_no_count():
     # plan 2026-11-08 T4: clients keep the tool texts while the database is replaced by one of more sites, so they
     # name no unit or site and give no number but the program's own (前 3 筆); the server is nknu, no longer nknu-aca
-    for text in (server.SEARCH_DESCRIPTION, server.READ_DESCRIPTION, server.INSTRUCTIONS):
+    for text in (server.SEARCH_DESCRIPTION, server.FETCH_DESCRIPTION, server.INSTRUCTIONS):
         assert not [w for w in ("教務", "c.nknu", "/aca", "只收", "2023") if w in text], text
-        assert {ch for ch in text if ch.isdigit()} <= {"3"}, text
+        # the program's own numbers only: 10 筆 and 500 字 since design 2026-11-16 §二 (前 3 筆 until 11-17)
+        assert {ch for ch in text if ch.isdigit()} <= {"1", "0", "5"}, text
     assert server.NAME == "nknu" and server.DEFAULT_DB.name == "aca.db"  # the default database stays where it was
 
 
 async def test_server_read_of_an_s_id_is_unknown(db_path):
     # the read tool answers a series id of a build before 11-03 as any unknown id
     for sid in ("s1a2b3c4d5", "sNOPE"):
-        r = await call(db_path, FakeSearch(), "read", {"id": sid})
+        r = await call(db_path, FakeSearch(), "fetch", {"id": sid})
         body = json.loads(r.content[0].text)
         assert not r.is_error and body["found"] is False and body["notes"] == ["【系統】查無此 id"], sid
 

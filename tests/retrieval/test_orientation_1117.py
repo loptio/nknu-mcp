@@ -81,7 +81,7 @@ async def test_the_handshake_and_the_tool_carry_the_built_texts(tmp_path):
         assert c.instructions == texts.instructions
         tools = {t.name: t for t in await c.list_tools()}
     assert tools["search"].description == texts.search
-    assert tools["read"].description == server.READ_DESCRIPTION
+    assert tools["fetch"].description == server.FETCH_DESCRIPTION
 
 
 def test_the_kinds_are_the_unit_trees():

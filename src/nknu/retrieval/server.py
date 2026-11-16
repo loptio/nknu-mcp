@@ -1,5 +1,6 @@
-"""The two read-only MCP tools (plan 2026-11-01 Task D): search(query) and read(id, part), FastMCP `nknu` (plan
-2026-11-08 T4; `nknu-aca` before),
+"""The two read-only MCP tools (plan 2026-11-01 Task D): search(query, detail, limit, unit, sort) and fetch(id, part)
+(read until 11-17; design 2026-11-16-mcp-interface-design §一～§三), FastMCP `nknu` (plan 2026-11-08 T4; `nknu-aca`
+before),
 over stdio by default or streamable HTTP on 127.0.0.1 behind the Host/Origin guard. The content database is opened
 read-only on every call (a rebuild replaces the file whole). An answer is one text block of compact JSON and no
 structuredContent (research/mcp_tools_2026-10-29/design_note.md §5.1); a bad argument, a missing database or a bug
@@ -34,10 +35,10 @@ import sqlite3
 import sys
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Literal
 from urllib.parse import quote
 
 from fastmcp import FastMCP
@@ -45,11 +46,13 @@ from fastmcp.exceptions import ToolError, ValidationError
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
+from pydantic import Field
 from pydantic import ValidationError as PydanticValidationError
 
 from nknu.core.timeutil import today_tpe
-from nknu.retrieval.respond import CALENDAR_PART, build_response, read_response, to_json
-from nknu.retrieval.types import SearchResult
+from nknu.retrieval.respond import CALENDAR_PART, DEFAULT_DETAIL, build_response, read_response, to_json
+from nknu.retrieval.types import DocHit, SearchResult
+from nknu.retrieval.unitfilter import unit_filter
 from nknu.server.envelope import echo
 from nknu.settings import REPO_ROOT
 
@@ -62,24 +65,37 @@ NAME = "nknu"  # plan 2026-11-08 T4: no longer 教務處's alone ("nknu-aca" bef
 DEFAULT_DB = REPO_ROOT / "research" / "pipeline_2026-11-02" / "aca.db"
 DEFAULT_PORT = 8766
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
-MAX_LEN = {"query": 300, "id": 100, "part": 20}
+MAX_LEN = {"query": 300, "id": 1000, "part": 20, "unit": 50}  # id: a URL the library holds too (design §三)
+DEFAULT_LIMIT, MAX_LIMIT = 10, 50  # design §二 limit: the reranker orders about the first 50
+DATE_DEPTH = 20  # sort=date reorders at least the 20 most relevant (design §二 sort) 【Claude】
 # a failure is no proof of 查無資料 (spec 2026-11-02 §3.5, borrowed from WeKnora)
 MSG_UNAVAILABLE = "資料暫時無法讀取，請稍後再試。這次失敗不代表查無資料。"
 MSG_INTERNAL = "查詢失敗，請稍後再試。這次失敗不代表查無資料。"
 # T9: true for a skeleton and a pipeline build alike (no build name, no format list); 換幾個說法再查 is the owner's
 # 11-01 idea (spec §3.5). Owner 11-03 (addendum L): no series, so 「；同系列較舊的公告收成一行」 went from
-# SEARCH_DESCRIPTION and 「；id 是 s 開頭的系列編號時列出同系列全部版本」 from READ_DESCRIPTION. Plan 2026-11-08 T4: no
+# SEARCH_DESCRIPTION and 「；id 是 s 開頭的系列編號時列出同系列全部版本」 from READ_DESCRIPTION (FETCH_DESCRIPTION since 11-17). Plan 2026-11-08 T4: no
 # unit and no count (教務處, its calendar's start year and 「目前只收教務處網站」 went); what a build holds is in each
 # answer's coverage and data_as_of
-SEARCH_HOW = ("前 3 筆給全文（長文件給命中的章節和目錄），其餘給原文摘要。"
+SEARCH_HOW = ("預設回 10 筆，每筆給命中處約 500 字的學校原文；要多一點或少一點原文用 detail，要更多筆用 limit，"
+              "只看某個單位用 unit，要最新的用 sort。"
               "query 請用繁體中文和台灣用語的關鍵字或問句"
               "（例如用「軟體」不用「軟件」、用「資訊」不用「信息」）。"
               "查不到或結果不對題時，請換幾個說法再查（同義詞、全稱或簡稱、學校公告的寫法），"
               "不要只查一次就下結論。")
 SEARCH_DESCRIPTION = ("搜尋已收錄的高師大網站的公開網頁、公告、附件與行事曆，回傳學校原文、日期與出處。"
                       + SEARCH_HOW + "收錄了哪些網站、資料截至何時，見每次回傳的 coverage 和 data_as_of。")
-READ_DESCRIPTION = ("用 search 回傳的 id 讀一份文件：part 留空讀全文（太長給目錄和開頭），part=節號讀某一節，"
+FETCH_DESCRIPTION = ("用 search 回傳的 id 讀一份文件：part 留空讀全文（太長給目錄和開頭），part=節號讀某一節，"
                     "part=toc 只看目錄。")
+# design 2026-11-16-mcp-interface-design §二～§三: what each parameter says to an agent (wording 【Claude】)
+QUERY_DESCRIPTION = "要找的內容：關鍵字或問句，請用繁體中文和台灣用語。"
+DETAIL_DESCRIPTION = ("每筆給多少原文。passage（預設）：每筆約 500 字的原文段落。snippet：每筆約 200 字，適合先瀏覽、"
+                      "再用 fetch 讀需要的那幾份。full：前 5 筆給全文（長文件給命中的章節和目錄），其餘給片段，適合細讀規定。")
+LIMIT_DESCRIPTION = "要幾筆，1～50，預設 10。"
+UNIT_DESCRIPTION = ("只看某個單位的資料：填單位名稱，全稱或簡稱都可以（例如「教務處」「軟體工程與管理學系」）。"
+                    "填系所時也包含全校適用的文件。不確定是哪個單位就不要填。")
+SORT_DESCRIPTION = "relevance（預設）：最相關的在前。date：在相關的結果裡由新到舊，適合問「最新」「最近」的公告。"
+ID_DESCRIPTION = "search 回傳的 id；也可以填收錄的網頁或檔案的網址。"
+PART_DESCRIPTION = "留空讀全文（太長給目錄和開頭）；填節號讀某一節；填 toc 只看目錄。"
 # sent at the MCP handshake, before any call (fix round 2, 11-01; plan 2026-11-02 T9 wording; plan 2026-11-08 T4: no
 # unit, no site address, no year)
 INSTRUCTIONS = ("高師大校園資訊：搜尋已收錄的高師大網站的公開網頁、公告、附件與行事曆；收錄範圍和資料日期見每次回傳的 "
@@ -101,7 +117,7 @@ ORIENT_COLLEGE_NO_CAMPUS = "{name}：{depts}"
 ORIENT_OTHER_DEPTS = "其他系所和學程：{depts}。"
 ORIENT_CENTRES = "中心：{units}。"
 ORIENT_HOW = ("查詢：請用繁體中文和台灣用語的關鍵字或問句。學校的寫法常和口語不同（例如學校寫「學雜費」不寫「學費」、"
-              "寫「交通車」不寫「校車」）；問某個單位的事，查詢裡寫上單位名稱。結果都不能回答問題時，先換幾個說法再查；"
+              "寫「交通車」不寫「校車」）；問某個單位的事，填 unit 或在查詢裡寫上單位名稱。結果都不能回答問題時，先換幾個說法再查；"
               "仍然查不到，請照實告訴使用者查無資料，不要推測。")
 SEARCH_WHAT = ("搜尋高師大 {sites} 個網站已收錄的公開網頁、公告、附件{calendar}，回傳學校原文、日期與出處。"
                "收錄的單位有：{admin}等行政單位，{colleges}這 {n_colleges} 個學院的 {n_depts} 個系所，"
@@ -252,10 +268,45 @@ def texts_for(db_path: Path) -> Texts:
         conn.close()
 
 
-def search_answer(db_path: Path, query: str, *, search_fn: SearchFn, today: date) -> dict:
+def by_date(conn: sqlite3.Connection, hits: list[DocHit]) -> list[DocHit]:
+    """sort=date (design §二): the hits with a date (docs.ident_date; not a calendar event, whose date is when it
+    happens) newest first, ties in relevance order; then the others in relevance order."""
+    ids = [h.doc_id for h in hits]
+    rows = dict(conn.execute(f"SELECT doc_id, CASE WHEN kind_class = 'event' THEN NULL ELSE ident_date END"
+                             f" FROM docs WHERE doc_id IN ({','.join('?' * len(ids))})", ids)) if ids else {}
+    dated = [h for h in hits if rows.get(h.doc_id)]
+    dated.sort(key=lambda h: rows[h.doc_id], reverse=True)  # stable: ties keep their relevance order
+    return dated + [h for h in hits if not rows.get(h.doc_id)]
+
+
+def applied_of(detail: str, limit: int, unit: dict | None, sort: str) -> dict | None:
+    """What the answer's head says of the optional parameters (design §四 applied): those not at their default."""
+    out = {"detail": detail if detail != DEFAULT_DETAIL else None, "limit": limit if limit != DEFAULT_LIMIT else None,
+           "unit": unit, "sort": sort if sort != "relevance" else None}
+    return {k: v for k, v in out.items() if v is not None} or None
+
+
+def search_answer(db_path: Path, query: str, *, search_fn: SearchFn, today: date, detail: str = DEFAULT_DETAIL,
+                  limit: int = DEFAULT_LIMIT, unit: str = "", sort: str = "relevance") -> dict:
+    """design 2026-11-16-mcp-interface-design §二: unit, when the tree knows it, filters both candidate paths and is
+    added to the searched text unless the query names it already (a named unit is not discounted as off its audience,
+    and the reranker reads it); the answer echoes the agent's query. sort=date reorders max(limit, DATE_DEPTH)."""
     conn = connect(db_path)
     try:
-        return build_response(conn, search_fn(conn, query, today=today, aliases=aliases_of(conn)), today=today)
+        only, said, text = None, None, query
+        if unit.strip():
+            from nknu.retrieval.hybrid import scope_units
+
+            only, said = unit_filter(scope_units(conn), unit.strip())
+            if only is not None and said["unit"] not in query:
+                text = f"{query} {said['unit']}"
+        depth = max(limit, DATE_DEPTH) if sort == "date" else limit
+        extra = {"only": only} if only is not None else {}
+        result = search_fn(conn, text, today=today, aliases=aliases_of(conn), limit=depth, **extra)
+        hits = by_date(conn, result.hits) if sort == "date" else result.hits
+        result = replace(result, query=query, hits=hits[:limit])
+        return build_response(conn, result, today=today, detail=detail,
+                              applied=applied_of(detail, limit, said, sort))
     finally:
         conn.close()
 
@@ -294,8 +345,9 @@ def _run(answer: Callable[[], dict]) -> ToolResult:
     return ToolResult(content=[TextContent(type="text", text=to_json(resp))])
 
 
-_WHY = (("missing", "缺少此參數"), ("unexpected", "不支援此參數"), ("extra", "不支援此參數"), ("int", "應為整數"),
-        ("string", "應為字串"))
+_WHY = (("missing", "缺少此參數"), ("unexpected", "不支援此參數"), ("extra", "不支援此參數"),
+        ("literal", "只能填"), ("greater_than", "應為 1～50 的整數"), ("less_than", "應為 1～50 的整數"),
+        ("int", "應為整數"), ("string", "應為字串"))
 
 
 def validation_message(exc: Exception) -> str:
@@ -307,6 +359,8 @@ def validation_message(exc: Exception) -> str:
     first = errors[0]
     name = ".".join(str(x) for x in first.get("loc", ())) or "參數"
     why = next((zh for key, zh in _WHY if key in first.get("type", "")), "格式不符")
+    if "literal" in first.get("type", ""):  # the values it takes, as the schema lists them
+        why += " " + str((first.get("ctx") or {}).get("expected", ""))
     more = f"（另有 {len(errors) - 1} 項）" if len(errors) > 1 else ""
     return f"參數不合法：{echo(name)} {why}{more}"
 
@@ -356,11 +410,20 @@ def create_mcp(db_path: Path, *, search_fn: SearchFn | None = None, today_fn: Ca
     mcp = FastMCP(NAME, instructions=texts.instructions, mask_error_details=True, middleware=[ShortErrors()])
 
     @mcp.tool(name="search", description=texts.search, output_schema=None, annotations=READ_ONLY)
-    def search(query: str) -> ToolResult:
-        return _run(lambda: search_answer(db_path, _clean(query, "query"), search_fn=search_fn, today=today_fn()))
+    def search(query: Annotated[str, Field(description=QUERY_DESCRIPTION)],
+               detail: Annotated[Literal["snippet", "passage", "full"],
+                                 Field(description=DETAIL_DESCRIPTION)] = DEFAULT_DETAIL,
+               limit: Annotated[int, Field(ge=1, le=MAX_LIMIT, description=LIMIT_DESCRIPTION)] = DEFAULT_LIMIT,
+               unit: Annotated[str, Field(description=UNIT_DESCRIPTION)] = "",
+               sort: Annotated[Literal["relevance", "date"], Field(description=SORT_DESCRIPTION)] = "relevance",
+               ) -> ToolResult:
+        return _run(lambda: search_answer(db_path, _clean(query, "query"), search_fn=search_fn, today=today_fn(),
+                                          detail=detail, limit=limit, unit=_clean(unit, "unit"), sort=sort))
 
-    @mcp.tool(name="read", description=READ_DESCRIPTION, output_schema=None, annotations=READ_ONLY)
-    def read(id: str, part: str | int = "") -> ToolResult:
+    # design §一: read is fetch since 11-17, the name ChatGPT's deep research and company knowledge take
+    @mcp.tool(name="fetch", description=FETCH_DESCRIPTION, output_schema=None, annotations=READ_ONLY)
+    def fetch(id: Annotated[str, Field(description=ID_DESCRIPTION)],
+              part: Annotated[str | int, Field(description=PART_DESCRIPTION)] = "") -> ToolResult:
         return _run(lambda: read_answer(db_path, _clean(id, "id"), _clean(part, "part"), today=today_fn()))
 
     return mcp
@@ -368,7 +431,7 @@ def create_mcp(db_path: Path, *, search_fn: SearchFn | None = None, today_fn: Ca
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m nknu.retrieval.server",
-                                 description="高师大已收录网站的 MCP 服务（search、read，只读）")
+                                 description="高师大已收录网站的 MCP 服务（search、fetch，只读）")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB,
                     help="内容资料库（默认 research/pipeline_2026-11-02/aca.db）")
     add_model_flags(ap)

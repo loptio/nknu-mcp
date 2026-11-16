@@ -17,11 +17,28 @@ import pytest
 from nknu.content.schema import create_schema
 from nknu.core.textnorm import tokenize
 from nknu.retrieval import respond
-from nknu.retrieval.respond import build_response, read_response, to_json, today_block
+from nknu.retrieval.respond import read_response, to_json, today_block
 from nknu.retrieval.types import DocHit, SearchResult, Understood
 from tests.retrieval.test_search import OLD_SERIES_DDL
 
 TODAY = date(2026, 11, 1)
+
+
+def build_response(conn, result, *, today, detail="full", **kw):
+    """Most of these tests are of the layout that is the full level's since design 2026-11-16 §二 (第四版, 11-17):
+    the first places 全文 or 章節, the rest 片段. The other two levels: tests/retrieval/test_detail_1117.py."""
+    return respond.build_response(conn, result, today=today, detail=detail, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _the_values_these_tests_were_written_for(monkeypatch):
+    """Three full places, a 400-character 片段 (摘要 then) and a 36,000-byte search budget, as before design
+    2026-11-16 §二: the logic is the same at the new values, which test_detail_1117.py checks."""
+    monkeypatch.setattr(respond, "FULL_PLACES", 3)
+    monkeypatch.setattr(respond, "SNIPPET_CHARS", 400)
+    monkeypatch.setattr(respond, "RESPONSE_BUDGET_BYTES", 36_000)
+
+
 BUDGET = 36_000
 ALIASES = [["停修", "棄選", "退選"]]
 META = {"site": "aca", "name": "教務處", "data_as_of": "2026-10-27", "missing_pages": "3", "missing_files": "43",
@@ -39,11 +56,11 @@ NOTE_RANKING = ("【系統】結果依關鍵字比對排序；問題沒有指定
                 "目前收錄的資料裡查無相關內容，不要推測。")
 # T9, deliberate: 章節 content now carries 〔第 N 節〕 lines (addendum E), which are ours, not the school's text
 NOTE_SECTIONS = ("【系統】長文件只給命中的章節和目錄；〔第 N 節〕是程式加的節號標記，N 就是 toc 的 part；"
-                 "用 read 讀其他章節或全文。")
+                 "用 fetch 讀其他章節或全文。")
 NOTE_DATES = ("【系統】每個日期後面括號是它的來源。附件的日期是所屬網頁的日期或伺服器檔案時間，"
               "不一定是文件本身的修訂日；文件自己寫的日期請看原文（開頭或沿革）。")
 NOTE_NOT_FOUND = "【系統】查無相關資料：目前收錄的教務處資料裡沒有符合的內容，請勿推測。"
-NOTE_DOWNGRADED = "【系統】回應太長，後面幾筆只給摘要；需要時照各筆 more 用 read 讀。"  # addendum E (deliberate)
+NOTE_DOWNGRADED = "【系統】回應太長，後面幾筆只給片段；需要時照各筆 more 用 fetch 讀。"  # addendum E (deliberate)
 NO_TEXT = "這份是掃描檔或無法轉成文字的檔案，目前只能依標題找到；內容請開原檔網址查看。"
 # plan 2026-11-02 T9: the copy the spec fixes
 NOTE_RANKING_HYBRID = ("【系統】結果依關鍵字比對和語意相近程度排序（排序模型只計分、不寫字）；"
@@ -266,7 +283,7 @@ def test_full_vs_section(db):
     assert r2["content"] == "〔第 36 節〕\n" + long_text[secs[36][1]:secs[38][2]].strip()
     assert r2["parts"] == ["36", "37", "38"]
     assert 1 <= len(r2["toc"]) <= 60 and {"part": "37", "heading": "第38條 規定事項38"} in r2["toc"]
-    assert r2["more"] == '全文共 50000 字；用 read 讀其他章節：read(id="dL", part="節號")'
+    assert r2["more"] == '全文共 50000 字；用 fetch 讀其他章節：fetch(id="dL", part="節號")'
     assert NOTE_SECTIONS in resp["notes"]
 
 
@@ -296,8 +313,8 @@ def test_section_window_around_best_chunk(db):
     assert rest.startswith("…\n本校") and rest.endswith("。\n…")  # snapped to sentence ends
     inner = rest[2:-2]
     assert len(inner) <= 3000 and text[10001:10400].strip() in inner  # the best chunk sits inside the window
-    assert r["more"] == ('第 0 節共 20000 字，這裡只給其中命中的一段（「…」處有截斷）；讀整節：read(id="dW", part="0")；'
-                         '全文共 20000 字；用 read 讀其他章節：read(id="dW", part="節號")')
+    assert r["more"] == ('第 0 節共 20000 字，這裡只給其中命中的一段（「…」處有截斷）；讀整節：fetch(id="dW", part="0")；'
+                         '全文共 20000 字；用 fetch 讀其他章節：fetch(id="dW", part="節號")')
 
 
 def test_window_stays_inside_a_long_section(db):
@@ -330,7 +347,7 @@ def test_tiny_hit_section_gets_whole_neighbours(db):
     # previous first, then next; T9 (deliberate): one block, opened by a line naming its first section
     assert r["content_type"] == "章節" and r["content"] == "〔第 0 節〕\n" + text[:secs[2][2]].strip()
     assert r["parts"] == ["0", "1", "2"]
-    assert r["more"] == f'全文共 {len(text)} 字；用 read 讀其他章節：read(id="dT", part="節號")'
+    assert r["more"] == f'全文共 {len(text)} 字；用 fetch 讀其他章節：fetch(id="dT", part="節號")'
 
 
 def test_tiny_hit_section_between_long_ones_gets_a_window(db):
@@ -371,13 +388,13 @@ def test_summary_for_ranks_4_to_10(db):
     for i in range(6):
         hits.append(hit(f"d{i}", db.doc(f"d{i}", prose(1000), title=f"公告{i}")))
     resp = build_response(db.conn, result(*hits), today=TODAY)
-    assert [r["content_type"] for r in resp["results"]] == ["全文"] * 3 + ["摘要"] * 3
+    assert [r["content_type"] for r in resp["results"]] == ["全文"] * 3 + ["片段"] * 3
     s = resp["results"][3]
     # T9 (addendum E, deliberate; was prose(164) and no more): 400 characters from the chunk's start (no query word
     # in it), cut after the last 。 in the window's last quarter (index 382), 「…」 where the text goes on, and more
     # says how to read the rest
     assert s["content"] == prose(383) + "\n…"
-    assert s["more"] == '全文共 1000 字；用 read 讀全文：read(id="d3")' and "part" not in s and "heading" not in s
+    assert s["more"] == '全文共 1000 字；用 fetch 讀全文：fetch(id="d3")' and "part" not in s and "heading" not in s
     assert all("toc" not in r for r in resp["results"])
     assert all("more" not in r for r in resp["results"][:3])  # 全文 has nothing more
 
@@ -394,7 +411,7 @@ def test_summary_from_best_chunk_hard_cut_and_text_start(db):
     assert rs[3]["content"] == "…\n" + prose(2000)[730:1100] + "\n…"
     assert rs[4]["content"] == "甲" * 400 + "\n…"  # no break in the window's last quarter: a hard cut (was 180)
     assert rs[5]["content"] == prose(383) + "\n…"  # no matched chunk: the text's start
-    assert rs[5]["more"] == '全文共 2000 字；用 read 讀全文：read(id="dStart")'
+    assert rs[5]["more"] == '全文共 2000 字；用 fetch 讀全文：fetch(id="dStart")'
 
 
 # ---------------------------------------------------------------- summaries that lead to the hit (addendum E)
@@ -407,13 +424,13 @@ def test_summary_part_and_more_on_long_text(db):
     hits += [hit("dL", [cids[17]]), hit("dN", [])]
     rs = build_response(db.conn, result(*hits), today=TODAY)["results"]
     s = rs[3]
-    assert s["content_type"] == "摘要" and s["part"] == "17" and s["heading"] == "第18條 規定事項18"
-    assert s["more"] == ('這段在第 17 節（全文共 15000 字）；讀這一節：read(id="dL", part="17")；'
-                         '看目錄：read(id="dL", part="toc")')
+    assert s["content_type"] == "片段" and s["part"] == "17" and s["heading"] == "第18條 規定事項18"
+    assert s["more"] == ('這段在第 17 節（全文共 15000 字）；讀這一節：fetch(id="dL", part="17")；'
+                         '看目錄：fetch(id="dL", part="toc")')
     assert s["content"].startswith("…\n第18條 規定事項18\n") and s["content"].endswith("\n…")
     assert read_response(db.conn, "dL", s["part"], today=TODAY)["content"].startswith("第18條 規定事項18\n")
     n = rs[4]  # nothing matched: the text's start, read from the start
-    assert n["more"] == '全文共 15000 字；用 read 讀：read(id="dN")' and "part" not in n and "heading" not in n
+    assert n["more"] == '全文共 15000 字；用 fetch 讀：fetch(id="dN")' and "part" not in n and "heading" not in n
     assert n["content"].startswith("第1條 規定事項1\n")
 
 
@@ -427,8 +444,8 @@ def test_summary_part_with_offset_in_a_long_section(db):
     hits += [hit("dP", p), hit("dQ", q)]
     sp, sq = build_response(db.conn, result(*hits), today=TODAY)["results"][3:5]
     assert sp["part"] == f"0:{a}" and sp["heading"] == "第一章 總則"
-    assert sp["more"] == (f'這段在第 0 節（全文共 {len(text)} 字）；讀這一節：read(id="dP", part="0:{a}")；'
-                          '看目錄：read(id="dP", part="toc")')
+    assert sp["more"] == (f'這段在第 0 節（全文共 {len(text)} 字）；讀這一節：fetch(id="dP", part="0:{a}")；'
+                          '看目錄：fetch(id="dP", part="toc")')
     first = sp["content"].split("\n")[1]  # the summary's first line, after the 「…」 line
     page = read_response(db.conn, "dP", sp["part"], today=TODAY)
     assert page["content"].split("\n")[0] == first and page["next"].startswith("0:")  # opens at the hit, pages on
@@ -445,8 +462,8 @@ def test_summary_on_short_text_says_read_whole(db):
     tiny = db.doc("dTiny", "停修申請請於期限內至教務處網站辦理。")
     hits += [hit("dS", [cids[6]]), hit("dTiny", tiny)]
     rs = build_response(db.conn, result(*hits), today=TODAY)["results"]
-    assert rs[3]["content_type"] == "摘要" and "part" not in rs[3] and "heading" not in rs[3]
-    assert rs[3]["more"] == '全文共 9000 字；用 read 讀全文：read(id="dS")'
+    assert rs[3]["content_type"] == "片段" and "part" not in rs[3] and "heading" not in rs[3]
+    assert rs[3]["more"] == '全文共 9000 字；用 fetch 讀全文：fetch(id="dS")'
     # the summary is the whole text: nothing is cut, so there is nothing more to read
     assert rs[4]["content"] == "停修申請請於期限內至教務處網站辦理。" and "more" not in rs[4]
 
@@ -499,7 +516,7 @@ def test_full_places_go_to_results_with_text(db):
            url="https://c.nknu.edu.tw/aca/uploadfile/files/scan.pdf")
     hits = [hit("dN")] + [hit(f"d{i}", db.doc(f"d{i}", prose(1000), title=f"公告{i}")) for i in range(4)]
     rs = build_response(db.conn, result(*hits), today=TODAY)["results"]
-    assert [r["content_type"] for r in rs] == ["無文字", "全文", "全文", "全文", "摘要"]
+    assert [r["content_type"] for r in rs] == ["無文字", "全文", "全文", "全文", "片段"]
 
 
 def test_budget_gives_up_the_last_full_place_first(db):
@@ -512,7 +529,7 @@ def test_budget_gives_up_the_last_full_place_first(db):
         hits.append(hit(f"dL{i}", [cids[k] for k in range(10, 13)]))
     resp = build_response(db.conn, result(*hits), today=TODAY)
     assert size(resp) <= BUDGET and NOTE_DOWNGRADED in resp["notes"]
-    assert [r["content_type"] for r in resp["results"]] == ["無文字", "章節", "章節", "摘要"]
+    assert [r["content_type"] for r in resp["results"]] == ["無文字", "章節", "章節", "片段"]
 
 
 def long_hits(db: Tiny, names: list[str]) -> list[DocHit]:
@@ -533,17 +550,17 @@ def test_budget_takes_places_back_from_the_last_place(db):
     a, b, c = long_hits(db, ["dA", "dB", "dC"])
     resp = build_response(db.conn, result(a, hit("dN"), b, c), today=TODAY)
     assert size(resp) <= BUDGET and NOTE_DOWNGRADED in resp["notes"]
-    assert [r["content_type"] for r in resp["results"]] == ["章節", "無文字", "章節", "摘要"]
+    assert [r["content_type"] for r in resp["results"]] == ["章節", "無文字", "章節", "片段"]
     given_up = resp["results"][3]
     assert len(given_up["content"]) > 300  # a place given up shows the full summary, not the shrunk one
     # ... with the way to its hit (addendum E: these fields also appear on a 摘要 the budget made)
     assert given_up["part"] == "10" and given_up["heading"] == "第11條 規定事項11"
-    assert given_up["more"].startswith('這段在第 10 節（全文共 100000 字）；讀這一節：read(id="dC", part="10")')
+    assert given_up["more"].startswith('這段在第 10 節（全文共 100000 字）；讀這一節：fetch(id="dC", part="10")')
 
 
 def fit_hits(db: Tiny) -> list[DocHit]:
     """Three top documents whose 章節 (3,000 characters each) fill most of the budget, then seven 1,000-character
-    notices shown as summaries: over budget with 400-character summaries, within it at 180."""
+    notices shown as 片段."""
     hits = []
     for i in range(3):
         text, secs = articles(4, 1000)
@@ -552,21 +569,20 @@ def fit_hits(db: Tiny) -> list[DocHit]:
     return hits + [hit(f"dt{i}", db.doc(f"dt{i}", prose(1000), title=f"公告{i}")) for i in range(7)]
 
 
-def test_fit_shrinks_tail_summaries_before_rank_2_and_3(db, monkeypatch):
-    # addendum E: over budget, the summaries after the three places shrink to SUMMARY_MIN_CHARS first (centred the
-    # same way), so ranks 2 and 3 keep their sections
+def test_fit_makes_片段_rows_from_the_last_up(db, monkeypatch):
+    # design 2026-11-16 §二 (第四版): within the budget nothing changes; over it, the last result that is not yet a
+    # 片段 row becomes one (its 片段 and the short header), then the one before it (addendum E's shrinking of the tail
+    # summaries to 180 characters went with the 摘要)
     hits = fit_hits(db)
-    resp = build_response(db.conn, result(*hits), today=TODAY)
-    rs = resp["results"]
-    assert size(resp) <= BUDGET and NOTE_DOWNGRADED in resp["notes"]
-    assert [r["content_type"] for r in rs] == ["章節"] * 3 + ["摘要"] * 7
-    assert all(r["content"] == prose(164) + "\n…" for r in rs[3:])  # 180 characters, cut after the 。 at 163
-    assert all(r["more"] == f'全文共 1000 字；用 read 讀全文：read(id="dt{i}")' for i, r in enumerate(rs[3:]))
-    # without that step (SUMMARY_MIN_CHARS = SUMMARY_CHARS gains nothing) the third place gives up its sections
-    monkeypatch.setattr(respond, "SUMMARY_MIN_CHARS", respond.SUMMARY_CHARS)
+    monkeypatch.setattr(respond, "RESPONSE_BUDGET_BYTES", 10**9)
     rs = build_response(db.conn, result(*hits), today=TODAY)["results"]
-    assert [r["content_type"] for r in rs] == ["章節", "章節"] + ["摘要"] * 8
-    assert all(r["content"] == prose(383) + "\n…" for r in rs[3:])
+    assert [r["content_type"] for r in rs] == ["章節"] * 3 + ["片段"] * 7
+    assert all("dates" not in r and "copies" not in r for r in rs[3:])  # 片段 rows carry the short header
+    assert all(r["more"] == f'全文共 1000 字；用 fetch 讀全文：fetch(id="dt{i}")' for i, r in enumerate(rs[3:]))
+    monkeypatch.setattr(respond, "RESPONSE_BUDGET_BYTES", size(build_response(db.conn, result(*hits), today=TODAY)) - 1)
+    resp = build_response(db.conn, result(*hits), today=TODAY)
+    assert NOTE_DOWNGRADED in resp["notes"]
+    assert [r["content_type"] for r in resp["results"]] == ["章節", "章節"] + ["片段"] * 8
 
 
 def test_hybrid_ranking_note(db):
@@ -630,7 +646,7 @@ def test_few_words_scan_is_not_full_text(db):
     assert rs[0]["content"] == NO_TEXT + "（只轉出少量文字：" + manual + "）" and "more" not in rs[0]
     assert rs[1]["content"].startswith(NO_TEXT + "（只轉出少量文字：Powered by TCPDF")
     assert rs[1]["content"].endswith("…）") and len(rs[1]["content"]) < len(NO_TEXT) + 620
-    assert rs[1]["more"] == f'轉出的文字共 {len(junk.strip())} 字；用 read 讀全部：read(id="dT")'
+    assert rs[1]["more"] == f'轉出的文字共 {len(junk.strip())} 字；用 fetch 讀全部：fetch(id="dT")'
     whole = read_response(db.conn, "dT", "", today=TODAY)
     assert whole["content_type"] == "無文字" and whole["content"] == NO_TEXT + "（只轉出少量文字：" + junk.strip() + "）"
 
@@ -662,8 +678,10 @@ def test_attachment_header(db):
     assert rs[0]["content_type"] == "章節" and rs[0]["header"] == HEADER
     assert list(rs[0])[list(rs[0]).index("content_type") + 1] == "header"  # right before the content
     assert rs[1]["content_type"] == "全文" and "header" not in rs[1]  # the whole text has its start
-    assert rs[3]["content_type"] == "摘要" and "header" not in rs[3]  # a notice: no header
-    assert rs[4]["content_type"] == "摘要" and rs[4]["header"] == HEADER
+    assert rs[3]["content_type"] == "片段" and "header" not in rs[3]  # a notice: no header
+    assert rs[4]["content_type"] == "片段" and "header" not in rs[4]  # a 片段 is the short form (design §二)
+    passage = build_response(db.conn, result(*hits), today=TODAY, detail="passage")["results"]
+    assert passage[4]["content_type"] == "段落" and passage[4]["header"] == HEADER
     first = build_response(db.conn, result(hit("dA2", [cids2[0]])), today=TODAY)["results"][0]
     assert first["content_type"] == "章節" and "header" not in first  # the content already starts with it
     assert read_response(db.conn, "dA", "37", today=TODAY)["header"] == HEADER
@@ -896,7 +914,7 @@ def test_copies_with_ids_are_said_to_share_their_content_not_their_title(db):
             "date_kind": "published"}
     db.conn.execute("INSERT INTO meta VALUES ('copies:dA', ?)", (json.dumps([copy], ensure_ascii=False),))
     note = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
-            "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
+            "用 fetch 讀副本的 id 會得到這一筆。內容和該筆相同。")
     assert respond.NOTE_COPIES == note and respond.NOTE_COPIES_NO_ID == NOTE_COPIES
     resp = build_response(db.conn, result(hit("dA", [1])), today=TODAY)
     assert resp["results"][0]["copies"] == [{"id": "dB", "url": copy["url"], "date": "2026-03-05", "date_type": "發布"}]
@@ -933,19 +951,20 @@ def test_budget_cap(db):
     assert size(resp) <= BUDGET
     assert NOTE_DOWNGRADED in resp["notes"]
     assert resp["results"][0]["content_type"] == "章節" and len(resp["results"][0]["content"]) > 2500
-    assert resp["results"][2]["content_type"] == "摘要"  # rank 3 is the first to give up its sections
-    assert all(r["copies_total"] == 40 and len(r.get("copies", [])) <= 2 for r in resp["results"])
+    assert resp["results"][2]["content_type"] == "片段"  # rank 3 is the first to give up its sections
+    full_rows = [r for r in resp["results"] if r["content_type"] == "章節"]
+    assert full_rows and all(r["copies_total"] == 40 for r in full_rows)
+    assert all("copies" not in r for r in resp["results"] if r["content_type"] == "片段")  # 片段 rows list none
 
 
 def test_budget_drops_results_from_the_end(db):
+    # rows that are 片段 rows already, too many of them: results go from the end
     hits = []
-    for i in range(10):
-        db.doc(f"d{i}", prose(1000), title=f"公告{i}")
-        for k in range(100):
-            db.date(f"d{i}", "revised", f"20{k % 25 + 1:02d}-0{k % 9 + 1}-1{k % 10}", f"沿革第{k}條")
+    for i in range(40):
+        db.doc(f"d{i}", prose(1000), title=f"公告{i}" + "很長的標題" * 120)
         hits.append(hit(f"d{i}", [i + 1]))
-    resp = build_response(db.conn, result(*hits), today=TODAY)
-    assert size(resp) <= BUDGET and 1 <= len(resp["results"]) < 10
+    resp = build_response(db.conn, result(*hits), today=TODAY, detail="snippet")
+    assert size(resp) <= BUDGET and 1 <= len(resp["results"]) < 40
     assert [r["rank"] for r in resp["results"]] == list(range(1, len(resp["results"]) + 1))
     assert NOTE_DOWNGRADED in resp["notes"]
 
@@ -968,7 +987,7 @@ def test_budget_trim_of_rank1_sections_drops_parts(db):
         db.date("d1", "revised", f"20{k % 25 + 1:02d}-0{k % 9 + 1}-1{k % 10}", f"沿革第{k}條修正")
     r = build_response(db.conn, result(hit("d1", [cids[k] for k in range(10, 16)])), today=TODAY)["results"][0]
     assert r["content_type"] == "章節" and r["content"].endswith("…") and "parts" not in r
-    assert r["more"].endswith('read(id="d1", part="節號")')
+    assert r["more"].endswith('fetch(id="d1", part="節號")')
 
 
 # ---------------------------------------------------------------- read
@@ -993,7 +1012,7 @@ def test_read_full_and_long_doc(db):
     assert len(long["content"]) <= 10_000
     assert long["toc"][:2] == [{"part": "0", "heading": "第1條 規定事項1"}, {"part": "1", "heading": "第2條 規定事項2"}]
     assert len(long["toc"]) == 60
-    assert long["more"] == '全文共 50000 字；用 read 讀其他章節：read(id="dL", part="節號")'
+    assert long["more"] == '全文共 50000 字；用 fetch 讀其他章節：fetch(id="dL", part="節號")'
     assert size(long) <= BUDGET
 
 
@@ -1020,7 +1039,7 @@ def test_read_section_paging(db):
         if "next" not in resp:
             break
         assert resp["next"].startswith("0:")
-        assert resp["more"].endswith(f'read(id="dP", part="{resp["next"]}")')
+        assert resp["more"].endswith(f'fetch(id="dP", part="{resp["next"]}")')
         part = resp["next"]
     assert len(pages) == 3
     assert "".join(pages).replace("\n", "") == text.replace("\n", "")  # nothing lost, nothing repeated
@@ -1066,7 +1085,7 @@ def test_table_header_above_a_summary_inside_a_table(db):
     text, rows = fee_table()
     c = db.doc("dT", text, title="學雜費收費標準", sections=[("", 0, len(text))], chunks=[(0, rows[40], rows[48] - 1)])
     s = build_response(db.conn, result(*tops(db), hit("dT", c)), today=TODAY)["results"][3]
-    assert s["content_type"] == "摘要"
+    assert s["content_type"] == "片段"
     assert s["content"].startswith(TABLE_HEAD + "\n…\n| 第41學系碩士在職專班 | 16,400 | 10,040 | 26,440 |\n")
     assert s["content"].count("| 系所 | 學費 |") == 1 and s["content"].endswith("\n…")
 

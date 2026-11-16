@@ -53,12 +53,25 @@ from nknu.content.numbering import strip_decor
 from nknu.core.textnorm import norm_text
 from nknu.retrieval.types import DocHit, SearchResult
 
-RESPONSE_BUDGET_BYTES = 36_000
+# design 2026-11-16-mcp-interface-design §二 (第四版; the owner 11-17 「可以」 to the levels, the 500 and the 5 × 3,000
+# his own): how much of each result's text a search answer carries. snippet: every result a 片段 of the best chunk;
+# passage: every result a 段落 around it, reaching past the chunk; full: the first FULL_PLACES results with text
+# 全文 or 章節 as before (FULL_CAP_CHARS), the rest 片段. The 10-31 「前三个直接给全文」 is the full level's, and no
+# longer the default (owner 11-17: 「之前所以定过的东西都是为了这个项目更好的结果，不要那么死板」)
+DETAILS = ("snippet", "passage", "full")
+DEFAULT_DETAIL = "passage"
+SNIPPET_CHARS = 200
+PASSAGE_CHARS = 500
+FULL_PLACES = 5
+# about 20,000 tokens (design §二 limit: the full level's five places fit, under Claude Code's 25,000-token default);
+# counted in bytes of compact JSON as before (36,000 until 11-17) 【Claude】
+RESPONSE_BUDGET_BYTES = 50_000
+READ_BUDGET_BYTES = 36_000  # fetch keeps the budget of before: one read page is at most READ_CAP_CHARS
 FULL_CAP_CHARS = 3_000
 CONTEXT_CHARS = FULL_CAP_CHARS // 3  # hit sections shorter than this get their neighbours (review 11-01)
-SUMMARY_CHARS = 400  # addendum E (was 180): the stretch of the best chunk a summary shows
-SUMMARY_MIN_CHARS = 180  # over budget, the summaries after the 全文/章節 places shrink to this first (addendum E)
-TOP_FULL = 3
+# a result shown as a 片段 carries only these of its header (design §二: 「只给片段的那几笔，附带的资料精简」); the rest
+# (dates, applies_to, parent, copies) is in fetch
+LEAN_KEYS = ("id", "background", "identity", "title", "url", "data_as_of", "status")
 COPIES_MAX = 5  # copies a search result lists (read lists them all); the budget shrinks it to 2, then 0
 READ_CAP_CHARS = 10_000
 TOC_MAX = 60
@@ -109,7 +122,7 @@ NOTE_BACKGROUND = "【系統】background 為 true 的是背景資料（會議�
 # (the plan's 「內容相同」) and no longer the title; that a title may differ is said too 【Claude】. NOTE_COPIES_NO_ID,
 # of a build before T1 (one title and text then), stays as it was
 NOTE_COPIES = ("【系統】copies 是同一份文件（內容相同，標題可能不同）在別的網址的副本，列出各自的 id、網址、所屬網頁和日期；"
-               "用 read 讀副本的 id 會得到這一筆。內容和該筆相同。")
+               "用 fetch 讀副本的 id 會得到這一筆。內容和該筆相同。")
 # The owner, 11-14 23:55 (nknu.content.build's platform twins: 「公告平台和单位网站各一份」 merged): a copy of a notice whose
 # words are not the kept one's to the letter says wording_differs; what that means, said once per response
 NOTE_WORDING = ("【系統】copies 中 wording_differs 為 true 的是同一則公告在公告平台或單位網站上的另一份：它的每一行都在該筆裡，"
@@ -124,7 +137,7 @@ NOTE_COPIES_NO_ID = ("【系統】copies 是同一份文件（標題和內容都
 NOTE_FORMATS_NO_ID = ("【系統】copies 中有 format 的是同一份文件的其他格式：各有自己的網址和格式，沒有自己的日期；"
                       "內容以該筆為準。")
 NOTE_SECTIONS = ("【系統】長文件只給命中的章節和目錄；〔第 N 節〕是程式加的節號標記，N 就是 toc 的 part；"
-                 "用 read 讀其他章節或全文。")
+                 "用 fetch 讀其他章節或全文。")
 NOTE_DATES = ("【系統】每個日期後面括號是它的來源。附件的日期是所屬網頁的日期或伺服器檔案時間，"
               "不一定是文件本身的修訂日；文件自己寫的日期請看原文（開頭或沿革）。")
 NOTE_NOT_FOUND = "【系統】查無相關資料：目前收錄的教務處資料裡沒有符合的內容，請勿推測。"
@@ -148,7 +161,7 @@ NOTE_RANKING_HYBRID_SITES = ("【系統】結果依關鍵字比對和語意相�
                              "若下列原文都不能回答問題，請換幾個說法再查；"
                              "仍然沒有，請告訴使用者：目前收錄的資料裡查無相關內容，不要推測。")
 NOTE_NOT_FOUND_SITES = "【系統】查無相關資料：已收錄的網站的資料裡沒有符合的內容，請勿推測。"
-NOTE_DOWNGRADED = "【系統】回應太長，後面幾筆只給摘要；需要時照各筆 more 用 read 讀。"
+NOTE_DOWNGRADED = "【系統】回應太長，後面幾筆只給片段；需要時照各筆 more 用 fetch 讀。"
 NOTE_REFS = ("【系統】referenced_by 是引用此檔的頁面（在正文或附件區連到它的網頁和公告），由新到舊；"
              "只出現在選單的連結不列。")
 NOTE_UNKNOWN_ID = "【系統】查無此 id"
@@ -156,21 +169,21 @@ NOTE_UNKNOWN_ID = "【系統】查無此 id"
 NOTE_ALIAS = "【系統】這個編號是 {kept} 的{why_label}，以下是保留的那份。"
 ALIAS_LABELS = {"copy": "副本", "format": "其他格式", "duplicate": "重複"}
 NOTE_BAD_PART = "【系統】沒有這一節；請從 toc 選節號。"
-NOTE_TOC_CUT = "【系統】目錄只列前 {shown} 節（共 {total} 節）；節號依序遞增，可直接用 read 的 part=節號 讀其他節。"
+NOTE_TOC_CUT = "【系統】目錄只列前 {shown} 節（共 {total} 節）；節號依序遞增，可直接用 fetch 的 part=節號 讀其他節。"
 NO_TEXT = "這份是掃描檔或無法轉成文字的檔案，目前只能依標題找到；內容請開原檔網址查看。"
 NO_TEXT_LINK = "這是外部網站的連結，內容沒有收錄；請開網址查看。"
 PARTIAL = "（只轉出少量文字：{text}）"
-PARTIAL_MORE = '轉出的文字共 {chars} 字；用 read 讀全部：read(id="{id}")'
-MORE = '全文共 {chars} 字；用 read 讀其他章節：read(id="{id}", part="節號")'
-MORE_PART = '第 {sec} 節共 {chars} 字，這裡只給其中命中的一段（「…」處有截斷）；讀整節：read(id="{id}", part="{sec}")；'
+PARTIAL_MORE = '轉出的文字共 {chars} 字；用 fetch 讀全部：fetch(id="{id}")'
+MORE = '全文共 {chars} 字；用 fetch 讀其他章節：fetch(id="{id}", part="節號")'
+MORE_PART = '第 {sec} 節共 {chars} 字，這裡只給其中命中的一段（「…」處有截斷）；讀整節：fetch(id="{id}", part="{sec}")；'
 MORE_AROUND = "這裡只給命中處前後約 {cap} 字（「…」處有截斷）；"
-NEXT = '接著讀：read(id="{id}", part="{next}")'
+NEXT = '接著讀：fetch(id="{id}", part="{next}")'
 MORE_PAGE = "第 {sec} 節共 {chars} 字，這裡到第 {upto} 字；" + NEXT
 # a summary's way on (addendum E): the whole text when read gives it in one page, else the hit's section and the toc
-SUMMARY_MORE = '全文共 {chars} 字；用 read 讀全文：read(id="{id}")'
-SUMMARY_MORE_PART = ('這段在第 {sec} 節（全文共 {chars} 字）；讀這一節：read(id="{id}", part="{part}")；'
-                     '看目錄：read(id="{id}", part="toc")')
-SUMMARY_MORE_START = '全文共 {chars} 字；用 read 讀：read(id="{id}")'  # nothing matched in a long text
+SUMMARY_MORE = '全文共 {chars} 字；用 fetch 讀全文：fetch(id="{id}")'
+SUMMARY_MORE_PART = ('這段在第 {sec} 節（全文共 {chars} 字）；讀這一節：fetch(id="{id}", part="{part}")；'
+                     '看目錄：fetch(id="{id}", part="toc")')
+SUMMARY_MORE_START = '全文共 {chars} 字；用 fetch 讀：fetch(id="{id}")'  # nothing matched in a long text
 SECTION_MARK = "〔第 {sec} 節〕"  # opens a block of 章節 (addendum E); N is the toc's part
 SECTION_MARK_HEADING = "〔第 {sec} 節：{heading}〕"  # ... when the block does not open with that section's heading
 ARCHIVE_MEMBER = "附件（{archive} 壓縮檔內的 {member}）"  # an archive member: <archive url>#<its path> (T7a)
@@ -751,7 +764,7 @@ def _hit_sections(text: str, sections: list[_Sec], chunks: list[tuple[int, int, 
 
 
 def _full_body(doc: sqlite3.Row, text: str, sections: list[_Sec], chunks: list[tuple[int, int, int]]) -> dict:
-    """Ranks 1–TOP_FULL: 全文 when the text fits FULL_CAP_CHARS, else 章節 with the parts shown, toc and more."""
+    """A full place (design §二): 全文 when the text fits FULL_CAP_CHARS, else 章節 with the parts shown, toc and more."""
     if len(text) <= FULL_CAP_CHARS:
         return {"content_type": "全文", "content": _tidy(text)}
     content, anchor, note, parts = _hit_sections(text, sections, chunks, doc["doc_id"])
@@ -772,9 +785,9 @@ def attachment_header(text: str) -> str:
 
 
 def _with_header(doc: sqlite3.Row, text: str, body: dict | None) -> dict | None:
-    """An attachment shown as 章節 or 摘要 also gets its header, unless the content (after its 〔第 N 節〕 line)
-    already starts with it."""
-    if body is None or doc["kind_class"] != "attachment" or body.get("content_type") not in ("章節", "摘要"):
+    """An attachment shown as 章節 or 段落 also gets its header, unless the content (after its 〔第 N 節〕 line)
+    already starts with it (a 片段 does not: it is the short form, design §二)."""
+    if body is None or doc["kind_class"] != "attachment" or body.get("content_type") not in ("章節", "段落"):
         return body
     header = attachment_header(text)
     content = body.get("content", "")
@@ -787,24 +800,25 @@ def _with_header(doc: sqlite3.Row, text: str, body: dict | None) -> dict | None:
 
 
 def _summary_body(text: str, chunks: list[tuple[int, int, int]], sections: list[_Sec], doc_id: str,
-                  tokens: list[str], cap: int | None = None) -> dict:
-    """摘要 (addendum E): the cap-long stretch (default SUMMARY_CHARS) of the best chunk that holds the most query
-    tokens, its ends moved to line or sentence ends (_window) and marked 「…」 where the text goes on, a table's header
-    row above it when it starts inside a table (H2). No token in the chunk (a meaning-only match): the chunk's start;
-    nothing matched: the text's start. more says how to read on: the whole text when one read page holds it, else the
-    hit's section (part, opening at the hit's line inside a section longer than a read page; heading as in the toc)
-    and the toc; nothing more when the summary is the whole text."""
-    cap = SUMMARY_CHARS if cap is None else cap
+                  tokens: list[str], cap: int | None = None, *, wide: bool = False) -> dict:
+    """片段 (addendum E; design §二): the cap-long stretch of the best chunk that holds the most query tokens, its ends
+    moved to line or sentence ends (_window) and marked 「…」 where the text goes on, a table's header row above it when
+    it starts inside a table (H2). wide: a 段落, the cap-long stretch around those tokens taken from the whole text,
+    past the chunk's ends. No token in the chunk (a meaning-only match): the chunk's start; nothing matched: the text's
+    start. 全文 when it is the whole text, with nothing more; else more says how to read on: the whole text when one
+    read page holds it, else the hit's section (part, opening at the hit's line inside a section longer than a read
+    page; heading as in the toc) and the toc. cap None: SNIPPET_CHARS."""
+    cap = SNIPPET_CHARS if cap is None else cap
     best = chunks[0] if chunks and text[chunks[0][1] : chunks[0][2]].strip() else None
     if best is None:
         ws, we = _window(text, 0, 0, cap)
     else:
         _, cs, ce = best
         a, b = _focus(text, cs, ce, tokens, cap) or (cs, cs)
-        ws, we = _window(text, a, b, cap, cs, ce)
-    body = {"content_type": "摘要", "content": _shown(text, ws, we, 0, len(text))}
+        ws, we = _window(text, a, b, cap) if wide else _window(text, a, b, cap, cs, ce)
+    body = {"content_type": "段落" if wide else "片段", "content": _shown(text, ws, we, 0, len(text))}
     if not (text[:ws].strip() or text[we:].strip()):
-        return body
+        return {**body, "content_type": "全文"}
     chars = len(text)
     if chars <= READ_CAP_CHARS:
         return {**body, "more": SUMMARY_MORE.format(chars=chars, id=doc_id)}
@@ -823,57 +837,64 @@ def _summary_body(text: str, chunks: list[tuple[int, int, int]], sections: list[
 
 @dataclass
 class _Item:
-    head: dict                  # id, identity, title, url, data_as_of, dates, status, applies_to, parent
-    full: dict | None           # 全文 or 章節 (ranks 1–TOP_FULL with text)
-    summary: dict               # 摘要, or 無文字
+    head: dict                  # id, background, identity, title, url, data_as_of, dates, status, applies_to, parent
+    rich: dict | None           # 全文 or 章節 (a full place) or 段落 (passage); None: the 片段 is all it has
+    snippet: dict               # 片段 (全文 when that is the whole text), or 無文字
     chars: int
+    level: str = DEFAULT_DETAIL  # what it was given: 'full' (a full place), 'passage' or 'snippet'
     copies: list[dict] = field(default_factory=list)  # the same document at other addresses (at most copies_cap)
-    full_shown: bool = True     # False once the budget took the 全文/章節 away
+    short: bool = False         # True once the budget made it a 片段 row
     copies_cap: int = COPIES_MAX  # copies shown
     trimmed: dict | None = None  # rank 1's body after the last budget step
-    short: dict | None = None   # a result after the places: its 摘要 at SUMMARY_MIN_CHARS, None when that gains nothing
-    shrunk: bool = False        # True once the budget's first step shows short
+
+    def lean(self) -> bool:
+        """A 片段 row: the short header, no copies (design §二): a snippet result, or one the budget shortened."""
+        return self.trimmed is None and (self.level == "snippet" or self.short)
 
     def body(self) -> dict:
         if self.trimmed is not None:
             return self.trimmed
-        if self.full is not None and self.full_shown:
-            return self.full
-        return self.short if self.shrunk and self.short is not None else self.summary
+        return self.snippet if self.lean() or self.rich is None else self.rich
+
+    def row(self, rank: int) -> dict:
+        if self.lean():
+            return {"rank": rank, **{k: self.head[k] for k in LEAN_KEYS if k in self.head}, **self.snippet}
+        return {"rank": rank, **self.head, **_copies_part(self.copies, self.copies_cap), **self.body()}
 
 
-def _item(conn: sqlite3.Connection, doc: sqlite3.Row, h: DocHit, full_place: bool, today: date,
+def _item(conn: sqlite3.Connection, doc: sqlite3.Row, h: DocHit, level: str, today: date,
           tokens: list[str]) -> _Item:
-    """full_place: one of the first TOP_FULL results with text (a 無文字 result never takes a place; review 11-01).
-    tokens: the query's own tokens, which the summaries centre on."""
+    """level: what this result gets, 'full' (a full place), 'passage' or 'snippet' (design §二; a 無文字 result never
+    takes a full place: review 11-01). tokens: the query's own tokens, which 片段 and 段落 centre on."""
     text = _shown_text(doc)
     chunks = _chunks(conn, doc["doc_id"], h.chunk_ids)
-    full = short = None
+    rich = None
     if text is None:
-        summary = _no_text(doc, PARTIAL_CHARS)
+        snippet = _no_text(doc, PARTIAL_CHARS)
     else:
         sections = _sections(conn, doc["doc_id"], text)
-        if full_place:
-            full = _with_header(doc, text, _full_body(doc, text, sections, chunks))
-        summary = _with_header(doc, text, _summary_body(text, chunks, sections, doc["doc_id"], tokens))
-        if not full_place:
-            small = _summary_body(text, chunks, sections, doc["doc_id"], tokens, SUMMARY_MIN_CHARS)
-            short = _with_header(doc, text, small) if small["content"] != summary["content"] else None
+        snippet = _summary_body(text, chunks, sections, doc["doc_id"], tokens)
+        if level == "full":
+            rich = _with_header(doc, text, _full_body(doc, text, sections, chunks))
+        elif level == "passage":
+            rich = _with_header(doc, text, _summary_body(text, chunks, sections, doc["doc_id"], tokens,
+                                                         PASSAGE_CHARS, wide=True))
+        if rich is not None and rich.get("content") == snippet.get("content") and "header" not in rich:
+            rich = None  # a text the 片段 already shows whole
     head = {"id": doc["doc_id"], **({"background": True} if h.background else {}), **_header(conn, doc, today)}
-    return _Item(head=head, full=full, summary=summary,
-                 chars=len(text or ""), copies=_copies(conn, doc["doc_id"]), short=short)
+    return _Item(head=head, rich=rich, snippet=snippet, chars=len(text or ""), level=level,
+                 copies=_copies(conn, doc["doc_id"]))
 
 
 def _render(head: dict, items: list[_Item], downgraded: bool, note: str) -> dict:
     """note: the ranking note, first (NOTE_RANKING or NOTE_RANKING_HYBRID)."""
-    results = [{"rank": rank, **it.head, **_copies_part(it.copies, it.copies_cap), **it.body()}
-               for rank, it in enumerate(items, 1)]
+    results = [it.row(rank) for rank, it in enumerate(items, 1)]
     notes = [note]
     if any(r.get("background") for r in results):
         notes.append(NOTE_BACKGROUND)
     if any(r["content_type"] == "章節" for r in results):
         notes.append(NOTE_SECTIONS)
-    notes += _copies_notes([c for it in items for c in it.copies])
+    notes += _copies_notes([c for it in items if not it.lean() for c in it.copies[: it.copies_cap]])
     notes.append(NOTE_DATES)
     if downgraded:
         notes.append(NOTE_DOWNGRADED)
@@ -881,24 +902,17 @@ def _render(head: dict, items: list[_Item], downgraded: bool, note: str) -> dict
 
 
 def _fit(head: dict, items: list[_Item], note: str) -> dict:
-    """Over budget, a step at a time until it fits: the summaries after the 全文/章節 places shrink to
-    SUMMARY_MIN_CHARS (addendum E: three long top results already fill most of the budget); the last place, then the
-    one before it, give up 全文/章節 for 摘要 (by place, never by rank number: a 無文字 result holds none; H6); copies
-    shrink to 2 then 0 (the totals stay); results go from the end (at least one stays); last, rank 1's content is cut.
-    note goes to every render."""
+    """Over budget, a step at a time until it fits (design §二 limit): from the last result up to the second, a result
+    becomes a 片段 row (its 片段 and the short header); copies shrink to 2 then 0 (the totals stay); results go from the end
+    (at least one stays); last, rank 1's content is cut. note goes to every render."""
     down = False
     resp = _render(head, items, down, note)
-    tail = [it for it in items if it.short is not None]
-    if tail and _size(resp) > RESPONSE_BUDGET_BYTES:
-        for it in tail:
-            it.shrunk = True
-        down = True
-        resp = _render(head, items, down, note)
-    for it in reversed([it for it in items if it.full is not None][1:TOP_FULL]):
+    for it in reversed(items[1:]):
         if _size(resp) <= RESPONSE_BUDGET_BYTES:
             return resp
-        it.full_shown, down = False, True
-        resp = _render(head, items, down, note)
+        if not it.lean():
+            it.short, down = True, True
+            resp = _render(head, items, down, note)
     for cap in (2, 0):
         if _size(resp) <= RESPONSE_BUDGET_BYTES:
             return resp
@@ -972,13 +986,18 @@ def _head(conn: sqlite3.Connection, today: date) -> dict:
                                         missing_files=meta.get("missing_files", "?"))}
 
 
-def build_response(conn: sqlite3.Connection, result: SearchResult, *, today: date) -> dict:
+def build_response(conn: sqlite3.Connection, result: SearchResult, *, today: date, detail: str = DEFAULT_DETAIL,
+                   applied: dict | None = None) -> dict:
     """The search answer. Its first note is NOTE_RANKING_HYBRID when result.ranking is 'hybrid' (vectors or the
     reranker shaped the order), else NOTE_RANKING (their *_SITES forms in a database with sites rows: plan 2026-11-08
-    T4); summaries centre on the query's own tokens (understood.tokens)."""
+    T4); 片段 and 段落 centre on the query's own tokens (understood.tokens). detail: one of DETAILS (design §二);
+    applied: what the server says of its optional parameters (design §四), in the head when given."""
+    if detail not in DETAILS:
+        raise ValueError(f"detail must be one of {DETAILS}: {detail!r}")
     u = result.understood
     understood = _compact({"terms": list(u.terms), "cohorts": list(u.cohorts), "aliases": list(u.aliases)})
-    head = {**_head(conn, today), "query": result.query[:QUERY_ECHO_MAX], **_compact({"understood": understood})}
+    head = {**_head(conn, today), "query": result.query[:QUERY_ECHO_MAX], **_compact({"understood": understood}),
+            **({"applied": applied} if applied else {})}
     many = "data_as_of" not in head  # sites rows (plan 2026-11-08 T4): each result has its own, the head none
     hybrid = result.ranking == "hybrid"
     note = (NOTE_RANKING_HYBRID_SITES if hybrid else NOTE_RANKING_SITES) if many else (
@@ -989,9 +1008,12 @@ def build_response(conn: sqlite3.Connection, result: SearchResult, *, today: dat
     for h in result.hits:
         doc = _doc(conn, h.doc_id, text=True)
         if doc is not None:  # a hit the database no longer holds is skipped, never an error
-            place = places < TOP_FULL and _shown_text(doc) is not None
-            places += place
-            items.append(_item(conn, doc, h, place, today, tokens))
+            level = detail
+            if detail == "full":
+                place = places < FULL_PLACES and _shown_text(doc) is not None
+                places += place
+                level = "full" if place else "snippet"
+            items.append(_item(conn, doc, h, level, today, tokens))
     if not items:
         return {**head, "found": False, "notes": [NOTE_NOT_FOUND_SITES if many else NOTE_NOT_FOUND]}
     return _fit(head, items, note)
@@ -1008,6 +1030,17 @@ def _alias(conn: sqlite3.Connection, id: str) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
+def _by_url(conn: sqlite3.Connection, url: str) -> str | None:
+    """design §三: the document a URL the library holds is the address of, http or https alike (an agent may pass the
+    page or file it has instead of an id); None for any other text."""
+    if not url.startswith(("http://", "https://")):
+        return None
+    rest = url.split("://", 1)[1]
+    row = conn.execute("SELECT doc_id FROM docs WHERE url IN (?, ?) ORDER BY url = ? DESC LIMIT 1",
+                       (f"http://{rest}", f"https://{rest}", url)).fetchone()
+    return row[0] if row else None
+
+
 def read_response(conn: sqlite3.Connection, id: str, part: str, *, today: date) -> dict:
     """One document by its id. An id the build left out under another document (a copy at another address, another
     format of it, a duplicate: doc_alias) gives the document kept for it, NOTE_ALIAS first; any other id (an
@@ -1015,6 +1048,8 @@ def read_response(conn: sqlite3.Connection, id: str, part: str, *, today: date) 
     head = {k: v for k, v in _head(conn, today).items() if k != "coverage"}  # today, and data_as_of before T4
     resp, id = None, id.strip()
     doc = _doc(conn, id, text=True) if id else None
+    if doc is None and id and (by_url := _by_url(conn, id)) is not None:
+        doc = _doc(conn, by_url, text=True)
     lead: tuple[str, ...] = ()
     if doc is None and id and (alias := _alias(conn, id)) is not None:
         kept, why = alias
@@ -1049,7 +1084,7 @@ def _read_doc(conn: sqlite3.Connection, doc: sqlite3.Row, part: str, head: dict,
             body, notes = _read_body(doc["doc_id"], text, sections, part, cap, toc_limit)
             body = _with_header(doc, text, body)
         resp = {**frame(shown), **body, "notes": [*lead, *notes, *tail]}
-        over = _size(resp) - RESPONSE_BUDGET_BYTES
+        over = _size(resp) - READ_BUDGET_BYTES
         if over <= 0:
             return resp
         content, toc = body.get("content", ""), body.get("toc", [])
