@@ -92,7 +92,9 @@ def url_ok(row, jp, auto: bool = False) -> bool:
         return False
     if auto and seen is None:  # a jump menu the page fires on load: the browser must have opened it (§8.4)
         return False
-    return TYPES.get(row["page_type"]) in ("ok", "frame")
+    # a type the browser judged to need nothing more, or one no browser judged at all on a page with no sign of
+    # JavaScript (the owner 11-16, direction §四 2: 「待判定」改「抓到了」; export batch T5)
+    return TYPES.get(row["page_type"], "todo") in ("ok", "frame", "todo")
 
 
 def url_rule(row) -> bool:

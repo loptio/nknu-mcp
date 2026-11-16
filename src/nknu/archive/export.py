@@ -98,8 +98,8 @@ from zoneinfo import ZoneInfo
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import google_api, links, monitor, outcome, postback, profiles, progress, scope, sniff
-from nknu.archive.frontier import _missing
+from nknu.archive import google_api, links, monitor, outcome, postback, profiles, progress, scope, sniff, watch
+from nknu.archive.frontier import KEPT_COLS, _missing
 from nknu.crawl.fetch import DecodeError, decode_body
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -110,7 +110,7 @@ FOLDERS = {PAGE: "pages", FILE: "files", IMAGE: "images", DATA: "data"}
 # position: a column is only ever added at the end
 COLUMNS = ("序号", "类型", "网址", "最后落地网址", "本地档案", "标题", "网页上写的日期", "日期原文", "完整度", "缺什么", "结果",
            "原因", "分类", "原因代码", "抓取时间", "大小", "sha256", "格式", "链到它的网页", "链接文字", "怎么来的", "备注",
-           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源", "页别", "列表上的类别", "公告单位")
+           "存档编号", "按钮编号", "最后修改时间", "日期来源", "来源", "页别", "列表上的类别", "公告单位", "组别")
 # 日期来源: which rule found a page's 网页上写的日期 (Writer._dates, in this order): the platform's date field (own_date),
 # the date a list row that links the page states (Writer.list_dates; P75: the notices a WebIdx row's press brought have
 # their list's address, which no detail path names; blueprint item 22: any page a row links, the row of this site's
@@ -123,6 +123,10 @@ LIST_FIRST, LIST_PAGER = "列表", "列表翻页"
 # 来源 of a row whose file is the 10-24 archive's copy (--old-copies, item ⑦: a gap row with a good copy there; a
 # redirect sharing that file too); '' is this round's archive
 ORIGIN_OLD = "10-24 旧存档"
+# 来源 of a row whose answer this time is no good and whose file is the latest good answer this archive held before
+# (url_version: periodic updates, design 2026-11-16 §7.1; 2026-11-15 update.md §5, §6.1). Its 结果, 分类 and 原因 stay
+# this time's; its file, 抓取时间, 最后修改时间, 大小, sha256, 格式 and 最后落地网址 are that answer's
+ORIGIN_PREV = "上一次抓到的"
 # item ⑧ of the 11-08 gaps: a page strict decoding refused is read again with an encoding the page itself or its
 # server names (_LABELS), never with one neither names: gb18030 reads almost any Big5 bytes whole into other
 # characters, and Big5-HKSCS gives the character a Taiwanese site made for a rare character in a name (造字, in Big5's
@@ -434,6 +438,7 @@ class Item:
     list_kind: str = ""  # 页别: LIST_FIRST, LIST_PAGER or '' (Writer._list_kinds; blueprint item 22, part 3)
     list_category: str = ""  # 列表上的类别: list_category() of the rows that link it (Writer._list_dates; part 2)
     unit: str = ""  # 公告单位: own_unit() of the page the row's file is (Writer._page, _unit_rows; the owner 11-15)
+    group: str = ""  # 组别: own_group() of the page the row's file is (Writer._page, _unit_rows; export batch T3)
 
     def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
         """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
@@ -449,7 +454,8 @@ class Item:
                 "链接文字": _joined((t for t in self.texts if t), cap, "个"), "怎么来的": self.how,
                 "备注": "；".join(dict.fromkeys(self.notes)), "存档编号": self.ref, "按钮编号": self.row_key,
                 "最后修改时间": self.modified, "日期来源": self.date_from, "来源": self.origin,
-                "页别": self.list_kind, "列表上的类别": self.list_category, "公告单位": self.unit}
+                "页别": self.list_kind, "列表上的类别": self.list_category, "公告单位": self.unit,
+                "组别": self.group}
 
     def result_words(self) -> str:
         """结果: the result in words; a gone with a reason of its own (a file sent to the school's home page, 11-03)
@@ -704,6 +710,50 @@ class Snap:
     foreign_items: list[dict] = field(default_factory=list)
     foreign_lists: dict[int, dict] = field(default_factory=dict)
     foreign_presses: dict[int, dict] = field(default_factory=dict)
+    # the good answers rows held before this one (url_version: _kept_good), newest first, by row id: the export
+    # falls back on the latest when this time's is no good (Writer._prev_copy)
+    kept: dict[int, list[dict]] = field(default_factory=dict)
+    # each row the crawler keeps of the site's own lists and of the other sites' lists that link its pages (list_row,
+    # periodic updates stage 1), as (its list, the row), by list and identity: 列表上的日期 and 列表上的类别 read them
+    # first (Writer._list_dates), so that a notice pushed off the pages a nightly look reads keeps its row's
+    list_row_rows: list[tuple[int, postback.Row]] = field(default_factory=list)
+    # the rows the school deleted (_deleted): since when they answer gone, by row id
+    deleted: dict[int, float] = field(default_factory=dict)
+
+
+def _list_row_rows(conn: sqlite3.Connection, site: str, foreign: Iterable[int]) -> list[tuple[int, postback.Row]]:
+    """The list_row rows of the site's own lists and of these other sites' lists, in (list, identity) order; none in
+    an archive older than periodic updates (no list_row). A row's link is canonical already (Chains._keep_rows)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='list_row'").fetchone():
+        return []
+    got = [tuple(r) for r in conn.execute(
+        "SELECT list_id, ident, row_key, href, title, date, category FROM list_row "
+        "WHERE list_id IN (SELECT id FROM url WHERE owner_site=?)", (site,))]
+    ids = sorted(set(foreign))
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        got += [tuple(r) for r in conn.execute(
+            "SELECT list_id, ident, row_key, href, title, date, category FROM list_row "
+            f"WHERE list_id IN ({','.join('?' * len(part))})", part)]
+    return [(lid, postback.Row(key or "", title or "", date or "", category or "", href))
+            for lid, _ident, key, href, title, date, category in sorted(set(got), key=lambda r: (r[0], r[1]))]
+
+
+def _deleted(conn: sqlite3.Connection, ids, kept: dict[int, list[dict]]) -> dict[int, float]:
+    """The rows the school deleted, by id: since when each answers gone (page_watch.gone_at), for a row that answered
+    gone at least twice in a row, the last at least watch.GONE_AGAIN_S after the first, and that was good once (a kept
+    good answer: the change list never calls a row never good deleted either). None in an archive with no
+    page_watch."""
+    ids = sorted(i for i in set(ids) if i in kept)
+    if not ids or not conn.execute("SELECT 1 FROM sqlite_master WHERE name='page_watch'").fetchone():
+        return {}
+    out = {}
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for r in conn.execute(f"SELECT url_id, gone_at FROM page_watch WHERE url_id IN ({','.join('?' * len(part))}) "
+                              "AND gone >= 2 AND checked_at - gone_at >= ?", (*part, watch.GONE_AGAIN_S)):
+            out[r[0]] = r[1]
+    return out
 
 
 def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
@@ -713,6 +763,57 @@ def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
         for r in conn.execute(f"SELECT * FROM url_result WHERE id IN ({','.join('?' * len(part))})", part):
             out[r["id"]] = dict(r)
     return out
+
+
+# a kept answer is good when the result rules, applied to it as a finished row, give one of these (2026-11-15 update.md
+# §5 item 2: outcome.PAGE_CAME_BACK less thin): what should be a page came back a page, what should be a file a file
+GOOD_RESULTS = ("ok", "unchecked", "js", "click", "unresolved")
+# a row whose result this time is a rule's decision (out of scope, round two's, held by a cap) is never filled with an
+# earlier answer: nothing went wrong with this fetch (update.md §5)
+NO_FALLBACK = frozenset({"rule", "later", "held"})
+
+
+def _kept_good(conn: sqlite3.Connection, ids) -> dict[int, list[dict]]:
+    """The good answers each of these url rows held before (url_version, periodic updates stage 0a), newest first, by
+    row id: each kept answer read as a finished row (the row's own columns, its answer's columns over them, state done,
+    no reason, no tries) and judged by the result rules themselves (outcome.url_result_case: one statement of them), a
+    row put back and not fetched yet (still holding its answer, state pending) counted with its own answer the same way
+    (update.md §6.1, view url_good). An archive with no url_version (older than stage 0a): none."""
+    ids = sorted(set(ids))
+    if not ids or not conn.execute("SELECT 1 FROM sqlite_master WHERE name='url_version'").fetchone():
+        return {}
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(url)")]
+    fixed = {"state": "'done'", "reason": "NULL", "attempts": "0"}
+
+    def select(src: str) -> str:
+        return ", ".join(f"{fixed[c]} AS {c}" if c in fixed else f"{src}.{c} AS {c}" if c in KEPT_COLS
+                         else f"u.{c} AS {c}" for c in cols)
+
+    out: dict[int, list[dict]] = defaultdict(list)
+    for i in range(0, len(ids), 400):
+        part = ids[i:i + 400]
+        marks = ",".join("?" * len(part))
+        sql = f"""WITH c AS (
+              SELECT {select('v')}, v.kept_at AS kept_at FROM url_version v JOIN url u ON u.id = v.url_id
+              WHERE v.url_id IN ({marks})
+              UNION ALL
+              SELECT {select('u')}, NULL AS kept_at FROM url u
+              WHERE u.id IN ({marks}) AND u.state <> 'done' AND u.warc IS NOT NULL AND u.warc_offset IS NOT NULL)
+            SELECT c.*, {outcome.url_result_case('c', 'pt', 'jp')} AS result
+            FROM c LEFT JOIN page_type pt ON pt.key = c.page_type {outcome.js_page_join('jp', 'c')}"""
+        for r in conn.execute(sql, (*part, *part)):
+            r = dict(r)
+            if r["result"] in GOOD_RESULTS and r["status"] == 200 and (r["bytes"] or 0) > 0:
+                out[r["id"]].append(r)
+    for rid, got in out.items():
+        got.sort(key=lambda r: (r["fetched_at"] or "", r["kept_at"] is None, r["kept_at"] or 0), reverse=True)
+        seen, uniq = set(), []
+        for r in got:  # the same answer kept twice (taken, then replaced) is one
+            if (r["warc"], r["warc_offset"]) not in seen:
+                seen.add((r["warc"], r["warc_offset"]))
+                uniq.append(r)
+        out[rid] = uniq
+    return dict(out)
 
 
 def _expected_file(r: dict) -> bool:
@@ -807,11 +908,15 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
         except sqlite3.OperationalError as exc:
             ready_error = f"{type(exc).__name__}: {exc}"
         foreign_items, foreign_lists, foreign_presses = _foreign(conn, site)
+        kept = _kept_good(conn, rows)
+        list_row_rows = _list_row_rows(conn, site, foreign_lists)
+        deleted = _deleted(conn, rows, kept)
     finally:
         conn.execute("COMMIT")
     return Snap(dict(plan) if plan is not None else None, rows, page_ids, pc, pres, raw_res, actions, walks, drive,
                 drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to,
-                site_ready, ready_error, foreign_items, foreign_lists, foreign_presses)
+                site_ready, ready_error, foreign_items, foreign_lists, foreign_presses, kept, list_row_rows,
+                deleted)
 
 
 def _foreign(conn: sqlite3.Connection, site: str) -> tuple[list[dict], dict[int, dict], dict[int, dict]]:
@@ -1088,7 +1193,9 @@ class Builder:
                 it.lacks = self._lacks(p)
                 if own == "decode":
                     it.judged = p
-            it.own, it.bucket = own, monitor.bucket(own, page=True)
+            # a page row a rule leaves out itself (an address merged into another's: out:alias) is not judged at
+            # all: its category is the rule's, never the page layer's 要人看 of a page leading out (judge.md §4.4 ①)
+            it.own, it.bucket = own, monitor.bucket(own, page=not (r["result"] == "rule" and p is None))
             it.why = _why(own, r["reason"], r["status"])
             if "in_image" in (r["flags"] or "").split(","):
                 it.notes.append(outcome.IN_IMAGE_WORDS)
@@ -1305,6 +1412,10 @@ class Builder:
                 it.result, it.why = "rule", RULE_WHY["media:drive_" + ("video" if d["mime"].startswith("video/")
                                                                        else "audio")]
             it.bucket = monitor.bucket(it.result)
+            if it.result == "redirect" and s.landing.get(uid, (None, None))[0] is not None:
+                # a redirect landing on a row of its own is counted there, as the views count it (规则不抓: the target
+                # is judged by its own row; judge.md §4.4 ①); one that never lands stays 要人看
+                it.bucket = outcome.user_bucket("redirect")
             it.title = (it.name or _last_part(r["url"])) if typ in (FILE, IMAGE) else (r["title"] or "")
             if typ == DATA:
                 it.title = self._data_title(r, it.title)
@@ -1353,6 +1464,16 @@ def _profile(url: str, site: str) -> profiles.Profile | None:
     return profiles.profile_for(url) or profiles.profile_for_site(site)
 
 
+def _detail(url: str, site: str) -> bool:
+    """Whether this address is a notice detail page of its platform (profiles.Detail.paths)."""
+    prof = _profile(url, site)
+    if prof is None:
+        return False
+    parts = urlsplit(url)
+    where = (parts.path + ("?" + parts.query if parts.query else "")).lower()
+    return any(re.search(d.paths, where) for d in prof.details)
+
+
 def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") -> str:
     """The page's own title: its platform's detail title (profiles.Detail.title), else the first cell with words of
     those the title rules name for its kind of page, in their order (profiles.PageTitle, by the page's own address: an
@@ -1385,6 +1506,14 @@ EMPTY_AREA = "内文区是空的（公告的标题栏和内文栏都没有内容
 # what every profiles.NoData's words begin with (the owner 11-09 「照这样做」; the content session's words: it leaves the
 # rows whose 缺什么 holds them out and counts them), and what 备注 says once of such a row (Writer._no_data)
 NO_DATA = "学校回答没有资料"
+# 缺什么 of a row the school deleted (export batch T4; design 2026-11-16 §7.5; the content session's handover point 3,
+# which leaves such rows out by this substring): a row good once, answered gone twice at least a day apart since
+# (page_watch, watch.night's deleted). Its file stays the last good answer (Writer._prev_copy)
+SCHOOL_DELETED = "学校已删除"
+# 缺什么 of a platform's notice address the school sends to a page of the same host that is no notice (its home page, a
+# list, an album: export batch T6; about 150 rows on 11-16, research/crawler_design_2026-11-16/export_batch/): most are
+# deleted notices sent away. The content stage leaves such rows out by this substring
+NOTICE_MOVED = "学校把这则公告转到别的页（多半是删了）"
 NO_DATA_NOTE = "「学校回答没有资料」是程序看网页里学校的讯息标的；完整度、分类、结果照存档的判断，没有改"
 
 
@@ -1416,6 +1545,20 @@ def empty_detail_area(tree: LexborHTMLParser, url: str, site: str) -> str:
     if d.files and any((n.attributes.get("href") or "").strip() not in ("", "#") for n in tree.css(d.files)):
         return ""
     return EMPTY_AREA
+
+
+# 组别 (export batch T3; the content session 11-16: c.nknu's notice detail page states the group that posted it,
+# 「和平教務組」「招生企劃組」; only there, newsview has no such field): the page's host, its path, its field. Read by the
+# export alone, so that no platform setting changes (PAGE_VERSION stays)
+GROUP_FIELDS = (("c.nknu.edu.tw", re.compile(r"/newsdetail\.aspx$", re.IGNORECASE), "#lbl_GroupName"),)
+
+
+def own_group(tree: LexborHTMLParser, url: str) -> str:
+    """The group a notice's detail page states it was posted by (GROUP_FIELDS), its words on one line; '' for any
+    other page and for a field with no words. Never 公告单位: the content stage rewrites a file's unit by that one."""
+    parts = urlsplit(url)
+    return next((_first_text(tree, css) for host, path, css in GROUP_FIELDS
+                 if parts.hostname == host and path.search(parts.path)), "")
 
 
 def own_unit(tree: LexborHTMLParser, url: str, site: str) -> str:
@@ -1815,7 +1958,7 @@ class Writer:
             (self.out / d).mkdir(parents=True, exist_ok=True)
         rank = {t: i for i, t in enumerate(TYPES)}
         for it in sorted(self.items.values(), key=lambda i: (rank[i.type], i.source is None, i.order)):
-            if self._old_copy(it):
+            if self._prev_copy(it) or self._old_copy(it):
                 continue
             if it.source is not None:
                 self._write(it)
@@ -1845,6 +1988,8 @@ class Writer:
                     it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间、最后修改时间都是落地那一页的）")
         self._read_whole()
         self._no_data_rows()
+        self._deleted_rows()
+        self._moved_rows()
         self._unit_rows()
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
@@ -1939,6 +2084,29 @@ class Writer:
             if it.path in by_file:
                 self._no_data(it, by_file[it.path])
 
+    def _deleted_rows(self) -> None:
+        """A row the school deleted (Snap.deleted) says so in 缺什么, after what else it lacks (joined by 、, never
+        twice): 「学校已删除（<the day it first answered gone> 起说不存在）」. Its file, 结果 and 分类 as they are."""
+        for it in self.items.values():
+            if it.key[:1] != "u" or not it.key[1:].isdigit() or int(it.key[1:]) not in self.s.deleted:
+                continue
+            since = datetime.fromtimestamp(self.s.deleted[int(it.key[1:])], TZ).date().isoformat()
+            if SCHOOL_DELETED not in it.lacks:
+                it.lacks = "、".join(x for x in (it.lacks, f"{SCHOOL_DELETED}（{since} 起说不存在）") if x)
+
+    def _moved_rows(self) -> None:
+        """A web page row whose address is its platform's notice detail page and whose 最后落地网址 is a page of the
+        same host that is no such detail (the school sent the notice elsewhere: export batch T6) says NOTICE_MOVED in
+        缺什么, after what else it lacks. A notice sent off the host, or to a notice address again (its other scheme,
+        another way of writing it), is not marked."""
+        for it in self.items.values():
+            if it.type != PAGE or not it.final_url or not _detail(it.url, self.site):
+                continue
+            if urlsplit(it.final_url).hostname != urlsplit(it.url).hostname or _detail(it.final_url, self.site):
+                continue
+            if NOTICE_MOVED not in it.lacks:
+                it.lacks = "、".join(x for x in (it.lacks, NOTICE_MOVED) if x)
+
     def _unit_rows(self) -> None:
         """Every row whose file is a notice page that states its posting unit states it too (公告单位 is what the file
         says, as the school's answer of no data is: _no_data_rows): a redirect to a notice that is a row of the same
@@ -1946,9 +2114,12 @@ class Writer:
         reads its landing page itself (the first address of another site sent to the platform's notice: 85 rows of
         11 sites' exports in round one land on such a notice) has the unit from _page already 【Claude 的执行办法】."""
         by_file = {it.path: it.unit for it in self.items.values() if it.unit and it.path}
+        groups = {it.path: it.group for it in self.items.values() if it.group and it.path}
         for it in self.items.values():
             if not it.unit and it.path in by_file:
                 it.unit = by_file[it.path]
+            if not it.group and it.path in groups:  # 组别 likewise (export batch T3)
+                it.group = groups[it.path]
 
     def _put(self, it: Item, name: str, data: bytes) -> None:
         """A row's file, numbered in turn in its type's folder."""
@@ -2026,6 +2197,61 @@ class Writer:
         it.sha256, it.size = sha, size
         it.modified = it.modified or changed_at(headers.get("last-modified"))
         self.by_source[(warc, offset)] = it
+        return True
+
+    # -- periodic updates: this archive's own latest good answer of a row whose answer this time is no good
+    def _empty_notice(self, it: Item, warc: str, offset: int) -> bool:
+        """Whether the answer at (warc, offset) of a page is a notice page with its areas missing or empty, or the
+        school's answer that it has no data (update.md §5 item 3: the views do not read these; the export does)."""
+        try:
+            _url, _status, headers, body = postback.read_response(self.root, warc, offset)
+        except (OSError, ValueError):
+            return True
+        try:
+            text = decode_body(body, headers.get("content-type") or "")
+        except DecodeError:
+            return False
+        return bool(empty_detail_area(LexborHTMLParser(text), it.url, self.site)
+                    or profiles.school_no_data(it.url, text) is not None)
+
+    def _prev_copy(self, it: Item) -> bool:
+        """A row whose answer this time is no good, with a good answer this archive held before (Snap.kept): written
+        with the latest good one (periodic updates: design 2026-11-16 §7.1; 2026-11-15 update.md §5, §6.1). No good
+        this time: its result is none of GOOD_RESULTS (a rule's decision, NO_FALLBACK, aside; a redirect landing on a
+        good row shares that row's file as before), or a notice page whose areas are empty or that says it has no
+        data. Its file, 抓取时间, 最后修改时间, 大小, sha256, 格式 and 最后落地网址 are that answer's, 来源 says
+        ORIGIN_PREV, 备注 says what this time came to; its 结果, 分类 and 原因 stay this time's (the gap in sight). A
+        kept answer that is itself an empty notice is passed over. False, the row written as before, otherwise."""
+        if it.type not in (PAGE, FILE, IMAGE) or it.key[:1] != "u" or not it.key[1:].isdigit():
+            return False
+        rid = int(it.key[1:])
+        kept, row = self.s.kept.get(rid), self.s.rows.get(rid)
+        if not kept or row is None or row["result"] in NO_FALLBACK:
+            return False
+        if row["result"] == "redirect":
+            end, _nowhere = self.s.landing.get(rid, (None, None))
+            to = self.s.rows.get(end) if end is not None else None
+            if to is not None and to["result"] in GOOD_RESULTS and not outcome.school_home(to["url"]):
+                return False  # a page moved: it shares the page it lands on, as before
+        elif row["result"] in GOOD_RESULTS:
+            if it.type != PAGE or it.source is None or not self._empty_notice(it, it.source[0], it.source[1]):
+                return False
+        pick = next((k for k in kept if it.type != PAGE or not self._empty_notice(it, k["warc"], k["warc_offset"])),
+                    None)
+        if pick is None:
+            return False
+        words, this_time = it.result_words(), it.fetched_at or "没有回应"
+        if row["result"] in GOOD_RESULTS:
+            words = "公告的标题栏、内文栏是空的，或学校回答没有资料"
+        it.source = (pick["warc"], pick["warc_offset"], pick["sha256"], pick["ctype"])
+        it.final_url = pick["final_url"] if pick["final_url"] and pick["final_url"] != it.url else ""
+        it.sniff, it.fetched_at, it.modified, it.landing = pick["sniff"] or "", _taipei(pick["fetched_at"]), "", None
+        it.empty_area, it.no_data = "", None
+        self._write(it)
+        if not it.path:
+            return False
+        it.origin = ORIGIN_PREV
+        it.notes.append(f"这一次（{this_time}）：{words}；用 {it.fetched_at[:10]} 抓到的上一版补上")
         return True
 
     # -- item ⑦: the 10-24 archive's copy of a row this round got nothing good of (--old-copies)
@@ -2245,10 +2471,23 @@ class Writer:
         self._foreign_rows()
         by_key: dict[tuple[int, str], list[tuple[int, postback.Row]]] = defaultdict(list)
         by_href: dict[str, list[tuple[int, postback.Row]]] = defaultdict(list)
+        # the rows the crawler keeps of each list first (list_row: the export batch T2; a row read again since says
+        # its latest date), then the rows of the pages written, each row of a list once: one list_row already holds
+        # (the same link, or the same key) is passed over, an older date of it never a vote against the latest
+        held: set[tuple[int, str]] = set()
+        for lid, row in self.s.list_row_rows:
+            by_key[(lid, row.key)].append((lid, row))
+            held.add((lid, f"key:{row.key}"))
+            if row.href:
+                by_href[row.href].append((lid, row))
+                held.add((lid, row.href))
         for lid, base, rows in self.list_rows:
             for row in rows:
+                canon = scope.canonical(row.href, base) if row.href else None
+                if (lid, f"key:{row.key}") in held or (canon is not None and (lid, canon) in held):
+                    continue
                 by_key[(lid, row.key)].append((lid, row))
-                if row.href and (canon := scope.canonical(row.href, base)) is not None:
+                if canon is not None:
                     by_href[canon].append((lid, row))
         if not by_key:
             return
@@ -2348,6 +2587,7 @@ class Writer:
                 it.notes.append("公告的内文区是程序看的；完整度、分类照存档的判断，没有改")
         if it.kind != "pager":
             it.unit = own_unit(tree, url, self.site)  # 公告单位: the platform's own field, by the page's own address
+            it.group = own_group(tree, url)  # 组别: c.nknu's notice field (export batch T3)
         # the school's answer of no data for what was asked (profiles.NoData; the owner 11-09 「照这样做」): by the
         # page's own address, in its HTML as read, whatever row brought it (a GET, a menu's press, a pager's answer);
         # after the empty-area words, so that its words come last (the review of 11-09)
@@ -2428,7 +2668,10 @@ def snapshot_digest(snap: Snap) -> str:
              "other_site_items": snap.other_site_items, "page_ids": snap.page_ids,
              "status": [st.state, st.why, st.warnings] if st is not None else snap.status_error,
              "ready": snap.ready.as_dict() if snap.ready is not None else snap.ready_error,
-             "foreign_lists": snap.foreign_lists, "foreign_presses": snap.foreign_presses}
+             "foreign_lists": snap.foreign_lists, "foreign_presses": snap.foreign_presses,
+             "kept": {i: [(k["warc"], k["warc_offset"]) for k in v] for i, v in snap.kept.items()},
+             "list_row_rows": [(lid, dataclasses.astuple(r)) for lid, r in snap.list_row_rows],
+             "deleted": snap.deleted}
     h = hashlib.sha256()
     for name in sorted(parts):
         h.update(f"{name}\0{json.dumps(_canon(parts[name]), sort_keys=True, ensure_ascii=False)}\0".encode())
@@ -2797,6 +3040,16 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
                     "没有再从存档读。两个资料夹里是同一个档，不要在资料夹里改档")
     elif old is not None:
         said.append(f"上一次导出（`{old.folder}`）没有用上：{old.why}，附件和图片都从存档读")
+    gone = [i for i in ordered if SCHOOL_DELETED in i.lacks]
+    if gone:
+        said.append(f"有 {len(gone)} 行「{SCHOOL_DELETED}」（「缺什么」栏写着）：以前抓到过正常的，之后连续两次、相隔 24 小时"
+                    "以上都说不存在；有档的照旧是它最后一次正常的版本")
+    prev = [i for i in ordered if i.origin == ORIGIN_PREV]
+    if prev:
+        said.append(f"有 {len(prev)} 行这一次重抓没抓好（学校那边没了、连不上、出错页、登入页、空模板、等着重抓），用这份存档"
+                    f"里它上一次抓到的正常版本补上了档：{_by_category(prev)}。它们的「来源」写「{ORIGIN_PREV}」，「抓取时间」"
+                    "「最后修改时间」「大小」「sha256」「格式」「最后落地网址」是那一版的；「结果」「分类」「原因」照这一次的"
+                    "（「备注」写这一次抓到什么）")
     filled = [i for i in ordered if i.filled]
     if copies is not None and copies.why:
         said.append(f"10-24 旧存档的副本资料夹（`{copies.folder}`）没有用上：{copies.why}；缺口照这一轮的")
@@ -3002,7 +3255,9 @@ COLUMN_HELP = {
              f"写的日期；别的网站的列表也算；下载按钮带来的档案是它那一行写的日期）、{PAGE_WORDS}（网页文字里标签后面的"
              "日期）；没有日期就空白"),
     "来源": (f"这一行的档从哪里来：空白是这一轮爬虫的存档；「{ORIGIN_OLD}」是这一轮没抓到能用的内容、导出时用 10-24 旧存档"
-           "的正常副本补上的（结果、分类、原因还是这一轮的，备注写这一轮抓到什么）"),
+           f"的正常副本补上的（结果、分类、原因还是这一轮的，备注写这一轮抓到什么）；「{ORIGIN_PREV}」是这一次重抓没抓好、"
+           "导出时用这份存档里上一次抓到的正常版本补上的（档和抓取时间、最后修改时间、大小、sha256、格式、最后落地网址是那一版的，"
+           "结果、分类、原因是这一次的，备注写这一次抓到什么）"),
     "页别": (f"「{LIST_FIRST}」：平台设定读得到列表格子的网页（列表的第一页；网站首页上的公告列表也算，这种页也有自己的字）；"
            f"「{LIST_PAGER}」：按翻页按钮出来的第 N 页（网址后面是 #第N页），和用网址翻页的列表的第 2 页以后；空白：其他网页，"
            "也包括有翻页的内容表格（荣誉榜这类没有链接的表格，内容只在这几页上），和平台设定读不出列表格子、只靠网址翻页的"
@@ -3012,4 +3267,6 @@ COLUMN_HELP = {
                "用 | 隔开，「备注」写明；没有就空白。列表上一行的下载按钮带来的档案：那一行写的类别"),
     "公告单位": ("公告页上平台的「公告單位」那一格的原文（平台设定写了这一格的公告页才有：SSO 公告中心和新闻网的公告、校园亮点）；"
              "转到这种公告页的行、和它共用同一个档的行一样有；那一格没有字、别的网页、附件和图片都空白"),
+    "组别": ("c.nknu 公告页（newsdetail）上「發佈單位」那一格（#lbl_GroupName）的原文，例如「招生企劃組」；转到这种公告页的行、"
+           "和它共用同一个档的行一样有；别的网页（含 newsview 版型）、附件和图片都空白。和「公告单位」是两栏，不合并"),
 }

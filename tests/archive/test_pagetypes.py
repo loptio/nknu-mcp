@@ -485,7 +485,7 @@ def test_a_new_type_waits_for_jscheck_whatever_it_looks_like(fr):
     assert (row["n_pages"], row["n_strong"], row["n_weak"]) == (1, 0, 0)
     assert fr.q("SELECT page_type FROM url WHERE id=?", (uid,))[0][0] == KEY
     finish(fr, uid, seen)
-    assert result(fr, uid) == "unchecked"
+    assert result(fr, uid) == "ok"  # no browser check this round: got unless the page shows JavaScript (the owner 11-16)
 
 
 def test_a_page_seen_again_is_counted_once(fr):
@@ -520,7 +520,9 @@ def test_a_strong_sign_sends_an_imported_or_crawled_ok_or_frame_type_back(fr, so
     assert (seen.flags, seen.retyped, seen.kept) == (("js_hint",), "hint", ())
     row = ptype(fr, KEY)
     assert (row["verdict"], row["why"], row["source"]) == ("todo", "hint", source)
-    assert result(fr, plain_page) == result(fr, hinted) == "unchecked"  # the whole type waits for jscheck
+    # the type waits for a browser check, which does not run this round (the owner 11-16, export batch T5): the page
+    # with the sign is round two's (unchecked), the plain one got
+    assert (result(fr, plain_page), result(fr, hinted)) == ("ok", "unchecked")
 
 
 @pytest.mark.parametrize("source", pagetypes.JUDGED_SOURCES)

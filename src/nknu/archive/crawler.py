@@ -234,6 +234,9 @@ CONN_GIVE_UP = 8  # B2: that many in a row (about two hours): its rows fail (ser
 # yet must not keep a run from ending for ever; review 11-08)
 CONN_GIVE_UP_ANSWERED = 96
 DOOR_WINDOW_S = 120.0  # a door (scheme, port) of a server that answers on another within this long is closed, not down
+# the flags of a kept answer that make it no good for keeping a page's resources (_good_before: export batch T1b)
+KEEP_RES_BAD = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirect", "error_page", "empty_detail",
+                          "thin"})
 END_WAIT_S = 600.0  # B1: a run whose soonest row is due later than this ends, leaving its rows for the next run
 # C0 (design §11): `archive run --end-wait`'s own default, longer than the fixed 15-minute rest of a server (and the
 # pause of one that does not connect), so that one such rest never ends a long run nobody watches 【Claude 的执行办法】
@@ -3742,6 +3745,17 @@ class Crawler:
             return round1.Placement("out", f"out:{v.reason}", None, None, 0, kind0)
         return round1.Placement("resource", None, row["owner_site"], row["tier"], 1, kind0)
 
+    def _good_before(self, uid: int) -> bool:
+        """Whether a page held a good answer before this fetch (url_version: a kept 200 web page with none of the
+        flags that make a page no good). Its resources then stay as they were when this time's answer is a sign-in,
+        a soft 404 or an empty notice template, so that the files it linked still name it while the export falls back
+        on its last good answer (export batch T1b; the content session's question 4, 11-16)."""
+        for k in self.frontier.q("SELECT flags FROM url_version WHERE url_id=? AND status=200 AND kind='page' "
+                                 "AND sniff='html'", (uid,)):
+            if not set((k["flags"] or "").split(",")) & KEEP_RES_BAD:
+                return True
+        return False
+
     def _page(self, row, snap: Snapshot, text: str, cols: dict, flags: list[str]) -> None:
         """A web page of this round: its parts (page_res, _parts), its page type and the signs it reads (design §8.3:
         pagetypes.measure and observe, before finish), its platform's presses and walk (postback.page_stored, after
@@ -3767,6 +3781,11 @@ class Crawler:
             cols["reason"] = "has_login_box"  # followed: the form is a sidebar box on an ordinary page
         if kind0 == "login_check" and "login" not in flags and _LOGIN_WORDS.search(text):
             flags.append("login")  # design §4.2: 請登入, 無權限, 請連線 VPN
+        said = profiles.school_no_data(row["url"], text)  # export batch T5 ③: two the views read by a flag
+        if said is profiles.CNKNU_FNF:
+            flags.append("gone_page")  # c.nknu's whole answer 「404: File not found」: the school's not-found page
+        elif said is profiles.NEWS_NO_ROWS:
+            flags.append("no_rows")  # a notice list that says 「搜尋結果：共0筆」: nothing to hold, never thin
         if profiles.detail_of(row["url"]) is not None and profiles.empty_detail(row["url"], text):
             flags.append("empty_detail")  # design §10.1 nonempty: no body text, attachment, picture or related link
             probe = self.frontier.q("SELECT status, empty FROM id_probe WHERE host=? AND page_type=?",
@@ -3795,7 +3814,8 @@ class Crawler:
         cols["flags"] = ",".join(dict.fromkeys(flags)) or None
         if "login" in flags or "soft404" in flags:  # archived as it is; not a place to look for more pages
             cols["n_links"] = 0
-            self.frontier.set_page_res(uid, [])
+            if not self._good_before(uid):  # a page good before keeps what it linked (export batch T1b)
+                self.frontier.set_page_res(uid, [])
             self.frontier.finish(uid, **cols)
             return
         if page.pagers:
@@ -3803,7 +3823,8 @@ class Crawler:
         entries, n = self._parts(row, page, uid, html=text, warc=cols.get("warc"), warc_offset=snap.warc_offset)
         entries += self._data_entries(row, text, cols.get("warc"), snap.warc_offset)  # design §23 C1
         keys = {e["res_key"] for e in entries}
-        self.frontier.set_page_res(uid, entries + [g for g in google if g["res_key"] not in keys])
+        if "empty_detail" not in flags or not self._good_before(uid):  # a page good before keeps what it linked (T1b)
+            self.frontier.set_page_res(uid, entries + [g for g in google if g["res_key"] not in keys])
         google_api.resync(self.frontier, uid)  # a folder or calendar read meanwhile brings what it holds
         # design §8.3: the page's type and its signs, after its page_res (a click it cannot press is read from it)
         # and before finish (observe reads the row's js_hint of its last fetch)

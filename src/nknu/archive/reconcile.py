@@ -513,7 +513,7 @@ def _decide_thin(fr: Frontier, site: str, rows, lines: Mapping[int, Mapping[str,
     pictured = _pictured(fr, site, pics or {})
     for r in rows:
         pid = r["id"]
-        if pid in skip:
+        if pid in skip or set(_flags(r)) & set(outcome.SAYS_NOTHING):  # the school says it holds nothing (T5 ③)
             want = in_image = False
         elif pid in lines:
             out.judged += 1

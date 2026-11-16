@@ -192,7 +192,7 @@ def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_p
            "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    want = {None: ["backup", "put-back", "sites", "run", "review"],
+    want = {None: ["backup", "put-back", "sites", "run", "review", "export-list", "seen"],  # export batch T7
             "put-back": ["backup", "put-back", "fail"],
             "run": ["backup", "put-back", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
     assert got.returncode == (0 if fail_at is None else 1) and steps == want

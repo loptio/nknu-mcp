@@ -509,16 +509,17 @@ def test_every_page_comes_to_the_completeness_its_evidence_gives(world):
     want = {ACA_LIST: "complete", SSO_HOME: "complete", "https://sso.nknu.edu.tw/News/SubjectList.aspx": "complete",
             OIA: "unchecked",  # 「載入中」 in its script: js_hint, its type back to todo (why hint) until jscheck
             EE: "partial",  # one button answered no file address: mismatch (要人看)
-            CLV2: "unchecked",  # a type the 10-25 test never saw: new, todo
+            CLV2: "complete",  # a type the 10-25 test never saw: new, todo; got, no browser check (the owner 11-16)
             COUNSEL: "complete"}
     want.update({f"https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid={n}&GI=1": "complete" for n in (661, 662, 663)})
-    want["https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid=660&GI=1"] = "incomplete"  # empty, and the probe's: looks_gone
+    # empty, and the probe says the number does not exist: gone (the owner 11-16 write-off, export batch T5)
+    want["https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid=660&GI=1"] = "complete_school"
     want.update({f"https://sso.nknu.edu.tw/News/SubjectList.aspx?cat={c}": "complete" for c in SSO_CATS})
     want.update({f"https://sso.nknu.edu.tw/News/lastNews.aspx?UNID={unid(k)}": "complete" for k in (1, 2)})
-    want[f"https://sso.nknu.edu.tw/News/lastNews.aspx?UNID={unid(3)}"] = "partial"  # its attachment: bad_link
+    # its attachment: bad_link, the school's broken link (the owner 11-16 「销账照表做」)
+    want[f"https://sso.nknu.edu.tw/News/lastNews.aspx?UNID={unid(3)}"] = "complete_school"
     assert {_canon(u): lv for u, lv in want.items()} == {u: lv for u, (lv, _label) in got.items()}
-    assert got[_canon(EE)][1] == "review" and got[_canon(f"https://sso.nknu.edu.tw/News/lastNews.aspx?UNID={unid(3)}")][1] \
-        == "review"
+    assert got[_canon(EE)][1] == "review"
     empty = crawler.frontier.row(_canon("https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid=660&GI=1"))
     assert set(empty["flags"].split(",")) == {"empty_detail", "gone_id"}
     probes = {r["host"]: r for r in crawler.frontier.q("SELECT * FROM id_probe")}

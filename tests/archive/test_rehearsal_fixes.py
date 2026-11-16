@@ -77,7 +77,7 @@ def test_an_error_page_a_page_links_to_is_in_the_link_table_only(tmp_path):
     assert err not in net.seen
 
 
-def test_a_picture_whose_address_is_an_error_page_is_a_broken_link_never_complete(tmp_path):
+def test_a_picture_whose_address_is_an_error_page_is_the_schools_broken_link(tmp_path):
     err = "https://c.nknu.edu.tw/aca/filenotfound.htm?aspxerrorpath=/aca/uploadfile/a.jpg"
     crawler, net, _ = crawl(tmp_path, {"/aca/default.aspx": page(f'<p>教務處公告</p><img src="{err}">')})
     crawler.seed_url(HOME)
@@ -86,7 +86,7 @@ def test_a_picture_whose_address_is_an_error_page_is_a_broken_link_never_complet
     got = crawler.frontier.q("SELECT result FROM page_resource WHERE page_id=?", (pid,))
     assert [r[0] for r in got] == ["bad_link"]
     level = crawler.frontier.q("SELECT level FROM page_completeness WHERE id=?", (pid,))[0][0]
-    assert level not in ("complete", "complete_school")
+    assert level == "complete_school"  # the school's broken link (the owner 11-16 「销账照表做」, export batch T5)
 
 
 @pytest.mark.parametrize(("to", "own"), [

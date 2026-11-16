@@ -554,13 +554,13 @@ def test_an_empty_notice_page_says_so_in_what_it_lacks_and_the_readme_names_it(t
 
 def _empty_notices(tmp_path: Path, flagged: tuple[str, ...], plain: tuple[str, ...] = ()):
     """An export whose archive holds empty notice pages: `flagged` ones whose text area is there and empty and that the
-    crawler's id probe called gone (the 教务处 archive's 27, flags empty_detail,gone_id,js_hint: 看起来像不存在, so
-    要人看 and 不完整 by the views), `plain` ones with no text area at all, which the crawler does not flag (抓到了,
-    完整)."""
+    crawler flagged (flags empty_detail,js_hint: 页面几乎是空的, so 要人看 and 不完整 by the views; one the id probe
+    also calls gone, gone_id, is gone since the owner's 11-16 write-off, export batch T5), `plain` ones with no text
+    area at all, which the crawler does not flag (抓到了, 完整)."""
     arch = make_archive(tmp_path / "archive").open()
     for nid in flagged:
         arch.page(f"g{nid}", BASE + f"newsview.aspx?nid={nid}", NOTICE_BLANK, found_via="common_crawl",
-                  flags="empty_detail,gone_id,js_hint")
+                  flags="empty_detail,js_hint")
     for nid in plain:
         arch.page(f"p{nid}", BASE + f"newsview.aspx?nid={nid}", NOTICE_GONE, found_via="common_crawl")
     arch.close()
@@ -583,7 +583,7 @@ def test_the_readme_says_empty_notice_pages_are_what_the_manifest_says_not_got_a
         r = rows[BASE + f"newsview.aspx?nid={nid}"]
         assert "内文区" in r["缺什么"]
         assert (r["分类"], r["完整度"], r["结果"]) == ("要人看", outcome.LEVEL_LABEL["incomplete"],
-                                                    outcome.RESULT_LABEL["looks_gone"])
+                                                    outcome.RESULT_LABEL["thin"])
     bullet, section = _passages(readme)
     assert "「抓到了」「完整」" not in readme and "「抓到」的里面" not in readme
     assert bullet == ("- 导出了档的网页里有 2 页是**空的公告页**（公告的内文区找不到或是空的，多半是学校删掉的公告只剩网站"

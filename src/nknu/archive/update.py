@@ -522,13 +522,69 @@ def _sites(raw: str | None) -> set[str] | None:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+# what tonight did with each update site, in seen.tsv's third column (export batch T7; the content session's handover
+# point 2 reads the first two columns only)
+SEEN_WORDS = {"ok": "导了", "failed": "导出失败", "alarm": "警报压着", "unanswered": "连不上", "same": "没变动"}
+
+
+def export_list(status: dict) -> list[str]:
+    """The sites tonight's export takes (design §7.4: the nightly script tells the export which): those the change
+    list says changed, none an alarm holds (§7.5: an alarmed site is not exported tonight)."""
+    held = set(status.get("alarms") or {})
+    return [s for s in status.get("sites_changed") or [] if s not in held]
+
+
+def _results(path: Path | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if path is not None and path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "\t" in line:
+                site, what = line.split("\t", 1)
+                out[site.strip()] = what.strip()
+    return out
+
+
+def seen_rows(status: dict, results: dict[str, str]) -> list[tuple[str, str, str]]:
+    """seen.tsv's rows, by site key (export batch T7; design §7.5 「每站最后一次看过」): the site, its last answer in
+    Taipei time (YYYY-MM-DD HH:MM; '' when it never answered), and what tonight did: an alarm held it, its export
+    failed, it was exported, it did not answer tonight (its last answer is older than tonight's start), or it did not
+    change."""
+    night = status.get("night_started")
+    start = datetime.fromisoformat(night) if night else None
+    alarms = set(status.get("alarms") or {})
+    rows = []
+    for site, at in sorted((status.get("sites_seen") or {}).items()):
+        when = datetime.fromisoformat(at).astimezone(TAIPEI) if at else None
+        if site in alarms:
+            what = "alarm"
+        elif results.get(site) in ("ok", "failed"):
+            what = results[site]
+        elif when is None or (start is not None and when < start):
+            what = "unanswered"
+        else:
+            what = "same"
+        rows.append((site, when.strftime("%Y-%m-%d %H:%M") if when else "", SEEN_WORDS[what]))
+    return rows
+
+
+def _write_seen(path: Path, rows: list[tuple[str, str, str]]) -> None:
+    """seen.tsv, whole: written to a .new beside it, then renamed over it (the content stage never reads half)."""
+    part = path.with_name(path.name + ".new")
+    part.write_text("".join("\t".join(r) + "\n" for r in rows), encoding="utf-8")
+    part.replace(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m nknu.archive.update",
                                  description="定期更新：挑今晚要看的列表和网页、放回待抓（不连网；抓取照旧用 nknu archive run）")
     ap.add_argument("--dir", required=True, type=Path, help="存档目录（frontier.db 所在）")
-    ap.add_argument("action", choices=("plan", "put-back", "go-live", "review", "sites", "fail"),
+    ap.add_argument("action", choices=("plan", "put-back", "go-live", "review", "sites", "fail", "export-list", "seen"),
                     help="plan 只读、只算数；put-back 放回今晚要看的；go-live 第一晚以前做一次；review 算这一晚的变动清单；"
-                         "sites 印出定期更新的网站键（逗号分隔）；fail --step 记下这一晚停在哪一步")
+                         "sites 印出定期更新的网站键（逗号分隔）；fail --step 记下这一晚停在哪一步；export-list 印出今晚要导出的"
+                         "网站（一行一个：有变动的，警报压着的不算）；seen --results --out 写 seen.tsv（每站最后一次看过）")
+    ap.add_argument("--results", type=Path, default=None,
+                    help="seen 用：今晚导出的结果（网站键<TAB>ok/failed/…，export_sites.sh 的 EXPORT_RESULTS）")
+    ap.add_argument("--out", type=Path, default=None, help="seen 用：写到哪里（例如 /work/archive-export/sites/seen.tsv）")
     ap.add_argument("--step", default=None, help="fail 用：停在哪一步")
     ap.add_argument("--today", type=date.fromisoformat, default=None,
                     help="plan、put-back 用：当作哪一天挑（YYYY-MM-DD，台北日期；默认今天）")
@@ -541,6 +597,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{root} 里没有 frontier.db（--dir 打错了？）：什么都没做", file=sys.stderr)
         return 1
     sites = _sites(a.sites)
+    if a.action in ("export-list", "seen"):
+        try:
+            status = json.loads((root / "reports" / STATUS).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"读不到这一晚的状态档（{type(exc).__name__}）：先跑 review", file=sys.stderr)
+            return 1
+        if a.action == "export-list":
+            print("\n".join(export_list(status)))
+            return 0
+        if a.out is None:
+            print("seen 要 --out", file=sys.stderr)
+            return 1
+        results = _results(a.results)
+        _write_seen(a.out, seen_rows(status, results))
+        print(f"写了 {a.out}：{len(status.get('sites_seen') or {})} 个网站")
+        return 0
     if a.action == "fail":
         status: dict = {}
         try:

@@ -257,15 +257,16 @@ def test_the_rows_of_such_pages_say_so_in_what_they_lack_and_keep_their_judgemen
     arch = _archive(tmp_path, _gone)
     rows, readme = _exported(arch, tmp_path, SITE)
     page, sent = rows[BASE + "nodata.html"], [rows[BASE + f"newsview.aspx?nid={n}"] for n in (71, 72)]
-    for r in (page, *sent):
-        assert r["缺什么"].count(export.NO_DATA) == 1 and r["缺什么"].endswith(NOT_FOUND_WORDS), r
-        assert r["备注"].count(export.NO_DATA_NOTE) == 1
-    assert all(r["结果"] == outcome.RESULT_LABEL["redirect"] and r["本地档案"] == page["本地档案"] != "" for r in sent)
+    # the template's nodata.html is the school's not-found page: gone since the owner's 11-16 write-off (export batch
+    # T5), no file, and the notices sent to it with it (学校那边已经不存在)
+    assert page["结果"] == outcome.RESULT_LABEL["gone"] and page["本地档案"] == "" and export.NO_DATA not in page["缺什么"]
+    assert all(r["本地档案"] == "" and r["分类"] == "学校那边已经不存在" for r in sent), sent
     fnf = rows[BASE + "wccafpsfs/page.aspx?pn=3"]
     assert fnf["缺什么"].count(export.NO_DATA) == 1 and fnf["缺什么"].endswith(FNF_WORDS)
+    assert fnf["备注"].count(export.NO_DATA_NOTE) == 1
     section = _section(readme)
-    assert section.startswith("这 4 行") and all(f"| {url} |" in section for url in rows if export.NO_DATA in rows[url]["缺什么"])
-    assert "找不到您所查詢的頁面" in section and "404: File not found" in section
+    assert section.startswith("这 1 行") and all(f"| {url} |" in section for url in rows if export.NO_DATA in rows[url]["缺什么"])
+    assert "404: File not found" in section
 
 
 def test_the_marks_change_nothing_but_what_the_rows_lack_and_their_notes(tmp_path, monkeypatch):
@@ -277,8 +278,7 @@ def test_the_marks_change_nothing_but_what_the_rows_lack_and_their_notes(tmp_pat
                                                     for p in profiles.PROFILES))
     off = _export_at(arch, tmp_path / "off", SITE)
     marked = {r["网址"]: r["缺什么"].rsplit("、", 1)[-1] for r in on.rows if export.NO_DATA in r["缺什么"]}
-    assert marked == {BASE + "nodata.html": NOT_FOUND_WORDS, BASE + "newsview.aspx?nid=71": NOT_FOUND_WORDS,
-                      BASE + "newsview.aspx?nid=72": NOT_FOUND_WORDS, BASE + "wccafpsfs/page.aspx?pn=3": FNF_WORDS}
+    assert marked == {BASE + "wccafpsfs/page.aspx?pn=3": FNF_WORDS}  # nodata.html is gone, with no file (T5)
     assert not [r for r in off.rows if export.NO_DATA in r["缺什么"] or export.NO_DATA_NOTE in r["备注"]]
     assert SECTION in on.readme and SECTION not in off.readme
     assert [r["网址"] for r in on.rows] == [r["网址"] for r in off.rows]
@@ -338,7 +338,8 @@ def test_a_notices_posting_unit_is_its_platforms_unit_cell_by_the_pages_own_addr
 
 
 def test_the_manifest_has_a_thirtieth_column_for_it_explained_as_the_others_are():
-    assert export.COLUMNS[-1] == "公告单位" and len(export.COLUMNS) == 30 == len(set(export.COLUMNS))
+    # the 31st, 组别 (export batch T3), comes after it
+    assert export.COLUMNS[29] == "公告单位" and len(export.COLUMNS) == 31 == len(set(export.COLUMNS))
     assert export.COLUMNS[:29][-2:] == ("页别", "列表上的类别")  # the 29 of 11-09 in their places
     assert "公告單位" in export.COLUMN_HELP["公告单位"]
     assert [d.unit for d in profiles.SSO_NEWS.details] == [UNIT_CELL]

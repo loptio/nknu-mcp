@@ -427,7 +427,9 @@ def test_the_errors_are_the_log_lines_per_site_per_card_and_in_the_top_line(trou
             assert r["errors"]["n"] == len(progress.log_view(snap, slow, site=r["site"])["rows"])
 
 
-def test_what_never_counts_and_pending_check_only_after_the_browser_check(troubled):
+def test_what_never_counts_and_a_page_no_browser_judged_is_no_error(troubled):
+    """Since the owner's 11-16 decision (direction §四 2, export batch T5) a type no browser check judged is 抓到了:
+    nothing waits for the browser check any more, before or after it ends."""
     f, ids, _root, _key = troubled
     snap, slow = numbers(f, slow=True)
     refs = {r["ref"] for r in progress.log_view(snap, slow)["rows"]}
@@ -435,8 +437,8 @@ def test_what_never_counts_and_pending_check_only_after_the_browser_check(troubl
     event(f, NOW - 30 * MIN, "info", "jscheck_end", json.dumps({"reason": "finished", "sites": None}))
     snap, slow = numbers(f, slow=True)
     lines = progress.log_view(snap, slow, site=BM)["rows"]
-    assert [(x["ref"], x["kind"], x["code"]) for x in lines] == [(f"p{ids['todo']}", "pending_check", "unchecked")]
-    assert row(snap, BM)["errors"] == {"n": 1, "failed": 0, "review": 0, "pending": 1, "color": "yellow"}
+    assert f"p{ids['todo']}" not in {x["ref"] for x in lines}
+    assert row(snap, BM)["errors"]["pending"] == 0
 
 
 def test_a_row_listed_as_a_page_and_as_a_resource_is_one_problem(lab):

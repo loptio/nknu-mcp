@@ -1353,8 +1353,9 @@ def school_no_data(url: str, html: str | None) -> NoData | None:
     """The rule by which a school page answers it has no data for what was asked (NoData: the course tables' pop-up
     「系所未提供相關資料」; the owner 11-09 「照这样做」), or None: by the platform of the page's own address (profile_for,
     as school_says goes: a unit site's export lists the course tables dataopen2search owns), its path (a press's
-    answer has its list's address; a fragment is no path) and its HTML as archived, scripts included. The export's
-    alone (export.Writer._page): the crawler never asks it."""
+    answer has its list's address; a fragment is no path) and its HTML as archived, scripts included. The export
+    asks it of every page (export.Writer._page); the crawler of every page it reads, for two rules only (CNKNU_FNF and
+    NEWS_NO_ROWS: flags gone_page and no_rows, export batch T5 ③)."""
     p = profile_for(url)
     if p is None or not p.no_data or not html:
         return None

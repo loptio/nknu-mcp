@@ -972,21 +972,21 @@ def test_reurls_own_page_is_read_for_its_target(tmp_path):
     assert links_of(crawler, short["url"])[target] == "out:social"  # it leads to a Facebook page: a link only
 
 
-def test_a_short_link_that_answers_404_is_dead_and_one_unread_needs_a_person(tmp_path):
+def test_a_short_link_that_answers_404_is_dead_and_one_unread_is_round_twos(tmp_path):
     crawler, _ = _short(tmp_path, "https://lurl.cc/Dead1", snap("x", 404))
     assert result(crawler, "https://lurl.cc/Dead1") == "short_dead"
     crawler, _ = _short(tmp_path / "b", "https://lihi1.cc/Odd1", page("<p>稍候</p>"))
-    assert result(crawler, "https://lihi1.cc/Odd1") == "unhandled"
+    assert result(crawler, "https://lihi1.cc/Odd1") == "later"  # the owner 11-16: round two's (export batch T5)
 
 
-def test_a_short_link_to_drive_is_unhandled_until_the_google_step(tmp_path):
+def test_a_short_link_to_drive_is_round_twos_until_the_google_step(tmp_path):
     to = "https://drive.google.com/file/d/1XyZ/view"
     crawler, _ = _short(tmp_path, "https://bit.ly/3xYz", snap("x", 301, headers={"location": to}))
     short = rows(crawler)["https://bit.ly/3xYz"]
     assert links_of(crawler, short["url"])[to] == "unhandled:google"
     got = crawler.frontier.q("SELECT result FROM page_resource WHERE page_id=? AND res_key=?",
                              (rows(crawler)[HOME]["id"], "https://bit.ly/3xYz"))[0][0]
-    assert got == "unhandled"
+    assert got == "later"  # a Google address no step reads: round two's (the owner 11-16, export batch T5)
 
 
 # ---------------------------------------------------------------- login re-checks (§4.2)

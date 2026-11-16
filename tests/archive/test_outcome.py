@@ -88,11 +88,14 @@ URL_CASES = [
     # short_dead: a short link that answers 404 or 410 is dead, not a page the school removed (review A2)
     ("short_dead", SHORT_DEAD),
     # unhandled: a short link's 200 page nobody could read a target from (unhandled:shortlink, review A2)
-    ("unhandled", {**SHORT, "url": "https://reurl.cc/unread0", "reason": "unhandled:shortlink"}),
+    # a short link whose way cannot be read: round two's (the owner 11-16, export batch T5)
+    ("later", {**SHORT, "url": "https://reurl.cc/unread0", "reason": "unhandled:shortlink"}),
     # looks_gone: only the program's comparison says so (§10.1): a person looks, never 学校那边已经不存在
     ("looks_gone", {"flags": "soft404"}),
-    ("looks_gone", {"flags": "gone_id"}),
-    ("looks_gone", {"flags": "soft404,gone_id,empty_detail"}),
+    # the id probe says the number does not exist: gone (export batch T5, judge.md §4.5 (ii)); a soft 404 alone looks gone
+    ("gone", {"flags": "gone_id"}),
+    ("gone", {"flags": "soft404,gone_id,empty_detail"}),
+    ("looks_gone", {"flags": "soft404"}),
     # api_error: Google's API cannot read it (private and deleted both answer 404 with a key, §7.6)
     ("api_error", {**FILE, "kind": "drive", "kind0": "drive", "sniff": "json", "status": 404,
                    "host": "www.googleapis.com", "url": API}),
@@ -155,9 +158,11 @@ URL_CASES = [
     ("unresolved", {"page_type": "t:unresolved"}),
     ("unresolved", {"page_type": "t:unresolved", "flags": "js_hint"}),
     # unchecked: a page type nobody has judged is never ok
-    ("unchecked", {"page_type": "t:todo"}),
-    ("unchecked", {"page_type": None}),
-    ("unchecked", {"page_type": "t:missing"}),  # a key with no page_type row
+    # a type no browser check judged, no sign of JavaScript: got (the owner 11-16, export batch T5)
+    ("ok", {"page_type": "t:todo"}),
+    ("ok", {"page_type": None}),
+    ("ok", {"page_type": "t:missing"}),  # a key with no page_type row
+    ("unchecked", {"page_type": "t:todo", "flags": "js_hint"}),
     ("unchecked", {"flags": "js_hint"}),
     # thin
     ("thin", {"flags": "thin"}),
@@ -294,10 +299,13 @@ def test_a_page_opened_before_it_was_fetched_again_is_judged_by_its_type(f):
     assert result_of(f, add_url(f, page_type="t:ok", flags="js_hint", fetched_at=None)) == "unchecked"
 
 
-def test_a_type_still_to_judge_stays_unchecked_whatever_one_page_showed(f):
+def test_a_type_still_to_judge_is_got_unless_a_page_shows_javascript(f):
+    """The owner 11-16 (direction §四 2, export batch T5): 「待判定」 is 「抓到了」 now, the browser check not running this
+    round; a page with a sign of JavaScript the browser has not opened since is round two's (unchecked)."""
     p = add_url(f, page_type="t:todo", flags="js_hint", fetched_at=FETCHED)
     opened(f, p, "ok")
-    assert result_of(f, p) == "unchecked"
+    assert result_of(f, p) == "ok"  # the browser opened this very page and saw it whole
+    assert result_of(f, add_url(f, page_type="t:todo", flags="js_hint", fetched_at=FETCHED)) == "unchecked"
     q = add_url(f, page_type="t:todo", fetched_at=FETCHED)
     opened(f, q, "js")
     assert result_of(f, q) == "js"
@@ -331,8 +339,8 @@ def strictly_ok(r) -> bool:
     expected_file = (r["kind0"] or r["kind"]) in outcome._EXPECTED_FILE
     if (expected_file and r["sniff"] == "html") or ((expected_file or r["kind"] != "page") and r["sniff"] is None):
         return False
-    if r["kind"] == "page":
-        return TYPES.get(r["page_type"]) in ("ok", "frame")
+    if r["kind"] == "page":  # a type judged ok, or one not judged at all (the owner 11-16: 「待判定」改「抓到了」)
+        return TYPES.get(r["page_type"]) in ("ok", "frame", "todo", None)
     return r["kind"] in outcome.FETCHED_KINDS
 
 
@@ -543,12 +551,11 @@ def test_every_result_has_a_label_a_colour_and_a_category():
     ("queued", ("todo", "retry")),
     ("failed", ("failed", "lab", "server_error", "refused", "http_4xx", "not_file")),
     ("login", ("login",)),
-    ("gone", ("gone",)),
-    ("pending_check", ("unchecked",)),
-    ("next_round", ("later", "js", "click")),
+    ("gone", ("gone", "bad_link", "short_dead")),  # the school's broken links: the owner 11-16 「销账照表做」
+    ("next_round", ("later", "js", "click", "unchecked")),  # unchecked: a sign of JavaScript, round two's (11-16)
     ("rule", ("rule", "redirect")),
     ("review", ("held", "thin", "decode", "mismatch", "not_discovered", "unknown", "too_large", "unresolved",
-                "looks_gone", "api_error", "unhandled", "bad_link", "short_dead", "parked")),
+                "looks_gone", "api_error", "unhandled", "parked")),
     ("school_side", ("school_side",)),
 ])
 def test_user_categories(bucket, codes):
@@ -816,8 +823,9 @@ def test_a_writing_nobody_has_decided_about_is_never_complete(f):
     r = completeness(f, p)
     assert (r["level"], r["label"], r["n_review"], r["n_bad"]) == ("partial", "review", 1, 1)
     q = add_url(f)
-    add_res(f, q, "click", how="unhandled", need="must", why="unhandled:google")  # a Google address not read
-    assert lv(f, q) == ("partial", "review")
+    # a Google address not read: round two's (the owner 11-16, export batch T5), still never complete
+    add_res(f, q, "click", how="unhandled", need="must", why="unhandled:google")
+    assert lv(f, q) == ("partial", "miss_other")
     ok = add_url(f)
     add_res(f, ok, "click", how="unhandled", need="no", why="unhandled:ignore")  # decided: only the sort order
     add_res(f, ok, "click", how="click", need="no", why="click:shown_on_load")
@@ -1156,7 +1164,7 @@ def test_a_resource_skipped_for_no_rule_is_never_complete(f, reason):
 
 
 def test_labels_keep_every_reason_in_order(f):
-    p = add_url(f, page_type="t:todo")  # not judged yet
+    p = add_url(f, page_type="t:todo", flags="js_hint")  # not judged yet, a sign of JavaScript (round two's)
     add_res(f, p, "img", res=add_url(f, **{**FILE, "kind": "image", **ROW_FOR["failed"]}))
     add_res(f, p, "file", res=add_url(f, **ROW_FOR["too_large"]))
     add_res(f, p, "img", res=add_url(f, **ROW_FOR["later"]))
@@ -1275,7 +1283,7 @@ def test_a_file_that_lands_on_a_file_is_got(f):
     assert lv(f, p) == ("complete", "complete")
 
 
-def test_the_school_saying_a_file_does_not_exist_is_gone_and_its_broken_link_is_for_a_person(f):
+def test_the_school_saying_a_file_does_not_exist_is_gone_and_its_broken_link_is_the_schools(f):
     """B6: SSO answers 200 with a page 「附件無法下載：檔案不存在」. The platform file (phase 3) reads it: gone_page
     once seen twice (the first time it is retried later), bad_link when the page says 「檔案包含不支援的字元」 (the
     school's own link is broken)."""
@@ -1284,7 +1292,8 @@ def test_the_school_saying_a_file_does_not_exist_is_gone_and_its_broken_link_is_
     assert result_of(f, add_url(f, **{**FILE, "state": "pending", "attempts": 1, "reason": "gone_page",
                                       "status": None})) == "retry"
     assert outcome.RESULT_LABEL["bad_link"] == "学校的链接坏了"
-    assert outcome.user_bucket("bad_link") == "review" and outcome.RESULT_COLOR["bad_link"] == "red"
+    # the school's broken link: 学校那边已经不存在 (the owner 11-16 「销账照表做」), still red for its site
+    assert outcome.user_bucket("bad_link") == "gone" and outcome.RESULT_COLOR["bad_link"] == "red"
     p = add_url(f)
     add_res(f, p, res=add_url(f, **{**FILE, "flags": "gone_page"}))
     assert lv(f, p) == ("complete_school", "complete_school")
@@ -1366,10 +1375,10 @@ def test_short_link_results(f):
                                       "final_url": "https://c.nknu.edu.tw/aca/"})) == "redirect"
     # a 200 page whose target was read (meta refresh, reurl's input#target): a redirect to it
     assert result_of(f, add_url(f, **{**SHORT, "final_url": "https://c.nknu.edu.tw/aca/x.pdf"})) == "redirect"
-    # a 200 page nobody could read a target from: unhandled:shortlink, for a person
+    # a 200 page nobody could read a target from: round two's (the owner 11-16, export batch T5)
     assert result_of(f, add_url(f, **{**SHORT, "url": "https://reurl.cc/none", "reason": "unhandled:shortlink"})) \
-        == "unhandled"
-    assert outcome.RESULT_LABEL["short_dead"] == "短网址已失效" and outcome.user_bucket("short_dead") == "review"
+        == "later"
+    assert outcome.RESULT_LABEL["short_dead"] == "短网址已失效" and outcome.user_bucket("short_dead") == "gone"
 
 
 def test_a_short_link_counts_by_where_it_leads(f):
@@ -1379,10 +1388,10 @@ def test_a_short_link_counts_by_where_it_leads(f):
     assert lv(f, p) == ("complete", "complete")
     dead = add_url(f)
     add_res(f, dead, "shortlink", res=add_url(f, **{**SHORT_DEAD, "url": "https://lurl.cc/dead2"}))
-    assert lv(f, dead) == ("partial", "review")  # never 学校那边已经不存在 by itself
+    assert lv(f, dead) == ("complete_school", "complete_school")  # the school's dead link (the owner 11-16)
     unread = add_url(f)
     add_res(f, unread, "shortlink", res=add_url(f, **{**SHORT, "url": "https://reurl.cc/unread"}))
-    assert lv(f, unread) == ("partial", "review")
+    assert lv(f, unread)[0] == "partial"  # round two's: never complete
 
 
 def test_a_short_link_row_is_never_a_round_one_page(f):

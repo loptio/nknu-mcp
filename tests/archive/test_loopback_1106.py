@@ -78,7 +78,8 @@ def test_the_first_batch_s_localhost_attachment_is_the_school_s_broken_link_and_
     assert [tuple(r) for r in got] == [("must", outcome.LOOPBACK_OUT)]
     assert [r[0] for r in crawler.frontier.q("SELECT result FROM page_resource WHERE page_id=?", (pid,))] == ["bad_link"]
     level, reasons = _level(crawler, pid)
-    assert level == "partial" and "review" in reasons.split(",")  # 要人看 until a person marks it the school's
+    # the school's broken link: complete as far as the school allows (the owner 11-16 「销账照表做」, export batch T5)
+    assert level == "complete_school"
     assert progress._no_row_result("must", outcome.LOOPBACK_OUT) == "bad_link"
 
 

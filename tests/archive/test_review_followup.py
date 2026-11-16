@@ -98,13 +98,13 @@ def test_a_frame_whose_file_lands_on_a_web_page_is_not_got(f):
     assert completeness(f, p)["miss_file"] == 1
 
 
-def test_a_resource_sent_to_a_google_address_with_no_google_step_is_for_a_person(f):
+def test_a_resource_sent_to_a_google_address_with_no_google_step_is_round_twos(f):
     p = add_url(f)
     r = moved(f, "https://drive.google.com/file/d/1AbC/view", **FILE)
     f.link(r, "https://drive.google.com/file/d/1AbC/view", "[redirect]", "unhandled:google")
     add_res(f, p, "file", res=r)
-    assert f.q("SELECT result FROM page_resource WHERE page_id=?", (p,))[0][0] == "unhandled"
-    assert lv(f, p) == ("partial", "review")
+    assert f.q("SELECT result FROM page_resource WHERE page_id=?", (p,))[0][0] == "later"  # the owner 11-16
+    assert lv(f, p)[0] == "partial"  # never complete
 
 
 def test_a_short_link_or_a_frame_that_leads_to_a_web_page_is_got(f):
@@ -122,20 +122,21 @@ def test_a_short_link_or_a_frame_that_leads_to_a_web_page_is_got(f):
     ("https://c.nknu.edu.tw/aca/a/a/a/a.pdf", "out:trap", ("partial", "failed")),
     ("https://c.nknu.edu.tw/aca/clip.mp4", "out:media", ("complete", "complete")),  # a video: the rule's own case
     ("https://webmail.nknu.edu.tw/login", "out:login", ("complete_school", "complete_school")),
-    ("https://drive.google.com/x", "unhandled:google", ("partial", "review")),  # no Google step: for a person
+    # no Google step: round two's (the owner 11-16, export batch T5), still never complete
+    ("https://drive.google.com/x", "unhandled:google", ("partial", None)),  # None: what it lacks is said per role
 ])
 def test_an_attachment_redirected_where_no_row_was_made_counts_by_what_it_should_have_been(f, to, verdict, want):
     p = add_url(f)
     r = moved(f, to, **FILE)
     f.link(r, to, "[redirect]", verdict)
     add_res(f, p, "file", res=r)
-    assert lv(f, p) == want
+    assert lv(f, p) == want if want[1] is not None else lv(f, p)[0] == want[0]
     q = add_url(f)  # the same behind a short link
     hop = moved(f, to, **{**FILE, "url": f"https://c.nknu.edu.tw/aca/s{r}.pdf"})
     f.link(hop, to, "[redirect]", verdict)
     add_res(f, q, "shortlink", res=add_url(f, **{**SHORT, "url": f"https://reurl.cc/x{r}", "status": 302,
                                                  "final_url": url_of(f, hop)}))
-    assert lv(f, q) == want
+    assert lv(f, q) == want if want[1] is not None else lv(f, q)[0] == want[0]
 
 
 @pytest.mark.parametrize("verdict, level", [("out:social", "partial"), ("out:media", "complete"),

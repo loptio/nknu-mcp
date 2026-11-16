@@ -306,7 +306,8 @@ def test_a_row_the_id_probe_calls_gone_or_waiting_for_the_lab_takes_its_old_copy
     got = export.export_site(arch.root, SITE, tmp_path / "out", old_copies=old)
     rows = by_url(rows_of(tmp_path / "out" / "manifest.csv"))
     page, pdf = rows[BASE + "newsview.aspx?nid=7"], rows[BASE + "uploadfile/lab.pdf"]
-    assert (page["结果"], page["来源"], page["标题"]) == (outcome.RESULT_LABEL["looks_gone"], export.ORIGIN_OLD, "宿舍搬遷公告")
+    # gone_id: gone since the owner's 11-16 write-off (export batch T5); still filled from the 10-24 copy
+    assert (page["结果"], page["来源"], page["标题"]) == (outcome.RESULT_LABEL["gone"], export.ORIGIN_OLD, "宿舍搬遷公告")
     assert (pdf["结果"], pdf["来源"]) == (outcome.RESULT_LABEL["lab"], export.ORIGIN_OLD)
     assert (tmp_path / "out" / pdf["本地档案"]).read_bytes() == OLD_PDF
     assert got.old_copies == 2

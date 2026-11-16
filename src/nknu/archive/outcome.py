@@ -101,7 +101,10 @@ def error_signature(url: str) -> ErrorSignature | None:
 # in_image: a page whose words alone would be thin, its body a picture (reconcile, design §23 E3: 内容在图片里, for the
 # organising stage's text recognition): said, never a gap, so not one of PAGE_FLAGS
 FLAGS = ("login", "soft404", "decode", "gone_redirect", "gone_id", "error_page", "thin", "empty_detail", "js_hint",
-         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link", "in_image")
+         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link", "in_image", "no_rows")
+# no_rows: a notice list that says it has no notice (profiles.NEWS_NO_ROWS, 「搜尋結果：共0筆」): got, never thin (export
+# batch T5 ③; the owner 11-16 「销账照表做」). gone_page is also set for c.nknu's 「404: File not found」 (CNKNU_FNF)
+SAYS_NOTHING = ("no_rows", "gone_page")  # the thin step never marks a page with either
 IN_IMAGE_WORDS = "内容在图片里（整理阶段做文字识别）"
 # what a page's text says: on a file or an image, a crawler bug
 PAGE_FLAGS = ("thin", "empty_detail", "js_hint", "js_redirect")
@@ -179,6 +182,24 @@ def school_home(url: str | None) -> bool:
     return (parts.scheme in ("http", "https") and (host == SCHOOL_DOMAIN or host.endswith("." + SCHOOL_DOMAIN))
             and port is None and "@" not in parts.netloc and parts.path.strip("/") == ""
             and not any(c in url for c in "?#"))
+
+
+# the pages a school sends the address of a notice it deleted to (2026-11-15 judge.md §4.5 (ii): the c.nknu template's
+# nodata.html, 「很抱歉，找不到您所查詢的頁面」, where tecs sends 133 old notices, a c.nknu unit's too; clcts's 404.php),
+# by the end of its path as profiles.CNKNU_NOT_FOUND and CLCTS_404 read it: such a page is gone,
+# and a redirect to it follows it. Read by the views alone, by the address's path on a school host: never one of
+# ERROR_SIGNATURES, which the crawler reads too (a link to one would turn bad_link, and the redirect would never be
+# followed) (export batch T5; the owner 11-16 「销账照表做」)
+NOT_FOUND_PATHS = ("/nodata.html", "/404.php")
+
+
+def _not_found_sql(u: str) -> str:
+    """SQL: url row `u` is one of a school host's not-found pages (NOT_FOUND_PATHS)."""
+    rest = f"lower(substr({u}.url, instr({u}.url, '://') + 3))"
+    host = f"substr({rest}, 1, instr({rest} || '/', '/') - 1)"
+    path = f"substr({rest}, instr({rest} || '/', '/'))"
+    return (f"({host} LIKE '%.{SCHOOL_DOMAIN}' AND instr({rest}, '?') = 0 AND "
+            f"({' OR '.join(f'{path} LIKE {chr(39)}%{x}{chr(39)}' for x in NOT_FOUND_PATHS)}))")  # its path ends so
 
 
 def _school_home_sql(x: str) -> str:
@@ -355,8 +376,10 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
   WHEN {has('gone_redirect')} OR {has('gone_page')} THEN 'gone'
   WHEN {has('bad_link')} THEN 'bad_link'
   WHEN {short} THEN
-       CASE WHEN {u}.final_url IS NOT NULL AND {u}.final_url <> {u}.url THEN 'redirect' ELSE 'unhandled' END
-  WHEN {has('soft404')} OR {has('gone_id')} THEN 'looks_gone'
+       CASE WHEN {u}.final_url IS NOT NULL AND {u}.final_url <> {u}.url THEN 'redirect' ELSE 'later' END
+  WHEN {has('gone_id')} THEN 'gone'
+  WHEN {u}.kind = 'page' AND {_not_found_sql(u)} THEN 'gone'
+  WHEN {has('soft404')} THEN 'looks_gone'
   WHEN {has('error_page')} THEN 'server_error'
   WHEN {has('decode')} THEN 'decode'
   WHEN {expected} AND {u}.sniff = 'html' THEN 'not_file'
@@ -367,13 +390,16 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
        CASE WHEN {has('js_redirect')} THEN 'redirect'
             WHEN {jp}.url_id IS NOT NULL AND {jp}.verdict NOT IN {_sql_list(JS_PAGE_VERDICTS)} THEN 'unknown'
             WHEN {pt}.verdict = 'js' OR {jp}.verdict = 'js' THEN 'js'
-            WHEN {has('thin')} OR {has('empty_detail')} THEN 'thin'
+            WHEN ({has('thin')} AND NOT EXISTS (SELECT 1 FROM page_res {u}_alb WHERE {u}_alb.page_id = {u}.id
+                 AND {u}_alb.why = 'album')) OR {has('empty_detail')} THEN 'thin'
             WHEN {pt}.verdict = 'unresolved' OR {jp}.verdict = 'unresolved' THEN 'unresolved'
-            WHEN coalesce({pt}.verdict, 'todo') = 'todo' THEN 'unchecked'
             WHEN {pt}.verdict = 'click' OR {jp}.verdict = 'click' THEN 'click'
             WHEN {has('js_hint')} AND {jp}.url_id IS NULL THEN 'unchecked'
             WHEN {jp}.url_id IS NULL AND EXISTS (SELECT 1 FROM page_res {u}_auto WHERE {u}_auto.page_id = {u}.id
                  AND {u}_auto.res_key >= '{AUTO_KEY}' AND {u}_auto.res_key < '{_after(AUTO_KEY)}') THEN 'unchecked'
+            -- a type no browser check judged, on a page with no sign of JavaScript: got (the owner 11-16, direction
+            -- §四 2: 「待判定」改「抓到了」; jscheck does not run this round). A sign of JavaScript: unchecked, round two's
+            WHEN coalesce({pt}.verdict, 'todo') = 'todo' THEN 'ok'
             WHEN {pt}.verdict IN ('ok', 'frame') THEN 'ok'
             ELSE 'unknown' END
   WHEN {u}.kind IN {_sql_list(FETCHED_KINDS)} AND NOT ({' OR '.join(has(flag) for flag in PAGE_FLAGS)}) THEN 'ok'
@@ -387,8 +413,8 @@ FROM url u LEFT JOIN page_type pt ON pt.key = u.page_type
 """
 URL_RESULTS = ("ok", "gone", "login", "redirect", "rule", "later", "todo", "retry", "lab", "js", "unchecked", "thin",
                "refused", "http_4xx", "decode", "too_large", "failed", "server_error", "not_file", "held", "unknown",
-               "unresolved", "click", "looks_gone", "api_error", "api_quota", "bad_link", "short_dead", "unhandled",
-               "parked", SCHOOL_SIDE)
+               "unresolved", "click", "looks_gone", "api_error", "api_quota", "bad_link", "short_dead",
+               "parked", SCHOOL_SIDE)  # unhandled: a resource's or a press's only, since a short link with no way is later
 
 # ---------------------------------------------------------------- §10.3: one result per button press
 
@@ -452,7 +478,7 @@ RESOURCE_RESULTS = tuple(dict.fromkeys((*URL_RESULTS, *ACTION_RESULTS, "not_disc
 
 # a needed resource's result, in exactly one group (test_outcome checks the split)
 GROUPS = {
-    "good": ("ok", "rule", "gone", "login", SCHOOL_SIDE),  # nothing more to fetch
+    "good": ("ok", "rule", "gone", "login", SCHOOL_SIDE, "bad_link", "short_dead"),  # nothing more to fetch
     "wait": ("todo", "retry", "lab"),
     "unchecked": ("unchecked",),
     "round2": ("later", "js", "click"),
@@ -460,16 +486,18 @@ GROUPS = {
     # gap in these rules, never a resource fetched
     "bad": ("failed", "not_file", "held", "refused", "http_4xx", "server_error", "mismatch", "unknown",
             "not_discovered", "too_large", "decode", "thin", "redirect", "unresolved", "looks_gone", "api_error",
-            "api_quota", "unhandled", "bad_link", "short_dead", "parked"),
+            "api_quota", "unhandled", "parked"),
 }
-SCHOOL = ("gone", "login", SCHOOL_SIDE)  # fetched as far as the school allows (school_side: a person said so)
+# fetched as far as the school allows (school_side: a person said so; bad_link and short_dead: the school's broken link
+# and dead short link, the owner 11-16 「销账照表做」)
+SCHOOL = ("gone", "login", SCHOOL_SIDE, "bad_link", "short_dead")
 LOST = ("not_discovered", "unknown")  # a resource nothing accounts for, or a combination nobody knows: a crawler bug
 # 连接失败: nothing came from the server, after the retries (the user's category of the same name, §10.2.1)
 FAILED = ("failed", "lab", "server_error", "refused", "http_4xx", "not_file")
 # 要人看: got but maybe wrong, or the crawler stopped by itself, or a person must decide (§10.4). thin here is a
 # resource's: a page that is itself thin has its own label. redirect: a resource whose redirects never land
 REVIEW = ("held", "too_large", "mismatch", "unknown", "not_discovered", "decode", "thin", "unresolved", "looks_gone",
-          "api_error", "api_quota", "unhandled", "redirect", "bad_link", "short_dead", "parked")
+          "api_error", "api_quota", "unhandled", "redirect", "parked")
 # a round-1 page whose redirects lead to what the rules leave out (a page that is itself skipped by a rule or too large
 # is not judged at all): a person decides whether the rule or the site list should change
 OWN_REVIEW = ("rule",)
@@ -581,6 +609,11 @@ def judge_page(row: dict, **changed: object) -> dict[str, str]:
     return dict(zip(JUDGED, got, strict=True))
 
 
+# a Google address no Google step reads (round1.admit; the forms' pictures, docs.google.com/forms-images-rt: 795 of 801
+# rows on 11-15): round two's, the owner's decision of 11-16 (direction §四 1), never 要人看
+UNHANDLED_GOOGLE = "unhandled:google"
+
+
 def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -591,7 +624,8 @@ def _kept_out(verdict: str, link: bool = True) -> str:
     broken link), behind a sign-in, left out by a rule, or else lost (never complete). A link
     verdict unhandled:<why> (a Google address with no Google step to read it, round1.admit) is unhandled, for a person;
     a page_res.why of that kind is placed before this (need must), and with any other need is lost as before."""
-    unhandled = f"WHEN {verdict} LIKE 'unhandled:%' THEN 'unhandled' " if link else ""
+    unhandled = (f"WHEN {verdict} = '{UNHANDLED_GOOGLE}' THEN 'later' WHEN {verdict} LIKE 'unhandled:%' "
+                 "THEN 'unhandled' ") if link else ""
     return (f"CASE WHEN {verdict} IN {_sql_list(BROKEN_OUT)} THEN 'bad_link' "
             f"WHEN {verdict} LIKE 'out:login%' THEN 'login' WHEN {verdict} LIKE 'out:%' THEN 'rule' "
             f"{unhandled}ELSE 'not_discovered' END")
@@ -724,6 +758,8 @@ r00 AS (
          CASE WHEN rests.need NOT IN ('must', 'round2') THEN 'unknown'
               WHEN rests.res_id IS NULL AND rests.action_id IS NULL AND rests.need = 'round2'
                    AND rests.why LIKE 'round2:%' THEN 'later'
+              WHEN rests.res_id IS NULL AND rests.action_id IS NULL AND rests.need = 'must'
+                   AND rests.why = '{UNHANDLED_GOOGLE}' THEN 'later'
               WHEN rests.res_id IS NULL AND rests.action_id IS NULL AND rests.need = 'must'
                    AND rests.why LIKE 'unhandled:%' THEN 'unhandled'
               WHEN rests.action_id IS NOT NULL AND (rests.act_id IS NULL OR rests.act_state = 'superseded')
@@ -921,7 +957,7 @@ RESULT_LABEL = {
     "lab": "连不上，等搬到实验室",
     "js": "内容要 JavaScript（下一轮补）",
     "click": "点了才载入的内容（下一轮补）",
-    "unchecked": "这类网页还没判定",
+    "unchecked": "有要 JavaScript 的迹象，下一轮用浏览器看",
     "unresolved": "这类网页用浏览器也判定不了",
     "thin": "页面几乎是空的",
     "refused": "被拒绝（401、403、451）",
@@ -981,11 +1017,12 @@ _BUCKET_OF = {
     "held": "review", "thin": "review", "decode": "review", "mismatch": "review", "not_discovered": "review",
     "too_large": "review", "unresolved": "review", "looks_gone": "review", "api_error": "review", "api_quota": "review",
     "unhandled": "review",
-    "unknown": "review", "bad_link": "review", "short_dead": "review", "parked": "review",
+    "unknown": "review", "parked": "review",
+    "bad_link": "gone", "short_dead": "gone",  # the school's (the owner 11-16 「销账照表做」)
     SCHOOL_SIDE: SCHOOL_SIDE,
     "login": "login",
     "gone": "gone",
-    "unchecked": "pending_check",
+    "unchecked": "next_round",  # a sign of JavaScript, no browser check this round (the owner 11-16)
     "later": "next_round", "js": "next_round", "click": "next_round",
     "rule": "rule", "redirect": "rule",
 }

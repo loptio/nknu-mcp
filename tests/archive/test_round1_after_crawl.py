@@ -288,8 +288,10 @@ def test_seed_run_jscheck_reconcile_verify_says_done_only_once_everything_is_the
         assert f.q("SELECT verdict FROM page_type WHERE key=?", (pagetypes.type_key(CONTACT),))[0][0] == "todo"
     finally:
         f.close()
-    got = w.not_done(monitor.LOOK)  # contact.html's type is new: 待判定 until jscheck, yellow
-    assert any("待判定" in x for x in got.sites[SITE].why)
+    # contact.html's type is new and no browser judged it: got since the owner's 11-16 decision (export batch T5),
+    # nothing 待判定 any more
+    got = w.not_done(monitor.LOOK)
+    assert SITE not in got.sites or not any("待判定" in x for x in got.sites[SITE].why)
     # the browser judged the new type: what is left is a reconciliation newer than the run
     report = w.jscheck()
     assert report.reason == "finished" and report.todo_left == 0

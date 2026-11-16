@@ -188,7 +188,8 @@ def test_an_old_frontier_gains_the_new_columns_and_tables_when_opened(tmp_path):
     old = rows["https://a.nknu.edu.tw/x"]
     assert (old["prio"], old["leaf"], old["owner_site"], old["kind0"]) == (1, 0, None, None)  # the defaults
     assert old["result"] == "looks_gone"  # a soft 404 is the program's comparison: a person looks (§10.1)
-    assert rows["https://a.nknu.edu.tw/y"]["result"] == "unchecked"  # no page type yet: never ok
+    # no page type yet, no sign of JavaScript: got (the owner 11-16, direction §四 2; export batch T5)
+    assert rows["https://a.nknu.edu.tw/y"]["result"] == "ok"
     assert (pb["n"], pb["decision"]) == (3, "unknown")
 
 
