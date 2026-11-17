@@ -17,7 +17,7 @@
 :root {
   --bg: #f5f5f2; --surface: #ffffff; --sunk: #f3f2ee; --ink: #161615; --ink2: #5c5b57; --ink3: #706e68;
   --line: #e7e6e0; --line2: #cfcec6; --hover: rgba(22,22,21,.05); --press: rgba(22,22,21,.1); --mark2: rgba(22,22,21,.1);
-  --shadow: 0 1px 2px rgba(22,22,21,.05);
+  --shadow: 0 1px 2px rgba(22,22,21,.05); --pop: 0 6px 24px rgba(22,22,21,.14);
   --k0: #3578b8; --k1: #6ebbe8; --k2: #e1a948; --k3: #3ca17b; --k4: #d6d4cd; --on-w: #ffffff; --on-k: #131312;
   --q0: #e5e6fc; --q1: #ccccf8; --q2: #b1b0ef; --q3: #9490e3; --q4: #736ace; --q5: #503ead; --qx: #f1f0eb;
   --amt: var(--q4); --amt2: rgba(115,106,206,.24); --amt3: rgba(115,106,206,.12); --on-amt: #ffffff;
@@ -34,7 +34,7 @@
   :root:not([data-theme="light"]) {
     --bg: #0e0e0d; --surface: #191918; --sunk: #141413; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #8f8d86;
     --line: #2b2b29; --line2: #3d3d3a; --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
-    --mark2: rgba(255,255,255,.13); --shadow: none;
+    --mark2: rgba(255,255,255,.13); --shadow: none; --pop: 0 8px 28px rgba(0,0,0,.55);
     --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
     --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
     --amt2: rgba(135,129,224,.32); --amt3: rgba(135,129,224,.16); --on-amt: #131312;
@@ -48,7 +48,7 @@
 :root[data-theme="dark"] {
   --bg: #0e0e0d; --surface: #191918; --sunk: #141413; --ink: #f1f0ec; --ink2: #bdbcb3; --ink3: #8f8d86;
   --line: #2b2b29; --line2: #3d3d3a; --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.12);
-  --mark2: rgba(255,255,255,.13); --shadow: none;
+  --mark2: rgba(255,255,255,.13); --shadow: none; --pop: 0 8px 28px rgba(0,0,0,.55);
   --k0: #036bb9; --k1: #33a1d2; --k2: #b88009; --k3: #088963; --k4: #b0aea6;
   --q0: #262540; --q1: #373362; --q2: #4b4589; --q3: #655cb8; --q4: #8781e0; --q5: #b3b1ff; --qx: #20201e;
   --amt2: rgba(135,129,224,.32); --amt3: rgba(135,129,224,.16); --on-amt: #131312;
@@ -64,18 +64,36 @@ html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font); -webkit-font-smoothing: antialiased; }
 :focus-visible { outline: 2px solid var(--act); outline-offset: 2px; border-radius: 4px; }
 
-/* the top bar: every page of every panel, the same row (nknu/ops/theme/bar.py writes it) */
-.nk-bar { display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap;
+/* the top bar: every page of every panel, the same row (nknu/ops/theme/bar.py writes it): the four entries on the left,
+   at the right end 資料截至 and the 工具 menu (a <details>; its list floats under its button, so the bar never clips:
+   Datasette's app.css gives every header overflow: hidden) */
+.nk-bar { position: relative; z-index: 40; overflow: visible; display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap;
   padding: 8px max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter)));
   background: var(--bg); border-bottom: 1px solid var(--line); font: 13px/1.4 var(--font); }
 .nk-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; }
 /* :link / :visited and the bar's class in front: Datasette's app.css colours every `header a:link` */
 .nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link, .nk-bar .nk-tabs a:visited { display: inline-flex; align-items: center; gap: 4px;
-  padding: 5px 11px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap; }
+  padding: 5px 12px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap; font-size: 14px; }
 .nk-bar .nk-tabs a:hover { background: var(--hover); color: var(--ink); }
 .nk-bar .nk-tabs a[aria-current], .nk-bar .nk-tabs a[aria-current]:link, .nk-bar .nk-tabs a[aria-current]:visited {
   background: var(--act); color: var(--on-act); font-weight: 650; }
-.nk-tabs .nk-sep { width: 1px; margin: 6px 6px; background: var(--line2); }
-.nk-tabs svg { flex: none; opacity: .7; }
-.nk-meta { margin-left: auto; color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-@media (max-width: 640px) { .nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link { padding: 5px 8px; } .nk-meta { margin-left: 0; } }
+.nk-end { margin-left: auto; display: flex; align-items: center; gap: 4px 14px; min-width: 0; }
+.nk-meta { color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nk-tools { position: relative; }
+.nk-tools > summary { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--line2); color: var(--ink2); cursor: pointer; list-style: none; white-space: nowrap; user-select: none; }
+.nk-tools > summary::-webkit-details-marker { display: none; }
+.nk-tools > summary:hover, .nk-tools[open] > summary { background: var(--hover); color: var(--ink); }
+.nk-tools > summary svg { transition: transform .15s; }
+.nk-tools[open] > summary svg { transform: rotate(180deg); }
+.nk-tools.nk-on > summary { background: var(--act); border-color: var(--act); color: var(--on-act); font-weight: 650; }
+.nk-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 168px; padding: 5px; display: flex;
+  flex-direction: column; gap: 2px; background: var(--surface); border: 1px solid var(--line2); border-radius: 10px;
+  box-shadow: var(--pop); }
+.nk-bar .nk-menu a, .nk-bar .nk-menu a:link, .nk-bar .nk-menu a:visited { display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px; border-radius: 7px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.nk-bar .nk-menu a:hover, .nk-bar .nk-menu a:focus-visible { background: var(--hover); }
+.nk-bar .nk-menu a[aria-current] { font-weight: 650; box-shadow: inset 2px 0 0 var(--act); }
+.nk-menu svg { flex: none; margin-left: auto; opacity: .6; }
+@media (prefers-reduced-motion: reduce) { .nk-tools > summary svg { transition: none; } }
+@media (max-width: 640px) { .nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link { padding: 5px 9px; } }

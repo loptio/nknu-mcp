@@ -19,7 +19,8 @@ from starlette.testclient import TestClient
 from nknu.archive import scope
 from nknu.archive.frontier import Frontier
 from nknu.ops import pagecheck, sweep, web
-from nknu.ops.check_sites import SITES_CSS
+from nknu.ops.check_sites import SITES_CSS, school_section
+from nknu.ops.doc_page import results_html
 from tests.ops.library import models
 from tests.ops.test_pagecheck import _records, _url
 from tests.retrieval.test_search import TODAY
@@ -334,6 +335,20 @@ def test_without_a_ledger_the_sweep_says_it_could_not_read_it(tmp_path):
     sw.close()
 
 
+def test_a_failed_sweep_never_asks_the_doc_page_to_look_again(tmp_path):
+    sw = sweep.Sweep(tmp_path, None)
+    sw.ensure()
+    assert sw.wait(10) and sw.phase == "failed" and not sw.progress()["ready"]
+    school = school_section(sw.overview())
+    found = results_html("教務", [], sw.find("教務"))
+    sw.close()
+    assert "data-running" not in school and "讀不了帳本" in school
+    assert "data-running" not in found and "讀不了帳本" in found and "還在讀" not in found
+    reading = {"phase": "reading", "running": True, "ready": False, "done": 0, "total": 0, "older": 0, "failure": ""}
+    assert "data-running" in school_section({"progress": reading, "totals": None, "top": None})
+    assert "data-running" in results_html("教務", [], {"progress": reading, "sites": [], "pages": [], "pages_total": 0})
+
+
 # ---------------------------------------------------------------- the pages
 
 @pytest.fixture
@@ -346,39 +361,42 @@ def client(made, lib, tmp_path):
         yield c
 
 
-def test_the_entry_lists_the_sites_with_their_deciding_numbers(client):
+def test_the_entry_is_the_doc_pages_school_numbers_and_its_sites_are_on_their_own_pages(client):
+    # structure design 2026-11-17 section 二: 網頁核查's entry is 文件's (its four numbers and the school's lists); its
+    # table of sites went to each site's page (/site), so one list of sites is left (網站)
     page = client.get("/check")
-    assert page.status_code == 200
+    assert page.status_code == 200 and str(page.url).endswith("/doc") and "aria-current='page'>文件</a>" in page.text
     tree = LexborHTMLParser(page.text)
-    rows = tree.css("a.srow")
-    assert [r.css_first("b").text() for r in rows] == ["教務處", "國文學系", "生物科技系"]
-    first = [n.text() for n in rows[0].css(".num")]
-    assert first == ["7", "2", "1", "2", "1"]  # pages, 正文區有漏, 選單沒抓到, 要查, 沒抓下來
-    assert rows[0].attributes["href"] == "/check?site=c.nknu.edu.tw%2Faca"
-    assert "沒有抓到網頁" in rows[2].text() and "zero" in rows[2].attributes["class"]
+    assert not tree.css("a.srow") and tree.css_first("h2.sec").text() == "全校網頁核查"
     assert "已核查 8 頁" in page.text and "正文區有漏" in page.text and "選單沒抓到" in page.text
     assert "帳本裡沒有這個網址" not in page.text and "<iframe" not in page.text
     assert " title=" not in page.text.split("<main>", 1)[1]
+    # the old list's answer (its script's) still answers, its rows now opening a site's page
+    rows = LexborHTMLParser(client.get("/check/list").json()["html"]).css("a.srow")
+    assert [r.css_first("b").text() for r in rows] == ["教務處", "國文學系", "生物科技系"]
+    assert [n.text() for n in rows[0].css(".num")] == ["7", "2", "1", "2", "1"]  # pages, then the four numbers
+    assert rows[0].attributes["href"] == "/site?site=c.nknu.edu.tw%2Faca#check"
+    assert "沒有抓到網頁" in rows[2].text() and "zero" in rows[2].attributes["class"]
 
 
 def test_words_in_the_box_list_matches_never_a_missing_address(client):
-    page = client.get("/check", params={"url": "第二則"})
-    assert page.status_code == 200 and "帳本裡沒有這個網址" not in page.text
+    page = client.get("/check", params={"url": "第二則"})  # words: 文件 finds them
+    assert page.status_code == 200 and "帳本裡沒有這個網址" not in page.text and str(page.url).endswith("/doc?q=%E7%AC%AC%E4%BA%8C%E5%89%87")
     assert "第二則消息" in page.text and "/check?url=" + "https%3A%2F%2Fc.nknu.edu.tw%2Faca%2Fnews2.aspx" in page.text
     got = client.get("/check/list", params={"q": "教务"}).json()
     assert "教務處" in got["html"] and "國文學系" not in got["html"] and got["running"] is False
     none = client.get("/check", params={"url": "沒有這種字"}).text
-    assert "網站名、網頁名和網址裡都沒有「沒有這種字」" in none
+    assert "網頁名和網址裡都沒有「沒有這種字」" in none and "標題裡沒有「沒有這種字」的文件" in none
     # an address or a document id still checks that page (the frame itself, not the script that names it)
     for ref in (NEWS1, "dnews1"):
         assert LexborHTMLParser(client.get("/check", params={"url": ref}).text).css_first("iframe.chk-frame"), ref
 
 
 def test_a_sites_page_has_its_merged_misses_and_its_pages(client):
-    page = client.get("/check", params={"site": ACA}).text
+    page = client.get("/check", params={"site": ACA}).text  # since 11-17 its 網頁核查 is a part of its page (/site)
     tree = LexborHTMLParser(page)
-    assert tree.css_first(".sh h1").text() == "教務處"
-    start = tree.css_first(".sh a.btn")
+    assert tree.css_first(".st-head h1").text() == "教務處"
+    start = tree.css_first("h2#check a.btn")
     assert start.text() == "從首頁開始" and start.attributes["data-live-href"] == HOME
     lists = tree.css(".lists section")
     fix = lists[0].css("a.prob")
@@ -403,7 +421,7 @@ def test_a_pressed_chip_shows_only_its_pages_and_a_second_press_returns_to_all(c
     tree = LexborHTMLParser(page)
     assert len(tree.css("#chk-rows a.prow")) == 2
     gap = next(c for c in tree.css("a.chip") if c.attributes["data-only"] == "gap")
-    assert gap.attributes["aria-pressed"] == "true" and gap.attributes["href"] == "/check?site=c.nknu.edu.tw%2Faca"
+    assert gap.attributes["aria-pressed"] == "true" and gap.attributes["href"] == "/site?site=c.nknu.edu.tw%2Faca#check"
     parts = client.get("/check/site", params={"site": ACA, "q": "沒有這種字"}).json()
     assert "名字和網址裡都沒有「沒有這種字」的網頁" in parts["rows"] and parts["running"] is False
     empty = client.get("/check", params={"site": BIO}).text
@@ -415,7 +433,7 @@ def test_a_checked_page_names_its_site_and_leads_to_the_next_page_with_a_miss(cl
     tree = LexborHTMLParser(page)
     crumb = tree.css_first("nav.crumb")
     links = crumb.css("a")
-    assert links[0].text() == "教務處" and links[0].attributes["href"] == "/check?site=c.nknu.edu.tw%2Faca"
+    assert links[0].text() == "教務處" and links[0].attributes["href"] == "/site?site=c.nknu.edu.tw%2Faca#check"
     assert crumb.css_first(".here").text() == "第一則消息"
     assert links[1].text() == "下一個有漏的頁 →" and links[1].attributes["data-live-href"] == NEWS2
     assert tree.css_first("iframe.chk-frame").attributes["data-flash"] == "3"
@@ -486,8 +504,8 @@ def test_words_never_steer_the_school_window(client):
 
 def test_a_sites_key_pasted_from_its_row_opens_the_site(client):
     page = client.get("/check", params={"url": ACA}).text
-    assert LexborHTMLParser(page).css_first(".sh h1").text() == "教務處" and "帳本裡沒有這個網址" not in page
-    assert LexborHTMLParser(client.get("/check", params={"url": "https://" + ACA + "/"}).text).css_first(".sh h1")
+    assert LexborHTMLParser(page).css_first(".st-head h1").text() == "教務處" and "帳本裡沒有這個網址" not in page
+    assert LexborHTMLParser(client.get("/check", params={"url": "https://" + ACA + "/"}).text).css_first(".st-head h1")
 
 
 def test_a_page_of_a_site_not_listed_draws_no_line_to_a_site_page(made, lib):
@@ -565,17 +583,16 @@ def test_the_entry_lists_the_schools_misses_merged_across_sites_the_most_pages_f
     assert len(top["fix"]) == 1
 
 
-def test_the_entry_shows_the_schools_lists_and_sorts_by_a_pressed_header(client):
-    tree = LexborHTMLParser(client.get("/check").text)
-    lists = tree.css("#chk-list .lists section")
+def test_the_entry_shows_the_schools_lists_and_its_old_list_still_sorts(client):
+    tree = LexborHTMLParser(client.get("/doc").text)
+    lists = tree.css("#doc-list .lists section")
     assert len(lists) == 2 and "漏了的辦法" in lists[0].text() and "教務處 · 正文區 · 帳本沒有" in lists[0].text()
     assert "很薄的頁" in lists[1].text() and "選單沒抓到" not in lists[0].text()
-    heads = {a.text(): a for a in tree.css(".sl-head a")}
-    assert heads["正文區有漏"].attributes["aria-pressed"] == "true" and heads["要查"].attributes["href"] == "/check?sort=check"
-    pressed = LexborHTMLParser(client.get("/check", params={"sort": "check"}).text)
-    check = next(a for a in pressed.css(".sl-head a") if a.text() == "要查")
-    assert check.attributes["aria-pressed"] == "true" and check.attributes["href"] == "/check"  # pressed again: back
-    assert pressed.css_first("#chk-list").attributes["data-sort"] == "check"
+    assert client.get("/doc/find").json()["html"].count("class='lists") == 1  # the part its script asks for again
+    listed = LexborHTMLParser(client.get("/check/list", params={"sort": "check"}).json()["html"])
+    check = next(a for a in listed.css(".sl-head a") if a.text() == "要查")
+    assert check.attributes["aria-pressed"] == "true"
+    assert str(client.get("/check", params={"sort": "check"}).url).endswith("/doc")
     assert client.app_state.sweep.overview("drop table")["sort"] == "gap"
     found = client.get("/check/list", params={"q": "教務", "sort": "check"}).json()["html"]
     assert "class='lists" not in found and "<a href" not in found.split("sl-head", 1)[1].split("</div>", 1)[0]
@@ -681,12 +698,12 @@ def test_the_school_window_follows_only_while_its_switch_is_on():
 def test_the_deciding_numbers_are_four_tiles_never_a_line_joined_by_dots(client):
     """research/dashboard_redesign_2026-11-17/diagnosis.md: the line 「…正文區有漏 67 頁 · 選單沒抓到…」 became tiles."""
     from nknu.ops.check_sites import summary_line
-    tree = LexborHTMLParser(client.get("/check").text)
-    tiles = tree.css("#chk-list .sv .ck-fig")
+    tree = LexborHTMLParser(client.get("/doc").text)
+    tiles = tree.css("#doc-list .sv .ck-fig")
     assert [t.css_first(".ck-w").text() for t in tiles] == ["正文區有漏", "選單沒抓到", "要查", "沒抓下來"]
     assert [t.css_first("b").text() for t in tiles] == ["2", "1", "2", "1"]
     assert all(t.attributes.get("data-tip") for t in tiles) and "class='sep'" not in tree.html
-    assert tree.css_first("#chk-list .sv .sv-line .hd").text() == "已核查 8 頁"
+    assert tree.css_first("#doc-list .sv .sv-line .hd").text() == "已核查 8 頁"
     zero = summary_line({"phase": "done", "ready": True}, {"pages": 3, "checked": 3, "gap": 0, "menu_links": 4})
     assert "class='ck-fig z'" in zero and "class='ck-fig'" in zero  # a 0 is faint, a count violet
     running = summary_line({"phase": "checking", "running": True, "ready": True, "done": 1, "total": 4},
@@ -698,7 +715,7 @@ def test_the_deciding_numbers_are_four_tiles_never_a_line_joined_by_dots(client)
 
 
 def test_a_sites_key_floats_in_its_names_card_not_after_every_row(client):
-    tree = LexborHTMLParser(client.get("/check").text)
+    tree = LexborHTMLParser(client.get("/check/list").json()["html"])
     first = tree.css_first("a.srow")
     assert not first.css("code") and first.css_first(".nm").attributes["data-tip"] == ACA
     assert "amt" in first.css(".num")[1].attributes["class"]  # 正文區有漏 2: violet, not a state colour
@@ -718,3 +735,49 @@ def test_only_a_checked_page_is_wider_than_the_shared_page_width(client):
     assert "max-width:1680px" not in client.get("/check").text
     assert "max-width:1680px" not in client.get("/check", params={"site": ACA}).text
     assert "max-width:1680px" in client.get("/check", params={"url": NEWS1}).text
+
+
+# ---------------------------------------------------------------- the four entries (structure design 2026-11-17 二)
+
+def test_one_sites_page_holds_everything_about_it_in_order(client):
+    lib = client.app_state.kinds.db
+    conn = sqlite3.connect(lib)
+    conn.execute("UPDATE docs SET site = ? WHERE doc_id = 'dnews1'", (ACA,))
+    conn.commit()
+    conn.close()
+    client.get("/site", params={"site": ACA})
+    client.app_state.kinds.wait(10)
+    page = client.get("/site", params={"site": ACA})
+    assert page.status_code == 200 and "aria-current='page'>網站</a>" in page.text  # a site's page is 網站's
+    tree = LexborHTMLParser(page.text)
+    head = tree.css_first(".st-head h1")
+    assert head.text() == "教務處" and ACA in head.attributes["data-tip"] and HOME in head.attributes["data-tip"]
+    assert tree.css_first(".st-now").attributes["aria-label"] == "這個網站現在" and tree.css_first(".st-now .pill")
+    heads = [(h.attributes.get("id"), h.text().strip()) for h in tree.css("h2.st-sec")]
+    assert [i for i, _ in heads] == ["steps", "changes", "check", "docs"]
+    assert heads[0][1] == "處理流程" and heads[2][1].startswith("網頁核查") and heads[3][1] == "文件"
+    assert "沒有前一份庫可以比" in page.text  # the last swap's comparison says why it has nothing to show
+    assert tree.css_first("#chk-site").attributes["data-path"] == "/site"  # its 網頁核查, kept on this page
+    kinds = [li.text() for li in tree.css(".st-kinds li")]
+    assert any(k.startswith("公告") for k in kinds) and kinds[-1].startswith("合計")
+    links = {a.text(): a.attributes["href"] for a in tree.css(".st-links a")}
+    assert links["沒日期的原因"] == "http://127.0.0.1:18001/aca/site_undated_why?site=c.nknu.edu.tw%2Faca"
+    assert links["全部文件"].endswith("/aca/site_docs?site=c.nknu.edu.tw%2Faca")
+    assert client.get("/site", params={"site": "nowhere.example"}).status_code == 404
+    old = client.get("/pipeline/site", params={"site": ACA})
+    assert str(old.url).endswith("/site?site=c.nknu.edu.tw%2Faca") and "處理流程" in old.text
+
+
+def test_the_doc_box_finds_documents_pages_and_sites_and_says_which_is_which(client):
+    page = LexborHTMLParser(client.get("/doc", params={"q": "第一則"}).text)
+    lib, web_ = page.css("#doc-list .dc-two .plist")
+    assert lib.css_first("h2").text().startswith("庫裡的文件") and web_.css_first("h2").text().startswith("抓到的網頁")
+    assert lib.css_first("a.prow").attributes["href"] == "/trace?ref=dnews1" and "第一則消息" in lib.text()
+    assert web_.css_first("a.prow").attributes["href"].startswith("/check?url=") and "第一則消息" in web_.text()
+    sites = LexborHTMLParser(client.get("/doc", params={"q": "教务"}).text).css(".dc-sites a")  # Simplified finds it
+    assert sites and sites[0].text().strip() == "教務處" and sites[0].attributes["href"] == "/site?site=c.nknu.edu.tw%2Faca"
+    named = LexborHTMLParser(client.get("/doc", params={"q": "dnews1"}).text)
+    assert named.css_first("a.prow").attributes["href"] == "/trace?ref=dnews1"  # an id: that document first
+    found = client.get("/doc/find", params={"q": "第一則"}).json()["html"]
+    assert "庫裡的文件" in found and "<form" not in found  # the list alone, for the page's script
+    assert "全校網頁核查" in client.get("/doc/find").json()["html"]  # nothing typed: the school's lists again

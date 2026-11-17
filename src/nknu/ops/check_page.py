@@ -368,7 +368,8 @@ def crumb_html(c: dict | None, fallback: str = "") -> str:
     if c.get("next"):
         nxt = (f"<a class='next' href='/check?{urlencode({'url': c['next']})}' data-live-href='{e(c['next'])}' "
                f"data-tip-h='下一個有漏的頁' data-tip='{e(c.get('next_name') or unquote(c['next']))}'>下一個有漏的頁 →</a>")
-    return (f"<nav class='crumb'><a href='/check?{urlencode({'site': c['site']})}'>{e(c.get('site_name') or c['site'])}"
+    # the site's name opens its page (/site, structure design 2026-11-17 section 二) at its 網頁核查
+    return (f"<nav class='crumb'><a href='/site?{urlencode({'site': c['site']})}#check'>{e(c.get('site_name') or c['site'])}"
             f"</a><span class='sep'>›</span><span class='here'>{e(here)}</span>{nxt}</nav>")
 
 

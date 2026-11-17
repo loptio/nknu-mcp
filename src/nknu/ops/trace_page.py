@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlencode
 
 from nknu.ops.explain import WHY
 from nknu.ops.look import KIND_ICON, e, icon, kind_tag, tw
+from nknu.ops.search_page import why_url
 from nknu.ops.trace import (
     DATE_KINDS,
     KINDS,
@@ -236,7 +237,7 @@ def _who(report: dict) -> str:
                  f"{icon('copy', 12)}{e(doc_id)}</button>")
     place = ""
     if s is not None:
-        why = f"/search?{urlencode({'q': s['query'], 'doc': r['doc_id'] or ''})}"
+        why = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
         pill = (f"<span class='pill good'>{icon('ok', 12)}標題搜尋第 {s['rank']} 名</span>" if s["rank"]
                 else f"<span class='pill bad'>{icon('no', 12)}標題搜尋：前 {s['within']} 名裡沒有</span>")
         place = (f"<a href='{e(why)}' style='text-decoration:none' "
@@ -283,7 +284,10 @@ def _export_card(x: dict | None) -> str:
         return f"<div class='in faint'>{UNSEEN}</div>"
     row = x["row"]
     written = e(row["网页上写的日期"]) + (f" <small>「{e(row['日期原文'])}」</small>" if row["日期原文"] else "")
-    facts = _facts([("網站", f"{e(tw(x['name']))} <small>{e(x['site'])}</small>"), ("類型", e(tw(row["类型"]))),
+    # the site's name opens its page (every site name links there: structure design 2026-11-17 section 二)
+    site = (f"<a href='/site?{urlencode({'site': x['site']})}'>{e(tw(x['name']))}</a> <small>{e(x['site'])}</small>"
+            if x.get("site") else e(tw(x["name"])))
+    facts = _facts([("網站", site), ("類型", e(tw(row["类型"]))),
                     ("網頁上寫的日期", written), ("日期來源", e(tw(row["日期来源"]))), ("頁別", e(tw(row["页别"]))),
                     ("最後修改時間", e(row["最后修改时间"]))])
     fold = _fold([("標題", e(row["标题"])), ("網址", e(row["网址"])), ("檔案", e(x["file"])),
@@ -430,8 +434,9 @@ def trace_body(report: dict, viewer_url: str, today: date) -> str:
     if s is not None:
         place = (f"<span class='pill good'>第 {s['rank']} 名</span>" if s["rank"]
                  else f"<span class='pill bad'>前 {s['within']} 名裡沒有</span>")
-        why = (f"<a class='btn' href='/search?{urlencode({'q': s['query'], 'doc': r['doc_id'] or ''})}' "
-               f"data-tip='在搜尋測試看那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
+        href = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
+        why = (f"<a class='btn' href='{e(href)}' "
+               f"data-tip='試用的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
         last = (f"<div class='in' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
                 f"<span data-tip='拿它的標題當問題搜一次'>標題搜尋</span>{place}{why}</div>")
         out.append(f"<section class='card step' id='s5'><h2>{STEP_MARKS[4]} {STEP_NAMES[4]}</h2>{last}</section>")

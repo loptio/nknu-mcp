@@ -677,3 +677,35 @@ def test_the_spelling_caveat_names_the_ledgers_address():
     from nknu.ops.check_page import caveats_html
     out = caveats_html({"caveats": ["spelled"], "spelled": "https://c.nknu.edu.tw/aca/default.aspx"})
     assert "帳本寫法不同" in out and "aca/default.aspx" in out
+
+
+def test_a_page_without_its_content_area_is_said_in_words_and_is_no_failure(made):
+    """11-17 (the crawler session): a page whose answer lacked its platform's content area is flagged no_area, asked
+    again up to three times, then read thin (outcome) and exported from its last good copy."""
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE url SET flags = 'no_area' WHERE url LIKE '%/thin.aspx' OR id = ?", (made.ids["page"],))
+    conn.close()
+    checked = pagecheck.check(made.archive, PAGE)
+    page = checked.summary["page"]
+    assert page["bucket"] == "look" and page["result_words"] == "缺內容區（學校回了空頁）"
+    thin = _by_id(checked)["c-thin"]
+    assert thin["bucket"] == "look" and "帳本：缺內容區（學校回了空頁）\n" in thin["tip"]
+    # while it waits to be asked again
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE url SET state = 'pending', reason = 'no_area', attempts = 1, flags = NULL, status = NULL"
+                 " WHERE url LIKE '%/thin.aspx'")
+    conn.close()
+    thin = _by_id(pagecheck.check(made.archive, PAGE))["c-thin"]
+    assert thin["bucket"] not in ("missing", "failed") and "缺內容區，學校回了空頁" in thin["tip"]
+
+
+def test_a_path_the_site_list_does_not_walk_is_a_rule_said_in_words(made):
+    """11-17 (the crawler session): url.reason out:skip_path, a path the site list says is not walked further."""
+    assert pagecheck.reason_words("out:skip_path") == "名單寫明這條路徑不往下翻"
+    assert pagecheck.verdict_bucket("out:skip_path") == "rule"
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE url SET state = 'skipped', reason = 'out:skip_path', status = NULL"
+                 " WHERE url LIKE '%/later.aspx'")
+    conn.close()
+    later = _by_id(pagecheck.check(made.archive, PAGE))["c-later"]
+    assert later["bucket"] == "rule" and "名單寫明這條路徑不往下翻" in later["tip"]

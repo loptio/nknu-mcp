@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from urllib.parse import unquote, urlencode
 
-from nknu.ops.check_page import CHECK_CSS, CHECK_JS, check_form, item_name
+from nknu.ops.check_page import CHECK_CSS, CHECK_JS, item_name
 from nknu.ops.look import e
 from nknu.ops.pagecheck import BUCKET_NAME, WHO, WHO_WORDS, live_url
 from nknu.ops.sweep import CHIP_TIPS, CHIPS, SORTS
@@ -174,7 +174,7 @@ if(site){const f=$('#chk-filter');let only=site.dataset.only||'';
   const load=asked=>{if(!asked&&(busy($('#chk-rows'))||busy($('#chk-top .lists')))){poll();return}
     const p=params();get('/check/site?'+p,j=>{const back=keep(site);for(const k of ['top','chips','rows']){
       const el=$('#chk-'+k);if(el)el.innerHTML=j[k]}back();site.toggleAttribute('data-running',!!j.running);
-      history.replaceState(null,'','/check?'+p);poll()})};
+      history.replaceState(null,'',(site.dataset.path||'/check')+'?'+p+location.hash);poll()})};
   f.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>load(true),180)});
   f.form.addEventListener('submit',ev=>{ev.preventDefault();load(true)});
   site.addEventListener('click',ev=>{const c=ev.target.closest('a.chip[data-only]');if(!c)return;ev.preventDefault();
@@ -228,7 +228,9 @@ def summary_line(progress: dict, sums: dict | None, *, unit_tip: str = "") -> st
                 "讀不了帳本</span></div>")
     if not progress.get("ready") or sums is None:
         # the ledger is being read: how long it takes is not known, so the bar moves rather than fills
-        return "<div class='sv-line' data-running='1'><span class='hd'>正在讀帳本</span></div><div class='prog ind'><i></i></div>"
+        running = " data-running='1'" if progress.get("running") else ""
+        return (f"<div class='sv-line'{running}><span class='hd'>正在讀帳本</span></div>"
+                "<div class='prog ind'><i></i></div>")
     done, total = progress.get("done", 0), progress.get("total", 0)
     running = progress.get("running")
     if "site_total" in progress:
@@ -287,7 +289,7 @@ def site_rows(sites: list[dict], sort: str | None = None) -> str:
         return ""
     rows = []
     for s in sites:
-        href = "/check?" + urlencode({"site": s["key"]})
+        href = "/site?" + urlencode({"site": s["key"]}) + "#check"  # the site's page (structure design 2026-11-17)
         # the site's key in its name's card, not trailing the row (redesign 2026-11-17); pasted in the box it opens
         # the site (design section 六 6)
         name = f"<span class='nm' data-tip-h='{e(s['name'])}' data-tip='{e(s['key'])}'><b>{e(s['name'])}</b></span>"
@@ -384,22 +386,6 @@ def entry_list(view: dict, found: dict | None = None) -> str:
     return f"<div>{body}</div>"
 
 
-def entry_body(view: dict | None, found: dict | None = None, *, value: str = "", archive: bool = True) -> str:
-    """網頁核查 with no page asked for (design section 六 1): one box, and under it the verdict line and the sites,
-    or what was found for the words in the box."""
-    body = f"<style>{CHECK_CSS}{SITES_CSS}</style>" + check_form(value, "", focus=True, live=False,
-                                                                 placeholder="打幾個字找網站或網頁，或貼網址")
-    if not archive or view is None:
-        body += ("<section class='card pad' style='margin-top:14px'><span class='pill warn'>沒有掛上爬蟲存檔</span>"
-                 "<div class='soft small' style='margin-top:8px'>檢視台啟動時沒有給 --archive，或那個資料夾裡沒有帳本。"
-                 "</div></section>")
-        return body + f"<script>{CHECK_JS}</script>"
-    sort = view.get("sort") or SORTS[0]
-    keep = f" data-sort='{e(sort)}'" if sort != SORTS[0] else ""
-    return (body + f"<div id='chk-list'{keep} style='margin-top:14px'>{entry_list(view, found)}</div>{DRAWER}"
-            f"<script>{CHECK_JS}</script><script>{SITES_JS}</script>")
-
-
 def merged_rows(rows: list[dict], empty: str, *, school: bool = False, site: str = "") -> str:
     """A site's misses merged across its pages: one row per target, where it is and on how many pages; a click opens
     the first page that has it and flashes it there (the drawer's 「核查它指的網址」 checks what it points to; the row
@@ -485,7 +471,7 @@ def _site_href(key: str, *, q: str = "", only: str = "") -> str:
         params["q"] = q
     if only:
         params["only"] = only
-    return "/check?" + urlencode(params)
+    return "/site?" + urlencode(params) + "#check"  # the site's page (structure design 2026-11-17 section 二)
 
 
 def site_parts(view: dict) -> dict:
@@ -540,35 +526,58 @@ def site_parts(view: dict) -> dict:
     return {"top": top, "chips": "".join(chips), "rows": listed, "running": bool(progress.get("site_running"))}
 
 
-def site_body(view: dict | None, key: str) -> str:
-    """A site's page (design section 六 2): its name and 「從首頁開始」, the verdict line, its misses merged, its pages."""
-    head = f"<style>{CHECK_CSS}{SITES_CSS}</style><nav class='crumb'><a href='/check'>全部網站</a></nav>"
+def home_button(view: dict | None) -> str:
+    """「從首頁開始」: the site's home page checked, to go on from its links ('' when the ledger knows no home)."""
+    site = (view or {}).get("site") or {}
+    if not site.get("home"):
+        return ""
+    return (f"<a class='btn' href='{e(_check_href(site['home']))}' data-live-href='{e(site['home'])}' "
+            "data-tip='核查這個網站的首頁，再點上面的連結一頁一頁看'>從首頁開始</a>")
+
+
+def site_section(view: dict | None, key: str, *, path: str = "/site") -> str:
+    """網頁核查 of one site as a section of its page (design section 六 2; nknu.ops.site_page): the verdict line, its
+    misses merged, its pages filtered by a chip and by what is typed, and the drawer a merged row opens in. path: the
+    page it is on (its filter's form and the address its script keeps go there). Until the structure design of
+    2026-11-17 (section 二) this was the page /check?site=…, under a crumb back to every site and the site's name."""
+    style = f"<style>{CHECK_CSS}{SITES_CSS}</style>"
     if view is None:
-        return head + (f"<section class='card pad'><span class='pill warn'>帳本裡沒有這個網站</span>"
-                       f"<div class='soft small' style='margin-top:8px'>{e(key)}</div></section>")
+        return style + ("<section class='card pad'><span class='pill none'>帳本裡沒有這個網站</span>"
+                        f"<div class='soft small' style='margin-top:8px'>{e(key)}</div></section>")
     if not view.get("ready"):  # the ledger is being read: look again in a moment (not when it could not be read)
         again = ("<script>setTimeout(()=>location.reload(),3000)</script>" if view["progress"].get("running")
                  else "")
-        return (head + f"<section class='card pad sv'>{summary_line(view['progress'], None)}</section>"
+        return (style + f"<section class='card pad sv'>{summary_line(view['progress'], None)}</section>"
                 f"<script>{CHECK_JS}</script>{again}")
     site = view["site"]
-    start = ""
-    if site["home"]:
-        start = (f"<a class='btn' href='{e(_check_href(site['home']))}' data-live-href='{e(site['home'])}' "
-                 f"data-tip='核查這個網站的首頁，再點上面的連結一頁一頁看'>從首頁開始</a>")
     parts = site_parts(view)
     running = " data-running" if parts["running"] else ""
     only = f" data-only='{e(view['only'])}'" if view["only"] else ""
-    return (head + f"<header class='sh'><h1>{e(site['name'])}</h1><code>{e(site['key'])}</code>{start}</header>"
-            f"<div id='chk-site' data-site='{e(site['key'])}'{only}{running}>"
+    return (style + f"<div id='chk-site' data-site='{e(site['key'])}' data-path='{e(path)}'{only}{running}>"
             f"<div id='chk-top'>{parts['top']}</div>"
             "<section class='card plist'><div class='pl-head'>"
             f"<h2>網頁<span class='faint'>{_n(view['sum']['pages'])}</span></h2>"
             f"<nav class='chips' id='chk-chips'>{parts['chips']}</nav>"
-            "<form class='filter' action='/check' method='get'>"
+            f"<form class='filter' action='{e(path)}' method='get'>"
             f"<input type='hidden' name='site' value='{e(site['key'])}'>"
             + (f"<input type='hidden' name='only' value='{e(view['only'])}'>" if view["only"] else "")
             + f"<input id='chk-filter' name='q' value='{e(view['q'])}' placeholder='打幾個字篩選網頁' "
             "aria-label='篩選網頁' autocomplete='off'></form></div>"
             f"<div id='chk-rows'>{parts['rows']}</div></section></div>{DRAWER}"
             f"<script>{CHECK_JS}</script><script>{SITES_JS}</script>")
+
+
+def school_section(view: dict | None, *, archive: bool = True) -> str:
+    """The school's 網頁核查 for 文件's page (/doc; nknu.ops.doc_page, which adds the style, the drawer its rows open in
+    and the scripts once): the verdict line with the four deciding numbers, then the school's misses merged across
+    sites (沒抓到的, 要查的). The sites' table it sat over until the structure design of 2026-11-17 (section 二) went to
+    each site's page (/site); data-running asks the page to fetch it again while the sweep runs, and only then: a
+    sweep that failed is not ready either, and the page asked every 4 s for good (review 2026-11-17)."""
+    if not archive or view is None:
+        return ("<section class='card pad'><span class='pill warn'>沒有掛上爬蟲存檔</span>"
+                "<div class='soft small' style='margin-top:8px'>檢視台啟動時沒有給 --archive，或那個資料夾裡沒有帳本。"
+                "</div></section>")
+    progress = view["progress"]
+    running = " data-running='1'" if progress.get("running") else ""
+    return (f"<div id='chk-school'{running}><section class='card pad sv'>"
+            f"{summary_line(progress, view.get('totals'))}</section>{school_lists(view.get('top'), progress)}</div>")

@@ -18,10 +18,23 @@ there) is read only; the stored page is served from here (/check/raw) under a po
 own archived images (/check/res), so the browser never reaches a school server from it.
 
 網頁核查 needs no address to be remembered (design section 六; owner 11-16: 「为什么要我输入网址或文件编号？我怎么会记得
-网址或者文件编号呀？」): /check with nothing asked lists the sites with their deciding numbers and finds sites and pages as
-one types (/check/list), /check?site=… is one site's misses and pages (/check/site), and every page of the ledger is
-checked in the background by nknu.ops.sweep (one thread; started by the first request of 網頁核查, stopped with the
-app), the site opened last first; /api/check/sweep says how far it has come.
+网址或者文件编号呀？」): its entry (since 2026-11-17 文件's page, /doc) holds the school's numbers and misses and finds
+sites and pages as one types, one site's misses and pages are a part of that site's page (/site; its script asks
+/check/site), and every page of the ledger is checked in the background by nknu.ops.sweep (one thread; started by the
+first request that needs it, stopped with the app), the site opened last first; /api/check/sweep says how far it has
+come. /check/list, the old entry's list, still answers.
+
+Four entries since the structure design of 2026-11-17 (docs/superpowers/specs/2026-11-17-panels-structure-design.md
+section 二; owner: 「可以按你的建议走吧，不用问我了」), the bar's (nknu/ops/theme/bar.py) 今晚 | 網站 | 試用 | 文件:
+- 今晚 is the home, /: tonight's run, last night's changes and the pipeline's steps, and only the sites to look at
+  (every site is on 網站, 資料總覽);
+- one site is /site?site=… (nknu.ops.site_page), 網站's page in 檢視台: its steps, its last changes, its 網頁核查 and its
+  documents. /pipeline/site?site= and /check?site= come here;
+- 試用 is /try (nknu.ops.try_page): the service as an agent sees it, and on its second tab (?tab=why) 搜尋測試's
+  explanation of the same question; with nothing asked, the scoreboard. /search comes here with what it was asked;
+- 文件 is /doc (nknu.ops.doc_page): one box that finds documents and archived pages, and the school's 網頁核查. /trace
+  and /check with nothing or with words come here; a document's trace (/trace?ref=<id or address>) and one page's
+  check (/check?url=<address or id>) stay where they were.
 
     python -m nknu.ops.web [--db research/pipeline_2026-11-02/aca.db] [--root .] [--host 127.0.0.1] [--port 8878]
                            [--viewer-url http://127.0.0.1:18877] [--questions DIR] [--gold FILE]
@@ -42,7 +55,7 @@ import time
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import uvicorn
 from starlette.applications import Starlette
@@ -52,20 +65,25 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
-from nknu.ops import pagecheck
+from nknu.ops import nightly, pagecheck
 from nknu.ops.board import Board
+from nknu.ops.changes import Changes
 from nknu.ops.check_page import check_body, empty_raw
-from nknu.ops.check_sites import entry_body, entry_list, item_html, site_body, site_parts
+from nknu.ops.check_sites import entry_list, item_html, site_parts
+from nknu.ops.doc_page import DOCS_SHOWN, doc_body, results_html, school_html
 from nknu.ops.explain import explain_search
 from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
 from nknu.ops.pipeline import Pipeline, Where, site_detail
-from nknu.ops.pipeline_page import pipeline_body, sites_html
-from nknu.ops.pipeline_page import site_body as pipeline_site_body
-from nknu.ops.search_page import board_html, question_nav, search_body, search_form
+from nknu.ops.pipeline_page import changes_title, pipeline_body, sites_html, tonight_html
+from nknu.ops.search_page import board_html, search_body, why_head
+from nknu.ops.site_page import Kinds, now_line
+from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
+from nknu.ops.theme import bar as theme
 from nknu.ops.trace import WITHIN, site_exports, trace
-from nknu.ops.trace_page import FOUND_MAX, MARKUP, examples_html, found_html, trace_body, trace_form
+from nknu.ops.trace_page import FOUND_MAX, MARKUP, trace_body, trace_form
+from nknu.ops.try_page import TryPage
 from nknu.retrieval.hybrid import HybridConfig, hybrid_search
 from nknu.retrieval.search import TOP_N
 from nknu.retrieval.server import DEFAULT_DB, add_model_flags, aliases_of, config_from, connect, search_answer
@@ -90,7 +108,6 @@ TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", "
 OWN_CODE = "nknu/ops/"  # the tools' own package: never the pipeline's (install_state)
 STATE_SECONDS = 60.0  # how long an install state is kept before the two source trees are compared again 【Claude】
 CHECK_SECONDS, CHECK_KEEP = 120, 8  # a check kept this long, this many at most 【Claude】
-EXAMPLES = 5  # how many documents the trace form offers to start from 【Claude】
 # an address typed without its scheme: a host of three labels or more (c.nknu.edu.tw/aca); anything shorter typed in
 # 網頁核查's box (List.aspx, 教務) is words to find sites and pages by (design section 六 1) 【Claude】
 HOSTLIKE = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+){2,}(:\d+)?(/|$)", re.IGNORECASE)
@@ -209,15 +226,24 @@ def find_titles(conn: sqlite3.Connection, words: str, limit: int = FOUND_MAX) ->
             for r in conn.execute(sql, [*forms, limit + 1])]
 
 
-def examples(conn: sqlite3.Connection, questions: list[dict]) -> list[dict]:
-    """A few documents to follow, [{doc_id, title, kind}]: the first gold answer of the first test questions that
-    the library holds."""
-    ids = list(dict.fromkeys(q["gold"][0] for q in questions if q["gold"]))[:EXAMPLES * 3]
-    if not ids:
-        return []
-    found = {r[0]: r for r in conn.execute(
-        f"SELECT doc_id, title, kind_class FROM docs WHERE doc_id IN ({','.join('?' * len(ids))})", ids)}
-    return [{"doc_id": i, "title": found[i][1], "kind": found[i][2]} for i in ids if i in found and found[i][1]][:EXAMPLES]
+def doc_row(conn: sqlite3.Connection, doc_id: str) -> dict | None:
+    """One document as find_titles lists one, by its id (None when the library has no such document)."""
+    have = columns(conn, "docs")
+    joined = "site" in have and has_table(conn, "sites")
+    site = "d.site" if "site" in have else "''"
+    name = "s.name" if joined else "''"
+    join = "LEFT JOIN sites s ON s.site = d.site" if joined else ""
+    r = conn.execute(f"SELECT d.doc_id, d.title, d.kind_class, d.ident_date, {site}, {name} FROM docs d {join} "
+                     "WHERE d.doc_id = ?", (doc_id,)).fetchone()
+    return {"doc_id": r[0], "title": r[1], "kind": r[2], "date": r[3], "site": r[4], "name": r[5]} if r else None
+
+
+def moved(path: str, params: list[tuple[str, str]], anchor: str = "") -> RedirectResponse:
+    """A page that moved (structure design 2026-11-17 section 二): the same question at its new address, a temporary
+    redirect (the old addresses keep working; nothing is cached)."""
+    query = urlencode([(k, v) for k, v in params if v])
+    return RedirectResponse(path + (f"?{query}" if query else "") + (f"#{anchor}" if anchor else ""), status_code=307,
+                            headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- the app
@@ -226,7 +252,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                gold: Path | None = None, config: HybridConfig | None = None, models: dict | None = None,
                today_fn: Callable[[], date] = today_tpe, code_root: Path | None = None,
                pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "",
-               archive: Path | None = None, watch: tuple[tuple[str, str, str], ...] = ()) -> Starlette:
+               archive: Path | None = None, watch: tuple[tuple[str, str, str], ...] = (),
+               mcp_url: str = "") -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
     browser reaches the archive viewer ('' : no link); questions and gold: load_questions; config: the search's
     settings (None: the server's); models: embedder and reranker in place of the process's shared ones (tests);
@@ -311,9 +338,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             log.exception("成绩板：看不到资料库档")
             return None
 
-    # 流水線, the home (owner 11-16: 「让我知道整个项目是否正常运作，出错的话是哪里错了 能帮助我精准定位」): every step
-    # read in the background (nknu.ops.pipeline); the two tools that were the home are /search and /trace, whose
-    # empty pages hold the same box and, on /search, the scoreboard
+    # 今晚, the home (流水線 until the structure design of 2026-11-17; owner 11-16: 「让我知道整个项目是否正常运作，出错的话是
+    # 哪里错了 能帮助我精准定位」): every step read in the background (nknu.ops.pipeline)
     def sweep_overview() -> dict | None:
         """網頁核查's results as they stand, never starting its sweep (a restart's 17 minutes are its own to start)."""
         return sweep.overview() if sweep is not None else None
@@ -321,53 +347,104 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     where = Where(root=root, db=db_path, archive=archive, services=tuple(watch),
                   board=lambda: scores.snapshot(start=False), sweep=sweep_overview, today=today_fn)
     flow = Pipeline(where)
-    panels = {"overview": overview_url, "board": "/search", "check": "/check", "tables": tables_url,
+    # where a step's links go by their short names: the scoreboard is on 試用, the school's 網頁核查 on 文件
+    panels = {"overview": overview_url, "board": "/try#board", "check": "/doc", "tables": tables_url,
               "crawl": f"{viewer_url}/progress" if viewer_url else ""}
+    every_site = theme.entry_href("sites", "ops")  # 網站, the one list of every site (資料總覽)
+    tables = (tables_url or theme.panels()["hosts"]["tables"]).rstrip("/")  # 資料庫, its queries of one site
+    kinds = Kinds(where.library)  # each site's documents per kind, counted once per library file
+    # 今晚 and 昨晚變了什麼 on top of the home (structure design 2026-11-17 三.2-三.4; nknu.ops.nightly, changes): the
+    # night read on every request (small files), the two libraries compared in the background
+    night_changes = Changes(where.library, root)
+
+    def tonight_now(request: Request) -> tuple[dict, dict]:
+        changes = night_changes.snapshot()
+        return nightly.tonight(where, night=request.query_params.get("night"), changes=changes), changes
 
     def home(request: Request) -> Response:
         snap = flow.snapshot(fresh=request.query_params.get("fresh") == "1")
+        night, changes = tonight_now(request)
         conn = connect(db_path)
         try:
-            return shell("流水線 · 檢視台", pipeline_body(snap, panels, sites_html(snap)), db_info(conn),
-                         tab="pipeline")
+            return shell("今晚 · 檢視台", pipeline_body(snap, panels, sites_html(snap, every_site),
+                                                     tonight_html(night, changes)), db_info(conn), tab="tonight")
         finally:
             conn.close()
 
-    def pipeline_site(request: Request) -> Response:
-        """One site through the pipeline (流水線's table links here): its numbers and what it lost, by reason."""
-        key = request.query_params.get("site", "").strip()
-        detail = site_detail(where, key) if key else None
+    def tonight_api(request: Request) -> Response:
+        """今晚 as data: the night shown (?night=YYYY-MM-DD, else the default one), the last seven nights, the first
+        sentence, the crawler's own counts, and the last swap's comparison (its lists capped: changes.LIST_CAP)."""
+        night, changes = tonight_now(request)
+        if request.query_params.get("brief") == "1":  # the page's own poll: whether to reload, not the lists
+            changes = {k: changes[k] for k in ("state", "words", "keys", "night", "totals") if k in changes}
+        return JSONResponse({**night, "changes": changes}, headers={"Cache-Control": "no-store"})
+
+    def site_view(request: Request) -> Response:
+        """One site on one page (nknu.ops.site_page): its steps, its last changes, its 網頁核查 and its documents.
+        Without a site, 網站 (every site is listed there)."""
+        p = request.query_params
+        key = p.get("site", "").strip()
+        if not key:
+            return RedirectResponse(every_site, status_code=307, headers={"Cache-Control": "no-store"})
+        detail = site_detail(where, key)
+        snap = flow.snapshot()
+        row = next((r for r in snap.get("sites") or [] if r.get("key") == key), None)
+        night, changes = tonight_now(request)
+        mine = next((x for x in changes.get("sites") or [] if x.get("site") == key), None)
+        sw = swept()
+        view = None
+        if sw is not None:
+            sw.prioritize(key)
+            view = sw.site_view(key, q=p.get("q", "").strip(), only=p.get("only", ""))
         conn = connect(db_path)
         try:
-            if detail is None:
-                body = (f"<section class='card pad'><span class='pill none'>沒有這個網站</span>　正式庫裡沒有「{e(key)}」。"
-                        " <a href='/#sites'>回到每個網站的表</a></section>")
-                return shell("沒有這個網站 · 流水線", body, db_info(conn), status=404, tab="pipeline")
-            name = detail["site"].get("name") or key
-            return shell(f"{name} · 流水線", pipeline_site_body(detail, panels), db_info(conn), tab="pipeline")
+            info = db_info(conn)
         finally:
             conn.close()
+        if detail is None and row is None and view is None and mine is None:
+            body = (f"<section class='card pad'><span class='pill none'>沒有這個網站</span>　正式庫、流水線和爬蟲帳本裡都沒有"
+                    f"「{e(key)}」。 <a href='{e(every_site)}'>全部網站</a></section>")
+            return shell("沒有這個網站 · 檢視台", body, info, status=404, tab="sites")
+        counted = kinds.get()
+        lib = (detail or {}).get("site") or {}
+        named = ((view or {}).get("site") or {})
+        name = lib.get("name") or (row or {}).get("name") or named.get("name") or (mine or {}).get("name") or key
+        body = one_site_body(
+            key, name=name, unit=lib.get("unit") or "", home=named.get("home") or "",
+            now=now_line(row, mine, changes.get("reasons") or {}, read=bool(snap.get("steps"))),
+            detail=detail, changes=changes, changes_title=changes_title(changes, night), view=view,
+            archive=sw is not None, kinds=None if counted is None else counted.get(key, {}),
+            tables=tables)
+        return shell(f"{name} · 檢視台", body, info, tab="sites")
+
+    def pipeline_site(request: Request) -> Response:
+        """Moved: one site's page is /site (structure design 2026-11-17 section 二)."""
+        return moved("/site", [("site", request.query_params.get("site", "").strip())])
 
     def pipeline_api(request: Request) -> Response:
         return JSONResponse(flow.snapshot(fresh=request.query_params.get("fresh") == "1"),
                             headers={"Cache-Control": "no-store"})
 
     def search_page(request: Request) -> Response:
+        """Moved: 搜尋測試 is 試用's second tab (/try?tab=why…), with what it was asked; asked nothing, 試用 itself (its
+        scoreboard)."""
+        p = request.query_params
+        kept = [(k, v) for k in ("qid", "q", "doc", "limit") for v in p.getlist(k)]
+        if not any(v.strip() for k, v in kept if k in ("qid", "q")):
+            return moved("/try", [], "board")
+        return moved("/try", [("tab", "why"), *kept], "result")
+
+    def why_of(request: Request, conn: sqlite3.Connection) -> tuple[str, str] | None:
+        """試用's second tab, when asked for (?tab=why with a question or a test question): (the question, search_page's
+        explanation of it on the library, under the test questions' picker and the box for documents to follow)."""
+        if request.query_params.get("tab") != "why":
+            return None
         query, docs, limit, question = asked_for(request)
-        conn = connect(db_path)
-        try:
-            typed = [] if question else docs
-            body = search_form(query, typed, focus=not (query or question))
-            if query or question:
-                body += question_nav(asked, question)
-                report = explained(conn, query, docs, limit)
-                gold_ids = {f["doc_id"] for f in report["follow"] if f["doc_id"]} if question else set()
-                body += search_body(report, gold_ids, question)
-            else:
-                body += board_html(board_now())
-            return shell(f"{query} · 搜尋測試" if query else "搜尋測試", body, db_info(conn), tab="search")
-        finally:
-            conn.close()
+        if not (query or question):
+            return None
+        report = explained(conn, query, docs, limit)
+        gold_ids = {f["doc_id"] for f in report["follow"] if f["doc_id"]} if question else set()
+        return query, why_head(asked, question, query, docs) + search_body(report, gold_ids, question)
 
     def board_api(request: Request) -> Response:
         """The scoreboard as it stands (the page asks again until every question is graded)."""
@@ -385,20 +462,54 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             conn.close()
 
     def trace_page(request: Request) -> Response:
+        """One document's trace (a document id or an address); with nothing or with words, 文件 (/doc finds them)."""
         ref = request.query_params.get("ref", "").strip()
         conn = connect(db_path)
         try:
-            body = trace_form(ref, focus=not ref)
-            if not ref:
-                body += examples_html(examples(conn, asked))
-            elif resolve(conn, ref).doc_id is None and not as_address(ref):
-                # words that are no document id and no address: the documents whose titles hold them
-                body += found_html(ref, find_titles(conn, ref))
-            else:
-                body += trace_body(traced(conn, ref), viewer_url, today_fn())
-            return shell(f"{ref} · 文件追蹤" if ref else "文件追蹤", body, db_info(conn), tab="trace")
+            if not ref or (resolve(conn, ref).doc_id is None and not as_address(ref)):
+                return moved("/doc", [("q", ref)])
+            body = trace_form(ref, focus=False) + trace_body(traced(conn, ref), viewer_url, today_fn())
+            return shell(f"{ref} · 文件", body, db_info(conn), tab="doc")
         finally:
             conn.close()
+
+    def doc_found(conn: sqlite3.Connection, q: str) -> str:
+        """What 文件's box finds for q (doc_page.results_html): the document q names and the ones whose titles hold it,
+        and the archive's sites and pages."""
+        docs: list[dict] = []
+        named = resolve(conn, q).doc_id
+        if named is not None and (row := doc_row(conn, named)) is not None:
+            docs.append(row)
+        docs += [d for d in find_titles(conn, q, DOCS_SHOWN) if d["doc_id"] != named]
+        sw = swept()
+        found = sw.find(q) if sw is not None else None
+        page_ref = q if asks_a_page(q, conn) else ""
+        return results_html(q, docs, found, page_ref=page_ref, archive=sw is not None)
+
+    def doc_view(request: Request) -> Response:
+        """文件: the box, and under it what it found, or the school's 網頁核查."""
+        q = request.query_params.get("q", "").strip()
+        conn = connect(db_path)
+        try:
+            sw = swept()
+            inner = doc_found(conn, q) if q else school_html(sw.overview() if sw is not None else None,
+                                                             archive=sw is not None)
+            return shell(f"{q} · 文件" if q else "文件 · 檢視台", doc_body(q, inner), db_info(conn), tab="doc")
+        finally:
+            conn.close()
+
+    def doc_find(request: Request) -> Response:
+        """The list under 文件's box for what is typed (its script asks as one types, and again while the sweep runs):
+        {html}."""
+        q = request.query_params.get("q", "").strip()
+        conn = connect(db_path)
+        try:
+            sw = swept()
+            html = doc_found(conn, q) if q else school_html(sw.overview() if sw is not None else None,
+                                                            archive=sw is not None)
+        finally:
+            conn.close()
+        return JSONResponse({"html": html}, headers={"Cache-Control": "no-store"})
 
     def trace_api(request: Request) -> Response:
         conn = connect(db_path)
@@ -482,35 +593,30 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return sweep
 
     def check_panel(request: Request) -> Response:
-        """網頁核查: for an address or a document id its check (design section 一), with its site's line (section 六
-        3); for a site its page (section 六 2); else the entry: the sites, or what the words in the box find (section
-        六 1)."""
+        """網頁核查 of one page, for an address or a document id (design section 一), with its site's line (section 六
+        3). A site (?site=, or its key pasted back) is its page /site, and nothing or words are 文件 (/doc), since the
+        structure design of 2026-11-17 (section 二)."""
         p = request.query_params
         ref, key = check_ref(request), p.get("site", "").strip()
         sw = swept()
         conn = connect(db_path)
         try:
-            info = db_info(conn)
             if not key and sw is not None and (named := sw.site_key(ref)):
-                key, ref = named, ""  # a site's key pasted back from its row: that site's page
-            if asks_a_page(ref, conn):
-                summary = page_checked(ref).summary
-                crumb = None
-                if sw is not None and summary.get("page"):
-                    sw.prioritize(summary["page"]["site"])
-                    crumb = sw.crumb(summary["page"]["site"], summary["page"]["url"])
-                body = check_body(summary, value=ref, crumb=crumb, flash=p.get("n", ""))
-                named = (crumb or {}).get("name") or summary.get("title") or ref  # the tab says which page, not its address
-                return shell(f"{named} · 網頁核查", body, info, tab="check")
-            if key and sw is not None:
-                sw.prioritize(key)
-                view = sw.site_view(key, q=p.get("q", "").strip(), only=p.get("only", ""))
-                name = ((view or {}).get("site") or {}).get("name") or key
-                return shell(f"{name} · 網頁核查", site_body(view, key), info, tab="check")
-            view = sw.overview(p.get("sort", "")) if sw is not None else None
-            found = sw.find(ref) if sw is not None and ref else None
-            body = entry_body(view, found, value=ref, archive=sw is not None)
-            return shell(f"{ref} · 網頁核查" if ref else "網頁核查", body, info, tab="check")
+                key = named  # a site's key pasted back from its row: that site's page
+            if key:
+                return moved("/site", [("site", key), ("q", p.get("q", "").strip()), ("only", p.get("only", ""))],
+                             "check")
+            if not asks_a_page(ref, conn):
+                return moved("/doc", [("q", ref)])
+            info = db_info(conn)
+            summary = page_checked(ref).summary
+            crumb = None
+            if sw is not None and summary.get("page"):
+                sw.prioritize(summary["page"]["site"])
+                crumb = sw.crumb(summary["page"]["site"], summary["page"]["url"])
+            body = check_body(summary, value=ref, crumb=crumb, flash=p.get("n", ""))
+            named = (crumb or {}).get("name") or summary.get("title") or ref  # the tab says which page, not its address
+            return shell(f"{named} · 網頁核查", body, info, tab="doc")
         finally:
             conn.close()
 
@@ -616,12 +722,16 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return run
 
     routes = [Route("/", guarded(home, False), methods=["GET"]),
+              Route("/site", guarded(site_view, False), methods=["GET"]),
+              Route("/doc", guarded(doc_view, False), methods=["GET"]),
+              Route("/doc/find", guarded(doc_find, True), methods=["GET"]),
               Route("/search", guarded(search_page, False), methods=["GET"]),
               Route("/trace", guarded(trace_page, False), methods=["GET"]),
               Route("/api/search", guarded(search_api, True), methods=["GET"]),
               Route("/api/trace", guarded(trace_api, True), methods=["GET"]),
               Route("/api/board", guarded(board_api, True), methods=["GET"]),
               Route("/api/pipeline", guarded(pipeline_api, True), methods=["GET"]),
+              Route("/api/tonight", guarded(tonight_api, True), methods=["GET"]),
               Route("/pipeline/site", guarded(pipeline_site, False), methods=["GET"]),
               Route("/file", guarded(original, True), methods=["GET"]),
               Route("/check", guarded(check_panel, False), methods=["GET"]),
@@ -634,6 +744,25 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/api/check", guarded(check_api, True), methods=["GET"]),
               Route("/api/check/sweep", guarded(sweep_api, True), methods=["GET"])]
 
+    # 試用 (nknu.ops.try_page; structure design 2026-11-17 section 三.1): the search service as a student's AI agent
+    # sees it, called from here through mcp_url ('' : the page says it is not set)
+    trying = TryPage(mcp_url)
+
+    def try_view(request: Request) -> Response:
+        """試用: the service called as an agent calls it; its second tab, 搜尋測試's explanation (why_of); with nothing
+        asked, the scoreboard of the test questions under the forms."""
+        conn = connect(db_path)
+        try:
+            why = why_of(request, conn)
+            asked_something = why is not None or bool(request.query_params.get("call"))
+            board = "" if asked_something else board_html(board_now())
+            title, body = trying.page(request.query_params, why=why, board=board)
+            return shell(title, body, db_info(conn), tab="try")
+        finally:
+            conn.close()
+
+    routes.append(Route("/try", guarded(try_view, False), methods=["GET"]))
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette):
         """The sweep's thread is stopped with the app, so the container stops cleanly."""
@@ -645,8 +774,14 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.sweep = sweep
+    app.state.kinds = kinds
     app.add_middleware(LocalOnly)
     return app
+
+
+def mcp_url_of(given: str, watch: list[tuple[str, str, str]] | tuple = ()) -> str:
+    """The service 試用 calls: --mcp-url, else the first --watch entry watched as 'mcp', else '' (not set)."""
+    return given.strip() or next((url for _name, url, how in watch if how == "mcp"), "")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -670,6 +805,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="流水线页要问「有没有回应」的服务（从这个程序连得到的网址），可以给好几次。方式：mcp（握手，"
                          "每小时真的搜一次）、datasette（看它开着的库是不是正式库）、overview（资料总览的 /stamp）、"
                          "http（只看有没有回应）")
+    ap.add_argument("--mcp-url", default="",
+                    help="「試用」那一页调用的搜索服务（MCP）网址，从这个程序连得到的（实验室是 http://mcp:8766/mcp）；"
+                         "不给就用 --watch 里方式是 mcp 的那一个，都没有就是那一页说没有设定")
     add_model_flags(ap)
     args = ap.parse_args(argv)
     if not args.db.is_file():
@@ -687,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
     app = create_app(args.db, args.root, viewer_url=args.viewer_url, questions=args.questions, gold=args.gold,
                      overview_url=args.overview_url, tables_url=args.tables_url,
                      config=config_from(args), archive=Path(args.archive) if args.archive else None,
-                     watch=tuple(watch))
+                     watch=tuple(watch), mcp_url=mcp_url_of(args.mcp_url, watch))
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

@@ -26,7 +26,7 @@ import re
 from urllib.parse import quote
 
 from nknu.ops.look import e, icon, s2t
-from nknu.ops.pipeline import BAD, FIXERS, NONE, OK, STATE_WORDS, WARN, stamp
+from nknu.ops.pipeline import BAD, CONTENT, FIXERS, NONE, OK, STATE_WORDS, WARN, stamp
 
 PILL = {OK: "good", WARN: "warn", BAD: "bad", NONE: "none"}
 STATE_ICON = {OK: "ok", WARN: "warn", BAD: "no", NONE: "dash"}  # look's drawings: the state is never colour alone
@@ -106,10 +106,8 @@ background:var(--sunk)}
 "mark out when";padding:11px 14px}
 .pl-body{padding:4px 14px 14px}}
 
-.pl-sitebox{display:flex;gap:8px;align-items:center;margin:0 0 10px}
-.pl-sitebox input{flex:1 1 auto;max-width:360px;padding:8px 12px;border:1px solid var(--line2);border-radius:10px;
-background:var(--surface)}
-.sec .pl-cnt{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:650;color:var(--warn-ink)}
+.sec .pl-all{margin-left:auto;font-size:13px;font-weight:600;color:var(--ink);text-decoration:none;padding:4px 10px;
+border:1px solid var(--line2);border-radius:8px;background:var(--surface)}.sec .pl-all:hover{background:var(--hover)}
 table.pl-sites{width:100%;border-collapse:collapse;font-size:13px}
 table.pl-sites th{text-align:right;font-weight:600;color:var(--ink2);padding:6px 8px;border-bottom:1px solid var(--line);
 white-space:nowrap;background:var(--surface);cursor:pointer;user-select:none}
@@ -130,6 +128,117 @@ table.pl-sites td .pl-m.bad{background:var(--bad);color:var(--on-bad)}
 table.pl-sites td.pl-why{text-align:left;white-space:normal;color:var(--ink2);font-size:12px;min-width:200px}
 table.pl-sites th.pl-why{text-align:left;cursor:default}
 .pl-scroll{overflow-x:auto}
+""" + """
+/* 今晚 (redesign 2026-11-17, spec 2026-11-17-panels-structure-design.md 三.2-三.4): the first sentence, the night's
+   five parts in a row, the last seven nights; then 昨晚變了什麼. State colours only on the small marks (an icon in
+   each), amounts violet, what is picked ink */
+.tn{padding:14px 18px 16px;margin:0 0 16px}
+.tn-say{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;line-height:1.4}
+.tn-m{flex:none;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--hover);
+color:var(--ink2)}
+.tn-say[data-state=ok] .tn-m{background:var(--good);color:var(--on-good)}
+.tn-say[data-state=warn] .tn-m{background:var(--warn);color:var(--on-warn)}
+.tn-say[data-state=bad] .tn-m{background:var(--bad);color:var(--on-bad)}
+.tn-say[data-state=run] .tn-m{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 2px var(--ink)}
+.tn-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;margin:14px 0 2px}
+.tn-h{font-size:14px;font-weight:650;color:var(--ink2)}.tn-h .faint{font-weight:400;margin-left:6px}
+.tn-nights{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+.tn-n{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 5px;border-radius:9px;
+text-decoration:none;color:var(--ink2);font-size:11px;font-variant-numeric:tabular-nums;min-width:40px}
+.tn-n:hover{background:var(--hover)}
+.tn-n[aria-current]{box-shadow:inset 0 0 0 1.5px var(--act);color:var(--ink);font-weight:650}
+.tn-n.off{opacity:.55;pointer-events:none}
+.tn-dot{display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:var(--hover);
+color:var(--ink2)}
+[data-state=ok]>.tn-dot{background:var(--good);color:var(--on-good)}
+[data-state=warn]>.tn-dot{background:var(--warn);color:var(--on-warn)}
+[data-state=bad]>.tn-dot,[data-state=missed]>.tn-dot{background:var(--bad);color:var(--on-bad)}
+[data-state=run]>.tn-dot{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1.5px var(--ink)}
+.tn-line{list-style:none;margin:12px 0 0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0}
+.tn-cell{position:relative;display:flex;gap:10px;align-items:flex-start;padding:10px 12px 10px 0;min-width:0}
+.tn-cell+.tn-cell{padding-left:12px}
+.tn-cell+.tn-cell::before{content:"";position:absolute;left:-10px;top:24px;width:16px;height:2px;
+background:var(--line2)}
+.tn-cell .tn-dot{width:30px;height:30px;border-radius:50%;flex:none}
+.tn-cell[data-state=done][data-sev=ok]>.tn-dot{background:var(--good);color:var(--on-good)}
+.tn-cell[data-state=done][data-sev=warn]>.tn-dot,.tn-cell[data-state=stop][data-sev=warn]>.tn-dot{background:var(--warn);
+color:var(--on-warn)}
+.tn-cell[data-state=stop][data-sev=bad]>.tn-dot{background:var(--bad);color:var(--on-bad)}
+.tn-cell[data-state=run]>.tn-dot{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 2px var(--ink)}
+.tn-body{min-width:0;display:flex;flex-direction:column;gap:2px}
+.tn-nm{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.tn-nm b{font-size:14px}
+.tn-word{font-size:12px;font-weight:650;color:var(--ink3)}
+.tn-cell[data-state=done][data-sev=ok] .tn-word{color:var(--good-ink)}
+.tn-cell[data-sev=warn] .tn-word{color:var(--warn-ink)}
+.tn-cell[data-state=stop][data-sev=bad] .tn-word{color:var(--bad-ink)}
+.tn-cell[data-state=run] .tn-word{color:var(--ink)}
+.tn-cell[data-state=run][data-sev=warn]>.tn-dot{background:var(--warn);color:var(--on-warn);box-shadow:none}
+.tn-cell[data-state=run][data-sev=warn] .tn-word{color:var(--warn-ink)}
+.tn-sayc{font-size:13px;color:var(--ink);overflow-wrap:anywhere}
+.tn-when{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.tn-fix{font-size:12px;font-weight:650;color:var(--ink)}
+@media (max-width:860px){.tn-line{grid-template-columns:minmax(0,1fr)}
+.tn-cell,.tn-cell+.tn-cell{padding:8px 0}
+.tn-cell+.tn-cell::before{left:14px;top:-6px;width:2px;height:12px}
+.tn-nights{margin-left:0;width:100%;justify-content:space-between;flex-wrap:nowrap;gap:0}
+.tn-n{min-width:0;padding:3px 2px}}
+@media (prefers-reduced-motion:no-preference){[data-state=run]>.tn-dot .ic{animation:tn-turn 2.4s linear infinite}}
+@keyframes tn-turn{to{transform:rotate(360deg)}}
+
+.tn-chg{margin:0 0 22px}
+.tn-chg .tn-tot{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 28px}
+.tn-fig{display:flex;flex-direction:column}
+.tn-fig span{font-size:12px;color:var(--ink2)}
+.tn-fig b{font-size:26px;font-weight:700;color:var(--amt);font-variant-numeric:tabular-nums;line-height:1.15}
+.tn-crawl{margin-left:auto;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:12px;color:var(--ink2)}
+.tn-crawl b{color:var(--amt);font-size:13px;font-variant-numeric:tabular-nums}
+.tn-flag{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:650;white-space:nowrap}
+.tn-flag .ic{width:16px;height:16px;padding:2px;border-radius:50%}
+.tn-flag.bad{color:var(--bad-ink)}.tn-flag.bad .ic{background:var(--bad);color:var(--on-bad)}
+.tn-flag.warn{color:var(--warn-ink)}.tn-flag.warn .ic{background:var(--warn);color:var(--on-warn)}
+.tn-unx{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:var(--bad-bg)}
+.tn-unx>.tn-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;font-size:13px}
+.tn-unx>.tn-row b{font-variant-numeric:tabular-nums}
+.tn-docs{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.tn-docs li{display:flex;align-items:baseline;gap:8px;min-width:0}
+.tn-docs a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line2);overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tn-docs .tn-of{flex:none;color:var(--ink2);font-size:12px;text-decoration:none}
+.tn-docs a.tn-of:hover{color:var(--ink);text-decoration:underline}
+.tn-site>summary .tn-sn a{color:inherit;text-decoration:none}.tn-site>summary .tn-sn a:hover{text-decoration:underline}
+.tn-one .tn-why{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0 0}.tn-one .tn-why .tag b{color:var(--ink)}
+.tn-one .tn-in{padding:12px 0 0}
+.tn-docs .tag{flex:none}
+.tn-more{font-size:12px;color:var(--ink3)}
+.tn-sites{margin:14px 0 0;border-top:1px solid var(--line)}
+.tn-sites .tn-head,.tn-site>summary{display:grid;grid-template-columns:minmax(140px,1.2fr) 64px 64px 64px minmax(0,2fr) 18px;
+gap:4px 12px;align-items:center;padding:7px 4px}
+.tn-sites .tn-head{font-size:12px;color:var(--ink2);font-weight:600;border-bottom:1px solid var(--line)}
+.tn-sites .tn-head span:nth-child(n+2):nth-child(-n+4),.tn-site>summary .num{text-align:right}
+.tn-site{border-bottom:1px solid var(--line)}
+.tn-site>summary{cursor:pointer;list-style:none;font-size:13px}
+.tn-site>summary::-webkit-details-marker{display:none}
+.tn-site>summary:hover{background:var(--hover)}
+.tn-site>summary .tn-sn{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tn-site>summary .num.zero{color:var(--ink3)}
+.tn-site .tn-why{display:flex;flex-wrap:wrap;gap:4px}
+.tn-site .tn-why .tag b{color:var(--ink);font-variant-numeric:tabular-nums}
+.tag.tn-r-unknown{color:var(--bad-ink);background:var(--bad-bg)}.tag.tn-r-look{color:var(--warn-ink);background:var(--warn-bg)}
+.tag.tn-r-unknown .ic,.tag.tn-r-look .ic{width:13px;height:13px;padding:1px;border-radius:50%}
+.tag.tn-r-unknown .ic{background:var(--bad);color:var(--on-bad)}.tag.tn-r-look .ic{background:var(--warn);color:var(--on-warn)}
+.tn-site .pl-chev{color:var(--ink3);transition:transform .15s}.tn-site[open] .pl-chev{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.tn-site .pl-chev{transition:none}}
+.tn-in{padding:4px 4px 14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px 24px;
+align-items:start}
+.tn-rest>summary{cursor:pointer;padding:9px 4px;font-size:13px;color:var(--ink2)}
+.tn-rest>summary:hover{color:var(--ink)}
+.tn-in h4{margin:0;font-size:12px;font-weight:650;color:var(--ink2);display:flex;align-items:center;gap:6px}
+@media (max-width:860px){.tn-sites .tn-head{display:none}
+.tn-site>summary{grid-template-columns:minmax(0,1fr) auto auto auto 14px;grid-template-areas:none}
+.tn-site>summary .tn-why{grid-column:1/-1}.tn-site>summary .pl-chev{grid-row:1;grid-column:5}
+.tn-site>summary .num::before{content:attr(data-h) " ";color:var(--ink3);font-size:11px}
+.tn-crawl{margin-left:0}}
 """
 
 
@@ -256,13 +365,19 @@ document.querySelectorAll('.pl-node').forEach(a=>a.addEventListener('click',ev=>
 if(go(id)){ev.preventDefault();history.replaceState(null,'','#'+id)}}));})();"""
 
 
-def pipeline_body(snap: dict, panels: dict[str, str], sites_html: str = "") -> str:
-    """The page: the first line and the flow map in one card, the steps, the sites. panels: where the step links go by
-    their short names ('overview', 'board', …); a link whose name panels does not hold is used as it is."""
+# look again at the same page (its ?night= kept), without asking for another reading (?fresh=1 dropped)
+AGAIN = ("const u=new URL(location.href);u.searchParams.delete('fresh');u.hash='';"
+         "setTimeout(()=>location.replace(u.toString()),{ms})")
+
+
+def pipeline_body(snap: dict, panels: dict[str, str], sites_html: str = "", before: str = "") -> str:
+    """The page: before (今晚 and 昨晚變了什麼: tonight_html), then the first line and the flow map in one card, the
+    steps, the sites. panels: where the step links go by their short names ('overview', 'board', …); a link whose
+    name panels does not hold is used as it is."""
     if not snap.get("steps"):
-        return ("<section class='card pad pl-pipe-head'><span class='pill none'>讀取中</span>"
+        return (f"<style>{CSS}</style>{before}<section class='card pad pl-pipe-head'><span class='pill none'>讀取中</span>"
                 "<span class='pl-big'>正在讀每一步的紀錄，幾秒後自動重新整理</span></section>"
-                "<script>setTimeout(()=>location.reload(),4000)</script>")
+                f"<script>{AGAIN.replace('{ms}', '4000')}</script>")
     head = (f"<div class='pl-pipe-head'>{pill(snap['state'], STATE_WORDS.get(snap['state']))}"
             f"<span class='pl-big'>{e(snap['say'])}</span>"
             f"<span class='pl-when' data-tip='每 5 分鐘重新讀一次各步驟的紀錄；這次讀了 {e(snap.get('took'))}'>"
@@ -270,16 +385,14 @@ def pipeline_body(snap: dict, panels: dict[str, str], sites_html: str = "") -> s
             + ("（正在重新讀）" if snap.get("running") else " · <a href='/?fresh=1'>現在重讀</a>")
             + "</span></div>")
     # a reading under way: look again in a few seconds, without asking for another one
-    again = "<script>setTimeout(()=>location.replace('/'),5000)</script>" if snap.get("running") else ""
+    again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if snap.get("running") else ""
     top = f"<section class='card pl-top'>{head}{flow_map(snap['steps'])}</section>{again}"
     chain = "<ol class='pl-chain card'>" + "".join(stage_html(s, panels) for s in snap["steps"]) + "</ol>"
-    return f"<style>{CSS}</style>{top}{chain}{sites_html}<script>{PIPE_JS}</script>"
+    return f"<style>{CSS}</style>{before}{top}{chain}{sites_html}<script>{PIPE_JS}</script>"
 
 
-SITE_JS = """(()=>{const box=document.getElementById('sitefind'),table=document.querySelector('table.pl-sites');
-if(!box||!table)return;const body=table.tBodies[0],rows=[...body.rows];
-box.addEventListener('input',()=>{const q=box.value.trim().toLowerCase();for(const r of rows){
-r.hidden=!!q&&!(r.dataset.q||'').includes(q);}});
+SITE_JS = """(()=>{const table=document.querySelector('table.pl-sites');
+if(!table)return;const body=table.tBodies[0],rows=[...body.rows];
 table.querySelectorAll('th[data-col]').forEach(th=>th.addEventListener('click',()=>{
 const down=th.getAttribute('aria-sort')!=='descending';
 table.querySelectorAll('th').forEach(h=>h.removeAttribute('aria-sort'));
@@ -301,27 +414,31 @@ def site_cell(cell: dict) -> str:
     return f"<td data-v='{value if value is not None else -1}'{tip_attr}>{mark}{n(value)}</td>"
 
 
-def sites_html(snap: dict) -> str:
-    """Every site with its number at each step (snap['sites'], snap['site_cols']: (key, header, what it counts)), the
-    ones with problems first; a box above filters them as one types (name, short name, address; either script), a
-    click on a header sorts by it. A site's address is in its name's floating card."""
+def sites_html(snap: dict, all_href: str = "") -> str:
+    """The sites with something to look at (留意 or 出錯) with their number at each step (snap['sites'],
+    snap['site_cols']: (key, header, what it counts)) and what to look at; a click on a header sorts by it. A site's
+    name opens its page (/site), its address is in the name's floating card. Every site is on 網站 (all_href: 資料總覽,
+    「全部 N 個網站 →」): one list of sites, not one per page (structure design 2026-11-17 section 二)."""
     rows, cols = snap.get("sites") or [], snap.get("site_cols") or []
     if not rows or not cols:
         return ""
+    every = (f"<a class='pl-all' href='{e(all_href)}' data-tip='「網站」：資料總覽的網站列表'>全部 {len(rows)} 個網站 →</a>"
+             if all_href else "")
+    marked = [r for r in rows if r.get("worst") in (WARN, BAD)]
+    if not marked:
+        return (f"<h2 class='sec' id='sites'>要留意的網站<span class='faint'>0</span>{every}</h2>"
+                "<section class='card pad'><span class='soft'>沒有要留意的網站</span></section>")
     head = "".join(f"<th data-col='{e(key)}' data-tip='{e(tip)}'>{e(name)}</th>" for key, name, tip in cols)
     body = []
-    for row in rows:
+    for row in marked:
         cells = "".join(site_cell((row.get("cells") or {}).get(key) or {}) for key, _name, _tip in cols)
         why = "；".join(row.get("why") or [])
         key = e(row.get("key"))
         name = (f"<a href='{e(row['href'])}' data-tip='{key}'>{e(row.get('name'))}</a>" if row.get("href")
                 else f"<span data-tip='{key}'>{e(row.get('name'))}</span>")
         body.append(f"<tr data-q='{e(row.get('q', ''))}'><td>{name}</td>{cells}<td class='pl-why'>{e(why)}</td></tr>")
-    bad = sum(1 for r in rows if r.get("worst") in (WARN, BAD))
-    count = f"<span class='pl-cnt'>{icon('warn', 12)}{bad} 個要留意</span>" if bad else ""
-    return (f"<h2 class='sec' id='sites'>每個網站<span class='faint'>{len(rows)}</span>{count}</h2>"
-            "<section class='card pad'><div class='pl-sitebox'><input id='sitefind' type='search' "
-            "placeholder='找網站：教務、aca、軟體…' autocomplete='off' aria-label='找網站'></div><div class='pl-scroll'>"
+    return (f"<h2 class='sec' id='sites'>要留意的網站<span class='faint'>{len(marked)}</span>{every}</h2>"
+            "<section class='card pad'><div class='pl-scroll'>"
             f"<table class='pl-sites'><thead><tr><th data-col='name'>網站</th>{head}<th class='pl-why'>要留意的地方</th></tr>"
             f"</thead><tbody>{''.join(body)}</tbody></table></div></section><script>{SITE_JS}</script>")
 
@@ -369,7 +486,33 @@ white-space:nowrap}.pl-reasons .pl-eg1:hover{text-decoration:underline}
 .pl-funnel .pl-st b{font-size:20px;font-variant-numeric:tabular-nums}.pl-funnel .pl-st span{font-size:12px;color:var(--ink2)}
 .pl-funnel .pl-ar{color:var(--ink3)}
 .pl-site-step{margin-top:14px}.pl-site-step h3{font-size:16px;margin:0 0 4px}
+.pl-more{margin-top:6px}
+.pl-more>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:9px;background:var(--sunk);
+font-size:13px;color:var(--ink);cursor:pointer;list-style:none}
+.pl-more>summary::-webkit-details-marker{display:none}
+.pl-more>summary .ic{color:var(--ink3);transition:transform .15s}.pl-more[open]>summary .ic{transform:rotate(90deg)}
+.pl-more>summary:hover{background:var(--hover)}
 """
+
+
+SHOWN_LOSS = 5  # rows of one kind of loss a step's section shows; the rest behind one fold row 【Claude, the lead's
+#                brief 11-17: 教務處's 轉文字 printed 41 rows of 讀不出文字】
+LOSS_ORDER = ("failed", "pending", "partial", "empty", "skipped")  # the to-text kinds, failures first
+
+
+def folded(rows: list[str], total: int | None = None) -> str:
+    """One kind of loss as rows (<li> of .pl-reasons): the first SHOWN_LOSS, the rest behind one fold row 「還有 N
+    個」 that opens in place (a <details>). total: how many of the kind there are when the list holds fewer (the
+    to-text accounting lists up to 30, the export's refills up to 300): said inside the fold."""
+    total = max(total or 0, len(rows))
+    head = f"<ul class='pl-reasons'>{''.join(rows[:SHOWN_LOSS])}</ul>"
+    if total <= SHOWN_LOSS:
+        return head
+    unlisted = total - len(rows)
+    return (head + f"<details class='pl-more'><summary>{icon('right', 12)}還有 {total - SHOWN_LOSS:,} 個</summary>"
+            + (f"<ul class='pl-reasons'>{''.join(rows[SHOWN_LOSS:])}</ul>" if len(rows) > SHOWN_LOSS else "")
+            + (f"<div class='faint small' style='margin-top:6px'>其餘 {unlisted:,} 個沒有列出來</div>" if unlisted else "")
+            + "</details>")
 
 
 STATUS_TEXT = {"ok": "轉成文字", "partial": "轉了一部分", "empty": "讀不出文字", "skipped": "照規則跳過", "failed": "轉文字失敗",
@@ -393,21 +536,15 @@ def funnel(detail: dict) -> str:
         for value, label, tip in stops) + "</div>"
 
 
-def site_body(detail: dict, panels: dict[str, str]) -> str:
-    """One site's page (nknu.ops.pipeline.site_detail): its steps as one line of numbers, then in the pipeline's
-    order what the crawl got of what the export lists (by result, with examples that open 網頁核查 on that page), what
-    the export says is missing, what the to-text step made of its files (with what failed or came out empty), and what
-    the library holds of it."""
+def site_steps(detail: dict, *, style: bool = True) -> str:
+    """One site through the pipeline's steps (nknu.ops.pipeline.site_detail), the 處理流程 of its page (/site,
+    nknu.ops.site_page): its steps as one line of numbers, then in the pipeline's order what the crawl got of what the
+    export lists (by result, with examples that open 網頁核查 on that page), what the export says is missing, what the
+    to-text step made of its files (with what failed or came out empty), and what the library holds of it. Until the
+    structure design of 2026-11-17 this was the page /pipeline/site, with the site's name and links over it. style:
+    whether the page's style comes with it (site_page puts it on the page once)."""
     site = detail["site"]
-    key = site.get("site") or ""
-    links = [link("網頁核查這個網站", f"/check?site={quote(key, safe='')}")]
-    if panels.get("tables"):
-        links.append(link("資料庫裡它的文件", f"{panels['tables']}/aca/docs?site={quote(key, safe='')}"))
-    links.append("<a href='/#sites'>回到每個網站</a>")
-    head = (f"<section class='card pad'><h2 style='font-size:20px'>{e(site.get('name') or key)}</h2>"
-            f"<div class='mono soft'>{e(key)}</div>{funnel(detail)}<div class='pl-facts'>{' '.join(links)}</div>"
-            "</section>")
-    parts = [head]
+    parts = [f"<section class='card pad'>{funnel(detail)}</section>"]
     for words in detail.get("errors") or []:
         parts.append(f"<section class='card pad'><span class='pill warn'>讀不到</span> {e(words)}</section>")
     ex = detail.get("export")
@@ -431,14 +568,19 @@ def site_body(detail: dict, panels: dict[str, str]) -> str:
     text = detail.get("text")
     if text:
         status = text.get("status") or {}
-        bad = "".join(f"<li><span class='pl-why'>{e(STATUS_TEXT.get(st, st))}：{e(s2t(f))}"
-                      f"<span class='faint'>（{e(s2t(r) or '沒寫原因')}）</span></span><b class='num'></b></li>"
-                      for st, r, f in text.get("bad") or [])
+        kinds: dict[str, list[str]] = {}
+        for st, r, f in text.get("bad") or []:
+            kinds.setdefault(st, []).append(
+                f"<li><span class='pl-why'>{e(STATUS_TEXT.get(st, st))}：{e(s2t(f))}"
+                f"<span class='faint'>（{e(s2t(r) or '沒寫原因')}）</span></span><b class='num'></b></li>")
+        order = {st: i for i, st in enumerate(LOSS_ORDER)}
+        bad = "".join(folded(rows, status.get(st))
+                      for st, rows in sorted(kinds.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0])))
         parts.append(
             "<section class='card pad pl-site-step'><h3>轉文字</h3><div class='pl-facts'>"
             + "".join(f"<span>{e(STATUS_TEXT.get(st, st))} <b>{n(c)}</b></span>"
                       for st, c in sorted(status.items(), key=lambda kv: -kv[1]))
-            + "</div>" + (f"<ul class='pl-reasons'>{bad}</ul>" if bad else "") + "</section>")
+            + "</div>" + bad + "</section>")
     copies = detail.get("copies") or {}
     flags = detail.get("flags") or []
     parts.append(
@@ -450,7 +592,7 @@ def site_body(detail: dict, panels: dict[str, str]) -> str:
         + (f"<span>別處有一樣的、併成一份 <b>{n(copies.get('merged'))}</b></span>" if copies else "")
         + "</div>" + (f"<div class='pl-facts'><span>這個網站的檢查提醒：{e('、'.join(flags))}</span></div>" if flags else "")
         + "</section>")
-    return f"<style>{CSS}{SITE_CSS}</style>" + "".join(parts)
+    return (f"<style>{CSS}{SITE_CSS}</style>" if style else "") + "".join(parts)
 
 
 REFILL_WORDS = {"10-24 旧存档": "10-24 舊存檔", "上一次抓到的": "每晚更新前一次抓到的"}
@@ -460,15 +602,286 @@ def refill_html(ex: dict) -> str:
     """The rows of the export filled from an older answer (its 来源), each with why (its 备注) and a link to 網頁核查 on
     that page: this round's answer was broken or empty."""
     rows = ex.get("refills") or []
-    total = sum((ex.get("refill") or {}).values())
+    counts = ex.get("refill") or {}
+    total = sum(counts.values())
     if not total:
         return "<div class='faint small' style='margin-top:10px'>用舊資料補的：沒有。</div>"
-    items = "".join(
-        f"<li><span class='pl-why'><a class='pl-eg1' href='/check?ref={e(quote(url, safe=''))}' data-tip='{e(url)}'>"
-        f"{e(s2t(title) or url)}</a><span class='faint'>（{e(REFILL_WORDS.get(origin, origin))}）</span>"
-        + (f"<div class='faint small'>{e(s2t(note))}</div>" if note else "")
-        + "</span><b class='num'></b></li>" for url, title, origin, note in rows[:100])
-    more = f"<div class='faint small'>只列前 100 筆，共 {total:,} 筆</div>" if total > 100 else ""
-    by = "、".join(f"{REFILL_WORDS.get(k, k)} {v:,}" for k, v in (ex.get("refill") or {}).items())
+    kinds: dict[str, list[str]] = {}
+    for url, title, origin, note in rows:
+        kinds.setdefault(origin, []).append(
+            f"<li><span class='pl-why'><a class='pl-eg1' href='/check?ref={e(quote(url, safe=''))}' data-tip='{e(url)}'>"
+            f"{e(s2t(title) or url)}</a><span class='faint'>（{e(REFILL_WORDS.get(origin, origin))}）</span>"
+            + (f"<div class='faint small'>{e(s2t(note))}</div>" if note else "") + "</span><b class='num'></b></li>")
+    by = "、".join(f"{REFILL_WORDS.get(k, k)} {v:,}" for k, v in counts.items())
+    items = "".join(folded(kinds[k], counts.get(k)) for k in sorted(kinds, key=lambda k: -counts.get(k, 0)))
     return (f"<div class='faint small' style='margin-top:10px'>抓壞或抓到空的、改用舊資料補上的 {total:,} 筆（{e(by)}）"
-            f"：</div><ul class='pl-reasons'>{items}</ul>{more}")
+            f"：</div>{items}")
+
+
+# ------------------------------------------------------------------------------------------------ 今晚 (nknu.ops.nightly)
+
+# a clock: the mark of a part that runs (look has no such drawing; currentColor only) 【Claude】
+CLOCK = ("<svg class='ic' viewBox='0 0 16 16' width='{s}' height='{s}' fill='none' stroke='currentColor' "
+         "stroke-width='1.6' stroke-linecap='round' aria-hidden='true'><circle cx='8' cy='8' r='5.6'/>"
+         "<path d='M8 4.8V8l2.2 1.4'/></svg>")
+NIGHT_ICON = {"ok": "ok", "warn": "warn", "bad": "no", "missed": "no", "wait": "dash", "off": "dash"}
+SAY_STATE = {"ok": "ok", "warn": "warn", "bad": "bad", "run": "run", "wait": "none"}
+SHOWN_DOCS = 40  # documents a list shows on the page; the rest are in /api/tonight 【Claude】
+SHOWN_SITES = 20  # sites shown before 還有 N 個網站有變動 (the ones with something to look at come first) 【Claude】
+
+
+def _mark(state: str, size: int) -> str:
+    return CLOCK.format(s=size) if state == "run" else icon(NIGHT_ICON.get(state, "dash"), size)
+
+
+def cell_html(c: dict) -> str:
+    """One part of the night: its mark (an icon in it), its name and state word, what it does or where it stopped,
+    when (a running part's 已經 … ticks in the page: TONIGHT_JS), who fixes it when it stopped."""
+    state, sev = c.get("state", "wait"), c.get("sev") or ""
+    # a part still running that has been silent a while (可能卡住, nknu.ops.nightly.STUCK) wears the warning mark; its
+    # minutes still tick and the page still asks (review 2026-11-17)
+    mark = ("warn" if sev == "warn" else "run" if state == "run" else "bad" if state == "stop" and sev == "bad"
+            else "ok" if state == "done" else "wait")
+    when = e(c.get("when"))
+    if state == "run" and c.get("since_ts"):
+        when = f"<span data-since='{int(c['since_ts'])}'>{when}</span>"
+    tip = "\n".join(x for x in (c.get("say"), c.get("tip"), f"從 {c['since'][11:16]}" if c.get("since") else "") if x)
+    return (f"<li class='tn-cell' data-state='{e(state)}' data-sev='{e(sev)}' data-tip-h='{e(c.get('name'))}："
+            f"{e(c.get('word'))}' data-tip='{e(tip)}'><span class='tn-dot'>{_mark(mark, 16)}</span>"
+            f"<div class='tn-body'><div class='tn-nm'><b>{e(c.get('name'))}</b><span class='tn-word'>{e(c.get('word'))}"
+            "</span></div>"
+            + (f"<div class='tn-sayc'>{e(c.get('say'))}</div>" if c.get("say") else "")
+            + (f"<div class='tn-when'>{when}</div>" if when else "")
+            + (f"<div class='tn-fix'>{e(c.get('fixer'))}</div>" if c.get("fixer") else "")
+            + (f"<div class='tn-when'>{icon('warn', 12)} 另外有一次建庫在跑</div>" if c.get("aside") else "")
+            + "</div></li>")
+
+
+def nights_html(nights: list[dict], shown: str) -> str:
+    """The last seven nights, oldest first: a small mark each (an icon in it) over its date; the one shown is ringed
+    in ink; a click shows that night (?night=)."""
+    out = []
+    for n in nights:
+        state = n.get("state", "wait")
+        current = " aria-current='page'" if n.get("night") == shown else ""
+        off = " off" if state == "off" else ""
+        tip_h = f"{n.get('date')}（{n.get('label')}）：{n.get('word')}" if n.get("label") in ("今晚", "昨晚") else \
+            f"{n.get('date')} 那一晚：{n.get('word')}"
+        out.append(f"<a class='tn-n{off}' href='{e(n.get('href'))}' data-state='{e(state)}'{current} "
+                   f"data-tip-h='{e(tip_h)}'><span class='tn-dot'>{_mark(state, 13)}</span>{e(n.get('date'))}</a>")
+    return "<nav class='tn-nights' aria-label='最近 7 晚'>" + "".join(out) + "</nav>"
+
+
+TONIGHT_JS = """(()=>{const box=document.querySelector('[data-tonight]');if(!box)return;
+const words=s=>s<90?Math.round(s)+' 秒':s<5400?Math.round(s/60)+' 分鐘':Math.floor(Math.round(s/60)/60)+' 小時 '+Math.round(s/60)%60+' 分';
+const tick=()=>document.querySelectorAll('[data-since]').forEach(el=>{el.textContent='已經 '+words(Date.now()/1000-Number(el.dataset.since))});
+const live=box.hasAttribute('data-live'),busy=!!document.querySelector('[data-computing]');
+if(live)setInterval(tick,30000);if(!live&&!busy)return;
+const poll=()=>fetch(box.getAttribute('data-tonight'),{cache:'no-store'}).then(r=>r.json()).then(d=>{
+if(d.sig!==box.getAttribute('data-sig'))location.reload();else setTimeout(poll,busy?5000:60000)}).catch(()=>setTimeout(poll,60000));
+setTimeout(poll,busy?5000:60000)})();"""
+
+
+def tonight_html(t: dict, changes: dict) -> str:
+    """The home page's top (t: nknu.ops.nightly.tonight; changes: nknu.ops.changes.Changes.snapshot): the first
+    sentence (of the default night), the night shown as five parts in a row with the last seven nights beside it, and
+    昨晚變了什麼 (changes_html). The page asks /api/tonight again while something runs or is computed, and reloads
+    when what it shows has changed."""
+    sentence, shown = t.get("sentence") or {}, t.get("shown") or {}
+    say_state = SAY_STATE.get(sentence.get("state"), "none")
+    mark = _mark("run" if say_state == "run" else {"ok": "ok", "warn": "warn", "bad": "bad"}.get(say_state, "wait"), 16)
+    api = "/api/tonight?brief=1" + (f"&night={quote(shown['night'])}"
+                                    if shown.get("night") and shown["night"] != t.get("default") else "")
+    live = " data-live" if t.get("live") else ""
+    said = e(sentence.get("text"))
+    if sentence.get("since_ts") and sentence.get("lead"):  # the minutes tick in the page (TONIGHT_JS)
+        rest = sentence["text"][len(sentence["lead"]):].lstrip("，")
+        said = f"{e(sentence['lead'])}，<span data-since='{int(sentence['since_ts'])}'>{e(rest)}</span>"
+    title = shown.get("label") or ""
+    cells = "".join(cell_html(c) for c in shown.get("cells") or [])
+    top = (f"<section class='card tn' data-tonight='{e(api)}' data-sig='{e(t.get('sig'))}'{live}>"
+           f"<div class='tn-say' data-state='{e(say_state)}'><span class='tn-m'>{mark}</span>"
+           f"<span>{said}</span></div>"
+           f"<div class='tn-bar'><h2 class='tn-h'>{e(title)}<span class='faint'>{e(shown.get('night'))}</span></h2>"
+           f"{nights_html(t.get('nights') or [], shown.get('night', ''))}</div>"
+           f"<ol class='tn-line' aria-label='這一晚的五步'>{cells}</ol></section>")
+    return top + changes_html(changes, t) + f"<script>{TONIGHT_JS}</script>"
+
+
+def _doc_li(d: dict, *, site: str = "", left: bool = False) -> str:
+    """One document of a list: its title, a link to 文件追蹤 (one in the library) or to 網頁核查's copy of the page (one
+    that left), its address, id and note in the floating card."""
+    title = d.get("title") or d.get("url") or d.get("id")
+    href = f"/check?ref={quote(d.get('url') or '', safe='')}" if left else f"/trace?ref={quote(d.get('id') or '', safe='')}"
+    tip = "\n".join(x for x in (d.get("url"), d.get("id"), d.get("note")) if x)
+    what = "".join(f"<span class='tag'>{e(w)}</span>" for w in d.get("what") or [])
+    key = d.get("site") or ""
+    where = (f"<a class='tn-of' href='/site?site={e(quote(key, safe=''))}'>{e(site)}</a>" if site and key
+             else f"<span class='tn-of'>{e(site)}</span>" if site else "")
+    return f"<li>{where}<a href='{e(href)}' data-tip='{e(tip)}'>{e(title)}</a>{what}</li>"
+
+
+def _docs(items: list[dict], total: int, *, left: bool = False, site_names: bool = False) -> str:
+    shown = "".join(_doc_li(d, site=d.get("site_name", "") if site_names else "", left=left)
+                    for d in items[:SHOWN_DOCS])
+    more = total - min(len(items), SHOWN_DOCS)
+    return (f"<ul class='tn-docs'>{shown}</ul>"
+            + (f"<div class='tn-more'>還有 {more:,} 份（全部在 /api/tonight）</div>" if more > 0 else ""))
+
+
+def _flag(kind: str, words: str) -> str:
+    return f"<span class='tn-flag {kind}'>{icon('no' if kind == 'bad' else 'warn', 12)}{e(words)}</span>"
+
+
+def _reason_tag(key: str, n: int, reasons: dict) -> str:
+    r = reasons.get(key) or {"label": key, "tip": "", "kind": "ok"}
+    tip = r.get("tip", "") + (f"（{FIXERS[r['fix']]}）" if r.get("fix") in FIXERS and r.get("kind") != "ok" else "")
+    lead = ""
+    if r.get("kind") == "unknown":
+        lead = icon("no", 11)
+    elif r.get("kind") == "look":
+        lead = icon("warn", 11)
+    cls = " tn-r-" + r.get("kind", "ok")
+    return f"<span class='tag{cls}' data-tip-h='{e(r['label'])}' data-tip='{e(tip)}'>{lead}{e(r['label'])} <b>{n:,}</b></span>"
+
+
+def _reason_keys(s: dict, reasons: dict) -> list[str]:
+    """A site's reasons for what left, 查不出原因 first, then ours to look at, then by how many."""
+    order = {"unknown": 0, "look": 1, "ok": 2}
+    return sorted(s.get("reasons") or {}, key=lambda k: (order.get((reasons.get(k) or {}).get("kind"), 2),
+                                                         -s["reasons"][k]))
+
+
+def _change_lists(s: dict, reasons: dict, keys: list[str]) -> str:
+    """A site's lists: what left by reason (keys' order), what came in, what changed and how."""
+    parts = []
+    lists = s.get("lists") or {}
+    for k in keys:
+        r = reasons.get(k) or {"label": k}
+        parts.append(f"<div><h4>離開：{e(r['label'])}<span class='faint'>{s['reasons'][k]:,}</span></h4>"
+                     + _docs((lists.get("left") or {}).get(k) or [], s["reasons"][k], left=True) + "</div>")
+    if s.get("new"):
+        parts.append(f"<div><h4>新進<span class='faint'>{s['new']:,}</span></h4>"
+                     + _docs(lists.get("new") or [], s["new"]) + "</div>")
+    if s.get("changed"):
+        parts.append(f"<div><h4>改了<span class='faint'>{s['changed']:,}</span></h4>"
+                     + _docs(lists.get("changed") or [], s["changed"]) + "</div>")
+    return "".join(parts)
+
+
+def site_change_html(s: dict, reasons: dict) -> str:
+    """One site's changes: a summary row (its name, a link to its page; new, changed, left, the reasons the left ones
+    have) that opens on the lists: what left by reason (查不出原因 and ours first), what came in, what changed and
+    how."""
+    keys = _reason_keys(s, reasons)
+    why = "".join(_reason_tag(k, s["reasons"][k], reasons) for k in keys)
+
+    def num(v: int, head: str) -> str:
+        return f"<span class='num{' zero' if not v else ''}' data-h='{head}'>{v:,}</span>"
+
+    held = " data-tip='這個網站留在舊的導出（ingest-hold.txt）'" if s.get("held") else ""
+    # the name opens the site's page (every site name links there: structure design 2026-11-17); the rest of the
+    # row opens the lists
+    name = (f"<a href='/site?site={e(quote(s.get('site') or '', safe=''))}'>{e(s.get('name'))}</a>" if s.get("site")
+            else e(s.get("name")))
+    summary = (f"<summary><span class='tn-sn'{held}>{name}</span>{num(s['new'], '新進')}"
+               f"{num(s['changed'], '改了')}{num(s['left'], '離開')}<span class='tn-why'>{why}</span>"
+               f"<span class='pl-chev'>{icon('right', 14)}</span></summary>")
+    return (f"<details class='tn-site' data-site='{e(s.get('site'))}'>{summary}"
+            f"<div class='tn-in'>{_change_lists(s, reasons, keys)}</div></details>")
+
+
+def one_site_changes(changes: dict, key: str) -> str:
+    """One site's part of the last swap's comparison, for its page (/site): its new, changed and left as figures,
+    the reasons the left ones have, its lists open; or why there is nothing to show (no library before, the same
+    file, being computed, nothing of this site changed)."""
+    state = changes.get("state")
+    if state in ("none", "same", "error"):
+        flag = _flag("warn", "比不了") + " " if state == "error" else ""
+        return f"<section class='card pad tn-chg'>{flag}<span class='soft'>{e(changes.get('words'))}</span></section>"
+    if state == "computing":
+        return ("<section class='card pad tn-chg' data-computing><span class='pill none'>計算中</span> "
+                "<span class='soft'>正在比對前一份庫和現在的庫（要一兩分鐘）</span></section>")
+    prev, new = changes.get("prev") or {}, changes.get("new") or {}
+
+    def when(x: dict) -> str:
+        return (x.get("swapped_at") or x.get("built_at") or "")[5:16].replace("T", " ")
+
+    pair = f"<span class='faint small'>{e(when(prev))} 換上的庫 → {e(when(new))} 換上的庫</span>"
+    s = next((x for x in changes.get("sites") or [] if x.get("site") == key), None)
+    if s is None:
+        return f"<section class='card pad tn-chg'><span class='soft'>這個網站沒有變動</span>　{pair}</section>"
+    reasons = changes.get("reasons") or {}
+    keys = _reason_keys(s, reasons)
+    figs = "".join(f"<div class='tn-fig'><span>{label}</span><b>{s.get(k, 0):,}</b></div>"
+                   for k, label in (("new", "新進"), ("changed", "改了"), ("left", "離開")))
+    why = "".join(_reason_tag(k, s["reasons"][k], reasons) for k in keys)
+    return (f"<section class='card pad tn-chg tn-one'><div class='tn-tot'>{figs}<div class='tn-crawl'>{pair}</div></div>"
+            + (f"<div class='tn-why'>{why}</div>" if why else "")
+            + f"<div class='tn-in'>{_change_lists(s, reasons, keys)}</div></section>")
+
+
+def changes_title(changes: dict, t: dict) -> str:
+    """昨晚變了什麼 when the last swap was that night's, else 上次換庫變了什麼 with its day."""
+    night = changes.get("night") or ""
+    for n in t.get("nights") or []:
+        if n.get("night") == night and n.get("label") in ("今晚", "昨晚"):
+            return f"{n['label']}變了什麼"
+    return "上次換庫變了什麼"
+
+
+def changes_html(changes: dict, t: dict) -> str:
+    """昨晚變了什麼 (nknu.ops.changes): the two libraries compared, what came in, changed and left in violet beside the
+    crawler's own counts of its night; then 查不出原因 (red, open), then every site that changed, the ones with
+    something unexplained or ours to look at first, each opening on its lists."""
+    state = changes.get("state")
+    if state in ("none", "same", "error"):
+        flag = _flag("warn", "比不了") if state == "error" else ""
+        return (f"<h2 class='sec' id='changes'>上次換庫變了什麼</h2><section class='card pad tn-chg'>{flag} "
+                f"<span class='soft'>{e(changes.get('words'))}</span></section>")
+    if state == "computing":
+        return ("<h2 class='sec' id='changes'>上次換庫變了什麼</h2><section class='card pad tn-chg' data-computing>"
+                "<span class='pill none'>計算中</span> <span class='soft'>正在比對前一份庫和現在的庫（兩份各約七萬份文件，"
+                "要一兩分鐘）</span></section>")
+    prev, new = changes.get("prev") or {}, changes.get("new") or {}
+
+    def when(x: dict) -> str:
+        return (x.get("swapped_at") or x.get("built_at") or "")[5:16].replace("T", " ")
+
+    head = (f"<h2 class='sec' id='changes'>{e(changes_title(changes, t))}<span class='faint' data-tip='aca.prev.db"
+            f"（{e(prev.get('docs'))} 份）→ aca.db（{e(new.get('docs'))} 份）；比對花了 {e(changes.get('took'))}'>"
+            f"{e(when(prev))} 換上的庫 → {e(when(new))} 換上的庫</span></h2>")
+    tot = changes.get("totals") or {}
+    figs = "".join(f"<div class='tn-fig'><span>{label}</span><b>{tot.get(k, 0):,}</b></div>"
+                   for k, label in (("new", "新進"), ("changed", "改了"), ("left", "離開")))
+    crawler = t.get("crawler") or {}
+    crawl = ""
+    if crawler.get("counts"):
+        when_c = (crawler.get("started") or "")[5:16].replace("T", " ")
+        crawl = (f"<div class='tn-crawl' data-tip='爬蟲自己數的：那一晚看了哪些網址、和上一次比怎樣（網址，不是文件）'>"
+                 f"<span>爬蟲 {e(when_c)} 那一晚看到</span>"
+                 + "".join(f"<span>{e(k)} <b>{v:,}</b></span>" for k, v in crawler["counts"] if v)
+                 + "</div>")
+    flags = []
+    if tot.get("unexplained"):
+        flags.append(_flag("bad", f"查不出原因 {tot['unexplained']:,} 份"))
+    if tot.get("look"):
+        flags.append(_flag("warn", f"可能是我們漏的 {tot['look']:,} 份"))
+    reasons = changes.get("reasons") or {}
+    unx = ""
+    if changes.get("unexplained"):
+        unx = (f"<div class='tn-unx'><div class='tn-row'>{_flag('bad', '查不出原因')}<b>{tot['unexplained']:,}</b> 份"
+               f"<span class='soft'>{e(FIXERS[CONTENT])}</span></div>"
+               + _docs(changes["unexplained"], tot["unexplained"], left=True, site_names=True) + "</div>")
+    sites = changes.get("sites") or []
+    if sites:
+        rows = "".join(site_change_html(s, reasons) for s in sites[:SHOWN_SITES])
+        if len(sites) > SHOWN_SITES:
+            rows += (f"<details class='tn-rest'><summary>還有 {len(sites) - SHOWN_SITES} 個網站有變動</summary>"
+                     + "".join(site_change_html(s, reasons) for s in sites[SHOWN_SITES:]) + "</details>")
+        table = ("<div class='tn-sites'><div class='tn-head'><span>網站</span><span>新進</span><span>改了</span>"
+                 f"<span>離開</span><span>離開的原因</span><span></span></div>{rows}</div>")
+    else:
+        table = "<p class='soft'>兩份庫的文件一模一樣。</p>"
+    return (f"{head}<section class='card pad tn-chg'><div class='tn-tot'>{figs}"
+            f"<div class='tn-fig'>{''.join(flags)}</div>{crawl}</div>{unx}{table}</section>")

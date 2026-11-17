@@ -225,8 +225,8 @@ def test_a_page_draws_without_its_board_when_the_library_file_cannot_be_looked_a
 
     monkeypatch.setattr(board.Board, "snapshot", gone)
     with TestClient(app, base_url=BASE) as client:
-        page = client.get("/search")
-        assert page.status_code == 200 and "class='tile'" not in page.text and "<form class='ask'" in page.text
+        page = client.get("/try")
+        assert page.status_code == 200 and "class='tile'" not in page.text and "沒有設定" in page.text
         assert client.get("/").status_code == 200
     assert search_page.board_html(None) == ""
 
@@ -259,21 +259,23 @@ def test_a_finished_board_hides_its_progress_and_the_script_keeps_it_current():
 
 # ---------------------------------------------------------------- the home page
 
-def test_the_home_page_is_the_pipeline_and_the_tools_keep_their_pages(db, tmp_path):
-    # owner 11-16: the home says whether every step of the pipeline is normal; the two tools that were the home
-    # keep their own pages, the scoreboard on the search's empty page
+def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
+    # owner 11-16: the home says whether every step of the pipeline is normal; since the structure design of 11-17
+    # (section 二) it is 今晚, 搜尋測試 is 試用's second tab (the scoreboard on 試用's empty page) and the empty trace is
+    # 文件's box
     folder, gold = _questions(tmp_path)
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
                          gold=gold)
     with TestClient(app, base_url=BASE) as client:
         home = client.get("/").text
-        search = client.get("/search").text
-        page_of_trace = client.get("/trace").text
+        search = client.get("/search")
+        page_of_trace = client.get("/trace")
         _settled(client)
-    assert "aria-current='page'>流水線</a>" in home and "action='/search'" not in home
-    assert "action='/search'" in search and "data-board='/api/board'" in search
-    assert "action='/trace'" in page_of_trace
-    assert "/trace?ref=d3" in page_of_trace  # there: a document to start from, a test question's gold answer
+    assert "aria-current='page'>今晚</a>" in home and "action='/search'" not in home
+    assert str(search.url).endswith("/try#board") and "data-board='/api/board'" in search.text
+    assert "aria-current='page'>試用</a>" in search.text
+    assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
+    assert "aria-current='page'>文件</a>" in page_of_trace.text
 
 
 # ---------------------------------------------------------------- a document's dates on one line

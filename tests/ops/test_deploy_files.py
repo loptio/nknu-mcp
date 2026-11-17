@@ -306,9 +306,13 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     guide = _plugin("guide")
     ds = _Datasette(empty)
     table = _vars(guide, "table.html", ds, "aca", "docs")
-    # since 11-17 the bar is the panels' one (nknu/ops/theme): 資料庫 marked, the others by their tunnel addresses
-    assert "aria-current='page'>資料庫</a>" in table["nk_bar"] and "http://127.0.0.1:18878/search" in table["nk_bar"]
-    assert "data-tip='每個網站收了多少、缺多少'" in table["nk_bar"]  # what each panel is floats over its name
+    # since 11-17 the bar is the panels' one (nknu/ops/theme): four entries by their tunnel addresses, and 資料庫, a
+    # tool, marked in the 工具 menu (structure design 2026-11-17 section 二)
+    assert "aria-current='page'>資料庫<svg" in table["nk_bar"] and "<details class='nk-tools nk-on'>" in table["nk_bar"]
+    assert "href='http://127.0.0.1:18878/try'" in table["nk_bar"] and "href='http://127.0.0.1:18878/doc'" in table["nk_bar"]
+    assert "data-tip='每個網站收了多少、缺什麼" in table["nk_bar"]  # what each entry is floats over its name
+    # a site's name on the home's list opens its page in 檢視台; a document's trace too
+    assert table["site_page"] == "http://127.0.0.1:18878/site?site=" and table["trace_url"].endswith(":18878/trace?ref=")
     assert "--k0:" in table["nk_theme"] and "--act:" in table["nk_theme"]
     assert table["zh_tables"]["docs"] == "文件" and table["value_words"]["kind_class"]["notice"] == "公告"
     assert table["column_names"]["kind_class"]["short"] == "類型" and "guide" not in table
@@ -843,6 +847,10 @@ def test_the_list_of_sites_is_one_piece_the_home_page_and_a_sites_query_share():
     assert "dataset.k" in script and "inOrder" in script
     query = (templates / "query.html").read_text(encoding="utf-8")
     assert "沒有文件進庫" in query and "都有日期" in query  # why a site's query has no rows, not only that it has none
+    # the home's list: a site's name opens its page in 檢視台 (structure design 2026-11-17 section 二); a query's list
+    # keeps switching that query's site
+    assert 'name_go=site_page' in (templates / "index.html").read_text(encoding="utf-8")
+    assert "name_go" not in query and '{{ name_go or go }}{{ s.site|urlencode }}' in piece
 
 
 def test_no_page_prints_a_description_and_the_table_page_draws_the_column_chips():

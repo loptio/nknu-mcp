@@ -321,3 +321,15 @@ def test_the_build_s_reminders_say_what_is_wrong_in_plain_words() -> None:
         assert old not in code, old
     assert 'class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' in PAGE  # 新 says since when
     assert "新出現 ' + n + ' 項</span>" in PAGE and "'新出現 ' + c.nw.length" not in PAGE
+
+
+def test_every_site_leads_to_its_page_in_the_inspection_panel() -> None:
+    """Structure design 2026-11-17 section 二: 網站 keeps its charts and its list, and every site in it leads to the
+    one page of that site (檢視台 /site): its name in the list is a link, and the inspector has one clear way there.
+    The address comes from panels.json through server.py (__LINKS__), not written in the page twice."""
+    assert '<script id="links" type="application/json">__LINKS__</script>' in PAGE
+    assert "const SITE_PAGE = LINKS.site ||" in PAGE and "const TABLES = LINKS.tables ||" in PAGE
+    assert '<a class="nm-a" href="\' + esc(SITE_PAGE + encodeURIComponent(s.k)) + \'"' in PAGE
+    assert 'id="iGo" hidden' in PAGE and "這個網站的詳情 →" in PAGE
+    assert "go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k);" in PAGE
+    assert "if (ev.target.closest('a[href]')) return;" in PAGE  # a name's link goes, it does not only pick the row

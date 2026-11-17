@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from nknu.ops import check_page, check_sites, look, pipeline_page
+from nknu.ops import check_page, check_sites, doc_page, look, pipeline_page, site_page
 from nknu.ops.theme import bar
 
 REPO = Path(__file__).resolve().parents[2]
@@ -17,6 +17,8 @@ THEME = bar.theme_css()
 SHEETS = {
     "look.py": look.CSS,
     "pipeline_page.py": pipeline_page.CSS,
+    "site_page.py": site_page.CSS,  # the four entries' new pages (structure design 2026-11-17 section 二)
+    "doc_page.py": doc_page.CSS,
     "check_page.py": (REPO / "src/nknu/ops/check_page.py").read_text(encoding="utf-8"),
     "check_sites.py": (REPO / "src/nknu/ops/check_sites.py").read_text(encoding="utf-8"),
     "tc.css": (REPO / "deploy/lab-inspect/datasette/static/tc.css").read_text(encoding="utf-8"),
@@ -75,14 +77,40 @@ def test_the_faint_grey_reads_on_every_paper_in_both_themes():
             assert _contrast(v["--ink3"], v[paper]) >= 4.5, (paper, v["--ink3"])
 
 
-def test_the_bar_marks_the_page_and_links_its_own_host_by_path():
-    html = bar.bar("search", "ops", "資料截至 x")
-    assert html.count("<a ") == 7 and "aria-current='page'>搜尋測試</a>" in html
-    assert "href='/check'" in html and "href='http://127.0.0.1:18879/'" in html
-    assert "href='http://127.0.0.1:18877/progress'" in html and "target='_blank'" in html  # the crawler's own page
-    assert "class='nk-meta'>資料截至 x</span>" in html
-    other = bar.bar("tables", "tables")
-    assert "href='http://127.0.0.1:18878/'" in other and "aria-current='page'>資料庫</a>" in other
+def _entries(html: str) -> list[str]:
+    """The four entries of a bar as they read, in order."""
+    nav = html.split("<nav class='nk-tabs'", 1)[1].split("</nav>", 1)[0]
+    return re.findall(r">([^<>]+)</a>", nav)
+
+
+def test_the_bar_has_four_entries_and_a_tools_menu_and_links_its_own_host_by_path():
+    # structure design 2026-11-17 section 二: 今晚 | 網站 | 試用 | 文件, and 資料庫, 爬蟲進度 in the 工具 menu
+    html = bar.bar("try", "ops", "資料截至 x")
+    assert _entries(html) == ["今晚", "網站", "試用", "文件"]
+    assert "aria-current='page'>試用</a>" in html and html.count("aria-current") == 1
+    assert "href='/'" in html and "href='/try'" in html and "href='/doc'" in html  # its own host's: by path
+    assert "href='http://127.0.0.1:18879/'" in html  # 網站 is 資料總覽, its own server
+    menu = html.split("<details class='nk-tools'>", 1)[1].split("</details>", 1)[0]
+    assert menu.startswith("<summary>工具") and ">資料庫<svg" in menu and ">爬蟲進度<svg" in menu
+    assert "href='http://127.0.0.1:18001/'" in menu
+    assert "href='http://127.0.0.1:18877/progress'" in menu and menu.count("target='_blank'") == 1  # the crawler's
+    assert "class='nk-meta'>資料截至 x</span>" in html and html.index("nk-meta") < html.index("nk-tools")
+    assert "e.key==='Escape'" in html  # the menu closes by Escape, a click outside, or the focus leaving it
+
+
+def test_a_tools_page_marks_the_menus_button_and_no_entry():
+    html = bar.bar("tables", "tables")
+    assert "aria-current='page'>資料庫<svg" in html and "<details class='nk-tools nk-on'>" in html
+    assert all("aria-current" not in a for a in html.split("</nav>", 1)[0].split("<a ")[1:])
+    assert "href='http://127.0.0.1:18878/'" in html and "href='/'" in html  # 今晚 by address; 資料庫 itself by path
+    assert "<details class='nk-tools'>" in bar.bar("doc", "ops")  # a page of an entry leaves the button plain
+
+
+def test_the_entries_and_a_sites_page_are_one_address_wherever_they_are_linked_from():
+    assert bar.entry_href("sites", "ops") == "http://127.0.0.1:18879/" and bar.entry_href("sites", "overview") == "/"
+    assert bar.entry_href("tables", "ops") == "http://127.0.0.1:18001/" and bar.entry_href("nothing", "ops") == ""
+    assert bar.site_href("c.nknu.edu.tw/aca", "ops") == "/site?site=c.nknu.edu.tw%2Faca"
+    assert bar.site_prefix("overview") == "http://127.0.0.1:18878/site?site="
 
 
 def test_the_overview_server_puts_the_theme_and_the_bar_on_its_page():
@@ -91,5 +119,8 @@ def test_the_overview_server_puts_the_theme_and_the_bar_on_its_page():
     spec = importlib.util.spec_from_file_location("ov_server", REPO / "deploy/lab-overview/server.py")
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
-    page = server.render("<p>x</p>", {}).decode("utf-8")
-    assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>資料總覽</a>" in page
+    page = server.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
+    assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>網站</a>" in page
+    assert _entries(page) == ["今晚", "網站", "試用", "文件"] and "<details class='nk-tools'>" in page
+    # its links to a site's page and to 資料庫 come from panels.json, as the bar's do
+    assert '"site": "http://127.0.0.1:18878/site?site="' in page and '"tables": "http://127.0.0.1:18001"' in page

@@ -148,6 +148,12 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 /* inspector */
 .ih-t { font-size: 20px; font-weight: 650; line-height: 1.25; }
 .ih-s { color: var(--ink2); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+/* one site's page in 檢視台 (structure design 2026-11-17 section 二): the inspector's one way there, ink as every act */
+.ih-go { display: inline-flex; align-items: center; margin-top: 10px; padding: 6px 12px; border-radius: 8px; background: var(--act); color: var(--on-act); font-size: 13px; font-weight: 650; text-decoration: none; }
+.ih-go:hover { opacity: .88; }
+.ih-go[hidden] { display: none; }
+#tbl a.nm-a { color: inherit; text-decoration: none; }
+#tbl a.nm-a:hover { text-decoration: underline; text-underline-offset: 2px; }
 .tag { display: inline-block; padding: 0 6px; border-radius: 5px; background: var(--hover); color: var(--ink2); font-size: 11px; margin-left: 6px; white-space: nowrap; }
 .dn { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; align-items: center; margin-top: 14px; }
 .dn svg { display: block; width: 100%; height: auto; }
@@ -374,7 +380,7 @@ tr.grow .pc { color: var(--ink); }
     </section>
 
     <aside class="side" aria-label="目前範圍的詳情"><div class="side-in card" id="insp">
-      <div class="ih"><div class="ih-t" id="iT"></div><div class="ih-s" id="iS"></div></div>
+      <div class="ih"><div class="ih-t" id="iT"></div><div class="ih-s" id="iS"></div><a class="ih-go" id="iGo" hidden data-tip="檢視台裡這個網站的一頁：每一步進多少出多少、上次換庫變了什麼、網頁核查、文件">這個網站的詳情 →</a></div>
       <div class="dn">
         <svg id="dn" viewBox="0 0 150 150" width="150" height="150" role="img" aria-label="文件類型佔比">
           <circle class="dn-track" cx="75" cy="75" r="62"/><g transform="translate(75,75)" id="dnG"></g>
@@ -425,6 +431,7 @@ tr.grow .pc { color: var(--ink); }
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
 <script id="data" type="application/json">__DATA__</script>
+<script id="links" type="application/json">__LINKS__</script>
 <script>
 (function () {
 'use strict';
@@ -450,8 +457,12 @@ const CK_SPIKE = ['檔案時間整批相同', '同一天有二十個以上的檔
 const OUTN = ['抓到', '留到下一輪', '學校已刪除', '抓取失敗', '要登入', '待處理'];
 const OUTTIP = ['', '這一輪按規則先不抓，多數是要 JavaScript 才出現的內容和按鈕', '連結還在，但學校那邊已經沒有這個網頁或檔案', '連不上、被拒絕，或者回來的不是檔案', '要登入才看得到', '寫法特殊，這一輪還沒決定怎麼抓'];
 const OUTCLS = ['o-got', 'o-next', 'o-gone', 'o-fail', 'o-login', 'o-todo'];
-// Datasette (the inspection tools' 翻庫裡的表), through the Mac's tunnel: its queries say why a site's documents have no date
-const TABLES = 'http://127.0.0.1:18001';
+// where the other panels are (server.py fills them in from nknu/ops/theme/panels.json, one place for the addresses):
+// 資料庫, whose queries say why a site's documents have no date, and one site's page in 檢視台, which the list's names and
+// the inspector link to (structure design 2026-11-17 section 二)
+const LINKS = (() => { try { return JSON.parse(document.getElementById('links').textContent); } catch (_) { return {}; } })();
+const TABLES = LINKS.tables || 'http://127.0.0.1:18001';
+const SITE_PAGE = LINKS.site || 'http://127.0.0.1:18878/site?site=';
 const QA = '品保＝教學品質保證。每個系所各有一個這樣的小網站，主要放辦法、要點和申請表';
 const GROUPS = D.groups, S0 = D.sites, byKey = {};
 const TODAY = Math.floor(Date.parse(D.today + 'T00:00:00Z') / DAY);
@@ -799,6 +810,7 @@ function checkRows(one, sc) {
 function renderInsp() {
   const one = S.site ? byKey[S.site] : null, sc = scopeSites();
   $('#iT').textContent = one ? one.n : S.grp !== null ? GROUPS[S.grp] : '全部網站';
+  const go = $('#iGo'); go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k);
   $('#iS').innerHTML = one
     ? esc(GROUPS[one.g]) + ' · <a href="' + esc(one.url) + '" target="_blank" rel="noopener">' + esc(one.k) + ' ↗</a>' +
       (one.imp ? '<span class="tag" data-tip="網站名單裡給它標的重要性">' + esc(one.imp) + '</span>' : '') + (/品保/.test(one.f) ? '<span class="tag" data-tip="' + QA + '">品保</span>' : '')
@@ -1228,7 +1240,7 @@ function renderList() {
   const siteRow = (r, kid) => {
     const s = r.s, ks = kidsOf.get(s.k) || [], open = S.unfold.has(s.k);
     const fold = ks.length ? '<button type="button" class="fold" data-fold="' + esc(s.k) + '" aria-expanded="' + open + '" data-tip="' + (open ? '收起' : '展開') + '這個系的品保網站">品保' + (ks.length > 1 ? ' ' + ks.length : '') + '</button>' : '';
-    return '<tr data-k="' + esc(s.k) + '" class="' + (kid ? 'kid' : grouped ? 'in' : '') + '" aria-selected="' + (S.site === s.k) + '"><td><span class="nm"><span data-tip="' + esc(s.f + ' · ' + s.s) + '">' + esc(s.n) + '</span>' + fold + '</span></td>' +
+    return '<tr data-k="' + esc(s.k) + '" class="' + (kid ? 'kid' : grouped ? 'in' : '') + '" aria-selected="' + (S.site === s.k) + '"><td><span class="nm"><a class="nm-a" href="' + esc(SITE_PAGE + encodeURIComponent(s.k)) + '" data-tip="' + esc(s.f + ' · ' + s.s) + '">' + esc(s.n) + '</a>' + fold + '</span></td>' +
       cells(figs([s], r.v, r.p), grand, hl) + '</tr>' + (open ? ks.map(k => siteRow(k, true)).join('') : '');
   };
   let body = '';
@@ -1330,6 +1342,7 @@ function init() {
   $('#calNext').addEventListener('click', () => { S.calYear++; S.calDay = null; drawCal(); });
   $('#calDay').addEventListener('click', ev => { const b = ev.target.closest('button[data-k]'); if (b && S.site !== b.dataset.k) selectSite(b.dataset.k); });
   $('#tbl').addEventListener('click', ev => {
+    if (ev.target.closest('a[href]')) return;  // a site's name goes to its page in 檢視台
     const f = ev.target.closest('button[data-fold]');
     if (f) { const k = f.dataset.fold; if (S.unfold.has(k)) S.unfold.delete(k); else S.unfold.add(k); hideTip(); renderList(); return; }
     const th = ev.target.closest('th[data-s]');

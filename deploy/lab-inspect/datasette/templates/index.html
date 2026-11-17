@@ -20,7 +20,7 @@
 <div class="start">
   <section class="card find">
     <h3>網站<span>{{ guide.sites|length }} 個</span><a href="{{ base }}/sites_overview" data-tip="每個網站的文件數、資料截至、沒抓到的網頁和檔案">明細</a></h3>
-    {{ finder(guide.sites, base ~ "/site_docs?site=", base ~ "/site_undated_why?site=") }}
+    {{ finder(guide.sites, base ~ "/site_docs?site=", base ~ "/site_undated_why?site=", name_go=site_page) }}
   </section>
   <div class="side">
     <form class="card do" action="{{ base }}/find_title" method="get">

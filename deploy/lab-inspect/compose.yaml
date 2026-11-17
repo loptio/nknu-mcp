@@ -107,6 +107,8 @@ services:
               "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
               "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
               "--archive", "/crawl/archive",
+              # 「試用」那一页从这里调用 MCP 服务（只读、一次一个；网页不直接连它）
+              "--mcp-url", "http://mcp:8766/mcp",
               # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
               # （11-16 在 ops 里实测都连得到）。mcp 是握手、每小时真的搜一次；datasette 看它开的是不是正式库；
               # overview 看资料总览算的是哪一份库；http 只看有没有回应（爬虫看板每一页都要现算，不问页面）

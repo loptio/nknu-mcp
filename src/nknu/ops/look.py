@@ -116,6 +116,10 @@ font-weight:700;font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){.tile[data-grade=wait] .g{animation:none}.tally .seg{transition:none}}
 
 /* a search: the question's bar, the verdict with its ruler */
+.whyhead{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0 0 4px}
+.whyhead .qnav{margin:0;flex:1 1 460px;min-width:0}.whyhead form.follow{flex:0 1 380px;flex-wrap:nowrap;min-width:0}
+.whyhead form.follow .box{flex:1 1 auto}.whyhead form.follow input{padding-top:7px;padding-bottom:7px}
+.whyhead form.follow button{min-height:36px;padding:0 16px}
 .qnav{display:flex;align-items:center;gap:8px;margin:12px 0 0}
 .qnav a.step{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;border:1px solid var(--line2);
 background:var(--surface);text-decoration:none;color:var(--ink2)}.qnav a.step:hover{color:var(--ink);background:var(--hover)}

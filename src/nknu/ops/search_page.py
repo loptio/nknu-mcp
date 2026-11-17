@@ -38,17 +38,37 @@ PART_TIPS = {
 }
 
 
-# ---------------------------------------------------------------- the forms
+# ---------------------------------------------------------------- where it lives, and the forms
 
-def search_form(q: str, docs: list[str], *, focus: bool = True, follow: bool = True) -> str:
-    """The question's box and, with follow, the box for documents to follow through the search."""
-    also = (f"<label class='box narrow' data-tip='填文件編號或網址：結果裡會標出它排第幾，沒排上的話停在哪一步'>"
+# Since the structure design of 2026-11-17 (section 二; owner: 「可以按你的建议走吧，不用问我了」) 搜尋測試 is the second tab
+# of 試用 (/try?tab=why…): /search redirects there, and every link of these pages goes there directly. 【Claude】
+WHY_TAB = ("tab", "why")
+
+
+def why_url(*, q: str = "", qid: str = "", docs: list[str] | tuple = (), limit: int | None = None,
+            anchor: str = "") -> str:
+    """The address of 試用's 「為什麼這樣排」 for a question (or a test question by its id), with documents to follow,
+    a limit and an anchor (a row's id: r-<doc_id>)."""
+    params = [WHY_TAB]
+    if qid:
+        params.append(("qid", qid))
+    elif q:
+        params.append(("q", q))
+    params += [("doc", d) for d in docs if d]
+    if limit is not None:
+        params.append(("limit", str(limit)))
+    return "/try?" + urlencode(params) + (f"#{anchor}" if anchor else "")
+
+
+def follow_form(q: str, docs: list[str], question: dict | None = None) -> str:
+    """The box for documents to follow through the search (a test question follows its gold answers by itself):
+    the question rides along hidden, so the same search is explained again with them marked."""
+    asked = (f"<input type='hidden' name='qid' value='{e(question['id'])}'>" if question
+             else f"<input type='hidden' name='q' value='{e(q)}'>")
+    return ("<form class='ask follow' action='/try' method='get'><input type='hidden' name='tab' value='why'>"
+            f"{asked}<label class='box narrow' data-tip='填文件編號或網址：結果裡會標出它排第幾，沒排上的話停在哪一步'>"
             f"{icon('trace', 15)}<input name='doc' value='{e(' '.join(docs))}' "
-            "placeholder='指定文件（可不填）' aria-label='指定文件'></label>" if follow else "")
-    return ("<form class='ask' action='/search' method='get'>"
-            f"<label class='box'>{icon('search', 16)}<input name='q' value='{e(q)}' "
-            f"placeholder='問一個學生會問的問題，或幾個關鍵字' aria-label='問題'{' autofocus' if focus else ''}></label>"
-            f"{also}<button>搜尋</button></form>")
+            "placeholder='指定文件（可不填）' aria-label='指定文件'></label><button>看名次</button></form>")
 
 
 def question_nav(questions: list[dict], current: dict | None) -> str:
@@ -62,7 +82,7 @@ def question_nav(questions: list[dict], current: dict | None) -> str:
             return f"<a class='step' aria-disabled='true'>{icon(key, 15)}</a>"
         target = questions[to]
         return (f"<a class='step' data-key='{'prev' if key == 'left' else 'next'}' "
-                f"href='/search?{urlencode({'qid': target['id']})}' "
+                f"href='{e(why_url(qid=target['id'], anchor='result'))}' "
                 f"data-tip='{e(name)}：{e(target['id'])}　{e(tw(target['question']))}' "
                 f"aria-label='{e(name)}'>{icon(key, 15)}</a>")
 
@@ -71,8 +91,16 @@ def question_nav(questions: list[dict], current: dict | None) -> str:
                    f"{e(q['id'])}　{e(tw(q['question']))}</option>" for q in questions)
     arrows = (step("left", None if at is None else at - 1, "上一題")
               + step("right", 0 if at is None else at + 1, "下一題"))
-    return (f"<form class='qnav' action='/search' method='get'>{arrows}<select name='qid' aria-label='測試題' "
-            f"onchange='this.form.submit()'>{first}{opts}</select><a class='back' href='/search'>全部測試題</a></form>")
+    return (f"<form class='qnav' action='/try' method='get'><input type='hidden' name='tab' value='why'>{arrows}"
+            f"<select name='qid' aria-label='測試題' onchange='this.form.submit()'>{first}{opts}</select>"
+            "<a class='back' href='/try#board'>全部測試題</a></form>")
+
+
+def why_head(questions: list[dict], question: dict | None, query: str, docs: list[str]) -> str:
+    """Over an explained search on 試用's second tab: the test questions' arrows and picker, and the box for documents
+    to follow (a test question's gold answers are followed by themselves, so only the others are in the box)."""
+    typed = [d for d in docs if not question or d not in question["gold"]]
+    return f"<div class='whyhead'>{question_nav(questions, question)}{follow_form(query, typed, question)}</div>"
 
 
 # ---------------------------------------------------------------- the scoreboard
@@ -103,12 +131,12 @@ def board_html(snapshot: dict | None) -> str:
                 else str(item["rank"]) if item["rank"] else "—")
         said = (f"標準答案第 {item['rank']} 名" if item["rank"] else "還在算" if item["grade"] == grades.WAIT
                 else "這一題沒搜成" if item["grade"] == grades.FAILED else "標準答案沒排上")
-        tiles.append(f"<a class='tile' href='/search?{urlencode({'qid': item['id']})}' data-q='{e(item['id'])}' "
+        tiles.append(f"<a class='tile' href='{e(why_url(qid=item['id'], anchor='result'))}' data-q='{e(item['id'])}' "
                      f"data-grade='{e(item['grade'])}'><span class='g g-{e(item['grade'])}' data-tip='{e(said)}'>"
                      f"{e(mark)}</span>"
                      f"<span class='q'><b>{e(item['id'])}</b>{e(tw(item['question']))}</span></a>")
     running = " data-running" if snapshot["done"] < total else ""
-    return (f"<h2 class='sec' data-tip='{total} 道測試題各搜一次，看標準答案排第幾名；點一題看那次搜尋'>測試題成績</h2>"
+    return (f"<h2 class='sec' id='board' data-tip='{total} 道測試題各搜一次，看標準答案排第幾名；點一題看那次搜尋'>測試題成績</h2>"
             f"<section class='card pad' data-board='/api/board'{running}><div class='tally' role='img' "
             f"aria-label='標準答案的名次分布'>{segs}</div><div class='legend'>{legend}</div>"
             f"<div class='tiles'>{''.join(tiles)}</div></section>")
@@ -264,8 +292,8 @@ def _detail(row: dict, p: dict, weights: dict, words: str = "") -> str:
                       if row["expires"] else "不會"))
     if row.get("period"):
         facts.append(("學期", e(row["period"])))
-    if row.get("site"):
-        facts.append(("網站", e(row["site"])))
+    if row.get("site"):  # its key, opening the site's page (structure design 2026-11-17 section 二)
+        facts.append(("網站", f"<a href='/site?{urlencode({'site': row['site']})}'>{e(row['site'])}</a>"))
     right = ""
     if paths:
         right += f"<h3>關鍵字・向量・重排</h3><div class='mini'>{''.join(paths)}</div>"

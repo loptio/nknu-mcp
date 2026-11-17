@@ -71,6 +71,7 @@ WHO_WORDS = {"fix": ("爬蟲可補", "爬蟲這邊能補：沒發現的去發現
 ZONE_ORDER = ("in", "files", "out")  # a miss in the content area first, then the attachment area, then the menus
 WHATS = (("link", "連結"), ("image", "圖片"), ("button", "按鈕"))
 
+NO_AREA = "no_area"  # outcome.FLAGS (11-17): a page that came back without its content area
 # outcome.user_bucket's categories as ours, then the three changes of design section 二 and facts §1.5
 _FROM_OUTCOME = {"got": "got", "queued": "next", "failed": "failed", "review": "review", "login": "login",
                  "gone": "gone", outcome.SCHOOL_SIDE: "gone", "pending_check": "got", "next_round": "next",
@@ -81,6 +82,7 @@ _OVERRIDE = {
     "held": "rule", "too_large": "rule",  # the owner 11-08 on the 43 held by a cap: 「保持现状」
     "bad_link": "gone", "short_dead": "gone",
     "parked": "failed", "api_quota": "failed",
+    NO_AREA: "look",  # read thin by outcome: the export keeps its last good copy; never missing nor failed
     "not_discovered": "missing",
 }
 # the ledger's result codes in Traditional words (outcome.RESULT_LABEL, said again for the panel)
@@ -95,6 +97,7 @@ RESULT_WORDS = {
     "not_discovered": "發現了，卻沒有留下紀錄", "unhandled": "還沒決定怎麼處理的寫法", "bad_link": "學校的連結壞了",
     "short_dead": "短網址已失效", "parked": "目錄連續被拒", outcome.SCHOOL_SIDE: "學校那邊的問題（人看過）",
     "superseded": "被後來那次取代，後來那次不見了", "gone_home": "跳回學校首頁（學校那邊已經不存在）",
+    NO_AREA: "缺內容區（學校回了空頁）",
 }
 # url.reason, page_res.why and link.verdict in words: the whole code, else its prefix before the colon 【Claude】
 REASON_WORDS = {
@@ -107,6 +110,7 @@ REASON_WORDS = {
     "out:trap": "爬蟲陷阱", "out:search": "搜尋頁", "out:media": "影音", "out:refuses": "網站不給抓", "out:too_long": "網址太長",
     "out:never_host": "不抓的網站", "out:bad_host": "網址寫壞了", "cap:depth": "撞到深度上限", "cap:site": "撞到整站上限",
     "out:internal_service": "學校內部的服務", "out:scheme": "不是網頁的網址",
+    "out:skip_path": "名單寫明這條路徑不往下翻",  # round1.Site's skip paths (11-17): a rule, never missing
     "media:drive_video": "雲端影片，只記檔名和大小", "media:drive_audio": "雲端聲音檔，只記檔名和大小",
     "media:drive_installer": "安裝檔，只記檔名和大小", "media": "影音或安裝檔，只記檔名和大小",
     "too_large": "檔案太大", "media_type": "影音或安裝檔", "gsimg_stale": "協作平台的舊圖", "server_down": "伺服器一直連不上",
@@ -130,6 +134,7 @@ REASON_WORDS = {
     "api:downloadQuotaExceeded": "Google 下載次數用完", "api:automated_queries": "Google 擋了自動查詢",
     "api:unreadable": "Google 的回答讀不懂", "api": "Google 讀不到",
     "http_4xx": "學校回了別的錯誤", "http_5xx": "學校伺服器出錯",
+    NO_AREA: "缺內容區，學校回了空頁",  # the reason of a row put back to be asked again (crawler._no_area_again)
 }
 # an HTTP status in words, the number after them 【Claude】
 HTTP_WORDS = {400: "學校說請求不對", 401: "學校要求登入", 403: "被拒絕", 404: "找不到", 405: "學校不收這種請求",
@@ -159,6 +164,15 @@ def reason_words(code: str | None) -> str:
         if REASON_WORDS.get(key):
             return REASON_WORDS[key]
     return RESULT_WORDS.get(code) or RESULT_WORDS.get(head) or code
+
+
+def own_result(row: sqlite3.Row) -> str:
+    """A url_result row's result, with a web page that came back without its platform's content area said as such:
+    flag no_area (11-17, the crawler session: a teacher's CV page with no card, asked again up to three times, then
+    read thin by outcome, and exported from its last good copy) is NO_AREA, not 頁面幾乎是空的."""
+    result = row["result"]
+    flags = row["flags"] if "flags" in row.keys() else None  # noqa: SIM118  a Row's `in` looks at its values
+    return NO_AREA if result == "thin" and NO_AREA in (flags or "").split(",") else result
 
 
 def bucket_of(result: str | None, reason: str | None = None) -> str:
@@ -611,7 +625,7 @@ def _apply(item: Item, row: sqlite3.Row | None, ledger: Ledger, *, file_like: bo
         if file_like and _off_file(verdict):
             return _set(item, "failed", "not_file", "應該是檔案，卻轉到" + reason_words(verdict))
         return _kept_out(item, verdict)
-    result, reason = land["result"], land["reason"] or ""
+    result, reason = own_result(land), land["reason"] or ""
     item.status = land["status"]
     item.fetched_at = taipei(land["fetched_at"])
     if (land["kind0"] or land["kind"]) == "drive" and result == "ok":
@@ -621,7 +635,7 @@ def _apply(item: Item, row: sqlite3.Row | None, ledger: Ledger, *, file_like: bo
         return _set(item, "gone", "gone_home", "")
     if file_like and came_back:
         return _set(item, "failed", "not_file", "應該是檔案，回來是網頁")
-    _set(item, bucket_of(result, reason), result, reason_words(reason))
+    _set(item, bucket_of(result, reason), result, "" if result == NO_AREA else reason_words(reason))
 
 
 def _file_like_role(res: sqlite3.Row | None) -> bool:
@@ -777,7 +791,7 @@ def _page_facts(row: sqlite3.Row, hops: list[str]) -> dict:
     url = row["url"]
     prof = profiles.profile_for(url)
     return {"id": row["id"], "url": url, "result": row["result"], "bucket": bucket_of(row["result"], row["reason"]),
-            "result_words": RESULT_WORDS.get(row["result"], row["result"]), "state": row["state"],
+            "result_words": RESULT_WORDS.get(own_result(row), row["result"]), "state": row["state"],
             "reason": reason_words(row["reason"]), "status": row["status"], "fetched_at": taipei(row["fetched_at"]),
             "ctype": row["ctype"] or "", "kind": row["kind"], "site": row["owner_site"] or row["site"],
             "profile": prof.name if prof is not None else "", "platform": prof.platform if prof is not None else "",

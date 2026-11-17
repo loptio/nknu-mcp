@@ -93,9 +93,36 @@ def test_the_page_escapes_what_it_prints(lib, db):
     assert "<script>alert" not in page.text and "&lt;script&gt;alert(1)" in page.text
 
 
-def test_an_empty_search_page_is_the_form(lib):
+def test_an_empty_search_page_is_try_with_its_board(lib):
+    # structure design 2026-11-17 section 二: 搜尋測試 moved into 試用; asked nothing, 試用 itself
+    page = lib.get("/search", follow_redirects=False)
+    assert page.status_code == 307 and page.headers["location"] == "/try#board"
     page = lib.get("/search")
-    assert page.status_code == 200 and "<form" in page.text and "名次" not in page.text
+    assert page.status_code == 200 and "aria-current='page'>試用</a>" in page.text and "名次" not in page.text
+
+
+def test_the_old_addresses_go_where_their_pages_went(lib):
+    def to(path: str, **params) -> str:
+        got = lib.get(path, params=params, follow_redirects=False)
+        assert got.status_code == 307, (path, params)
+        return got.headers["location"]
+
+    assert to("/search", q="停修", doc="d3") == "/try?tab=why&q=%E5%81%9C%E4%BF%AE&doc=d3#result"
+    assert to("/search", qid="Q01", limit="20") == "/try?tab=why&qid=Q01&limit=20#result"
+    assert to("/trace") == "/doc" and to("/trace", ref="停修") == "/doc?q=%E5%81%9C%E4%BF%AE"
+    assert to("/pipeline/site", site="a.example/x") == "/site?site=a.example%2Fx"
+    assert to("/check") == "/doc" and to("/check", url="教務") == "/doc?q=%E6%95%99%E5%8B%99"
+    assert to("/check", site="a.example", only="gap") == "/site?site=a.example&only=gap#check"
+    assert lib.get("/trace", params={"ref": "d3"}, follow_redirects=False).status_code == 200  # a trace stays
+    assert to("/site") == "http://127.0.0.1:18879/"  # no site asked: 網站, where every site is
+
+
+def test_the_second_tab_of_try_explains_the_search_on_the_library(lib):
+    page = lib.get("/try", params={"tab": "why", "q": "停修", "doc": "dx"}).text
+    assert "aria-current='page'>試用</a>" in page and "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in page
+    assert "class='rhead'" in page and "id='r-dx'" in page and "class='star'" in page  # search_page's rows, dx marked
+    assert "<form class='ask follow' action='/try'" in page and "name='doc' value='dx'" in page
+    assert "<title>停修 · 試用</title>" in page
 
 
 def test_the_questions_are_offered_and_their_gold_is_followed(db, tmp_path):
@@ -107,9 +134,10 @@ def test_the_questions_are_offered_and_their_gold_is_followed(db, tmp_path):
     gold = tmp_path / "gold.json"
     gold.write_text(json.dumps({"Q01": {"docs": ["dx", "d3"]}, "N01": {"docs": ["dq"]}}), encoding="utf-8")
     with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
-        home = client.get("/search").text
-        assert "/search?qid=Q01" in home and "/search?qid=N01" in home and "qid=Q02" not in home
-        page = client.get("/search", params={"qid": "Q01"}).text
+        home = client.get("/try").text
+        assert "/try?tab=why&amp;qid=Q01#result" in home and "/try?tab=why&amp;qid=N01#result" in home
+        assert "qid=Q02" not in home
+        page = client.get("/try", params={"tab": "why", "qid": "Q01"}).text
         assert "標準答案" in page and "學生選課應行注意事項" in page
         report = client.get("/api/search", params={"qid": "Q01"}).json()
         assert report["query"] == "停修" and [f["doc_id"] for f in report["follow"]] == ["dx", "d3"]
@@ -180,7 +208,7 @@ def test_a_database_built_before_pipeline_8_still_draws(site):
 
 def test_the_home_page_says_which_library_it_reads(site):
     home = site.get("/").text
-    assert "2026-11-15" in home and "/search" in home and "/trace" in home
+    assert "2026-11-15" in home and "href='/try'" in home and "href='/doc'" in home
 
 
 # ---------------------------------------------------------------- python -m nknu.ops.web
@@ -234,21 +262,26 @@ def test_a_test_question_says_first_where_its_gold_answer_stands(db, tmp_path):
 
 
 def test_words_that_are_no_id_find_documents_by_title(site):
+    # 文件 (/doc) finds them since the structure design of 2026-11-17; the trace's box sends words there
     page = site.get("/trace", params={"ref": "停修"}).text
-    assert "標題含「停修」的文件" in page and "/trace?ref=" in page and "① 抓取" not in page
+    assert "庫裡的文件" in page and "/trace?ref=" in page and "① 抓取" not in page
+    assert "aria-current='page'>文件</a>" in page and "value='停修'" in page
     none = site.get("/trace", params={"ref": "沒有這幾個字"}).text
-    assert "沒有標題含「沒有這幾個字」的文件" in none
+    assert "標題裡沒有「沒有這幾個字」的文件" in none
 
 
 def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
     # since 11-17 every panel shows nknu/ops/theme/bar.py's bar: 檢視台's own pages by path, the others by address
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
-        page = client.get("/search").text
-    assert "href='http://127.0.0.1:18879/'" in page and "href='http://127.0.0.1:18001/'" in page
-    assert "href='/trace'" in page and "href='/'" in page and "class='nk-bar'" in page
-    assert "aria-current='page'>搜尋測試" in page and ">資料庫<" in page and "翻庫" not in page
-    assert "data-tip='每個網站收了多少、缺多少'" in page  # what each panel is floats over its name
+        pages = {path: client.get(path).text for path in ("/", "/try", "/doc", "/trace?ref=d3")}
+    for path, page in pages.items():
+        assert "href='http://127.0.0.1:18879/'" in page and "href='http://127.0.0.1:18001/'" in page, path
+        assert "href='/doc'" in page and "href='/'" in page and "class='nk-bar'" in page, path
+        assert ">資料庫<svg" in page and "<summary>工具" in page and "翻庫" not in page, path
+    marked = {path: page.split("aria-current='page'>", 1)[1].split("<", 1)[0] for path, page in pages.items()}
+    assert marked == {"/": "今晚", "/try": "試用", "/doc": "文件", "/trace?ref=d3": "文件"}
+    assert "data-tip='每個網站收了多少、缺什麼" in pages["/"]  # what each entry is floats over its name
 
 
 def test_a_trace_opens_with_the_five_steps_state(site):
@@ -413,11 +446,11 @@ def test_a_test_question_is_shown_in_traditional_chinese_and_searched_as_written
     gold = tmp_path / "gold.json"
     gold.write_text(json.dumps({"Q01": {"docs": ["dx"]}}), encoding="utf-8")
     with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
-        listed = client.get("/search").text
-        page = client.get("/search", params={"qid": "Q01"}).text
+        listed = client.get("/try").text
+        page = client.get("/try", params={"tab": "why", "qid": "Q01"}).text
         report = client.get("/api/search", params={"qid": "Q01"}).json()
     assert "<b>Q01</b>怎麼申請停修</span>" in listed and "怎么申请停修" not in listed
-    assert "Q01　怎麼申請停修</option>" in page and "value='怎么申请停修'" in page
+    assert "Q01　怎麼申請停修</option>" in page and "<title>怎么申请停修 · 試用</title>" in page
     assert report["query"] == "怎么申请停修"
 
 
@@ -440,5 +473,4 @@ def test_the_words_the_index_folds_to_simplified_are_shown_in_traditional(lib):
 def test_the_trace_page_leads_to_the_page_check_of_its_address(site):
     """design 2026-11-16-page-check-design.md section 一: a document with an address offers 「核查這一頁」."""
     page = site.get("/trace", params={"ref": NOTICE_URL}).text
-    assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>文件追蹤" in page
-    assert ">網頁核查</a>" in page  # the third tab
+    assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>文件</a>" in page

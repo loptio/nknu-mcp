@@ -43,7 +43,8 @@ theme = _theme_module()
 
 DATABASE = "aca"
 # the panels' one top bar and look (nknu/ops/theme: the inspect copy's src is on PYTHONPATH, compose.yaml): this
-# panel's key and host are both 'tables' (redesign 2026-11-17)
+# panel's key and host are both 'tables' (redesign 2026-11-17); since the structure design of 2026-11-17 (section 二)
+# 資料庫 is a tool, so its pages mark the bar's 工具 menu, not one of its four entries
 BAR = theme.bar("tables", "tables")
 THEME = theme.theme_css()
 # Datasette's words for a filter's comparisons -> the page's (templates/table.html)
@@ -52,7 +53,10 @@ OPS = {"exact": "等於", "not": "不等於", "contains": "包含", "endswith": 
        "glob": "像（glob）", "in": "是其中之一", "notin": "不是其中之一", "arraycontains": "陣列裡有",
        "arraynotcontains": "陣列裡沒有", "date": "日期是", "isnull": "是空的（null）", "notnull": "不是空的",
        "isblank": "是空白", "notblank": "不是空白"}
-TRACE = "http://127.0.0.1:18878/trace?ref="
+# 檢視台's addresses, from panels.json (one place for them): a document's trace, and one site's page (the home's list
+# of sites links a site's name there: structure design 2026-11-17 section 二)
+TRACE = theme.panels()["hosts"]["ops"].rstrip("/") + "/trace?ref="
+SITE_PAGE = theme.site_prefix("tables")
 # the map's groups: (key, the caption over its tables)
 GROUPS = (("site", "網站和建庫紀錄"), ("docs", "文件和它的資料"), ("unit", "單位"), ("index", "搜尋用的索引"))
 # (table, its name on the page, group, x and y of its box on the map, joins: (column, table it joins, that column))
@@ -261,7 +265,7 @@ def extra_template_vars(template, database, table, datasette):
     async def inner():
         titles = {name: (about or {}).get("title") or "" for name, about in (datasette.metadata("databases") or {}).items()}
         out = {"nk_bar": BAR, "nk_theme": THEME, "zh_tables": NAMES, "op_words": OPS, "value_words": WORDS, "param_names": PARAMS,
-               "trace_url": TRACE, "column_names": column_names(datasette, database, table), "kind_classes": KIND_CLASS,
+               "trace_url": TRACE, "site_page": SITE_PAGE, "column_names": column_names(datasette, database, table), "kind_classes": KIND_CLASS,
                "db_titles": titles}
         if template == "index.html":
             out["guide"] = await guide(datasette)

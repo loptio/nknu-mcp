@@ -99,12 +99,18 @@ HEAD = ('<!doctype html><html lang="zh-Hant-TW"><head><meta charset="utf-8">'
         "<style>:root{color-scheme:light;padding-block:env(safe-area-inset-top,0px) env(safe-area-inset-bottom,0px)}"
         "body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>"
         f"<style>{_BAR.theme_css(THEME_DIR)}</style>"
-        f"</head><body>{_BAR.bar('overview', 'overview', folder=THEME_DIR)}")
+        f"</head><body>{_BAR.bar('sites', 'overview', folder=THEME_DIR)}")
+# where the page's links to the other panels go, from panels.json (one place for the addresses): one site's page in
+# 檢視台 (the list's names and the inspector's 「這個網站的詳情」 link to it; structure design 2026-11-17 section 二) and
+# 資料庫's origin (its canned queries)
+LINKS = json.dumps({"site": _BAR.site_prefix("overview", folder=THEME_DIR),
+                    "tables": _BAR.panels(THEME_DIR)["hosts"]["tables"].rstrip("/")}, ensure_ascii=False)
 
 
 def render(template: str, data: dict) -> bytes:
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    return (HEAD + template.replace("__DATA__", text) + "</body></html>").encode("utf-8")
+    page = template.replace("__DATA__", text).replace("__LINKS__", LINKS.replace("</", "<\\/"))
+    return (HEAD + page + "</body></html>").encode("utf-8")
 
 
 class State:

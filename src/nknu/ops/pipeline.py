@@ -122,7 +122,7 @@ SITE_COLS = (("crawl", "抓到", "爬蟲帳本裡這個網站抓到的網址（�
              ("refill", "舊資料補的", "這一次抓壞或抓到空的、改用以前抓到的那一份補上的筆數（10-24 舊存檔，或每晚更新前一次抓到的）"),
              ("text", "轉成文字", "建庫時這個網站的檔案和網頁有幾個轉成了文字（壓縮檔裡的檔各算一個，可能比導出的行數多）"),
              ("docs", "庫裡文件", "正式庫裡屬於這個網站的文件"),
-             ("check", "漏抓的網頁", "網頁核查找到正文區有漏、或整頁沒抓下來的網頁（點網站名再點「網頁核查這個網站」看是哪幾頁）"))
+             ("check", "漏抓的網頁", "網頁核查找到正文區有漏、或整頁沒抓下來的網頁（點網站名，在它那一頁的「網頁核查」看是哪幾頁）"))
 
 
 def cell(where: Where, site: str, col: str, n: int | None, *, state: str = OK, tip: str = "", sub: str = "",
@@ -146,7 +146,7 @@ def site_table(where: Where, t2s: Callable[[str], str] = lambda s: s) -> list[di
         row = dict(row)
         row["name"] = row["name"] or site
         row["q"] = " ".join({site.lower(), row["name"].lower(), t2s(row["name"]).lower()})
-        row["href"] = "/pipeline/site?site=" + quote(site, safe="")
+        row["href"] = "/site?site=" + quote(site, safe="")  # one site's page (structure design 2026-11-17 section 二)
         rows.append(row)
     rank = {BAD: 0, WARN: 1, OK: 2, NONE: 3}
     rows.sort(key=lambda r: (rank.get(r["worst"], 3), -((r["cells"].get("docs") or {}).get("n") or 0), r["name"]))
@@ -394,6 +394,19 @@ def crawler_night(conn: sqlite3.Connection, archive: Path, now: datetime) -> dic
         got = judge(conn, archive, now.timestamp())
         if got is None:
             return None
+        # the night's export as the crawler marks it (progress.export_mark: a held site red, and first) is read here
+        # by the panels' rule instead: held is no failure (11-17, the lead's brief)
+        export = night_export(archive)
+        mark = getattr(progress, "export_mark", None)
+        if export is not None and mark is not None and got == mark(export):
+            said = export_night(export)
+            if said is None:  # only manual holds: the night went as it should (the crawler's mark is red for them)
+                began = _night_started(conn)
+                said = {"state": OK, "words": f"每晚更新 {stamp(began)} 那一次跑完了" if began else "每晚更新跑完了",
+                        "tip": ""}
+            said["tip"] = "；".join(x for x in (said["tip"], held_words(export_paused(export), inline=True,
+                                                                        paused=True)) if x)
+            return said
         words = str(got.get("words") or "")
         state = NONE if "还没跑过" in words else NIGHT_COLORS.get(str(got.get("color")), OK)
         return {"state": state, "words": tw(words).replace("定期更新", "每晚更新"), "tip": tw(str(got.get("tip") or ""))}
@@ -433,12 +446,85 @@ def crawler_night(conn: sqlite3.Connection, archive: Path, now: datetime) -> dic
     if "export" in status and export is None:
         return {"state": OK, "words": f"每晚更新在跑（{stamp(night)} 開始，變動算好了、還在導出）", "tip": tip}
     if isinstance(export, dict):
-        failed = [str(x) for x in export.get("failed") or []]
-        if failed:
-            return {"state": BAD, "words": f"每晚更新有 {len(failed)} 站導出失敗（下一晚再導）",
-                    "tip": "、".join(failed[:12])}
-        tip = "；".join(x for x in (tip, f"導了 {len(export.get('exported') or [])} 站") if x)
+        paused = held_words(export_paused(export), inline=True, paused=True)
+        if (said := export_night(export)) is not None:
+            said["tip"] = "；".join(x for x in (said["tip"], paused) if x)
+            return said
+        tip = "；".join(x for x in (tip, f"導了 {len(export.get('exported') or [])} 站", paused) if x)
     return {"state": OK, "words": f"每晚更新 {stamp(night)} 那一次跑完了", "tip": tip}
+
+
+def _night_started(conn: sqlite3.Connection) -> float | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'update:night_started'").fetchone()
+    try:
+        return float(row[0]) if row and row[0] else None
+    except (TypeError, ValueError):
+        return None
+
+
+def night_export(archive: Path | None) -> dict | None:
+    """The last night's export as the crawler's status file records it (reports/update-status.json "export"), None
+    when there is none."""
+    status = read_json(archive / "reports" / "update-status.json") if archive is not None else None
+    export = status.get("export") if isinstance(status, dict) else None
+    return export if isinstance(export, dict) else None
+
+
+MANUAL_HOLD = "人工暂缓："  # export_sites.sh: a site export-hold.txt names, its reason after it (11-17)
+
+
+def _holds(export: dict | None, manual: bool) -> dict[str, str]:
+    held = (export or {}).get("held")
+    if not isinstance(held, dict):
+        return {}
+    out = {}
+    for k, v in held.items():
+        v = str(v or "")
+        if v.startswith(MANUAL_HOLD) == manual:
+            out[str(k)] = tw(v.removeprefix(MANUAL_HOLD))
+    return out
+
+
+def export_held(export: dict | None) -> dict[str, str]:
+    """The sites whose new export the crawler's copy guard held back, and why (update-status.json export.held, 11-17:
+    the export in use filled a row from the 10-24 archive's copy that the new one did not fill, and it is neither
+    deleted nor fetched this round): their old export stays in use, they stay owed, and they are listed in
+    export.failed too. The manual holds (export_paused) are not among them."""
+    return _holds(export, False)
+
+
+def export_paused(export: dict | None) -> dict[str, str]:
+    """The sites a person put in export-hold.txt (the crawler's export folder; the reason the crawler records after
+    人工暂缓：, 11-17): not exported on purpose, held and listed in failed as the copy guard's are, but nothing to fix:
+    said as news, never a warning (the lead's brief, 11-17). Their reasons without the prefix, in Traditional."""
+    return _holds(export, True)
+
+
+def held_words(held: dict[str, str], *, inline: bool = False, paused: bool = False) -> str:
+    """The held (or, paused, the manually held) sites and why, for a floating card (a line each) or a note (inline)."""
+    if not held:
+        return ""
+    if inline:
+        head = "人工暫緩的站：" if paused else "攔下的站照舊用前一份導出："
+        return head + "、".join(f"{k}（{v}）" if v else k for k, v in list(held.items())[:12])
+    head = (f"人工暫緩 {len(held)} 站（export-hold.txt 寫著，這次不導、照舊用前一份導出）：" if paused
+            else f"攔下 {len(held)} 站，新導出沒換上、照舊用前一份導出：")
+    return "\n".join([head] + [f"{k}：{v}" if v else k for k, v in list(held.items())[:12]])
+
+
+def export_night(export: dict) -> dict | None:
+    """The night's export when a site did not go out: a held site is a warning (the crawler session looks at what
+    dropped; the old export stays in use), a failure that is not a held one stays red (review 2026-11-17 and the
+    lead's brief of 11-17); None when every site went out."""
+    held, paused = export_held(export), export_paused(export)
+    failed = [str(x) for x in export.get("failed") or [] if str(x) not in held and str(x) not in paused]
+    if failed:
+        return {"state": BAD, "words": f"每晚更新有 {len(failed)} 站導出失敗（下一晚再導）"
+                + (f"，另攔下 {len(held)} 站" if held else ""),
+                "tip": "；".join(x for x in ("、".join(failed[:12]), held_words(held, inline=True)) if x)}
+    if held:
+        return {"state": WARN, "words": f"每晚更新導出攔下 {len(held)} 站", "tip": held_words(held, inline=True)}
+    return None
 
 
 def owed_sites(archive: Path) -> list[str]:
@@ -448,17 +534,57 @@ def owed_sites(archive: Path) -> list[str]:
     return [x for x in got if isinstance(x, str)] if isinstance(got, list) else []
 
 
-def crawl_buckets(conn: sqlite3.Connection, sites: set[str]) -> dict[str, dict[str, int]]:
+ROUND2_OPEN = "round2:open"  # nknu.archive.batch.OPEN_KEY: meta {"sites": [...]}, the sites of round two's open batch
+
+
+def round2_open(conn: sqlite3.Connection) -> list[str]:
+    """The sites of round two's batch being crawled (meta round2:open, written by the crawler's batch.promote and
+    cleared by its close); [] when none."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (ROUND2_OPEN,)).fetchone()
+        got = json.loads(row[0]) if row and row[0] else None
+    except (sqlite3.Error, TypeError, ValueError):
+        return []
+    sites = got.get("sites") if isinstance(got, dict) else got
+    return sorted({s for s in sites if isinstance(s, str)}) if isinstance(sites, list) else []
+
+
+def crawl_buckets(conn: sqlite3.Connection, sites: set[str], batch_sites: list[str] = ()
+                  ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]] | None]:
     """Per site, its addresses by the crawler's own category of their result (outcome.user_bucket: got, failed,
-    review, pending_check, …): the ledger's url_result, the rules 看板, the export and 網頁核查 all use."""
+    review, pending_check, …): the ledger's url_result, the rules 看板, the export and 網頁核查 all use; and, apart
+    from them, round two's open batch per site: the rows it took from 下一輪 (round2_promoted) and what its sites
+    gained since it began (what those pages led to), so the batch is never read as round one falling behind (the
+    lead's brief, 11-17; batch.promote marks only the first, the second by url.added_at 【Claude】). The batch is
+    None when the ledger cannot tell them apart (no round2_promoted: an older crawler); {} when no batch is open."""
     outcome, _progress = _crawler()
     out: dict[str, dict[str, int]] = {}
-    for site, result, n in conn.execute("SELECT owner_site, result, count(*) FROM url_result GROUP BY 1, 2"):
-        if site in sites:
-            bucket = outcome.user_bucket(result)
+    batch: dict[str, dict[str, int]] | None = {}
+    rows = None
+    if batch_sites:
+        qs = ",".join("?" * len(batch_sites))
+        try:
+            start = conn.execute(f"SELECT min(k.at) FROM round2_promoted k JOIN url u ON u.id = k.url_id"
+                                 f" WHERE u.owner_site IN ({qs})", tuple(batch_sites)).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT owner_site, result, owner_site IN ({qs}) AND (id IN (SELECT url_id FROM round2_promoted)"
+                " OR added_at >= ?), count(*) FROM url_result GROUP BY 1, 2, 3",
+                (*batch_sites, start if start is not None else float("inf"))).fetchall()
+        except sqlite3.Error:
+            batch = None
+    if rows is None:
+        rows = [(s, r, 0, n) for s, r, n in conn.execute(
+            "SELECT owner_site, result, count(*) FROM url_result GROUP BY 1, 2")]
+    for site, result, apart, n in rows:
+        if apart and batch is not None:
+            per = batch.setdefault(site, {})
+        elif site in sites:
             per = out.setdefault(site, {})
-            per[bucket] = per.get(bucket, 0) + n
-    return out
+        else:
+            continue
+        bucket = outcome.user_bucket(result)
+        per[bucket] = per.get(bucket, 0) + n
+    return out, batch
 
 
 def bucket_words() -> dict[str, str]:
@@ -480,7 +606,8 @@ def crawl_step(where: Where) -> Step:
     try:
         run = run_state(conn, now)
         night = crawler_night(conn, archive, now)
-        buckets = crawl_buckets(conn, keys)
+        open_sites = round2_open(conn)
+        buckets, batch = crawl_buckets(conn, keys, open_sites)
     finally:
         conn.close()
     words = bucket_words()
@@ -490,6 +617,8 @@ def crawl_step(where: Where) -> Step:
             totals[bucket] = totals.get(bucket, 0) + n
         others = sorted(((b, n) for b, n in per.items() if b != "got"), key=lambda bn: -bn[1])
         tip = "\n".join(f"{words.get(b, b)}：{n:,}" for b, n in others) or "全部抓到了"
+        if (mine := (batch or {}).get(site)) is not None:
+            tip += f"\n第二輪這一批另外抓到 {mine.get('got', 0):,} / {sum(mine.values()):,} 個網址（不算在這裡）"
         cell(where, site, "crawl", per.get("got", 0), tip=tip, sub=f"共 {sum(per.values()):,} 個網址" if others else "")
     # the whole of the bar: the addresses this round meant to fetch; what the rules leave out or keep for round two is
     # no loss and is said beside it 【Claude】 (a 63% that was mostly by design misled more than it told)
@@ -519,6 +648,15 @@ def crawl_step(where: Where) -> Step:
     # the export batch of 11-16 (the crawler session) wrote most of round one's 待判定 and 要人看 off: what is left is
     # shown, and the light follows only whether the crawler ran and ended as it should
     step.notes.append("「還沒抓到的」只顯示數字、不亮燈；亮燈只看爬蟲有沒有正常跑完、每晚更新有沒有警報")
+    if open_sites:  # round two's batch crawled in the daytime (11-17): said, and kept out of round one's whole
+        head = f"第二輪這一批在抓（{len(open_sites)} 站）"
+        say += "；" + head
+        if batch is None:
+            step.notes.insert(0, f"{head}：帳本分不出哪些網址是這一批的，上面的比例含這幾站還沒抓的")
+        else:
+            got = sum(per.get("got", 0) for per in batch.values())
+            whole = sum(sum(per.values()) for per in batch.values())
+            step.notes.insert(0, f"{head}：抓到 {got:,} / {whole:,} 個網址，不算在上面的比例裡")
     page_check_cells(where, step)
     step.state, step.say = state, say
     step.fix = CRAWLER if state in (BAD, WARN) else ""
@@ -662,6 +800,8 @@ def export_step(where: Where) -> Step:
     step.more = [("看每站的數字", "#sites")]
     facts = library_facts(where.library)
     newest = current_exports(where.root)
+    night = night_export(where.archive)
+    held, paused = export_held(night), export_paused(night)  # the crawler held these sites' new export (11-17)
     rows = fetched = with_files = 0
     missing: dict[str, int] = {}
     refill: dict[str, int] = {}
@@ -708,6 +848,14 @@ def export_step(where: Where) -> Step:
             if age is not None and age > LATE_EXPORT:
                 state, why = WARN, f"新導出放了 {span(age)} 還沒進庫（交給內容 session 重建，或等每晚進庫）"
                 late.append(key)
+        if key in held:
+            state = WARN
+            said = f"每晚更新的新導出被攔下（{held[key]}），照舊用前一份導出（{FIXERS[CRAWLER]}）"
+            why = "；".join(x for x in (why, said) if x)
+            tip.append(f"新導出被攔下：{held[key]}")
+        if key in paused:  # news, not a problem: the row's state stays as it is
+            why = "；".join(x for x in (why, f"人工暫緩：{paused[key]}（這一次不導，照舊用前一份導出）") if x)
+            tip.append(f"人工暫緩：{paused[key]}")
         cell(where, key, "export", summary["rows"], state=state, tip="\n".join(tip), sub=sub, why=why, name=name)
         # rows filled from an older answer; more of them in the crawler's newer export than in the one in use means the
         # newest crawl broke more pages (a light 【Claude】; the export in use itself is a number to see)
@@ -750,6 +898,13 @@ def export_step(where: Where) -> Step:
     if more_refill:
         state, fix = WARN, CRAWLER
         say = f"有 {len(more_refill)} 站的新導出用舊資料補的變多了：" + "、".join(more_refill[:5])
+    if paused:
+        say += f"；人工暫緩 {len(paused)} 站"
+        step.notes.insert(0, held_words(paused, inline=True, paused=True))
+    if held:
+        state, fix = WARN, CRAWLER
+        say = f"每晚更新攔下 {len(held)} 站的新導出，照舊用前一份：" + "、".join(list(held)[:5])
+        step.notes.insert(0, held_words(held, inline=True))
     if late:
         state, fix = WARN, CONTENT
         say = f"有 {len(late)} 站的新導出放超過一天還沒進庫：" + "、".join(late[:5])

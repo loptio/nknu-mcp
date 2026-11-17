@@ -300,15 +300,21 @@ def asdict_(step: Step) -> dict:
     return asdict(step)
 
 
-def test_the_sites_table_puts_problems_first_and_can_be_filtered():
+def test_the_home_lists_only_the_sites_to_look_at_and_leads_to_every_site():
+    # one list of every site, on 網站 (structure design 2026-11-17 section 二): the home keeps the ones to look at
     snap = {"site_cols": [("docs", "文件", "庫裡的文件")],
             "sites": [{"key": "a.example", "name": "甲處", "q": "甲处 甲處 a.example", "worst": WARN,
+                       "href": "/site?site=a.example",
                        "cells": {"docs": {"n": 0, "state": WARN, "tip": "導出有 3 行，庫裡 0 份"}},
                        "why": ["導出有東西，庫裡沒有"]},
                       {"key": "b.example", "name": "乙處", "q": "乙处 b.example", "worst": OK,
                        "cells": {"docs": {"n": 12}}, "why": []}]}
-    html = pipeline_page.sites_html(snap)
-    assert html.index("甲處") < html.index("乙處") and "1 個要留意" in html and "id='sitefind'" in html
+    html = pipeline_page.sites_html(snap, "http://127.0.0.1:18879/")
+    assert "甲處" in html and "乙處" not in html and "要留意的網站<span class='faint'>1</span>" in html
+    assert "href='http://127.0.0.1:18879/'" in html and "全部 2 個網站 →" in html and "id='sitefind'" not in html
+    assert "<a href='/site?site=a.example' data-tip='a.example'>甲處</a>" in html
+    calm = pipeline_page.sites_html({**snap, "sites": snap["sites"][1:]}, "http://127.0.0.1:18879/")
+    assert "沒有要留意的網站" in calm and "全部 1 個網站 →" in calm
     # one number per cell; a step to look at is a small mark with an icon, never a coloured number (redesign 11-17)
     assert "<td data-v='0' data-tip='導出有 3 行，庫裡 0 份'><span class='pl-m warn'" in html and "<svg" in html
     assert "class='warn'" not in html
@@ -337,7 +343,7 @@ def test_the_page_checks_numbers_go_to_each_sites_row_without_an_alarm(where):
     pipeline.page_check_cells(where, step)
     row = where.sites["school.example"]
     assert row["cells"]["check"]["n"] == 5 and row["worst"] == OK
-    assert pipeline.site_table(where)[0]["href"] == "/pipeline/site?site=school.example"
+    assert pipeline.site_table(where)[0]["href"] == "/site?site=school.example"
     assert any("正文區有漏 4 頁" in n for n in step.notes)
     where.sites = {}
     where.sweep = lambda: {"progress": {"phase": "idle"}, "totals": None, "sites": []}
@@ -361,8 +367,36 @@ def test_one_site_shows_its_export_as_the_library_read_it(tmp_path, monkeypatch)
     assert detail["site"]["name"] == made.NAMES[made.SITE] and ex["rows"] == len(w.rows[made.SITE])
     assert ex["outcomes"]["抓到了"] >= 1 and ex["exported_at"].startswith("2026-11-09")
     assert pipeline.site_detail(where, "nowhere.example") is None
-    page = pipeline_page.site_body(detail, {"tables": "http://127.0.0.1:18001"})
-    assert "網頁核查這個網站" in page and "/aca/docs?site=school.example" in page and "導出清單" in page
+    page = pipeline_page.site_steps(detail)
+    assert "導出清單" in page and "<h3>爬取</h3>" in page and "<h3>建庫</h3>" in page
+
+
+def _step(page: str, name: str) -> str:
+    """One step's section of site_steps' page."""
+    return page.split(f"<h3>{name}</h3>", 1)[1].split("</section>", 1)[0]
+
+
+def test_a_steps_list_shows_five_of_each_kind_of_loss_and_folds_the_rest():
+    bad = [("failed", "壞了", "x/broken1.pdf"), ("failed", "壞了", "x/broken2.pdf")]
+    bad += [("empty", "OCR 沒認出字", f"images/p{i}.png") for i in range(28)]  # the accounting lists up to 30
+    refills = [(f"https://school.example/r{i}", f"補的頁 {i}", "10-24 旧存档", "") for i in range(12)]
+    detail = {"site": {"key": "a", "name": "範例處", "docs": 3},
+              "export": {"rows": 50, "outcomes": {"抓到了": 50}, "examples": {}, "exported_at": "2026-11-16T01:20:00+08:00",
+                         "folder": "exp/a-1", "paging": 0, "missing": {}, "refill": {"10-24 旧存档": 12},
+                         "refills": refills},
+              "text": {"status": {"ok": 10, "empty": 41, "failed": 2}, "bad": bad}}
+    page = pipeline_page.site_steps(detail)
+    text = _step(page, "轉文字")
+    seen, folded = text.split("<details", 1)
+    assert seen.count("轉文字失敗：") == 2 and seen.count("讀不出文字：") == 5
+    assert seen.index("轉文字失敗：") < seen.index("讀不出文字：")  # failures first
+    assert "<summary>" in folded and "還有 36 個" in folded and folded.count("讀不出文字：") == 23
+    assert "其餘 13 個沒有列出來" in folded  # 41 empty, 28 listed by the accounting
+    refill = _step(page, "導出")
+    seen, folded = refill.split("<details", 1)
+    assert seen.count("/check?ref=") == 5 and "還有 7 個" in folded and folded.count("/check?ref=") == 7
+    small = pipeline_page.site_steps({**detail, "text": {"status": {"ok": 1, "failed": 1}, "bad": bad[:1]}})
+    assert "<details" not in _step(small, "轉文字")  # nothing to fold: no fold row
 
 
 def test_what_an_export_says_is_missing_is_counted_by_the_words_it_holds():
@@ -625,6 +659,136 @@ def test_the_nightly_export_read_from_the_status_file_as_the_crawler_reads_it(wh
     assert "停在「列出要導出的網站」這一步" in pipeline.crawl_step(where).say
 
 
+@pytest.mark.parametrize("judge", [True, False])
+def test_a_held_export_is_a_warning_for_the_crawler_and_a_real_failure_stays_red(where, ledger, monkeypatch, judge):
+    # 11-17 (the crawler session): a site whose new export dropped a row the 10-24 copy filled is held, listed in
+    # failed too, and its old export stays in use
+    from nknu.archive import progress
+    if not judge:
+        monkeypatch.delattr(progress, "update_state", raising=False)  # an older crawler: the same rules read here
+    reports = where.archive / "reports"
+    reports.mkdir()
+    started = str(NOW.timestamp() - 3600)
+    meta = {"update:sites": json.dumps(["school.example"]), "update:night_started": started,
+            "update:night_reviewed": started}
+    events = [("2026-11-16T06:54:23+00:00", "run_start", {"sites": []}),
+              ("2026-11-16T06:55:53+00:00", "run_end", {"reason": "finished"})]
+    status = reports / "update-status.json"
+    held = {"b.example": "1 行用 10-24 舊存檔補的，新導出沒補上"}
+    status.write_text(json.dumps({"export": {"exported": ["a"], "failed": ["b.example"], "held": held}}),
+                      encoding="utf-8")
+    ledger(_ledger(events, meta, RESULTS))
+    step = pipeline.crawl_step(where)
+    assert step.state == WARN and step.fix == pipeline.CRAWLER and "導出攔下 1 站" in step.say
+    assert any("b.example（1 行用 10-24 舊存檔補的，新導出沒補上）" in n and "照舊用前一份導出" in n for n in step.notes)
+    status.write_text(json.dumps({"export": {"exported": ["a"], "failed": ["b.example", "c.example"], "held": held}}),
+                      encoding="utf-8")
+    ledger(_ledger(events, meta, RESULTS))
+    step = pipeline.crawl_step(where)
+    assert step.state == BAD and "1 站導出失敗" in step.say and "攔下 1 站" in step.say
+
+
+@pytest.mark.parametrize("judge", [True, False])
+def test_a_manual_hold_is_said_in_the_crawl_step_and_never_a_warning(where, ledger, monkeypatch, judge):
+    from nknu.archive import progress
+    if not judge:
+        monkeypatch.delattr(progress, "update_state", raising=False)
+    reports = where.archive / "reports"
+    reports.mkdir()
+    started = str(NOW.timestamp() - 3600)
+    meta = {"update:sites": json.dumps(["school.example"]), "update:night_started": started,
+            "update:night_reviewed": started}
+    events = [("2026-11-16T06:54:23+00:00", "run_start", {"sites": []}),
+              ("2026-11-16T06:55:53+00:00", "run_end", {"reason": "finished"})]
+    (reports / "update-status.json").write_text(json.dumps({"export": {
+        "exported": ["a"], "failed": ["sso.example/vita"], "held": {"sso.example/vita": "人工暂缓：按钮行太多"}}}),
+        encoding="utf-8")
+    ledger(_ledger(events, meta, RESULTS))
+    step = pipeline.crawl_step(where)
+    assert step.state == OK and not step.fix and "跑完了" in step.say
+    assert any("人工暫緩的站：sso.example/vita（按鈕行太多）" in n for n in step.notes)
+
+
+def test_a_manual_hold_is_said_on_its_sites_page_as_plain_news(tmp_path, monkeypatch):
+    from nknu.ops import site_page
+    from nknu.retrieval import vectors
+    from tests.ops import world as made
+
+    monkeypatch.setattr(vectors, "_CACHE", {})
+    w = made.build(tmp_path)
+    archive = tmp_path / "crawl"
+    (archive / "reports").mkdir(parents=True)
+    (archive / "reports" / "update-status.json").write_text(json.dumps(
+        {"export": {"exported": [], "failed": [made.SITE], "held": {made.SITE: "人工暂缓：按钮行太多"}}}),
+        encoding="utf-8")
+    where = Where(root=tmp_path, db=w.db, archive=archive, today=lambda: TODAY)
+    step = pipeline.export_step(where)
+    assert step.state == OK and not step.fix and "人工暫緩 1 站" in step.say
+    row = next(r for r in pipeline.site_table(where) if r["key"] == made.SITE)
+    assert row["worst"] == OK and row not in [r for r in pipeline.site_table(where) if r["worst"] in (WARN, BAD)]
+    state, said = site_page.now_line(row, None, {}, read=True)
+    assert state == OK and said.startswith("人工暫緩：按鈕行太多") and "交給" not in said
+
+
+def test_a_held_site_says_so_on_its_row_and_its_page(tmp_path, monkeypatch):
+    from nknu.ops import site_page
+    from nknu.retrieval import vectors
+    from tests.ops import world as made
+
+    monkeypatch.setattr(vectors, "_CACHE", {})
+    w = made.build(tmp_path)
+    archive = tmp_path / "crawl"
+    (archive / "reports").mkdir(parents=True)
+    (archive / "reports" / "update-status.json").write_text(json.dumps(
+        {"export": {"exported": [], "failed": [made.SITE], "held": {made.SITE: "1 行用 10-24 舊存檔補的，新導出沒補上"}}}),
+        encoding="utf-8")
+    where = Where(root=tmp_path, db=w.db, archive=archive, today=lambda: TODAY)
+    step = pipeline.export_step(where)
+    assert step.state == WARN and step.fix == pipeline.CRAWLER and "攔下 1 站" in step.say
+    row = next(r for r in pipeline.site_table(where) if r["key"] == made.SITE)
+    state, said = site_page.now_line(row, None, {}, read=True)
+    assert state == WARN and "新導出被攔下" in said and "照舊用前一份導出" in said and "交給爬蟲 session" in said
+
+
+def _batch_ledger(events: list, meta: dict) -> sqlite3.Connection:
+    """A made-up ledger whose url_result has the columns round two's open batch is told by (id, added_at) and the
+    crawler's round2_promoted (batch.TABLE's first columns)."""
+    conn = _ledger(events, meta, [])
+    conn.execute("DROP TABLE url_result")
+    conn.execute("CREATE TABLE url_result (id INTEGER PRIMARY KEY, owner_site TEXT, result TEXT, added_at REAL)")
+    conn.execute("CREATE TABLE round2_promoted (url_id INTEGER PRIMARY KEY, batch TEXT NOT NULL, at REAL NOT NULL)")
+    conn.execute("CREATE VIEW url AS SELECT * FROM url_result")
+    rows = ([("school.example", "ok", 1000.0)] * 6 + [("school.example", "failed", 1000.0)] * 2  # round one's
+            + [("school.example", "todo", 900.0)] * 4  # promoted from later: round2_promoted holds them
+            + [("school.example", "todo", 5000.0)] * 3 + [("school.example", "ok", 5000.0)]  # what they brought
+            + [("unit.example", "todo", 800.0)] * 5)  # a round-two site of the batch (not in the library)
+    for i, (site, result, added) in enumerate(rows, 1):
+        conn.execute("INSERT INTO url_result VALUES (?, ?, ?, ?)", (i, site, result, added))
+    for i in [*range(9, 13), *range(17, 22)]:
+        conn.execute("INSERT INTO round2_promoted VALUES (?, ?, 4000.0)", (i, "2026-11-17"))
+    return conn
+
+
+def test_round_twos_open_batch_is_said_and_kept_out_of_round_ones_whole(where, ledger):
+    events = [("2026-11-16T06:54:23+00:00", "run_start", {"sites": ["school.example", "unit.example"]}),
+              ("2026-11-16T06:55:53+00:00", "run_end", {"reason": "finished"})]
+    meta = {"round2:open": json.dumps({"sites": ["school.example", "unit.example"]})}
+    ledger(_batch_ledger(events, meta))
+    step = pipeline.crawl_step(where)
+    assert step.into == [("個這一輪該抓的網址（1 站）", 8)] and step.bar == [6, 8]
+    assert "第二輪這一批在抓（2 站）" in step.say
+    assert step.notes[0] == "第二輪這一批在抓（2 站）：抓到 1 / 13 個網址，不算在上面的比例裡"
+    # the batch closed: its rows are this round's
+    ledger(_batch_ledger(events, {}))
+    step = pipeline.crawl_step(where)
+    assert "第二輪" not in step.say and step.into == [("個這一輪該抓的網址（1 站）", 16)]
+    # a ledger without round2_promoted cannot tell them apart: the batch is said, the number left as it is
+    ledger(_ledger(events, meta, RESULTS))
+    step = pipeline.crawl_step(where)
+    assert "第二輪這一批在抓（2 站）" in step.say and step.into == [("個這一輪該抓的網址（1 站）", 10)]
+    assert step.notes[0].startswith("第二輪這一批在抓（2 站）：帳本分不出")
+
+
 # ---------------------------------------------------------------- rows filled from an older answer (owner 11-17)
 
 
@@ -644,7 +808,7 @@ def test_rows_filled_from_an_older_answer_are_counted_shown_and_listed(tmp_path,
     assert step.notes[0].startswith("用舊資料補的 1 筆") and "1 筆抓壞了、用舊資料補上" in step.flow_words
     cell = where.sites[made.SITE]["cells"]["refill"]
     assert cell["n"] == 1 and cell["state"] == OK and "10-24 舊存檔：1" in cell["tip"]
-    page = pipeline_page.site_body(pipeline.site_detail(where, made.SITE), {})
+    page = pipeline_page.site_steps(pipeline.site_detail(where, made.SITE))
     assert "改用舊資料補上的 1 筆" in page and "頁面幾乎是空的" in page and "/check?ref=" in page
 
 
@@ -700,9 +864,45 @@ def test_the_flow_map_is_the_overview_and_a_click_opens_that_steps_row():
 
 def test_a_site_cells_second_line_and_the_sites_address_float():
     snap = {"site_cols": [("crawl", "抓到", "抓到的網址")],
-            "sites": [{"key": "a.example", "name": "甲處", "q": "a.example", "worst": OK, "href": "/pipeline/site?site=a",
-                       "cells": {"crawl": {"n": 4, "state": OK, "tip": "連接失敗：2", "sub": "共 6 個網址"}}, "why": []}]}
+            "sites": [{"key": "a.example", "name": "甲處", "q": "a.example", "worst": WARN, "href": "/site?site=a",
+                       "cells": {"crawl": {"n": 4, "state": OK, "tip": "連接失敗：2", "sub": "共 6 個網址"}},
+                       "why": ["某理由"]}]}
     html = pipeline_page.sites_html(snap)
     assert "<td data-v='4' data-tip='共 6 個網址\n連接失敗：2'>4</td>" in html
     assert "pl-sub" not in html and "data-tip='a.example'>甲處</a>" in html
 
+
+
+# ---------------------------------------------------------------- one site's page (structure design 2026-11-17 二)
+
+def test_one_sites_changes_show_its_figures_reasons_and_lists_or_why_there_are_none():
+    reasons = {"gone": {"label": "學校刪了", "tip": "", "kind": "ok", "fix": ""},
+               "lost": {"label": "查不出原因", "tip": "", "kind": "unknown", "fix": pipeline.CONTENT}}
+    ready = {"state": "ready", "reasons": reasons, "prev": {"swapped_at": "2026-11-16T15:03:00+08:00"},
+             "new": {"swapped_at": "2026-11-17T00:49:00+08:00"},
+             "sites": [{"site": "a.example", "name": "甲處", "new": 2, "changed": 1, "left": 3, "unexplained": 1,
+                        "look": 0, "reasons": {"gone": 2, "lost": 1},
+                        "lists": {"new": [{"id": "d1", "title": "新的一則"}], "changed": [],
+                                  "left": {"gone": [{"id": "d9", "url": "https://a.example/9", "title": "刪掉的"}]}}}]}
+    html = pipeline_page.one_site_changes(ready, "a.example")
+    assert "<span>新進</span><b>2</b>" in html and "<span>離開</span><b>3</b>" in html
+    assert html.index("查不出原因") < html.index("學校刪了")  # what nobody can explain first
+    assert "新的一則" in html and "/check?ref=https%3A%2F%2Fa.example%2F9" in html and "11-16 15:03 換上的庫" in html
+    assert "這個網站沒有變動" in pipeline_page.one_site_changes(ready, "b.example")
+    assert "計算中" in pipeline_page.one_site_changes({"state": "computing"}, "a.example")
+    assert "沒有前一份" in pipeline_page.one_site_changes({"state": "none", "words": "沒有前一份庫可以比"}, "a.example")
+
+
+def test_a_sites_line_says_whether_it_is_fine_and_who_fixes_what_is_not():
+    from nknu.ops.site_page import kinds_html, now_line
+    reasons = {"miss": {"kind": "look", "fix": pipeline.CRAWLER}}
+    assert now_line({"worst": OK, "why": []}, None, {}, read=True) == (OK, "每一步都正常")
+    assert now_line(None, None, {}, read=False)[0] == pipeline.NONE
+    state, said = now_line({"worst": WARN, "why": ["導出少了（交給爬蟲 session）"]},
+                           {"unexplained": 2, "look": 1, "reasons": {"miss": 1}}, reasons, read=True)
+    assert state == BAD and "導出少了" in said and "2 份離開了、查不出原因（交給內容（建庫）session）" in said
+    assert "1 份離開了、可能是我們漏的（交給爬蟲 session）" in said
+    html = kinds_html("a.example", {"notice": [3, 1], "event": [2, 2]}, "http://127.0.0.1:18001")
+    assert "公告" in html and "行事曆" in html and "<span class='num'>5</span>" in html  # 合計
+    assert "/aca/site_undated_why?site=a.example" in html and "var(--k0)" in html
+    assert "計算中" in kinds_html("a.example", None, "") and "/aca/" not in kinds_html("a.example", None, "")
