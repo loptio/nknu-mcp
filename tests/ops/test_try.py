@@ -178,9 +178,10 @@ def test_tokens_are_estimated_wide_characters_one_each():
 
 def test_on_open_the_page_shows_what_the_agent_reads_first(mcp):
     title, body = TryPage(mcp).page({})
-    assert title == "試用"
+    assert title == "搜尋"
     assert "這是編的開場說明。\n第二行。" in body and "made-up 9.9" in body and "2025-06-18" in body
-    assert "<details class='tr-first' id='first' open>" in body  # open: nothing was called
+    assert "<details class='tr-first' id='first'>" in body  # folded: the search box comes first
+    assert body.index("form class='sr-form") < body.index("id='first'")
     raw = [a for a in _Mcp.asked if a[0] in ("initialize", "tools/list")]
     assert [a[0] for a in raw] == ["initialize", "tools/list"] and not _calls()
     assert "initialize" in body and "tools/list" in body and "找一找測試用的文件。" in body  # the raw and the rendering
@@ -194,10 +195,14 @@ def test_the_forms_follow_whatever_tools_the_list_names(mcp):
                   {"name": "page_by_key", "description": "編的另一個。", "annotations": RO,
                    "inputSchema": {"type": "object", "required": ["key"], "properties": {"key": {"type": "string"}}}}]
     _, body = TryPage(mcp).page({})
-    assert "data-tool='ask_campus'" in body and "data-tool='page_by_key'" in body
-    assert "name='a.words'" in body and "name='a.count'" in body and "name='a.key'" in body
+    assert "<form class='sr-form card pad' method='get' action='/try#result' data-tool='ask_campus'>" in body
+    assert "name='a.words'" in body and "name='a.count'" in body
+    assert "data-tool='page_by_key'" not in body  # reads one result: reached from a result card, not a form
     assert "data-tool='lookup'" not in body and "name='a.query'" not in body
-    assert "data-pick='ask_campus' data-tip='編的工具。' aria-current='true'" in body  # the first is picked
+    _Mcp.tools = [*_Mcp.tools, {"name": "count_things", "description": "編的第三個。", "annotations": RO,
+                                "inputSchema": {"type": "object", "properties": {"when": {"type": "string"}}}}]
+    _, body = TryPage(mcp).page({})
+    assert "其他工具 1" in body and "data-tool='count_things'" in body and "name='a.when'" in body
     _, body = TryPage(mcp).page({"call": "ask_campus", "a.words": "測試", "a.count": "2"})
     assert _calls()[-1][1] == {"name": "ask_campus", "arguments": {"words": "測試", "count": 2}}
 
@@ -205,9 +210,10 @@ def test_the_forms_follow_whatever_tools_the_list_names(mcp):
 def test_a_call_shows_the_text_as_received_and_the_same_laid_out(mcp):
     title, body = TryPage(mcp).page(QueryParams("call=lookup&a.term=測試"))
     text = json.dumps(ANSWER, ensure_ascii=False)
-    assert title == "測試 · 試用"
+    assert title == "測試 · 搜尋"
     assert _calls()[-1][1] == {"name": "lookup", "arguments": {"term": "測試"}}
-    left, right = body.split("<header>排版</header>")[-2:]
+    called = body[body.index("id='result'"):body.index("id='first'")]  # the answer, before the folded first look
+    left, right = called.split("<header>排版</header>")[-2:]
     assert f"<pre class='tr-pre' data-asis>{try_page.e(text)}</pre>" in left  # unchanged
     assert f"{len(text):,} 字" in left and f"約 {approx_tokens(text):,} token" in left
     assert "第一則測試公告" in right and "第二份附件" in right and "2 筆" in right
@@ -221,7 +227,7 @@ def test_a_call_shows_the_text_as_received_and_the_same_laid_out(mcp):
 
 def test_each_card_reads_itself_again_and_asks_why_it_ranked_there(mcp):
     _, body = TryPage(mcp).page(QueryParams("call=lookup&a.term=測試"))
-    assert "href='/try?call=open&amp;a.ref=d1#result'" in body and "再查這一份" in body
+    assert "href='/try?call=open&amp;a.ref=d1#result'" in body and "讀這一份" in body
     # 「為什麼排在這裡」 is this page's second tab on the same question with that document followed, at its row
     assert "href='/try?tab=why&amp;q=%E6%B8%AC%E8%A9%A6&amp;doc=d1#r-d1'" in body and "為什麼排在這裡" in body
     tabs = re.search(r"<nav class='tr-tabs'.*?</nav>", body).group(0)
@@ -235,7 +241,7 @@ def test_the_second_tab_draws_the_explanation_here_and_calls_no_tool(mcp):
     before = len(_calls())
     title, body = TryPage(mcp).page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'>理由</div>"),
                                     board="<div id='made-up-board'></div>")
-    assert len(_calls()) == before and title == "測試 · 試用"
+    assert len(_calls()) == before and title == "測試 · 搜尋"
     assert "<div id='made-up-why'>理由</div>" in body and "made-up-board" not in body
     tabs = re.search(r"<nav class='tr-tabs'.*?</nav>", body).group(0)
     assert "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in tabs
@@ -245,7 +251,7 @@ def test_the_second_tab_draws_the_explanation_here_and_calls_no_tool(mcp):
 
 def test_the_scoreboard_is_under_the_forms_when_nothing_is_asked(mcp):
     _, idle = TryPage(mcp).page({}, board="<div id='made-up-board'></div>")
-    assert idle.index("id='call'") < idle.index("made-up-board")
+    assert idle.index("form class='sr-form") < idle.index("made-up-board")
     _, called = TryPage(mcp).page(QueryParams("call=lookup&a.term=測試"), board="<div id='made-up-board'></div>")
     assert "made-up-board" not in called
 
@@ -253,7 +259,7 @@ def test_the_scoreboard_is_under_the_forms_when_nothing_is_asked(mcp):
 def test_the_second_tab_and_the_board_show_while_the_service_is_down():
     page = TryPage("http://127.0.0.1:9/mcp")
     title, body = page.page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'></div>"))
-    assert "連不上" in body and "made-up-why" in body and title == "測試 · 試用"
+    assert "連不上" in body and "made-up-why" in body and title == "測試 · 搜尋"
     assert "aria-disabled='true' data-tip='搜尋服務沒有回應" in body  # no tool to call: the first tab waits
     assert "<form class='ask tr-alone' action='/try'" in body and "name='q' value='測試'" in body  # a box to ask in
     assert "made-up-board" in page.page({}, board="<div id='made-up-board'></div>")[1]
@@ -321,7 +327,7 @@ def test_a_call_that_takes_too_long_says_so_and_frees_the_page(mcp):
 
 def test_not_configured_and_not_answering_are_said(mcp):
     title, body = TryPage("").page({})
-    assert title == "試用" and "沒有設定" in body and "--mcp-url" in body
+    assert title == "搜尋" and "沒有設定" in body and "--mcp-url" in body
     _, body = TryPage("http://127.0.0.1:9/mcp").page({})
     assert "連不上" in body and "沒有設定" not in body
 
@@ -351,7 +357,7 @@ def served(db, tmp_path, mcp):
 
 def test_the_route_serves_the_page_with_its_tab_marked(served):
     got = served.get("/try")
-    assert got.status_code == 200 and "aria-current='page'>試用</a>" in got.text and "data-tool='lookup'" in got.text
+    assert got.status_code == 200 and "aria-current='page'>搜尋</a>" in got.text and "data-tool='lookup'" in got.text
     got = served.get("/try", params={"call": "lookup", "a.term": "測試"})
     assert got.status_code == 200 and "第一則測試公告" in got.text
     assert served.post("/try", data={"call": "lookup"}).status_code == 405
@@ -399,7 +405,9 @@ def test_the_page_style_keeps_the_panels_rules():
     defined = set(re.findall(r"(--[a-z0-9-]+):", THEME))
     assert set(re.findall(r"var\((--[a-z0-9-]+)", css)) <= defined
     selectors = [s.strip() for block in re.findall(r"([^{}]+)\{", css) for s in block.split(",") if s.strip()]
-    assert all("tr-" in s for s in selectors if not s.startswith("@")), [s for s in selectors if "tr-" not in s]
+    mine = ("tr-", "sr-")  # this page's own classes only, so nothing leaks into the shared theme
+    assert all(any(m in s for m in mine) for s in selectors if not s.startswith("@")), [
+        s for s in selectors if not any(m in s for m in mine)]
     assert "--k" not in css.replace("var(--k0)", "").replace("var(--k1)", "").replace("var(--k2)", "").replace(
         "var(--k3)", "")  # kinds' hues only on the kinds' marks
     assert "title=" not in try_page.form_html(FIND, {}, shown=True)  # detail floats in data-tip, never title=

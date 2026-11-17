@@ -239,7 +239,9 @@ def summary_line(progress: dict, sums: dict | None, *, unit_tip: str = "") -> st
     stopped = progress.get("phase") == "failed" and sums.get("checked", 0) < sums.get("pages", 0)
     rereading = progress.get("phase") == "reading"  # the ledger changed: its pages are read again before checking
     said = ("帳本改過，正在重讀" if rereading else
-            f"核查中 {_n(done)} / {_n(total)} 頁" if running else
+            # a check just begun reads as stuck at 0 (the lab, 11-17): say it has begun and how long the whole takes
+            (f"剛重啟，正在逐頁核查（全部約 17 分鐘）：{_n(done)} / {_n(total)} 頁" if not done else
+             f"正在逐頁核查 {_n(done)} / {_n(total)} 頁（全部約 17 分鐘）") if running else
             f"核查到 {_n(sums.get('checked', 0))} / {_n(sums.get('pages', 0))} 頁" if stopped else
             f"已核查 {_n(sums.get('checked', 0))} 頁")
     head = (f"<span class='hd' data-tip='{e(unit_tip or '帳本裡抓下來的網頁，一頁一頁照網頁核查的同一套規則核查')}'>"

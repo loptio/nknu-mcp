@@ -436,7 +436,7 @@ def trace_body(report: dict, viewer_url: str, today: date) -> str:
                  else f"<span class='pill bad'>前 {s['within']} 名裡沒有</span>")
         href = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
         why = (f"<a class='btn' href='{e(href)}' "
-               f"data-tip='試用的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
+               f"data-tip='搜尋的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
         last = (f"<div class='in' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
                 f"<span data-tip='拿它的標題當問題搜一次'>標題搜尋</span>{place}{why}</div>")
         out.append(f"<section class='card step' id='s5'><h2>{STEP_MARKS[4]} {STEP_NAMES[4]}</h2>{last}</section>")

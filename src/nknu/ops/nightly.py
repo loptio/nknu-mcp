@@ -77,13 +77,15 @@ def at_night(night: date, clock: dtime) -> datetime:
     return datetime.combine(night + timedelta(days=1), clock, TAIPEI)
 
 
-def label_of(night: date, now: datetime) -> str:
-    """今晚 until 06:00 the morning after, 昨晚 for the day after that, else its date 【Claude】."""
-    if now < at_night(night, dtime(6, 0)):
-        return "今晚"
-    if now < at_night(night + timedelta(days=1), dtime(6, 0)):
-        return "昨晚"
-    return f"{night:%m-%d} 那一晚"
+def label_of(night: date, now: datetime | None = None) -> str:
+    """A night named by its evening, 「11-16 夜」, whatever the time now (今晚 and 昨晚, which changed at 06:00, until
+    the owner's 「一个页面叫"今晚"你觉得合理吗」, 11-17; the name picked with a cold reader)."""
+    return f"{night:%m-%d} 夜"
+
+
+def starts_at(night: date) -> str:
+    """When a night's chain starts, in words: 「11-17 01:00 開跑」 (the floating card of its name)."""
+    return f"{at_night(night, START):%m-%d %H:%M} 開跑"
 
 
 def clock(at: datetime | None) -> str:
@@ -230,14 +232,63 @@ def build_step_words(step: str | None) -> str:
     return f"第 {step} 步（{BUILD_STEPS[step]}）" if step in BUILD_STEPS else (f"第 {step} 步" if step else "")
 
 
+def known_error(error: str | None) -> str | None:
+    """The plain words of an error code the ingest writes (error_words' dictionary), None for one it does not know."""
+    error = str(error or "")
+    words = error_words(error)
+    return None if not error or words == tw(error)[:120] else words
+
+
+# what the ingest's outcomes are, in plain words (nightly_ingest.py's outcome field): the one small dictionary; an
+# outcome not in it is shown as it is with 沒見過 (spec 2026-11-17-panels-v3-questions.md 八.6) 【Claude】
+OUTCOME_WORDS = {"running": "跑中", "swapped": "換上了", "nothing_new": "沒有新資料", "held": "把關沒過，新庫沒換上",
+                 "paused": "暫停（有 ingest.pause）", "deferred": "兩小時內沒轉完", "failed": "失敗", "busy": "前一次還在跑",
+                 "rolled_back": "退回前一份庫"}
+
+
+def run_reason(run: dict, dep: dict | None = None) -> dict:
+    """What an ingest run's own line says of it: {'reason' (plain words of its outcome, error and held reasons, from the
+    dictionaries), 'code' (the raw codes, as written), 'unknown' (a code no dictionary knows)}."""
+    outcome, error = str(run.get("outcome") or ""), str(run.get("error") or "")
+    codes, words, unknown = [outcome] if outcome else [], [], False
+    if outcome in OUTCOME_WORDS:
+        words.append(OUTCOME_WORDS[outcome])
+    else:
+        unknown = True
+    if error:
+        codes.append(error)
+        known = known_error(error)
+        if known is None:
+            unknown = True
+        else:
+            words.append(known)
+    held = run.get("held") if isinstance(run.get("held"), dict) else {}
+    for why in held.get("reasons") or ([held["reason"]] if held.get("reason") else []):
+        codes.append(str(why))
+        if why in HELD_WORDS:
+            words.append(HELD_WORDS[why])
+        else:
+            unknown = True
+    if dep and dep.get("unexplained"):
+        words.append(f"說不出原因地離開 {dep['unexplained']:,} 份（{sites_words(dep['by_site'])}）")
+    return {"reason": "；".join(words), "code": " · ".join(codes), "unknown": unknown}
+
+
 def error_words(error: str | None) -> str:
     """The ingest's error codes in plain words (nightly_ingest.py: lanes_timeout, lane_<X>_exit_<n>, build_exit_<n>,
-    checks_exit_<n>, an exception's 'Type: words')."""
+    checks_exit_<n>, an exception's 'Type: words'; since 11-17 disk_low_<n>GB, build_timeout, checks_timeout: the
+    content session's note research/pipeline_2026-11-02/guard_1117/note_for_panels_1117.md)."""
     error = str(error or "")
     if not error:
         return ""
     if error == "lanes_timeout":
         return "兩小時內沒轉完"
+    if m := re.fullmatch(r"disk_low_(\d+(?:\.\d+)?)GB", error):
+        return f"C 盤只剩 {m.group(1)} GB，沒建庫"
+    if error == "build_timeout":
+        return "建庫超過 3 小時停掉"
+    if error == "checks_timeout":
+        return "換庫後的檢查超時（庫已換上）"
     if m := re.fullmatch(r"lane_([A-Z])_exit_(-?\d+)", error):
         what = dict(pl.LANES).get(m.group(1), f"第 {m.group(1)} 條線")
         return f"{what}出錯（退出碼 {m.group(2)}）"
@@ -248,16 +299,78 @@ def error_words(error: str | None) -> str:
     return tw(error)[:120]
 
 
+# ------------------------------------------------------------------------------------------------ the build's check
+
+# why a swap guard held the new library (nightly_ingest held.reasons; note_for_panels_1117.md) 【Claude's words】
+HELD_WORDS = {"site_collapsed": "某站一次少了一半以上", "unexplained_departures": "說不出原因的離開太多",
+              "school_wave": "某站一次被標成學校刪掉太多"}
+SITES_SHOWN = 3  # sites a sentence names before 等 【Claude】
+
+
+def departures_of(run: dict | None, swap: dict | None = None) -> dict | None:
+    """What the build's own check found of the documents that left (the ingest line's departures and
+    unexplained_left; else aca.swap.json's, when it was written during that run): {'unexplained', 'left', 'by_site'
+    (site → documents, most first), 'items' (≤ 50: site, title, url, why, detail), 'words' (why → plain words,
+    Traditional), 'waves'}; None when nothing was compared."""
+    if not run:
+        return None
+    got = run.get("departures")
+    if not (isinstance(got, dict) and got.get("checked")) and swap and swap.get("_run") is run:
+        got = swap.get("departures")
+    if not (isinstance(got, dict) and got.get("checked")):
+        return None
+    n = run.get("unexplained_left")
+    n = got.get("unexplained_total") if not isinstance(n, int) else n
+    by_site = {str(k): int(v) for k, v in (got.get("by_site") or {}).items() if k and isinstance(v, int)}
+    return {"unexplained": int(n or 0), "left": got.get("left"),
+            "by_site": dict(sorted(by_site.items(), key=lambda kv: -kv[1])),
+            "items": [x for x in (got.get("items") or []) if isinstance(x, dict)][:50],
+            "words": {str(k): tw(str(v)) for k, v in (got.get("words") or {}).items()},
+            "waves": got.get("waves") if isinstance(got.get("waves"), dict) else {}}
+
+
+def sites_words(by_site: dict, shown: int = SITES_SHOWN) -> str:
+    """「a.example 2、b.example 1 等」: the sites with the most first."""
+    pairs = list(by_site.items())
+    return "、".join(f"{k} {v:,}" for k, v in pairs[:shown]) + (" 等" if len(pairs) > shown else "")
+
+
+def held_words(run: dict, dep: dict | None) -> tuple[str, str]:
+    """(the swap cell's words, its floating card) for a run the swap guard held, by held.reasons; a line from before
+    11-17 (no reasons) keeps the words it had."""
+    held = run.get("held") if isinstance(run.get("held"), dict) else {}
+    reasons = [str(r) for r in held.get("reasons") or ([held["reason"]] if held.get("reason") else [])]
+    detail = [h for h in held.get("detail") or [] if isinstance(h, dict)]
+    tip = [f"{h.get('site')}：{h.get('before')} → {h.get('after')} 份" for h in detail[:12]]
+    if not reasons:
+        return "把關沒過，新庫沒換上（有網站的文件數掉到一半以下）", "\n".join(tip) or "新庫留在 aca.held.db"
+    said = []
+    for why in reasons:
+        words = HELD_WORDS.get(why, tw(why))
+        if why == "unexplained_departures" and dep:
+            words += f"（{dep['unexplained']:,} 份）"
+            tip.append("說不出原因的：" + sites_words(dep["by_site"], 8))
+        elif why == "school_wave" and dep and dep["waves"]:
+            words += f"（{'、'.join(list(dep['waves'])[:SITES_SHOWN])}）"
+            tip.append("被標成學校刪掉的：" + "、".join(f"{k} {v[0]:,} / {v[1]:,} 份" for k, v in dep["waves"].items()
+                                                if isinstance(v, (list, tuple)) and len(v) == 2))
+        said.append(words)
+    tip.append(f"新庫留在 {held.get('db') or 'aca.held.db'}")
+    return "把關沒過，新庫沒換上：" + "、".join(said), "\n".join(tip)
+
+
 # ------------------------------------------------------------------------------------------------ one night
 
 
 def _cell(key: str, state: str, say: str = "", *, word: str = "", since: datetime | None = None,
           until: datetime | None = None, fix: str = "", sev: str = "", tip: str = "", phrase: str = "",
-          now: datetime | None = None) -> dict:
+          now: datetime | None = None, reason: str = "", code: str = "", unknown: bool = False) -> dict:
     """One part of the chain as the page shows it: its state (WAIT, RUN, DONE, STOP) and the word for it, a short say
     (what it is doing, where it stopped, or a note), when (finished time and duration, or how long already), who
     fixes it (FIXERS' key) and how bad (sev: OK, WARN, BAD) when it stopped, a longer tip, and phrase: the words the
-    first sentence uses for it while it runs."""
+    first sentence uses for it while it runs; reason: what the source itself says of it (a status file's reason or
+    error, a log line, as written, Traditional), code: the raw code, unknown: a code no dictionary here knows (spec
+    2026-11-17-panels-v3-questions.md 八.1, 八.6: shown as it is, never as normal)."""
     name = dict(CELLS)[key]
     took = span((until - since).total_seconds()) if since and until else ""
     if state == DONE:
@@ -273,7 +386,7 @@ def _cell(key: str, state: str, say: str = "", *, word: str = "", since: datetim
             "until": until.isoformat(timespec="seconds") if until else "", "took": took, "fix": fix,
             "fixer": FIXERS.get(fix, "") if state == STOP or sev in (WARN, BAD) else "",
             "sev": sev or (OK if state == DONE else ""),
-            "tip": tip, "phrase": phrase or name}
+            "tip": tip, "phrase": phrase or name, "reason": reason, "code": code, "unknown": unknown}
 
 
 class Reading:
@@ -294,6 +407,7 @@ class Reading:
         self.build = build_status(pipe / "lab_pc")
         self.lanes = pl.lane_states(pipe / "lab_pc", now)
         self.paused = (pipe / "ingest.pause").exists()
+        self.swap = _swap_file(where.library.with_name(f"{where.library.stem}.swap.json"), self.ingests)
         lib = _meta(where.library)
         self.swapped_at = when_of(lib.get("vec_built_at") or lib.get("built_at"))
         crawls = [r["night"] for r in self.runs] + ([self.status_night] if self.status_night else [])
@@ -319,6 +433,21 @@ class Reading:
 
     def archive_missing(self) -> bool:
         return self.where.archive is None or not self.where.archive.exists()
+
+
+def _swap_file(path: Path, runs: list[dict]) -> dict | None:
+    """aca.swap.json (the build writes it beside the library each time), tied to the ingest run it was written
+    during (_run; None when no run's time holds it: a build by hand)."""
+    got = pl.read_json(path)
+    if not isinstance(got, dict):
+        return None
+    try:
+        at = datetime.fromtimestamp(path.stat().st_mtime, TAIPEI)
+    except OSError:
+        return None
+    got["_run"] = next((r for r in reversed(runs) if r["_start"] - timedelta(seconds=5) <= at
+                        <= (r["_end"] or at) + timedelta(seconds=120)), None)
+    return got
 
 
 def _meta(db: Path) -> dict:
@@ -359,7 +488,9 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
     marks, start = run["marks"], run["start"]
     if run["kind"] in ("pause", "busy"):
         say = "暫停中（有 update.pause），這晚沒更新" if run["kind"] == "pause" else "沒開（前一晚的還在跑）"
-        return (_cell("crawl", STOP, say, since=start, until=start, fix=CRAWLER, sev=WARN),
+        line = tw(str(marks.get(run["kind"], (None, ""))[1]))
+        return (_cell("crawl", STOP, say, since=start, until=start, fix=CRAWLER, sev=WARN, reason=line,
+                      code=run["kind"]),
                 _cell("export", WAIT, word="沒跑到"), start)
     stopped = marks.get("stop")
     bad_run = marks.get("badrun")
@@ -378,7 +509,7 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
         step, by_hand = stop_step(stopped[1])
         say = f"停在「{step_words(step)}」" + ("（有人停了它）" if by_hand else "")
         crawl = _cell("crawl", STOP, say, word="出錯", since=start, until=stopped[0], fix=CRAWLER, sev=BAD,
-                      tip=str(status.get("note") or "") or "細節在存檔的 update.log")
+                      tip=str(status.get("note") or "") or "細節在存檔的 update.log", reason=tw(stopped[1]), code=step)
         return crawl, _cell("export", WAIT, word="沒跑到"), stopped[0]
     if reviewed:
         crawl = _cell("crawl", DONE, since=start, until=reviewed, tip=count_tip)
@@ -391,12 +522,14 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
         return crawl, _cell("export", WAIT), None
     elif stuck:
         crawl = _cell("crawl", RUN, stuck_say, word="可能卡住", since=start, now=now, fix=CRAWLER, sev=WARN,
-                      tip="紀錄半小時以上沒動：可能還在做久的一步，也可能卡住了" + stuck_until)
+                      tip="紀錄半小時以上沒動：可能還在做久的一步，也可能卡住了" + stuck_until,
+                      reason=f"update.log {stuck_say}")
         return crawl, _cell("export", WAIT), None
     else:
         last = max(at for at, _w in marks.values())
         return (_cell("crawl", STOP, f"沒有收尾（紀錄停在 {clock(last)}）", word="出錯", since=start, until=last,
-                      fix=CRAWLER, sev=BAD, tip="爬蟲的每晚更新沒寫完就不動了：可能被關掉，或卡住了"),
+                      fix=CRAWLER, sev=BAD, tip="爬蟲的每晚更新沒寫完就不動了：可能被關掉，或卡住了",
+                      reason=last_line(marks)),
                 _cell("export", WAIT, word="沒跑到"), last)
     # 導出: from the change list to the script's end
     export_info = status.get("export") if isinstance(status.get("export"), dict) else {}
@@ -407,7 +540,8 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
     if stopped:
         step, by_hand = stop_step(stopped[1])
         export = _cell("export", STOP, f"停在「{step_words(step)}」" + ("（有人停了它）" if by_hand else ""), word="出錯",
-                       since=reviewed, until=stopped[0], fix=CRAWLER, sev=BAD, tip="細節在存檔的 update.log")
+                       since=reviewed, until=stopped[0], fix=CRAWLER, sev=BAD, tip="細節在存檔的 update.log",
+                       reason=tw(stopped[1]), code=step)
         return crawl, export, stopped[0]
     if ended:
         # held by the crawler's copy guard (a warning for it) or by export-hold.txt (人工暫緩: news, never a warning;
@@ -420,14 +554,17 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
         if failed:
             export = _cell("export", STOP, f"有 {len(failed)} 站失敗（下一晚再導）", word="出錯", since=reviewed,
                            until=ended, fix=CRAWLER, sev=BAD,
-                           tip="\n".join(x for x in ("、".join(failed[:12]), held_tip) if x))
+                           tip="\n".join(x for x in ("、".join(failed[:12]), held_tip) if x),
+                           reason="失敗的網站：" + "、".join(failed[:6]) + (" 等" if len(failed) > 6 else ""))
         elif held:  # the crawler held the new export back on purpose: the old one stays in use (11-17)
             export = _cell("export", DONE, f"攔下 {len(held)} 站{aside}", since=reviewed, until=ended, fix=CRAWLER,
-                           sev=WARN, tip="\n".join(x for x in (held_tip, tip) if x))
+                           sev=WARN, tip="\n".join(x for x in (held_tip, tip) if x),
+                           reason="；".join(f"{k}：{tw(v)}" for k, v in list(held.items())[:6]))
         elif alarms:
             export = _cell("export", STOP, f"有 {len(alarms)} 站警報，這晚沒導出它們", word="出錯", since=reviewed,
                            until=ended, fix=CRAWLER, sev=BAD,
-                           tip="\n".join(f"{k}：{tw(str(v))}" for k, v in list(alarms.items())[:12]))
+                           tip="\n".join(f"{k}：{tw(str(v))}" for k, v in list(alarms.items())[:12]),
+                           reason="；".join(f"{k}：{tw(str(v))}" for k, v in list(alarms.items())[:6]))
         else:
             n = re.search(r"导出 (\d+) 个网站", marks["end"][1])
             say = (f"導了 {n.group(1)} 站" if n else "") + aside
@@ -439,10 +576,17 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
         return crawl, _cell("export", RUN, doing, since=reviewed, now=now, phrase=f"導出（{doing}）"), None
     if stuck:
         return crawl, _cell("export", RUN, stuck_say, word="可能卡住", since=reviewed, now=now, fix=CRAWLER, sev=WARN,
-                            tip="導出會排隊等前一次導出跑完，最多等兩小時，等的時候不寫紀錄" + stuck_until), None
+                            tip="導出會排隊等前一次導出跑完，最多等兩小時，等的時候不寫紀錄" + stuck_until,
+                            reason=f"update.log {stuck_say}"), None
     last = max(at for at, _w in marks.values())
     return crawl, _cell("export", STOP, f"沒有收尾（紀錄停在 {clock(last)}）", word="出錯", since=reviewed, until=last,
-                        fix=CRAWLER, sev=BAD), last
+                        fix=CRAWLER, sev=BAD, reason=last_line(marks)), last
+
+
+def last_line(marks: dict) -> str:
+    """The crawler script's last line of a night that wrote no end, as written (Traditional), with its time."""
+    at, words = max(marks.values(), key=lambda m: m[0])
+    return f"最後一行（{clock(at)}）：{tw(words)}" if words else f"最後一行在 {clock(at)}"
 
 
 def _run_from_status(status: dict) -> dict | None:
@@ -462,6 +606,16 @@ def _run_from_status(status: dict) -> dict | None:
     return {"start": start, "kind": "run", "marks": marks, "night": night_of(start)}
 
 
+def _chain(r: Reading, night: date, crawl_start: datetime | None) -> list[dict]:
+    """The ingest runs of a night's chain: named for it, started after its crawler run began (or after midnight
+    without one) and before the next night's crawler run, rollbacks aside."""
+    floor = crawl_start or at_night(night, dtime(0, 0))
+    after = r.crawler_run(night + timedelta(days=1))
+    ceiling = after["start"] if after else None
+    return [x for x in r.ingests if x["_night"] == night and x["_start"] >= floor - timedelta(seconds=1)
+            and x.get("outcome") != "rolled_back" and (ceiling is None or x["_start"] < ceiling)]
+
+
 def chain_ingest(r: Reading, night: date, crawl_start: datetime | None
                  ) -> tuple[dict | None, dict | None, int, dict | None]:
     """The ingest run of a night's chain, a rollback line after it (None: none), how many other runs that night had
@@ -479,11 +633,7 @@ def chain_ingest(r: Reading, night: date, crawl_start: datetime | None
     been updated (the lead, 11-17). A rollback is looked for after the chosen run, up to the next run that swapped a
     library (one in the afternoon is named the next night and still undoes this one's swap) 【Claude】."""
     runs = [x for x in r.ingests if x["_night"] == night]
-    floor = crawl_start or at_night(night, dtime(0, 0))
-    after = r.crawler_run(night + timedelta(days=1))
-    ceiling = after["start"] if after else None
-    chain = [x for x in runs if x["_start"] >= floor - timedelta(seconds=1) and x.get("outcome") != "rolled_back"
-             and (ceiling is None or x["_start"] < ceiling)]
+    chain = _chain(r, night, crawl_start)
     scheduled = next((x for x in chain if x.get("outcome") != "busy"), chain[0] if chain else None)
     swaps = [x for x in chain if x.get("outcome") == "swapped"]
     run = swaps[-1] if swaps else scheduled
@@ -502,26 +652,24 @@ def chain_ingest(r: Reading, night: date, crawl_start: datetime | None
     return run, rolled, others, first
 
 
-# what the scheduled run did, when one by hand after it swapped (chain_ingest) 【Claude】
-FIRST_WORDS = {"paused": "暫停了", "failed": "出錯了", "deferred": "沒轉完", "held": "把關沒過、沒換上",
-               "nothing_new": "沒有新資料", "swapped": "也換上了一次", "busy": "沒開"}
-
-
-def first_note(first: dict | None, run: dict) -> str:
-    """「排程那次暫停了，03:51 手動再跑一次換上了新庫」: the scheduled run stopped short and one by hand swapped."""
-    if first is None:
-        return ""
-    did = FIRST_WORDS.get(str(first.get("outcome") or ""), "沒跑完")
-    return f"排程那次{did}，{clock(run['_start'])} 手動再跑一次換上了新庫"
-
-
 def ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cells: tuple[dict, dict],
                  crawl_start: datetime | None) -> list[dict]:
-    """轉文字, 建庫, 換庫 of one night."""
+    """轉文字, 建庫, 換庫 of one night, each part that is not normal carrying its run's own reason (run_reason)."""
+    cells = _ingest_cells(r, night, crawl_end, crawl_cells, crawl_start)
+    run, _rolled, _others, _first = chain_ingest(r, night, crawl_start)
+    if run is not None:
+        said = run_reason(run, departures_of(run, r.swap))
+        for c in cells:
+            if (c["state"] == STOP or c["sev"] in (WARN, BAD)) and not c["reason"]:
+                c.update(said)
+    return cells
+
+
+def _ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cells: tuple[dict, dict],
+                  crawl_start: datetime | None) -> list[dict]:
     now = r.now
-    run, rolled, others, first = chain_ingest(r, night, crawl_start)
-    note = first_note(first, run) if run is not None else ""
-    extra = "；".join(x for x in (note, f"這一晚另外跑過 {others} 次（手動）" if others > 0 else "") if x)
+    run, rolled, _others, _first = chain_ingest(r, night, crawl_start)
+    extra = ""
     if run is None:
         if r.first_ingest is None or night < r.first_ingest:
             return [_cell(k, WAIT, word="還沒上線") for k in ("totext", "build", "swap")]
@@ -569,6 +717,12 @@ def ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cell
     if outcome == "deferred":
         return [_cell("totext", STOP, "兩小時內沒轉完，這晚不建庫（下一晚接著轉）", since=start, until=end, fix=CONTENT,
                       sev=WARN, tip=tip_run), _cell("build", WAIT, word="沒跑到"), _cell("swap", WAIT, word="沒跑到")]
+    if outcome == "failed" and str(error or "").startswith("disk_low_"):  # checked after the lanes, before the build
+        disk = f"C 盤剩 {run['disk_free_gb']} GB" if run.get("disk_free_gb") is not None else ""
+        return [_cell("totext", DONE, since=start, until=end, tip=tip_run),
+                _cell("build", STOP, words, word="出錯", since=end, until=end, fix=CONTENT, sev=BAD,
+                      tip="；".join(x for x in (disk, "建庫要 C 盤至少 15 GB") if x)),
+                _cell("swap", WAIT, word="沒跑到")]
     if outcome == "failed" and (early or not keep_at):
         say = (words or "出錯了") if step == "convert" else (
             f"在「{INGEST_STEPS.get(step, step)}」出錯" + (f"：{words}" if words else ""))
@@ -599,12 +753,9 @@ def ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cell
         return [totext, _cell("build", STOP, say, word="出錯", since=build_from, until=end, fix=CONTENT, sev=BAD,
                               tip=words), _cell("swap", WAIT, word="沒跑到")]
     if outcome == "held":
-        held = (run.get("held") or {}).get("detail") or []
-        tip = "\n".join(f"{h.get('site')}：{h.get('before')} → {h.get('after')} 份" for h in held[:12]
-                        if isinstance(h, dict))
+        said, tip = held_words(run, departures_of(run, r.swap))
         return [totext, _cell("build", DONE, since=build_from, until=done_at or end),
-                _cell("swap", STOP, "把關沒過，新庫沒換上（有網站的文件數掉到一半以下）", since=done_at or end, until=end,
-                      fix=CONTENT, sev=WARN, tip=tip or "新庫留在 aca.held.db")]
+                _cell("swap", STOP, said, since=done_at or end, until=end, fix=CONTENT, sev=WARN, tip=tip)]
     if outcome in ("swapped", "rolled_back"):
         moment = swapped if swapped and swapped <= (end or now) else None
         build = _cell("build", DONE, since=build_from, until=moment or done_at or end,
@@ -614,10 +765,18 @@ def ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cell
             return [totext, build, _cell("swap", STOP, f"換上後又退回前一份庫（{clock(at)}）", since=moment or done_at,
                                          until=at, fix=CONTENT, sev=WARN)]
         checks = error_words(error) if error else ""
-        swap = _cell("swap", DONE, "換上了" + (f"；{checks}" if checks else ""), since=moment or done_at or end, until=end,
-                     sev=WARN if checks else OK, tip="從換上到檢查跑完" if moment else "")
+        dep = departures_of(run, r.swap)
+        unx = dep["unexplained"] if dep else 0
+        # left for no reason the build could give: lit even when the swap went ahead (爬虫judge, 11-17: 「只要有说不通
+        # 的离开，即使没到门槛，也请在人会看的地方亮出来」)
+        said = "換上了" + (f"，但有 {unx:,} 份說不出原因地離開（{sites_words(dep['by_site'])}）" if unx else "")
+        tip = "\n".join(x for x in ("從換上到檢查跑完" if moment else "",
+                                    f"說不出原因的：{sites_words(dep['by_site'], 12)}" if unx else "") if x)
+        swap = _cell("swap", DONE, said + (f"；{checks}" if checks else ""), since=moment or done_at or end, until=end,
+                     sev=WARN if checks or unx else OK, fix=CONTENT if unx else "", tip=tip)
         return [totext, build, swap]
-    return [totext, _cell("build", WAIT, word="看不懂", tip=f"進庫的結果是 {outcome}"), _cell("swap", WAIT, word="看不懂")]
+    return [totext, _cell("build", STOP, "", word="沒見過", since=build_from, until=end or now, fix=CONTENT, sev=WARN,
+                          tip=f"進庫的結果是 {outcome}"), _cell("swap", WAIT, word="沒跑到")]
 
 
 def night_state(cells: list[dict]) -> str:
@@ -657,10 +816,23 @@ def one_night(r: Reading, night: date) -> dict:
         cells[3]["aside"] = extra
     state = night_state(cells)
     # the scheduled ingest stopped short and one by hand swapped: said in the first sentence too (chain_ingest)
-    ran, _rolled, _others, first = chain_ingest(r, night, crawl_start)
-    note = first_note(first, ran) if ran is not None else ""
-    return {"night": night.isoformat(), "date": f"{night:%m-%d}", "label": label_of(night, r.now), "state": state,
-            "word": NIGHT_WORDS[state], "cells": cells, "note": note}
+    ran, _rolled, _others, _first = chain_ingest(r, night, crawl_start)
+    return {"night": night.isoformat(), "date": f"{night:%m-%d}", "label": label_of(night), "tip": starts_at(night),
+            "state": state, "word": NIGHT_WORDS[state], "cells": cells, "note": "",
+            "departures": departures_of(ran, r.swap), "runs": night_runs(r, night, crawl_start, ran)}
+
+
+def night_runs(r: Reading, night: date, crawl_start: datetime | None, shown: dict | None) -> list[dict]:
+    """Every ingest run of a night's chain, in the order they started (spec 2026-11-17-panels-v3-questions.md 八.3: one
+    run, one segment), each {'run' (1, 2, …), 'since', 'until', 'outcome', 'shown' (the one the night's parts are
+    drawn from), 'reason', 'code', 'unknown'} — nothing said of why there were several."""
+    out = []
+    for k, x in enumerate(_chain(r, night, crawl_start), 1):
+        end = x["_end"] or (r.now if x.get("outcome") == "running" else x["_start"])
+        out.append({"run": k, "since": x["_start"].isoformat(timespec="seconds"),
+                    "until": end.isoformat(timespec="seconds"), "outcome": str(x.get("outcome") or ""),
+                    "shown": x is shown, **run_reason(x, departures_of(x, r.swap))})
+    return out
 
 
 def default_night(r: Reading) -> date:
@@ -675,23 +847,25 @@ def default_night(r: Reading) -> date:
 
 
 def first_sentence(night: dict, changes: dict | None) -> dict:
-    """The page's first line (the spec's 「早上一句話」): {'state', 'text', 'fix'}; state as the night's mark, made
-    worse by what the last swap's comparison found (documents that left with no reason, or with one on our side)."""
+    """The night in one line for /api/tonight (the page draws its own headline: tonight_page.headline): {'state',
+    'text', 'fix'}; state as the night's mark, made worse by what the last swap's comparison found (documents that left
+    with no reason, or with one on our side). fix: which side's step it is, as data; the text names no one (spec
+    2026-11-17-panels-v3-questions.md 八.2)."""
     label, cells, state = night["label"], night["cells"], night["state"]
     if state == "run":
         cur = next((c for c in cells if c["state"] == RUN), None)
         if cur is not None and cur["sev"] == WARN:  # silent a while, maybe waiting: said, and the page still asks
-            return {"state": WARN, "text": f"{label}{cur['name']}{cur['word']}：{cur['say']}，{cur['fixer']}",
+            return {"state": WARN, "text": f"{label}{cur['name']}{cur['word']}：{cur['say']}",
                     "fix": cur["fix"]}
         if cur is None:  # between two parts: the last done and the next not begun
             done = [c for c in cells if c["state"] == DONE]
-            return {"state": "run", "text": f"{label}還在跑：{done[-1]['name'] if done else ''}跑完了，等下一步開始",
+            return {"state": "run", "text": f"{label}正在跑：{done[-1]['name'] if done else ''}跑完了，等下一步開始",
                     "fix": ""}
         took = f"，{cur['when']}" if cur["when"] else ""
-        lead = f"{label}還在跑：{cur['phrase']}"
+        lead = f"{label}正在跑：{cur['phrase']}"
         return {"state": "run", "text": lead + took, "fix": "", "lead": lead, "since_ts": cur["since_ts"]}
     if state == "missed":
-        return {"state": BAD, "text": f"{label}沒跑：01:00 該開始的每晚更新沒有動靜，{FIXERS[CRAWLER]}", "fix": CRAWLER}
+        return {"state": BAD, "text": f"{label}沒跑：01:00 該開始的每晚更新沒有動靜", "fix": CRAWLER}
     if state in (BAD, WARN):
         # the worst part that stopped, not the first: an ingest that failed after a paused crawl is the content
         # session's (review 2026-11-17)
@@ -699,18 +873,21 @@ def first_sentence(night: dict, changes: dict | None) -> dict:
         c = next((c for c in stops if c["sev"] == BAD), stops[0] if stops else None)
         if c is None:  # every part done, one with a warning: an export held back, the checks after a swap
             c = next(c for c in cells if c["sev"] == WARN)
+            unx = (night.get("departures") or {}).get("unexplained") or 0
+            if c["key"] == "swap" and unx and cells[-1]["state"] == DONE:  # the build's own count of the unexplained
+                return _with_changes(label, night, changes)
             if c["key"] != "swap":  # said, unless the last swap's comparison found worse (查不出原因)
                 if cells[-1]["state"] == DONE and cells[-1]["say"] != "庫沒換":
                     lib = _with_changes(label, night, changes)
-                    if lib["state"] == BAD:
+                    if lib["state"] == BAD or unx:
                         return lib
                 said = c["say"].split("；", 1)[0]  # what follows is news (人工暫緩), never the worst thing
-                return {"state": WARN, "text": f"{label}{c['name']}{said}，{c['fixer']}", "fix": c["fix"]}
+                return {"state": WARN, "text": f"{label}{c['name']}{said}", "fix": c["fix"]}
             swapped = night.get("note") or "換了新庫"
-            return {"state": WARN, "text": f"{label}{swapped}，{c['say'].split('；', 1)[-1]}，{FIXERS[CONTENT]}",
+            return {"state": WARN, "text": f"{label}{swapped}，{c['say'].split('；', 1)[-1]}",
                     "fix": CONTENT}
         head = "出錯" if c["sev"] == BAD else "停了"
-        return {"state": state, "text": f"{label}{head}：{c['name']}{c['say']}，{c['fixer']}", "fix": c["fix"]}
+        return {"state": state, "text": f"{label}{head}：{c['name']}{c['say']}", "fix": c["fix"]}
     if state == "wait":
         return {"state": "wait", "text": f"{label}還沒開始：01:00 開跑", "fix": ""}
     if state == "off":
@@ -727,18 +904,28 @@ def _with_changes(label: str, night: dict, changes: dict | None) -> dict:
     note = night.get("note") or ""
     swapped, after = note or "換了新庫", f"；{note}" if note else ""
     ready = changes and changes.get("state") == "ready" and changes.get("night") == night["night"]
+    dep = night.get("departures")  # the build's own check, when it made one: its count of the unexplained wins
+    if dep and dep["unexplained"]:
+        tail = f"但有 {dep['unexplained']:,} 份說不出原因地離開（{sites_words(dep['by_site'])}）"
+        if ready:
+            t = changes["totals"]
+            return {"state": WARN, "fix": CONTENT, "text": f"{label}換了新庫：新進 {t['new']:,} 份、離開 "
+                    f"{t['left']:,} 份，{tail}" + after}
+        return {"state": WARN, "text": f"{label}{swapped}，{tail}", "fix": CONTENT}
     if changes and changes.get("state") == "computing":
         return {"state": OK, "text": f"{label}正常：{swapped}（變了什麼還在算）", "fix": ""}
     if not ready:
         return {"state": OK, "text": f"{label}正常：{swapped}", "fix": ""}
     t = changes["totals"]
+    if dep is not None:  # compared, nothing unexplained: the panel's own count gives way
+        t = {**t, "unexplained": 0}
     base = f"新進 {t['new']:,} 份、離開 {t['left']:,} 份"
     if t["unexplained"]:
-        return {"state": BAD, "text": f"{label}換了新庫：{base}，其中 {t['unexplained']:,} 份查不出原因，{FIXERS[CONTENT]}"
+        return {"state": BAD, "text": f"{label}換了新庫：{base}，其中 {t['unexplained']:,} 份查不出原因"
                 + after, "fix": CONTENT}
     if t["look"]:
         fix = t.get("look_fix") or CONTENT
-        return {"state": WARN, "text": f"{label}換了新庫：{base}，其中 {t['look']:,} 份可能是我們這邊漏的，{FIXERS[fix]}"
+        return {"state": WARN, "text": f"{label}換了新庫：{base}，其中 {t['look']:,} 份可能是我們這邊漏的"
                 + after, "fix": fix}
     return {"state": OK, "text": f"{label}正常：{base}" + ("（都有原因）" if t["left"] else "") + after, "fix": ""}
 

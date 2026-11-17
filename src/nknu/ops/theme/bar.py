@@ -2,7 +2,8 @@
 no way to the others, 檢視台 had tabs plus three links, 資料庫 links only). 【Claude】
 
 Since the structure design of 2026-11-17 (docs/superpowers/specs/2026-11-17-panels-structure-design.md section 二; owner:
-「可以按你的建议走吧，不用问我了」) the bar holds four entries, 今晚 | 網站 | 試用 | 文件 (panels.json "pages"), and at its
+「可以按你的建议走吧，不用问我了」) the bar holds four entries, 每晚運行 | 網站 | 搜尋 | 找文件 (panels.json "pages"; 今晚 | 網站 | 試用 | 文件 until the owner's
+「一个页面叫"今晚"你觉得合理吗」, 11-17), and at its
 right end a small 「工具」 menu (a native <details>: it opens with a click, Enter or Space, Escape closes it) holding the
 two tools that are no entry of their own, 資料庫 and 爬蟲進度 (panels.json "tools"). A page of a tool marks the menu's
 button, not an entry.

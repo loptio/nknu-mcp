@@ -114,11 +114,23 @@ def test_only_the_page_check_reads_the_crawlers_archive_and_only_read_only():
     ops = services["ops"]["volumes"]
     assert "nknu-crawl:/crawl:ro" in ops and "D:/nknu-crawl/warc:/crawl/archive/warc:ro" in ops
     assert "nknu-work:/work:ro" in ops and "nknu-models:/models:ro" in ops
-    assert all(v.endswith(":ro") for v in ops)
+    assert all(v.endswith(":ro") for v in ops if v != "nknu-ops:/ops")
     for name in ("mcp", "datasette"):
         assert not any("crawl" in v for v in services[name]["volumes"]), name
     assert compose["volumes"]["nknu-crawl"] == {"external": True}
     assert "--archive /crawl/archive" in " ".join(services["ops"]["command"])
+
+
+def test_the_nights_record_is_the_one_place_the_ops_service_writes():
+    """每晚紀錄 (panels v3 2026-11-17, nknu.ops.history): a volume of its own, read-write, on ops alone, never inside
+    /work or /crawl, and the service is told where its file is."""
+    compose = _compose()
+    services = compose["services"]
+    writable = {name: [v for v in s["volumes"] if not v.endswith(":ro")] for name, s in services.items()}
+    assert writable == {"datasette": [], "mcp": [], "ops": ["nknu-ops:/ops"]}
+    assert compose["volumes"]["nknu-ops"] == {"name": "nknu-ops"}
+    command = " ".join(services["ops"]["command"])
+    assert "--ops-db /ops/ops.db" in command
 
 
 def test_datasette_is_pinned_and_reads_its_settings_from_the_volume():

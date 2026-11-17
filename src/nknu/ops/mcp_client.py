@@ -1,4 +1,4 @@
-"""A small MCP client for 試用 (nknu.ops.try_page): the same three requests a student's AI agent sends to the search
+"""A small MCP client for 搜尋 (nknu.ops.try_page): the same three requests a student's AI agent sends to the search
 service, initialize, tools/list and tools/call, over streamable HTTP, with what came back kept exactly as it came.
 
 Design: docs/superpowers/specs/2026-11-17-panels-structure-design.md section 三.1 (owner: 「真实的user agent看见的东西是

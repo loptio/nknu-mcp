@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 
 from nknu.content import build
 from nknu.ops import changes as ch
-from nknu.ops import nightly, pipeline_page, web
+from nknu.ops import nightly, tonight_page, web
 from nknu.ops.pipeline import BAD, CONTENT, CRAWLER, OK, PIPE, TAIPEI, WARN, Where
 from tests.ops.library import models
 from tests.retrieval.test_search import TODAY
@@ -122,7 +122,7 @@ def test_a_whole_night_is_five_parts_done_each_with_its_time_and_duration(where)
     ingest(where, [run("swapped")], SAID)
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     c = cells(t)
-    assert t["default"] == "2026-11-16" and t["shown"]["label"] == "昨晚" and t["shown"]["state"] == OK
+    assert t["default"] == "2026-11-16" and t["shown"]["label"] == "11-16 夜" and t["shown"]["state"] == OK
     assert all(x["state"] == nightly.DONE for x in c.values())
     assert c["crawl"]["when"] == "01:51 · 51 分鐘" and c["export"]["when"] == "02:06 · 15 分鐘"
     assert c["export"]["say"] == "導了 35 站" and "新的 135" in c["crawl"]["tip"]
@@ -130,17 +130,17 @@ def test_a_whole_night_is_five_parts_done_each_with_its_time_and_duration(where)
     # checks after it belong to 換庫
     assert c["totext"]["when"] == "02:31 · 24 分鐘" and c["build"]["when"] == "03:05 · 34 分鐘"
     assert c["swap"]["when"] == "03:40 · 35 分鐘" and c["swap"]["say"] == "換上了"
-    assert t["sentence"] == {"state": OK, "text": "昨晚正常：換了新庫", "fix": ""}
+    assert t["sentence"] == {"state": OK, "text": "11-16 夜正常：換了新庫", "fix": ""}
 
 
 def test_while_the_crawler_runs_the_night_says_so_and_how_long(where):
     crawler_log(where, NIGHT[:3], at("2026-11-17T01:30:00"))
     t = nightly.tonight(where, now=at("2026-11-17T01:40:00"))
     c = cells(t)
-    assert t["default"] == "2026-11-16" and t["shown"]["label"] == "今晚" and t["live"]
+    assert t["default"] == "2026-11-16" and t["shown"]["label"] == "11-16 夜" and t["live"]
     assert c["crawl"]["state"] == nightly.RUN and c["crawl"]["say"] == "抓網頁" and c["crawl"]["when"] == "已經 40 分鐘"
     assert [x["state"] for x in c.values()][1:] == [nightly.WAIT] * 4
-    assert t["sentence"]["text"] == "今晚還在跑：爬取（抓網頁），已經 40 分鐘"
+    assert t["sentence"]["text"] == "11-16 夜正在跑：爬取（抓網頁），已經 40 分鐘"
 
 
 def test_a_crawler_whose_log_went_quiet_may_be_stuck_and_after_two_hours_ten_it_stopped(where):
@@ -150,11 +150,12 @@ def test_a_crawler_whose_log_went_quiet_may_be_stuck_and_after_two_hours_ten_it_
     assert crawl["state"] == nightly.RUN and crawl["sev"] == WARN and crawl["word"] == "可能卡住"
     assert crawl["say"] == "01:30 以後沒有動靜" and crawl["fix"] == CRAWLER and "03:40" in crawl["tip"]
     assert t["live"] and t["shown"]["state"] == "run"  # the page keeps asking
-    assert t["sentence"] == {"state": WARN, "text": "今晚爬取可能卡住：01:30 以後沒有動靜，交給爬蟲 session", "fix": CRAWLER}
+    assert t["sentence"] == {"state": WARN, "text": "11-16 夜爬取可能卡住：01:30 以後沒有動靜", "fix": CRAWLER}
     t = nightly.tonight(where, now=at("2026-11-17T03:41:00"))  # past 2 h 10 min without a line
     crawl = cells(t)["crawl"]
     assert crawl["state"] == nightly.STOP and crawl["sev"] == BAD and "沒有收尾" in crawl["say"]
-    assert not t["live"] and t["sentence"]["state"] == BAD and t["sentence"]["text"].endswith("交給爬蟲 session")
+    said = t["sentence"]["text"]
+    assert not t["live"] and t["sentence"]["state"] == BAD and said == "11-16 夜出錯：爬取沒有收尾（紀錄停在 01:01）"
 
 
 def test_an_export_waiting_on_its_lock_may_be_stuck_and_the_page_keeps_asking(where):
@@ -165,11 +166,14 @@ def test_an_export_waiting_on_its_lock_may_be_stuck_and_the_page_keeps_asking(wh
     assert c["export"]["state"] == nightly.RUN and c["export"]["sev"] == WARN and c["export"]["word"] == "可能卡住"
     assert c["export"]["say"] == "01:52 以後沒有動靜" and "04:02" in c["export"]["tip"]
     assert t["live"] and t["sentence"]["state"] == WARN and t["sentence"]["fix"] == CRAWLER
-    page = pipeline_page.tonight_html(t, {"state": "none", "words": ""})
-    assert "data-live" in page and "data-state='run' data-sev='warn'" in page
-    drawn = pipeline_page.cell_html(c["export"])  # the warning mark, not the running clock; its minutes still tick
-    assert pipeline_page.icon("warn", 16) in drawn and pipeline_page.CLOCK.format(s=16) not in drawn
-    assert "data-since=" in drawn and "交給爬蟲 session" in drawn
+    # panels v3: on the night clock the export is drawn up to now in the warning tone (not as a plain run), and the
+    # top says it with who to tell; the page keeps asking (data-live)
+    seg = {x["key"]: x for x in tonight_page.timeline_data(t, at("2026-11-17T02:40:00"))["nights"][0]["segs"]}
+    assert seg["export"]["tone"] == "warn" and seg["export"]["to"] == pytest.approx(2 + 40 / 60, abs=0.01)
+    rows = tonight_page.problems(t, {"steps": []}, [])  # spec 八.5: where, state, the source's own words, when
+    assert [(x["where"], x["state"]) for x in rows] == [("導出", "可能卡住")] and "01:52" in rows[0]["reason"]
+    page = tonight_page.status_section(t, None, rows, tonight_page.mark_state(t, rows), "/api/tonight?brief=1")
+    assert "data-live" in page and "交給" not in page and "data-state='warn'" in page
     later = nightly.tonight(where, now=at("2026-11-17T04:03:00"))
     export = cells(later)["export"]
     assert export["state"] == nightly.STOP and export["sev"] == BAD and export["say"] == "沒有收尾（紀錄停在 01:51）"
@@ -227,7 +231,7 @@ def test_a_held_export_is_a_warning_for_the_crawler_and_never_a_failure(where):
     assert export["fix"] == CRAWLER and export["fixer"] == "交給爬蟲 session"
     assert "b：1 行用 10-24 舊存檔補的，新導出沒補上" in export["tip"] and "照舊用前一份導出" in export["tip"]
     assert t["shown"]["state"] == WARN
-    assert t["sentence"] == {"state": WARN, "text": "昨晚導出攔下 1 站，交給爬蟲 session", "fix": CRAWLER}
+    assert t["sentence"] == {"state": WARN, "text": "11-16 夜導出攔下 1 站", "fix": CRAWLER}
     # what the swap's comparison found is said when it is worse
     got = {"state": "ready", "night": "2026-11-16",
            "totals": {"new": 3, "changed": 0, "left": 2, "unexplained": 2, "look": 0, "look_fix": ""}}
@@ -253,7 +257,7 @@ def test_a_manual_hold_is_said_plainly_and_never_raises_the_night(where):
     export = cells(t)["export"]
     assert export["state"] == nightly.DONE and export["sev"] == OK and export["say"] == "導了 35 站；人工暫緩 1 站"
     assert "sso.example/vita：按鈕行太多" in export["tip"] and not export["fixer"]
-    assert t["shown"]["state"] == OK and t["sentence"]["text"] == "昨晚正常：換了新庫"
+    assert t["shown"]["state"] == OK and t["sentence"]["text"] == "11-16 夜正常：換了新庫"
     # with a copy-guard hold beside it: both said, only the guard's in the first sentence
     crawler_status(where, export={"at": "2026-11-17T02:06:00+08:00", "exported": ["a"], "unchanged": [],
                                   "failed": ["b", "sso.example/vita"], "held": {**HELD, **MANUAL}, "owed": []})
@@ -261,7 +265,7 @@ def test_a_manual_hold_is_said_plainly_and_never_raises_the_night(where):
     export = cells(t)["export"]
     assert export["sev"] == WARN and export["say"] == "攔下 1 站；人工暫緩 1 站"
     assert "b：1 行用 10-24 舊存檔補的" in export["tip"] and "sso.example/vita：按鈕行太多" in export["tip"]
-    assert t["sentence"]["text"] == "昨晚導出攔下 1 站，交給爬蟲 session"
+    assert t["sentence"]["text"] == "11-16 夜導出攔下 1 站"
 
 
 def test_a_night_with_nothing_by_two_is_missed_and_before_that_it_waits(where):
@@ -270,7 +274,7 @@ def test_a_night_with_nothing_by_two_is_missed_and_before_that_it_waits(where):
     assert t["shown"]["night"] == "2026-11-16" and cells(t)["crawl"]["state"] == nightly.WAIT
     t = nightly.tonight(where, now=at("2026-11-17T02:30:00"))
     assert cells(t)["crawl"]["word"] == "沒跑" and t["shown"]["state"] == "missed"
-    assert t["sentence"]["text"].startswith("今晚沒跑：01:00") and t["sentence"]["fix"] == CRAWLER
+    assert t["sentence"]["text"].startswith("11-16 夜沒跑：01:00") and t["sentence"]["fix"] == CRAWLER
     # the nights before the crawler's nightly went live are 還沒上線, never 沒跑
     marks = {n["night"]: n["state"] for n in t["nights"]}
     assert marks["2026-11-14"] == "off" and marks["2026-11-15"] in (OK, "run", WARN, BAD)
@@ -289,7 +293,7 @@ def test_the_page_opens_on_last_night_until_tonights_hour_comes(where):
 def test_a_night_can_be_picked(where):
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     t = nightly.tonight(where, night="2026-11-16", now=at("2026-11-18T09:00:00"))
-    assert t["default"] == "2026-11-17" and t["shown"]["night"] == "2026-11-16" and t["shown"]["label"] == "11-16 那一晚"
+    assert t["default"] == "2026-11-17" and t["shown"]["night"] == "2026-11-16" and t["shown"]["label"] == "11-16 夜"
     assert nightly.tonight(where, night="nonsense", now=at("2026-11-18T09:00:00"))["shown"]["night"] == "2026-11-17"
 
 
@@ -319,7 +323,7 @@ def test_a_build_running_says_its_step_and_after_the_swap_the_checks_are_the_swa
     t = nightly.tonight(where, now=at("2026-11-17T02:52:00"))
     c = cells(t)
     assert c["totext"]["state"] == nightly.DONE and c["build"]["state"] == nightly.RUN
-    assert c["build"]["say"] == "第 4 步（組裝）" and t["sentence"]["text"] == "今晚還在跑：建庫第 4 步（組裝），已經 21 分鐘"
+    assert c["build"]["say"] == "第 4 步（組裝）" and t["sentence"]["text"] == "11-16 夜正在跑：建庫第 4 步（組裝），已經 21 分鐘"
     library(where.library, swapped="2026-11-17T03:05:00+08:00")
     ingest(where, [run("running", finished=None, step="build")], SAID[:4],
            build="2026-11-17 03:10:00 running step 7 since 2026-11-17 03:10:00")
@@ -335,7 +339,7 @@ def test_a_build_that_failed_names_its_step_and_the_content_session(where):
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     build = cells(t)["build"]
     assert build["state"] == nightly.STOP and build["say"] == "停在第 4 步（組裝）" and build["fix"] == CONTENT
-    assert t["sentence"] == {"state": BAD, "text": "昨晚出錯：建庫停在第 4 步（組裝），交給內容（建庫）session",
+    assert t["sentence"] == {"state": BAD, "text": "11-16 夜出錯：建庫停在第 4 步（組裝）",
                              "fix": CONTENT}
 
 
@@ -351,7 +355,7 @@ def test_a_night_that_stopped_on_purpose_is_a_warning_for_the_content_session(wh
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     c = cells(t)[where_]
     assert c["state"] == nightly.STOP and c["say"] == say and c["sev"] == sev and c["fix"] == CONTENT
-    assert t["shown"]["state"] == WARN and t["sentence"]["text"].startswith("昨晚停了：")
+    assert t["shown"]["state"] == WARN and t["sentence"]["text"].startswith("11-16 夜停了：")
 
 
 def test_a_build_run_by_hand_is_said_beside_the_nights_build_not_as_its_state(where):
@@ -361,7 +365,9 @@ def test_a_build_run_by_hand_is_said_beside_the_nights_build_not_as_its_state(wh
     build = cells(nightly.tonight(where, now=at("2026-11-17T03:30:00")))["build"]
     assert build["state"] == nightly.STOP and build["say"].startswith("暫停中")
     assert "另外有一次建庫在跑：第 5 步（建庫和算向量），02:52 開始" in build["tip"]
-    assert "另外有一次建庫在跑" in pipeline_page.cell_html(build)
+    t = nightly.tonight(where, now=at("2026-11-17T03:30:00"))
+    seg = {x["key"]: x for x in tonight_page.timeline_data(t, at("2026-11-17T03:30:00"))["nights"][0]["segs"]}
+    assert "另外有一次建庫在跑" in seg["build"]["say"]  # said in the segment's floating card, not as its state
 
 
 def test_nothing_new_is_a_normal_night_without_a_swap(where):
@@ -369,7 +375,7 @@ def test_nothing_new_is_a_normal_night_without_a_swap(where):
     ingest(where, [run("nothing_new", step="plan", finished="2026-11-17T02:06:40+08:00")])
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     assert [c["state"] for c in t["shown"]["cells"]] == [nightly.DONE] * 5
-    assert t["sentence"]["text"] == "昨晚正常：沒有新資料，庫沒換"
+    assert t["sentence"]["text"] == "11-16 夜正常：沒有新資料，庫沒換"
 
 
 def test_the_first_run_after_the_crawler_is_the_nights_and_the_others_are_aside(where):
@@ -381,7 +387,8 @@ def test_the_first_run_after_the_crawler_is_the_nights_and_the_others_are_aside(
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     c = cells(t)
     assert c["totext"]["state"] == nightly.STOP and c["totext"]["say"] == "轉 PDF 和 Office 檔的程序出錯（退出碼 1）"
-    assert "另外跑過 2 次" in c["totext"]["tip"] and c["build"]["word"] == "沒跑到"
+    # every run of the night is one (spec 八.3), the evening's before the crawler is not the night's
+    assert [x["outcome"] for x in t["shown"]["runs"]] == ["failed", "paused"] and c["build"]["word"] == "沒跑到"
 
 
 def busy_line(started: str) -> dict:
@@ -393,12 +400,13 @@ def test_a_second_ingest_that_found_the_nights_busy_never_hides_it(where):
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     busy = busy_line("2026-11-17T02:30:00+08:00")  # one started by hand while the night's converted
     ingest(where, [busy, run("running", finished=None, step="convert")], SAID[:2])
-    totext = cells(nightly.tonight(where, now=at("2026-11-17T02:35:00")))["totext"]
-    assert totext["state"] == nightly.RUN and "另外跑過 1 次" in totext["tip"]
+    early = nightly.tonight(where, now=at("2026-11-17T02:35:00"))
+    totext = cells(early)["totext"]
+    assert totext["state"] == nightly.RUN and [x["outcome"] for x in early["shown"]["runs"]] == ["running", "busy"]
     ingest(where, [busy, run("swapped")], SAID)  # the night's line comes after the busy one in the history
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     assert [x["state"] for x in t["shown"]["cells"]] == [nightly.DONE] * 5
-    assert t["sentence"]["text"] == "昨晚正常：換了新庫"
+    assert t["sentence"]["text"] == "11-16 夜正常：換了新庫"
 
 
 def test_a_night_with_nothing_but_a_busy_ingest_says_it_did_not_start(where):
@@ -414,8 +422,8 @@ def test_a_manual_ingest_the_morning_after_never_wins_over_the_nights_swap(where
     ingest(where, [run("swapped"), morning], SAID)
     t = nightly.tonight(where, now=at("2026-11-17T11:00:00"))
     c = cells(t)
-    assert c["swap"]["say"] == "換上了" and "另外跑過 1 次" in c["totext"]["tip"]
-    assert t["sentence"]["text"] == "昨晚正常：換了新庫"
+    assert c["swap"]["say"] == "換上了" and [x["outcome"] for x in t["shown"]["runs"]] == ["swapped", "nothing_new"]
+    assert t["sentence"]["text"] == "11-16 夜正常：換了新庫"
 
 
 MANUAL_SAID = [("2026-11-17 02:41:58", "步骤 convert"), ("2026-11-17 02:47:00", "结束：paused"),
@@ -434,18 +442,19 @@ def test_a_night_whose_scheduled_ingest_paused_and_a_manual_one_swapped_shows_th
     c = cells(t)
     assert [x["state"] for x in t["shown"]["cells"]] == [nightly.DONE] * 5 and t["shown"]["state"] == OK
     assert c["build"]["when"] == "04:09 · 14 分鐘" and c["swap"]["say"] == "換上了"
-    note = "排程那次暫停了，03:51 手動再跑一次換上了新庫"
-    assert note in c["totext"]["tip"] and "另外跑過" not in c["totext"]["tip"]
-    assert t["sentence"] == {"state": OK, "text": f"昨晚正常：{note}", "fix": ""}
+    # two runs, each drawn as itself; nothing written about why there were two (spec 八.3)
+    runs = t["shown"]["runs"]
+    assert [(x["run"], x["outcome"], x["shown"]) for x in runs] == [(1, "paused", False), (2, "swapped", True)]
+    assert t["sentence"] == {"state": OK, "text": "11-16 夜正常：換了新庫", "fix": ""}
     # a run by hand the morning after on top: the swap is still the night's; the scheduled one is said, the other counted
     morning = run("nothing_new", step="plan", started="2026-11-17T10:00:00+08:00", finished="2026-11-17T10:01:00+08:00")
     ingest(where, [paused, manual, morning], MANUAL_SAID)
-    c = cells(nightly.tonight(where, now=at("2026-11-17T11:00:00")))
-    assert c["swap"]["say"] == "換上了" and note in c["totext"]["tip"] and "另外跑過 1 次" in c["totext"]["tip"]
+    later = nightly.tonight(where, now=at("2026-11-17T11:00:00"))
+    assert cells(later)["swap"]["say"] == "換上了" and len(later["shown"]["runs"]) == 3
     got = {"state": "ready", "night": "2026-11-16",
            "totals": {"new": 3, "changed": 0, "left": 0, "unexplained": 0, "look": 0, "look_fix": ""}}
     said = nightly.tonight(where, changes=got, now=at("2026-11-17T11:00:00"))["sentence"]
-    assert said == {"state": OK, "text": f"昨晚正常：新進 3 份、離開 0 份；{note}", "fix": ""}
+    assert said == {"state": OK, "text": "11-16 夜正常：新進 3 份、離開 0 份", "fix": ""}
 
 
 def rollback_line(started: str, night: str = "2026-11-16") -> dict:
@@ -457,9 +466,10 @@ def test_a_rollback_after_the_nights_swap_is_found_past_a_later_run_and_on_the_n
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     morning = run("nothing_new", step="plan", started="2026-11-17T10:00:00+08:00", finished="2026-11-17T10:01:00+08:00")
     ingest(where, [run("swapped"), rollback_line("2026-11-17T09:00:00+08:00"), morning], SAID)
-    c = cells(nightly.tonight(where, now=at("2026-11-17T11:00:00")))
+    t = nightly.tonight(where, now=at("2026-11-17T11:00:00"))
+    c = cells(t)
     assert c["swap"]["state"] == nightly.STOP and c["swap"]["say"] == "換上後又退回前一份庫（09:00）"
-    assert "另外跑過 1 次" in c["totext"]["tip"]
+    assert [x["outcome"] for x in t["shown"]["runs"]] == ["swapped", "nothing_new"]
     # rolled back in the afternoon: the line is named the next night, and still undoes this night's swap
     ingest(where, [run("swapped"), rollback_line("2026-11-17T14:00:00+08:00", night="2026-11-17")], SAID)
     swap = cells(nightly.tonight(where, now=at("2026-11-17T15:00:00")))["swap"]
@@ -473,7 +483,7 @@ def test_the_morning_sentence_names_the_worst_stop_not_the_first(where):
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     c = cells(t)
     assert c["crawl"]["sev"] == WARN and c["totext"]["sev"] == BAD
-    assert t["sentence"] == {"state": BAD, "text": "昨晚出錯：轉文字轉 PDF 和 Office 檔的程序出錯（退出碼 1），交給內容（建庫）session",
+    assert t["sentence"] == {"state": BAD, "text": "11-16 夜出錯：轉文字轉 PDF 和 Office 檔的程序出錯（退出碼 1）",
                              "fix": CONTENT}
 
 
@@ -660,15 +670,16 @@ def test_the_first_sentence_counts_what_came_and_left_and_flags_the_unexplained(
     assert t["sentence"]["state"] == BAD and "其中 1 份查不出原因" in t["sentence"]["text"]
     got["totals"] = {**got["totals"], "unexplained": 0}
     t = nightly.tonight(where, changes=got, now=at("2026-11-17T09:00:00"))
-    assert t["sentence"]["state"] == WARN and "4 份可能是我們這邊漏的，交給爬蟲 session" in t["sentence"]["text"]
+    assert t["sentence"]["state"] == WARN and "4 份可能是我們這邊漏的" in t["sentence"]["text"]
     got["totals"] = {**got["totals"], "look": 0}
     t = nightly.tonight(where, changes=got, now=at("2026-11-17T09:00:00"))
-    assert t["sentence"]["text"] == "昨晚正常：新進 3 份、離開 15 份（都有原因）"
+    assert t["sentence"]["text"] == "11-16 夜正常：新進 3 份、離開 15 份（都有原因）"
 
 
 # ---------------------------------------------------------------- the page
 
-def test_the_page_draws_the_night_the_marks_and_the_changes_with_the_unexplained_first(where, two, tmp_path):
+def test_the_home_draws_seven_nights_and_lists_what_left_for_no_reason(where, two, tmp_path):
+    # panels v3: the nights on the night clock (question 2), and under 每晚進出 the documents nobody can explain
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     ingest(where, [run("swapped")], SAID)
     prev, new = (ch.read_library(p) for p in two)
@@ -676,22 +687,29 @@ def test_the_page_draws_the_night_the_marks_and_the_changes_with_the_unexplained
            "prev": {"swapped_at": "2026-11-16T15:03:00+08:00", "docs": 16},
            "new": {"swapped_at": "2026-11-17T03:05:00+08:00", "docs": 4}}
     t = nightly.tonight(where, changes=got, now=at("2026-11-17T09:00:00"))
-    page = pipeline_page.tonight_html(t, got)
-    assert page.count("class='tn-cell'") == 5 and page.count("<a class='tn-n") == 7
-    assert "aria-current='page'" in page and "昨晚變了什麼" in page and "11-16 15:03 換上的庫" in page
-    assert page.index("tn-unx") < page.index("tn-sites")  # 查不出原因 before the sites
-    assert "/check?ref=" + "https%3A%2F%2Fschool.example%2Flost" in page and "/trace?ref=d50" in page
-    computing = pipeline_page.changes_html({"state": "computing"}, t)
-    assert "data-computing" in computing and "計算中" in computing
+    data = tonight_page.timeline_data(t, at("2026-11-17T09:00:00"))
+    # only the nights since the chain went live have a row (owner 11-17): this made-up one went live on 11-16
+    assert len(data["nights"]) == 1 and data["nights"][0]["title"] == "11-16 夜" and data["max"] == 8
+    assert [x["name"] for x in data["nights"][0]["segs"]] == ["爬取", "導出", "轉文字", "建庫", "換庫"]
+    assert {x["tone"] for x in data["nights"][0]["segs"]} == {"done"}  # no hue for a step that is done
+    hist = {"enabled": False, "why": "沒有設定紀錄檔（--ops-db）"}
+    page = tonight_page.flow_section(hist, got, {})
+    assert "查不出原因" in page and "/check?ref=" + "https%3A%2F%2Fschool.example%2Flost" in page
+    assert "沒有在記每晚的紀錄" in page
 
 
 def test_the_page_escapes_what_it_prints(where):
     crawler_log(where, NIGHT[:3], at("2026-11-17T01:30:00"))
     t = nightly.tonight(where, now=at("2026-11-17T01:40:00"))
-    t["shown"]["cells"][0]["say"] = "<b>x</b>"
-    page = pipeline_page.tonight_html(t, {"state": "none", "words": "<i>y</i>"})
-    assert "<b>x</b>" not in page and "&lt;b&gt;x&lt;/b&gt;" in page and "<i>y</i>" not in page
-    assert "data-live" in page and page.count("data-since=") == 2  # the part that runs, and the first sentence
+    t["nights"][-1]["cells"][0]["say"] = "<b>x</b>"
+    t["nights"][-1]["label"] = "<i>y</i>"
+    page = tonight_page.home_body({"steps": []}, t, {"state": "none", "words": "<i>z</i>"},
+                                  {"enabled": False, "why": "<u>w</u>"}, {}, now=at("2026-11-17T01:40:00"))
+    for raw in ("<b>x</b>", "<i>y</i>", "<u>w</u>"):
+        assert raw not in page
+    assert "&lt;i&gt;y&lt;/i&gt;" in page and "&lt;u&gt;w&lt;/u&gt;" in page
+    assert "\\u003cb>x\\u003c/b>" in page  # the chart's JSON: no < from the data reads as markup
+    assert "data-live" in page  # the night runs: the page keeps asking
     later = nightly.tonight(where, now=at("2026-11-17T01:45:00"))
     assert later["sig"] == nightly.tonight(where, now=at("2026-11-17T01:40:00"))["sig"]  # minutes never reload
 
@@ -707,4 +725,7 @@ def test_the_api_and_the_home_carry_tonight(db, tmp_path):
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         brief = client.get("/api/tonight?brief=1").json()
     assert brief["sig"] == data["sig"] and set(brief["changes"]) <= {"state", "words", "keys", "night", "totals"}
-    assert "data-tonight='/api/tonight?brief=1'" in home and home.index("class='tn-say'") < home.index("pl-pipe-head'>")
+    assert "data-tonight='/api/tonight?brief=1'" in home
+    # the five questions in the spec's order (panels v3 三), then the steps' detail folded
+    assert [home.index(f"data-q='{q}'") for q in range(1, 6)] == sorted(home.index(f"data-q='{q}'") for q in range(1, 6))
+    assert "各步驟細節" not in home or home.index("data-q='5'") < home.index("各步驟細節")

@@ -119,22 +119,31 @@ class Where:
 # the columns of the table of sites, in the pipeline's order: (key, header, what it counts: the header's floating card)
 SITE_COLS = (("crawl", "抓到", "爬蟲帳本裡這個網站抓到的網址（還沒抓到的、照規則不抓的另算，滑過去看）"),
              ("export", "導出", "庫用的那份導出清單有幾筆（每筆一個網頁、檔案或圖片）"),
-             ("refill", "舊資料補的", "這一次抓壞或抓到空的、改用以前抓到的那一份補上的筆數（10-24 舊存檔，或每晚更新前一次抓到的）"),
+             ("refill", "舊存檔頂替的", "這一次沒抓好（抓壞或抓到空的）、只能用以前抓到的那一份頂替的筆數（10-24 舊存檔，或每晚更新前一次抓到的）"),
              ("text", "轉成文字", "建庫時這個網站的檔案和網頁有幾個轉成了文字（壓縮檔裡的檔各算一個，可能比導出的行數多）"),
              ("docs", "庫裡文件", "正式庫裡屬於這個網站的文件"),
              ("check", "漏抓的網頁", "網頁核查找到正文區有漏、或整頁沒抓下來的網頁（點網站名，在它那一頁的「網頁核查」看是哪幾頁）"))
 
 
 def cell(where: Where, site: str, col: str, n: int | None, *, state: str = OK, tip: str = "", sub: str = "",
-         why: str = "", name: str = "") -> None:
+         why: str = "", name: str = "", lost: list[tuple[str, str, int]] | None = None,
+         whole: int | None = None) -> None:
     """One number of one site's row; why: a sentence for the row's 要看的地方 when the cell is not normal (it says who
-    fixes it)."""
-    row = where.sites.setdefault(site, {"key": site, "name": "", "cells": {}, "why": [], "worst": OK})
+    fixes it); lost: (key, words, count) of what did not come out at this step, and whole: what this step was to put
+    out, for the site's page (its funnel and its reasons, panels v3 2026-11-17 四.2-四.3). A cell to look at (WARN,
+    BAD) is also one of the row's issues: (col, state, why), so a page can say at which step it is."""
+    row = where.sites.setdefault(site, {"key": site, "name": "", "cells": {}, "why": [], "worst": OK, "issues": []})
     if name and not row["name"]:
         row["name"] = name
     row["cells"][col] = {"n": n, "state": state, "tip": tip, "sub": sub}
+    if lost is not None:
+        row["cells"][col]["lost"] = [list(x) for x in lost]
+    if whole is not None:
+        row["cells"][col]["whole"] = whole
     if why:
         row["why"].append(why)
+    if state in (BAD, WARN):
+        row["issues"].append({"col": col, "state": state, "why": why})
     if state in (BAD, WARN) and WORST.index(state) < WORST.index(row["worst"]):
         row["worst"] = state
 
@@ -619,7 +628,9 @@ def crawl_step(where: Where) -> Step:
         tip = "\n".join(f"{words.get(b, b)}：{n:,}" for b, n in others) or "全部抓到了"
         if (mine := (batch or {}).get(site)) is not None:
             tip += f"\n第二輪這一批另外抓到 {mine.get('got', 0):,} / {sum(mine.values()):,} 個網址（不算在這裡）"
-        cell(where, site, "crawl", per.get("got", 0), tip=tip, sub=f"共 {sum(per.values()):,} 個網址" if others else "")
+        lost = [(b, words.get(b, b), n) for b, n in others if b not in NOT_MEANT and n]
+        cell(where, site, "crawl", per.get("got", 0), tip=tip, sub=f"共 {sum(per.values()):,} 個網址" if others else "",
+             lost=lost, whole=sum(n for b, n in per.items() if b not in NOT_MEANT))
     # the whole of the bar: the addresses this round meant to fetch; what the rules leave out or keep for round two is
     # no loss and is said beside it 【Claude】 (a 63% that was mostly by design misled more than it told)
     left_aside = {b: totals.get(b, 0) for b in NOT_MEANT if totals.get(b)}
@@ -678,7 +689,7 @@ def page_check_cells(where: Where, step: Step) -> None:
     totals, progress = view["totals"], view.get("progress") or {}
     done = "核完" if progress.get("phase") == "done" else f"核了 {progress.get('done', 0):,}/{progress.get('total', 0):,} 頁"
     step.notes.append(f"網頁核查（{done}）：正文區有漏 {totals['gap']:,} 頁、沒抓下來 {totals['nofetch']:,} 頁、"
-                      f"要人看 {totals['check']:,} 頁；照規矩整理後交給爬蟲 session")
+                      f"要人看 {totals['check']:,} 頁")
     for site in view.get("sites") or []:
         lost = (site.get("gap") or 0) + (site.get("nofetch") or 0)
         tip = (f"網頁 {site.get('pages', 0):,} 頁；正文區有漏 {site.get('gap', 0):,}、沒抓下來 {site.get('nofetch', 0):,}、"
@@ -690,6 +701,7 @@ def page_check_cells(where: Where, step: Step) -> None:
 # ------------------------------------------------------------------------------------------------ 導出
 
 FETCHED = "抓到了"  # the export's 结果 for a row the crawler has (nknu.archive.export)
+MISSING_SHOWN = 20  # examples kept of each kind of 缺什么 (the site page's reason lists) 【Claude】
 _manifest_sums: dict[tuple[str, int], dict] = {}  # (manifest path, its time of change) -> its summary
 
 
@@ -707,6 +719,7 @@ def manifest_summary(folder: Path) -> dict:
     kinds: dict[str, int] = {}
     outcomes: dict[str, int] = {}
     missing: dict[str, int] = {}
+    missing_examples: dict[str, list[tuple[str, str]]] = {}  # up to MISSING_SHOWN of each (the site page's lists)
     examples: dict[str, list[tuple[str, str]]] = {}
     paging = files = 0
     refill: dict[str, int] = {}
@@ -720,6 +733,8 @@ def manifest_summary(folder: Path) -> dict:
             examples[result].append((str(r.get("网址") or ""), str(r.get("标题") or "")))
         for part in missing_parts(str(r.get("缺什么") or "")):
             missing[part] = missing.get(part, 0) + 1
+            if len(shown := missing_examples.setdefault(part, [])) < MISSING_SHOWN:
+                shown.append((str(r.get("网址") or ""), str(r.get("标题") or "")))
         if str(r.get("页别") or "") == "列表翻页":
             paging += 1
         if r.get("本地档案"):
@@ -733,7 +748,7 @@ def manifest_summary(folder: Path) -> dict:
                "exported_at": manifest.get("导出时间") or "", "as_of": manifest.get("资料截至") or "",
                "rows": len(rows), "files": files, "kinds": kinds, "outcomes": outcomes, "missing": missing,
                "paging": paging, "refill": refill, "refills": refills,
-               "examples": examples}
+               "examples": examples, "missing_examples": missing_examples}
     _manifest_sums[key] = summary
     while len(_manifest_sums) > 400:  # about three exports a site at most are ever asked about
         _manifest_sums.pop(next(iter(_manifest_sums)))
@@ -793,6 +808,12 @@ def folder_time(folder: Path) -> datetime | None:
         return None
 
 
+def refill_words(before: int, now: int) -> str:
+    """A site's export filling more rows from an older answer than the one in use, as data: the two counts (spec
+    2026-11-17-panels-v3-questions.md 八.1: the numbers, no sentence written for one incident, no one named to fix it)."""
+    return f"用舊存檔頂替的筆數：庫用的導出 {before:,}，新導出 {now:,}"
+
+
 def export_step(where: Where) -> Step:
     """The exports the library was built from (sites.export), each summed up from its manifest, and the crawler's
     newer exports the library has not taken yet (current.tsv against sites.export)."""
@@ -822,7 +843,7 @@ def export_step(where: Where) -> Step:
         except (OSError, ValueError):
             unread.append(key)
             cell(where, key, "export", None, state=WARN, tip=f"讀不到 {folder.name} 的清單", name=name,
-                 why="庫用的那份導出讀不到了（可能被導出服務清掉了；交給內容 session）")
+                 why=f"讀不到庫用的導出清單：{folder.name}")
             continue
         rows += summary["rows"]
         fetched += summary["outcomes"].get(FETCHED, 0)
@@ -846,11 +867,11 @@ def export_step(where: Where) -> Step:
             sub = f"有 {stamp(made.isoformat()) if made else ''} 的新資料，還沒進庫"
             tip.append(f"爬蟲有更新的導出：{new.name}，庫還沒用它")
             if age is not None and age > LATE_EXPORT:
-                state, why = WARN, f"新導出放了 {span(age)} 還沒進庫（交給內容 session 重建，或等每晚進庫）"
+                state, why = WARN, f"新導出放了 {span(age)} 還沒進庫"
                 late.append(key)
         if key in held:
             state = WARN
-            said = f"每晚更新的新導出被攔下（{held[key]}），照舊用前一份導出（{FIXERS[CRAWLER]}）"
+            said = f"新導出被攔下：{held[key]}"
             why = "；".join(x for x in (why, said) if x)
             tip.append(f"新導出被攔下：{held[key]}")
         if key in paused:  # news, not a problem: the row's state stays as it is
@@ -866,9 +887,9 @@ def export_step(where: Where) -> Step:
             except (OSError, ValueError):
                 newer = filled
             if newer > filled:
-                mark, why2 = WARN, f"新導出用舊資料補的從 {filled:,} 筆變成 {newer:,} 筆（最近抓壞的變多；交給爬蟲 session）"
+                mark, why2 = WARN, refill_words(filled, newer)
                 more_refill.append(key)
-        cell(where, key, "refill", filled, state=mark, why=why2, tip=tip2 or "沒有用舊資料補的", name=name)
+        cell(where, key, "refill", filled, state=mark, why=why2, tip=tip2 or "沒有要用舊存檔頂替的", name=name)
     outside = sorted(set(newest) - {s.get("site") for s in facts["sites"]})
     failed = []
     try:
@@ -882,11 +903,11 @@ def export_step(where: Where) -> Step:
     step.flow_words = f"清單共 {rows:,} 筆（每筆一個網頁、檔案或圖片），其中 {with_files:,} 筆存下了檔案"
     step.out = [("筆存下了檔案", with_files)]
     step.lost = [(k, v) for k, v in sorted(missing.items(), key=lambda kv: -kv[1])][:8]
-    step.lost_label = "清單標出的缺漏（一筆可能缺好幾樣）"
+    step.lost_label = "清單上註明缺東西的（一筆可能缺好幾樣）"
     if refill:
-        step.notes.insert(0, f"用舊資料補的 {sum(refill.values()):,} 筆（這一次抓壞或抓到空的）："
+        step.notes.insert(0, f"這次沒抓好、用舊存檔頂替的 {sum(refill.values()):,} 筆："
                           + "、".join(f"{REFILL[k]} {v:,}" for k, v in refill.items()))
-        step.flow_words += f"；其中 {sum(refill.values()):,} 筆抓壞了、用舊資料補上"
+        step.flow_words += f"；其中 {sum(refill.values()):,} 筆這次沒抓好、用舊存檔頂替"
     if outside:
         step.notes.append(f"爬蟲導出了、庫裡還沒有的網站 {len(outside)} 個：" + "、".join(outside[:6]))
     batch = [ln for ln in tail(where.root / EXPORTS / "export.log", 8192) if "这一批结束" in ln]
@@ -897,7 +918,7 @@ def export_step(where: Where) -> Step:
         say += f"；另有 {len(waiting)} 站的新導出等著進庫"
     if more_refill:
         state, fix = WARN, CRAWLER
-        say = f"有 {len(more_refill)} 站的新導出用舊資料補的變多了：" + "、".join(more_refill[:5])
+        say = f"有 {len(more_refill)} 站這次沒抓好、要用舊存檔頂替的變多了：" + "、".join(more_refill[:5])
     if paused:
         say += f"；人工暫緩 {len(paused)} 站"
         step.notes.insert(0, held_words(paused, inline=True, paused=True))
@@ -1152,14 +1173,14 @@ def build_step(where: Where) -> Step:
         for found in flags.values():
             for f in found:
                 kinds[f] = kinds.get(f, 0) + 1
-        step.notes.append(f"有檢查提醒的網站 {len(flags)} 個（長期的，不亮燈）："
+        step.notes.append(f"建庫自己查出問題的網站 {len(flags)} 個（長期的，不亮燈）："
                           + "、".join(f"{FLAG_WORDS.get(k, k)} {v}" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])))
     if not current and flags:
         step.notes.append("每站報告是上一份庫的（換庫後約 35 分鐘才寫好）")
     if current and new:
         state = WARN if state == OK else state
         fix = fix or CONTENT
-        say += "；這次建庫新冒出提醒：" + "、".join(f"{s} {FLAG_WORDS.get(k, k)}" for s, k in new[:5])
+        say += "；這次建庫查出新問題：" + "、".join(f"{s} {FLAG_WORDS.get(k, k)}" for s, k in new[:5])
     new_sites = {s for s, _k in new} if current else set()
     for row in facts["sites"]:
         site, docs = row.get("site") or "", row.get("docs")
@@ -1172,14 +1193,14 @@ def build_step(where: Where) -> Step:
             tip.append(f"正文區讀漏、改讀整頁 {row['under_read']} 份")
         found = flags.get(site) or []
         if found:
-            tip.append("這個網站的檢查提醒：" + "、".join(FLAG_WORDS.get(f, f) for f in found))
+            tip.append("建庫查出這個網站的問題：" + "、".join(FLAG_WORDS.get(f, f) for f in found))
         mark, why = OK, ""
         if not docs:
-            mark, why = WARN, "庫裡一份文件也沒有（交給內容 session 看是學校沒東西還是建庫丟了）"
+            mark, why = WARN, "庫裡 0 份文件"
         elif site in new_sites:
-            mark, why = WARN, "這次建庫新冒出提醒：" + "、".join(FLAG_WORDS.get(k, k) for s, k in new if s == site)
+            mark, why = WARN, "這次建庫查出新問題：" + "、".join(FLAG_WORDS.get(k, k) for s, k in new if s == site)
         cell(where, site, "docs", docs, state=mark, tip="\n".join(tip), why=why, name=row.get("name") or "",
-             sub=f"檢查提醒 {len(found)} 種" if found else "")
+             sub=f"建庫查出的問題 {len(found)} 種" if found else "")
     step.state, step.say, step.fix = state, say, fix
     return step
 
@@ -1463,7 +1484,7 @@ def nightly_step(where: Where) -> Step:
         if status.get(key):
             step.notes.append(f"{label}：" + "、".join(map(str, status[key][:8])))
     if status.get("new_reminders"):
-        step.notes.append("新出現的提醒：" + "、".join(f"{r.get('site')} {FLAG_WORDS.get(r.get('kind'), r.get('kind'))}"
+        step.notes.append("建庫查出的新問題：" + "、".join(f"{r.get('site')} {FLAG_WORDS.get(r.get('kind'), r.get('kind'))}"
                                                 for r in status["new_reminders"][:8] if isinstance(r, dict)))
     if (pipe / "ingest.pause").exists():
         step.notes.append("現在是暫停的（有 ingest.pause）：每晚只轉文字、不換庫")

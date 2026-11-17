@@ -271,11 +271,11 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
         search = client.get("/search")
         page_of_trace = client.get("/trace")
         _settled(client)
-    assert "aria-current='page'>今晚</a>" in home and "action='/search'" not in home
+    assert "aria-current='page'>每晚運行</a>" in home and "action='/search'" not in home
     assert str(search.url).endswith("/try#board") and "data-board='/api/board'" in search.text
-    assert "aria-current='page'>試用</a>" in search.text
+    assert "aria-current='page'>搜尋</a>" in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
-    assert "aria-current='page'>文件</a>" in page_of_trace.text
+    assert "aria-current='page'>找文件</a>" in page_of_trace.text
 
 
 # ---------------------------------------------------------------- a document's dates on one line

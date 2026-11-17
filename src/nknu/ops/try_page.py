@@ -1,4 +1,15 @@
-"""試用 (檢視台 /try): the search service as a student's AI agent sees it, and its tools called as the agent calls them.
+"""搜尋 (檢視台 /try; 試用 until the owner's 「那個不叫"搜索試用"，叫搜索就好」, 11-17): the search service as a
+student's AI agent sees it, and its tools called as the agent calls them.
+
+Since 11-17 evening (spec docs/superpowers/specs/2026-11-17-panels-v3-questions.md 八.7: the page follows the MCP
+tools' own design, read from the service, nothing written here): the tool a question is asked with (search_tool) is the
+page's one form, its first required text parameter a big box, an enum a row of buttons (each option's sentence of the
+description floating over it, the default marked), an integer with a range a small number field, a text parameter
+whose description gives examples in 「」 a box offering the names the service's instructions list beside them
+(suggestions); the tool that reads one result again (follow_up: its one required parameter is a key the results
+carry) has no form of its own: each result card calls it (讀這一份, and a value its description names, as 目錄), and a
+document it returns links each of its sections; any other tool keeps a form of its own, folded. The reply stays on the
+left exactly as the agent receives it.
 
 Design: docs/superpowers/specs/2026-11-17-panels-structure-design.md section 三.1, which the owner approved; owner:
 「真实的user agent看见的东西是什么样的，把他坐在一个网页上 让我尝试用user agent的角度去用这个工具，然后来看具体返回的东西」.
@@ -39,7 +50,7 @@ from nknu.ops.look import e, icon
 from nknu.ops.mcp_client import Exchange, McpClient, Session, approx_tokens
 from nknu.ops.search_page import why_url
 
-PICK, CALL, ARG = "tool", "call", "a."  # the form shown; the tool to call; one argument: a.<its name>
+CALL, ARG = "call", "a."  # the tool to call; one argument: a.<its name>
 SNIP = 180  # characters of a result's text shown on its card before 「全文」 opens the rest 【Claude】
 ID_KEYS = ("id", "url", "doc_id", "ref")  # what a card may be fetched again by, the first a tool takes wins 【Claude】
 KIND_WORDS = (("公告", "notice", 0), ("網頁", "page", 1), ("附件", "attachment", 2), ("行事曆", "event", 3),
@@ -51,7 +62,6 @@ SHOWN = {"rank", "id", "identity", "title", "url", "data_as_of", "dates", "statu
          "background", "parent", "copies", *BODY_KEYS}  # a card's keys drawn on it; any other is listed under it
 TOKEN_TIP = "估算：中文字每字約 1 個 token，其他字元約 3 個算 1 個；實際依各家模型的分詞而定"
 WAIT_WORDS = "服務剛重啟後的第一次要載入模型，約 30 秒"
-CURRENT = " aria-current='true'"
 REQUIRED = "<b class='tr-req'>必填</b>"
 
 
@@ -208,6 +218,8 @@ def arguments(schema: object, params: object) -> dict:
             continue
         value = got[-1]
         if f.control == "select":
+            if f.has_default and str(f.default) == value:  # the default: left out, as an agent leaves it
+                continue
             out[f.name] = next((o for o in f.options if str(o) == value), value)
             continue
         kinds = f.types or ("string",)
@@ -313,7 +325,7 @@ def form_html(tool: dict, values: dict[str, str], *, shown: bool) -> str:
         rows = "<p class='faint small tr-none'>這個工具沒有參數</p>"
     allowed = read_only(tool)
     lock = "" if allowed else " disabled"
-    why = "" if allowed else ("<span class='pill none' data-tip='工具清單沒有把它標成只讀（readOnlyHint）；試用頁只呼叫只讀的工具'>"
+    why = "" if allowed else ("<span class='pill none' data-tip='工具清單沒有把它標成只讀（readOnlyHint）；搜尋頁只呼叫只讀的工具'>"
                               f"{icon('no', 12)}不呼叫</span>")
     return (f"<form class='tr-form' method='get' action='/try#result' data-tool='{e(name)}'"
             f"{'' if shown else ' hidden'}><input type='hidden' name='{CALL}' value='{e(name)}'>"
@@ -322,13 +334,97 @@ def form_html(tool: dict, values: dict[str, str], *, shown: bool) -> str:
             f"<span class='tr-wait' data-wait hidden></span></div></fieldset></form>")
 
 
-def picker_html(tools: list[dict], picked: str) -> str:
-    """The tools as a row of choices (the first is picked on a page that called nothing)."""
-    links = "".join(
-        f"<a href='/try?{e(urlencode({PICK: t['name']}))}#call' data-pick='{e(t['name'])}' "
-        f"data-tip='{e(_first_line(str(t.get('description') or '')))}'"
-        f"{CURRENT if t['name'] == picked else ''}>{e(t['name'])}</a>" for t in tools)
-    return f"<nav class='tr-pick' aria-label='工具'>{links}</nav>"
+def instructions_of(s: Session) -> str:
+    """The service's instructions (initialize), '' without."""
+    return str((s.hello.result or {}).get("instructions") or "")
+
+
+def suggestions(description: str, instructions: str) -> list[str]:
+    """Names to offer for a text parameter whose description gives examples in 「」: the names listed in the
+    paragraphs of the service's instructions that hold one of the examples, read generically (each line's list after
+    its own heading, split at 、；（）：). A parameter whose description gives no example gets none 【Claude】."""
+    examples = re.findall(r"「([^」]{1,30})」", description)
+    if not examples or not instructions:
+        return []
+    names: list[str] = []
+    for block in re.split(r"\n\s*\n", instructions):
+        if not any(x in block for x in examples):
+            continue
+        for line in block.splitlines():
+            body = line.split("：", 1)[1] if "：" in line else ""
+            for word in re.split(r"[、；;（）()：:，,。\s]+", body):
+                word = word.strip()
+                if 2 <= len(word) <= 24 and not re.search(r"[A-Za-z0-9]", word):
+                    names.append(word)
+    return list(dict.fromkeys(names))
+
+
+def option_tip(description: str, option: object) -> str:
+    """The sentence of a parameter's description that is about one of its options (it starts with the option),
+    else the whole description."""
+    for part in re.split(r"(?<=[。；])", description):
+        if part.strip().startswith(str(option)):
+            return part.strip()
+    return description
+
+
+def param_html(f: Field, value: str | None, instructions: str, tool: str) -> str:
+    """One parameter of the search form, as compact as its schema allows: an enum as a row of buttons (its default
+    picked and marked 預設), an integer or a number as a small number field with its range, a text box with the
+    names the instructions list (suggestions), anything else as the general form's field."""
+    label = (f"<span class='tr-k' data-tip-h='{e(f.name)}　{e(type_words(f))}' data-tip='{e(f.description)}'>"
+             f"{e(f.name)}" + (REQUIRED if f.required else "") + "</span>")
+    name = ARG + f.name
+    if f.control == "select":
+        picked = value if value is not None and value != "" else (str(f.default) if f.has_default else "")
+        if not picked and f.required and f.options:
+            picked = str(f.options[0])
+        opts = []
+        if not f.required and not f.has_default:
+            opts.append(f"<label data-tip='不填（服務自己決定）'><input type='radio' name='{e(name)}' value=''"
+                        f"{' checked' if not picked else ''}><span>不填</span></label>")
+        for o in f.options:
+            mark = "<i>預設</i>" if f.has_default and o == f.default else ""
+            opts.append(f"<label data-tip='{e(option_tip(f.description, o))}'><input type='radio' name='{e(name)}' "
+                        f"value='{e(o)}'{' checked' if str(o) == picked else ''}><span>{e(o)}{mark}</span></label>")
+        return f"<div class='sr-p'>{label}<div class='sr-seg' role='radiogroup'>{''.join(opts)}</div></div>"
+    if f.control in ("integer", "number"):
+        lo = f" min='{f.minimum:g}'" if f.minimum is not None else ""
+        hi = f" max='{f.maximum:g}'" if f.maximum is not None else ""
+        step = " step='1'" if f.control == "integer" else " step='any'"
+        default = _shown_default(f)
+        hint = f" placeholder='{e(default)}'" if default and default != "空白" else ""
+        return (f"<div class='sr-p'>{label}<input class='sr-num' type='number' name='{e(name)}' value='{e(value or '')}'"
+                f"{lo}{hi}{step}{hint} inputmode='numeric'></div>")
+    if f.control == "text":
+        names = suggestions(f.description, instructions)
+        listed = f"sr-dl-{tool}-{f.name}"
+        dl = ("<datalist id='" + e(listed) + "'>" + "".join(f"<option value='{e(x)}'>" for x in names)
+              + "</datalist>") if names else ""
+        hint = f" placeholder='{e('、'.join(names[:2]))}…'" if names else ""
+        size = f" maxlength='{f.max_length}'" if f.max_length else ""
+        return (f"<div class='sr-p'>{label}<input class='sr-txt' type='text' name='{e(name)}' value='{e(value or '')}'"
+                + (f" list='{e(listed)}'" if names else "") + f"{hint}{size} autocomplete='off'>{dl}</div>")
+    return field_html(f, value, wide=False)
+
+
+def search_form_html(tool: dict, values: dict[str, str], instructions: str) -> str:
+    """The page's one form: the search tool (search_tool), its question a big box, its other parameters in a row
+    under it (param_html); values: what was sent last, by parameter name."""
+    name = str(tool.get("name"))
+    asked = query_field(tool)
+    fs = fields(tool.get("inputSchema"))
+    q = next((f for f in fs if f.name == asked), None)
+    hint = _first_line(q.description, 40) if q is not None else ""
+    top = (f"<div class='sr-top'><label class='sr-box'>{icon('search', 18)}<input class='sr-q' type='text' "
+           f"name='{e(ARG + asked)}' value='{e(values.get(asked) or '')}' placeholder='{e(hint)}' "
+           f"aria-label='{e(asked)}' data-tip-h='{e(asked)}' data-tip='{e(q.description if q else '')}' required "
+           f"autocomplete='off'></label><button type='submit'>搜尋</button></div>")
+    rest = "".join(param_html(f, values.get(f.name), instructions, name) for f in fs if f.name != asked)
+    return (f"<form class='sr-form card pad' method='get' action='/try#result' data-tool='{e(name)}'>"
+            f"<input type='hidden' name='{CALL}' value='{e(name)}'><fieldset>{top}"
+            + (f"<div class='sr-opts'>{rest}</div>" if rest else "")
+            + "<span class='tr-wait' data-wait hidden></span></fieldset></form>")
 
 
 def _first_line(text: str, n: int = 90) -> str:
@@ -419,7 +515,7 @@ def tool_card(tool: dict) -> str:
     table = (f"<table class='grid tr-params'><tr><th>參數</th><th>類型</th><th>預設</th><th>說明</th></tr>{rows}</table>"
              if rows else "<p class='faint small'>沒有參數</p>")
     ro = ("<span class='tag' data-tip='工具清單標成只讀（readOnlyHint）'>只讀</span>" if read_only(tool)
-          else "<span class='pill none' data-tip='工具清單沒有標成只讀；試用頁不呼叫它'>沒標只讀</span>")
+          else "<span class='pill none' data-tip='工具清單沒有標成只讀；搜尋頁不呼叫它'>沒標只讀</span>")
     return (f"<article class='tr-tool'><header><b class='mono'>{e(tool.get('name'))}</b>"
             + (f"<span class='faint'>{e(title)}</span>" if title and title != tool.get("name") else "")
             + f"{ro}{counts_html(desc)}</header><div class='tr-words'>{e(desc)}</div>{table}</article>")
@@ -441,18 +537,44 @@ def _text_of(result: dict) -> str:
     return "\n\n".join(parts)
 
 
+def reader_key(tool: dict) -> str:
+    """The one required parameter of a tool that reads one thing (a read-only tool with exactly one required
+    parameter), '' for any other."""
+    req = [f.name for f in fields(tool.get("inputSchema")) if f.required]
+    return req[0] if read_only(tool) and len(req) == 1 else ""
+
+
 def follow_up(tools: list[dict], keys: set[str]) -> tuple[str, str] | None:
     """The tool that reads one result again: a read-only tool with exactly one required parameter, named as a key the
-    results carry (ID_KEYS order: id before url). Found in the schemas, never by the tool's name."""
-    for key in ID_KEYS:
+    results carry (ID_KEYS first: id before url; then any other key). Found in the schemas, never by the tool's name."""
+    for key in (*ID_KEYS, *sorted(keys - set(ID_KEYS))):
         if key not in keys:
             continue
         for t in tools:
-            fs = fields(t.get("inputSchema"))
-            req = [f.name for f in fs if f.required]
-            if read_only(t) and req == [key]:
+            if reader_key(t) == key:
                 return str(t["name"]), key
     return None
+
+
+def reader_choices(tool: dict | None) -> list[tuple[str, str, str, str]]:
+    """What a result card offers besides reading the whole: for each optional parameter of the reading tool, every
+    lowercase literal its description names (「填 toc 只看目錄」 → toc), as (parameter, value, label, the clause): the
+    label is 目錄 when the clause says so, else the value itself 【Claude】."""
+    out = []
+    for f in fields((tool or {}).get("inputSchema")):
+        if f.required or f.control not in ("text",):
+            continue
+        for clause in re.split(r"[；;。]", f.description):
+            for value in re.findall(r"(?<![A-Za-z])([a-z][a-z_]{1,15})(?![A-Za-z])", clause):
+                out.append((f.name, value, "目錄" if "目錄" in clause else value, clause.strip()))
+    return list(dict.fromkeys(out))
+
+
+def read_href(tool: str, key: str, value: str, extra: tuple[str, str] | None = None) -> str:
+    args = {CALL: tool, ARG + key: value}
+    if extra:
+        args[ARG + extra[0]] = extra[1]
+    return "/try?" + urlencode(args) + "#result"
 
 
 def _kind(parts: list[str]) -> tuple[str, int, str] | None:
@@ -513,7 +635,8 @@ def link_html(url: str) -> str:
     return f"<div class='tr-url'><span>{e(url)}</span></div>" if url else ""
 
 
-def card_html(r: dict, n: int, *, query: str, follow: tuple[str, str] | None) -> str:
+def card_html(r: dict, n: int, *, query: str, follow: tuple[str, str] | None,
+              choices: list[tuple[str, str, str, str]] = ()) -> str:
     """One result: its place, title, unit, kind, date, address and a snippet of its text, then its whole text and
     the two ways on (read it again; why it ranked here)."""
     rank = r.get("rank") if isinstance(r.get("rank"), int) else n
@@ -536,9 +659,12 @@ def card_html(r: dict, n: int, *, query: str, follow: tuple[str, str] | None) ->
         full = more_words
     acts = []
     if follow and r.get(follow[1]):
-        href = "/try?" + urlencode({CALL: follow[0], ARG + follow[1]: str(r[follow[1]])})
-        acts.append(f"<a class='btn' href='{e(href)}#result' data-tip='等於 agent 接著呼叫 {e(follow[0])}'>"
-                    f"{icon('page', 13)}再查這一份</a>")
+        key = str(r[follow[1]])
+        acts.append(f"<a class='btn' href='{e(read_href(follow[0], follow[1], key))}' "
+                    f"data-tip='等於 agent 接著呼叫 {e(follow[0])}（{e(follow[1])}={e(key)}）'>{icon('page', 13)}讀這一份</a>")
+        for param, value, label, clause in choices:
+            acts.append(f"<a class='btn' href='{e(read_href(follow[0], follow[1], key, (param, value)))}' "
+                        f"data-tip='{e(clause)}（{e(param)}={e(value)}）'>{e(label)}</a>")
     if query and r.get("id"):
         href = why_url(q=query, docs=[str(r["id"])], anchor=f"r-{r['id']}")
         acts.append(f"<a class='btn' href='{e(href)}' data-tip='「為什麼這樣排」：這一份的名次和分數怎麼算出來的'>"
@@ -557,13 +683,16 @@ def _fold(name: str, inner: str, tip: str = "") -> str:
     return f"<details class='fold tr-fold'><summary{t}>{e(name)}</summary><div class='tr-fold-in'>{inner}</div></details>"
 
 
-def answer_html(answer: dict, *, query: str, follow_tools: list[dict]) -> str:
-    """An answer that is JSON, laid out: a search's head and its results as cards; else one document."""
+def answer_html(answer: dict, *, query: str, follow_tools: list[dict],
+                reading: tuple[dict, str, str] | None = None) -> str:
+    """An answer that is JSON, laid out: a search's head and its results as cards; else one document (reading: the
+    tool that read it, doc_html)."""
     results = answer.get("results")
     if isinstance(results, list):
         cards = [r for r in results if isinstance(r, dict)]
         keys = set().union(*(r.keys() for r in cards)) if cards else set()
         follow = follow_up(follow_tools, keys)
+        choices = reader_choices(next((t for t in follow_tools if follow and t.get("name") == follow[0]), None))
         head = []
         if answer.get("found") is False or not cards:
             head.append(f"<span class='pill none'>{icon('dash', 12)}查無資料</span>")
@@ -577,9 +706,9 @@ def answer_html(answer: dict, *, query: str, follow_tools: list[dict]) -> str:
         for k, v in applied.items():
             head.append(f"<span class='tag mono' data-tip='這次用的參數（不是預設的）'>{e(k)}={e(_val(v))}</span>")
         folds = _side_folds(answer, skip={"results", "understood", "applied", "found", "query"})
-        body = "".join(card_html(r, i, query=query, follow=follow) for i, r in enumerate(cards, 1))
+        body = "".join(card_html(r, i, query=query, follow=follow, choices=choices) for i, r in enumerate(cards, 1))
         return f"<div class='tr-ahead'>{''.join(head)}</div>{folds}{body}"
-    return doc_html(answer)
+    return doc_html(answer, reading=reading)
 
 
 def _side_folds(answer: dict, *, skip: set[str]) -> str:
@@ -602,8 +731,10 @@ def _side_folds(answer: dict, *, skip: set[str]) -> str:
     return f"<div class='tr-around'>{''.join(out)}{''.join(folds)}</div>" if out or folds else ""
 
 
-def doc_html(doc: dict) -> str:
-    """One document (a fetch-like answer): who it is, its whole text, its table of contents, the rest."""
+def doc_html(doc: dict, *, reading: tuple[dict, str, str] | None = None) -> str:
+    """One document (a fetch-like answer): who it is, its whole text, its table of contents (each entry that names a
+    value of an optional parameter of the tool that read it a link reading that part: reading is (that tool, its
+    required parameter, the value it was called with)), the rest."""
     if doc.get("found") is False:
         top = f"<span class='pill none'>{icon('dash', 12)}找不到這一份</span>"
     else:
@@ -621,8 +752,19 @@ def doc_html(doc: dict) -> str:
     toc = doc.get("toc")
     toc_html = ""
     if isinstance(toc, list) and toc:
-        toc_html = _fold(f"目錄 {len(toc)}", "<ol class='tr-toc'>" + "".join(
-            f"<li>{e(_val(x) if not isinstance(x, dict) else x.get('title') or _val(x))}</li>" for x in toc) + "</ol>")
+        optional = ({f.name for f in fields(reading[0].get("inputSchema")) if not f.required} if reading else set())
+        items = []
+        for x in toc:
+            words = _val(x) if not isinstance(x, dict) else str(x.get("heading") or x.get("title") or _val(x))
+            part = next((k for k in (x if isinstance(x, dict) else {}) if k in optional), None)
+            if reading and part:
+                href = read_href(str(reading[0]["name"]), reading[1], reading[2], (part, str(x[part])))
+                items.append(f"<li><a href='{e(href)}' data-tip='讀這一節（{e(part)}={e(x[part])}）'>{e(words)}</a></li>")
+            else:
+                items.append(f"<li>{e(words)}</li>")
+        toc_html = _fold(f"目錄 {len(toc)}", "<ol class='tr-toc'>" + "".join(items) + "</ol>")
+        if reading:
+            toc_html = toc_html.replace("<details class='fold tr-fold'>", "<details class='fold tr-fold' open>", 1)
     elif isinstance(toc, str) and toc:
         toc_html = _fold("目錄", f"<div class='tr-words'>{e(toc)}</div>")
     folds = _side_folds(doc, skip=shown)
@@ -699,7 +841,9 @@ def result_html(tool: dict, args: dict, got: Exchange, tools: list[dict]) -> str
     left = (f"<div class='pane'><header>原文{counts_html(text, got.ms)}</header><div class='tr-scroll'>"
             f"{raw_block(text)}{envelope}</div></div>")
     if isinstance(parsed, dict):
-        laid = answer_html(parsed, query=query, follow_tools=tools)
+        key = reader_key(tool)
+        reading = (tool, key, str(args.get(key))) if key and args.get(key) is not None else None
+        laid = answer_html(parsed, query=query, follow_tools=tools, reading=reading)
     else:
         laid = f"<p class='tr-plain'>{e(text)}</p>" if text else "<p class='faint small'>沒有文字</p>"
     if isinstance(result.get("structuredContent"), (dict, list)):
@@ -736,21 +880,17 @@ class TryPage:
                      f"</span><span>搜尋服務：{e(s.hello.error)}</span>"
                      f"<span class='faint mono small'>{e(self.url)}</span>{raw}</section>")
             return self._without_service(body + state, why, board)
-        names = [str(t["name"]) for t in s.tools]
         by_name = {str(t["name"]): t for t in s.tools}
         asker = search_tool(s.tools)
+        others = [t for t in s.tools if t is not asker and not reader_key(t)]
         called = (_all(params, CALL) or [""])[-1] if why is None else ""
-        picked = called if called in names else (_all(params, PICK) or [""])[-1]
-        if why is not None and asker is not None:
-            picked = str(asker["name"])
-        picked = picked if picked in names else (names[0] if names else "")
-        result, values, title, filled = "", {}, "試用", called
+        result, values, title, filled = "", {}, "搜尋", called
         if why is not None:  # the second tab: the question in its tool's box, the explanation under it
             query, inner = why
             result = why_html(query, inner, asker)
             if asker is not None:
                 values, filled = {query_field(asker): query}, str(asker["name"])
-            title = f"{query} · 試用" if query else "試用"
+            title = f"{query} · 搜尋" if query else "搜尋"
         elif called:
             tool = by_name.get(called)
             if tool is None:
@@ -769,16 +909,18 @@ class TryPage:
                         self.busy.release()
                     result = result_html(tool, args, got, s.tools)
                     asked = args.get(query_field(tool)) if query_field(tool) else None
-                    title = f"{asked} · 試用" if isinstance(asked, str) and asked else f"{called} · 試用"
+                    title = f"{asked} · 搜尋" if isinstance(asked, str) and asked else f"{called} · 搜尋"
                 else:
                     result = (f"<section id='result' class='tr-result card pad tr-state'><span class='pill warn'>"
                               f"{icon('warn', 12)}正在查</span><span>另一個查詢還沒查完，查完再送一次</span></section>")
-        forms = "".join(form_html(t, values if t["name"] == filled else {}, shown=t["name"] == picked)
-                        for t in s.tools)
-        call = (f"<section id='call' class='tr-call'><h2 class='sec'>呼叫工具</h2>{picker_html(s.tools, picked)}"
-                f"{forms}</section>" if s.tools else "")
+        ask = (search_form_html(asker, values if filled == asker["name"] else {}, instructions_of(s))
+               if asker is not None else "<section class='card pad tr-state'><span class='pill none'>沒有搜尋的工具"
+               "</span><span>工具清單裡沒有一個只讀、要一段文字的工具</span></section>")
+        forms = "".join(form_html(t, values if t["name"] == filled else {}, shown=True) for t in others)
+        call = (f"<details class='fold tr-others' id='call'{' open' if filled in {t['name'] for t in others} else ''}>"
+                f"<summary class='sec'>其他工具 {len(others)}</summary>{forms}</details>" if others else "")
         idle = "" if called or why is not None else board
-        return title, (body + first_look_html(s, open_=not (called or why is not None)) + call + result + idle + tail)
+        return title, (body + ask + result + call + first_look_html(s, open_=False) + idle + tail)
 
     @staticmethod
     def _without_service(top: str, why: tuple[str, str] | None, board: str) -> tuple[str, str]:
@@ -790,8 +932,8 @@ class TryPage:
                f"<label class='box'>{icon('search', 16)}<input name='q' value='{e(query)}' "
                "placeholder='問一個學生會問的問題，看搜尋怎麼排' aria-label='問題'></label><button>搜尋</button></form>")
         if why is not None:
-            return (f"{query} · 試用" if query else "試用"), top + ask + why_html(query, why[1], None)
-        return "試用", top + ask + board
+            return (f"{query} · 搜尋" if query else "搜尋"), top + ask + why_html(query, why[1], None)
+        return "搜尋", top + ask + board
 
 
 def _keys(params: object) -> list[str]:
@@ -832,12 +974,34 @@ font-weight:600}.tr-h .side{margin-left:auto;font-weight:400}
 .tr-params td:first-child,.tr-params td.tr-def{white-space:nowrap}.tr-params td{font-size:12px;overflow-wrap:break-word}
 .tr-req{margin-left:6px;padding:0 6px;border-radius:6px;background:var(--hover);color:var(--ink);font:650 11px/18px var(--font)}
 
-.tr-call{margin-top:8px;scroll-margin-top:64px}
-.tr-pick{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--line2);border-radius:11px;
+.sr-form{margin:0 0 8px}.sr-form fieldset{border:0;margin:0;padding:0;min-width:0}
+.sr-top{display:flex;gap:10px;align-items:stretch}
+.sr-box{position:relative;flex:1 1 auto;min-width:0;display:flex}
+.sr-box .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--ink3);pointer-events:none}
+.sr-q{flex:1 1 auto;min-width:0;width:100%;padding:13px 16px 13px 42px;border:1px solid var(--line2);border-radius:12px;
+background:var(--surface);font-size:16px}
+.sr-q:focus,.sr-num:focus,.sr-txt:focus{outline:2px solid var(--act);outline-offset:1px}
+.sr-top button{flex:none;padding:0 26px;min-height:48px;border:0;border-radius:12px;background:var(--act);
+color:var(--on-act);font-weight:650;cursor:pointer}.sr-top button:hover{opacity:.88}
+.sr-top button[disabled]{opacity:.5;cursor:default}
+.sr-opts{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 22px;margin-top:14px}
+.sr-p{display:flex;flex-direction:column;gap:5px;min-width:0}
+.sr-seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--line2);border-radius:10px;
 background:var(--surface)}
-.tr-pick a{padding:5px 14px;border-radius:8px;text-decoration:none;font:13px/1.5 var(--mono);color:var(--ink2)}
-.tr-pick a:hover{background:var(--hover);color:var(--ink)}
-.tr-pick a[aria-current]{background:var(--act);color:var(--on-act);font-weight:650}
+.sr-seg label{position:relative;cursor:pointer}
+.sr-seg input{position:absolute;opacity:0;pointer-events:none}
+.sr-seg span{display:block;padding:5px 12px;border-radius:7px;font:13px/1.4 var(--mono);color:var(--ink2)}
+.sr-seg label:hover span{background:var(--hover);color:var(--ink)}
+.sr-seg input:checked+span{background:var(--act);color:var(--on-act);font-weight:650}
+.sr-seg input:focus-visible+span{outline:2px solid var(--act);outline-offset:1px}
+.sr-seg i{font-style:normal;font-size:11px;margin-left:5px;opacity:.75}
+.sr-num{width:96px;padding:7px 10px;border:1px solid var(--line2);border-radius:9px;background:var(--surface);
+font-size:14px;font-variant-numeric:tabular-nums}
+.sr-txt{width:240px;max-width:100%;padding:7px 10px;border:1px solid var(--line2);border-radius:9px;
+background:var(--surface);font-size:14px}
+.tr-others{margin-top:18px}.tr-others>summary{cursor:pointer;list-style:none}
+@media (max-width:640px){.sr-top{flex-direction:column}.sr-top button{min-height:44px}.sr-txt{width:100%}}
+.tr-call{margin-top:8px;scroll-margin-top:64px}
 .tr-form{margin-top:12px}.tr-form[hidden]{display:none}
 .tr-form fieldset{border:0;margin:0;padding:0;min-width:0}
 .tr-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px 14px;align-items:end}
@@ -914,17 +1078,11 @@ gap:2px 10px;padding:6px 0;border-bottom:1px solid var(--line)}.tr-params tr:las
 table.grid.tr-params td{padding:0;border:0}.tr-params td:last-child{grid-column:1/-1;color:var(--ink2)}}
 """
 
-# The page works without the script (every form submits, every link goes); it only shows a tool's form in place, keeps
-# the address saying which, says how long a call has been waiting, and flips a raw block between as-is and indented.
+# The page works without the script (every form submits, every link goes); it only says how long a call has been
+# waiting and flips a raw block between as-is and indented.
 JS = """
 (()=>{
-const forms=[...document.querySelectorAll('form.tr-form')];
-document.querySelectorAll('.tr-pick a[data-pick]').forEach(a=>a.addEventListener('click',ev=>{
-ev.preventDefault();const name=a.getAttribute('data-pick');
-forms.forEach(f=>{f.hidden=f.getAttribute('data-tool')!==name});
-document.querySelectorAll('.tr-pick a').forEach(b=>b.toggleAttribute('aria-current',b===a));
-try{history.replaceState(null,'','/try?tool='+encodeURIComponent(name)+'#call')}catch(_){}
-const box=forms.find(f=>!f.hidden);const i=box&&box.querySelector('input:not([type=hidden]),select,textarea');if(i)i.focus()}));
+const forms=[...document.querySelectorAll('form.tr-form,form.sr-form')];
 let timer=null;
 forms.forEach(f=>f.addEventListener('submit',()=>{const b=f.querySelector('button[type=submit]');
 const w=f.querySelector('[data-wait]');const t0=Date.now();if(b)b.disabled=true;

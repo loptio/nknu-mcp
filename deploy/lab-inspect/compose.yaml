@@ -95,6 +95,8 @@ services:
   # 网页核查读爬虫的账本和 WARC（设计 docs/superpowers/specs/2026-11-16-page-check-design.md 第四节），两个都只读挂载：
   # 账本在磁碟区 nknu-crawl 的 /crawl/archive/frontier.db，WARC 在 D:\nknu-crawl\warc（爬虫看板也是这样挂）。
   # 磁碟区是只读的，账本的 -wal、-shm 不在时程序改用 immutable=1 读（爬虫没在跑时这样读是对的）。
+  # 每晚纪录（面板第三版 2026-11-17，nknu.ops.history）：检视台唯一会写的地方是磁碟区 nknu-ops（/ops/ops.db），
+  # 只挂给 ops；/work、/crawl 照旧只读。加了这个磁碟区以后要 `up -d ops`（restart 不会挂上新的磁碟区）。
   ops:
     <<: *ours
     volumes:
@@ -102,11 +104,14 @@ services:
       - nknu-models:/models:ro
       - nknu-crawl:/crawl:ro
       - D:/nknu-crawl/warc:/crawl/archive/warc:ro
+      - nknu-ops:/ops
     command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
               "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
               "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
               "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
               "--archive", "/crawl/archive",
+              # 每晚纪录：每 5 分钟看一次各晚，跑完的那一晚记一笔（每晚運行、单站页的 14 晚长条读它）
+              "--ops-db", "/ops/ops.db",
               # 「試用」那一页从这里调用 MCP 服务（只读、一次一个；网页不直接连它）
               "--mcp-url", "http://mcp:8766/mcp",
               # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
@@ -126,3 +131,5 @@ volumes:
     external: true
   nknu-crawl:   # 爬虫的存档（只读挂给检视台）
     external: true
+  nknu-ops:     # 检视台自己的每晚纪录（可写，只挂给 ops；第一次 up 时 compose 会建它，名字固定是 nknu-ops）
+    name: nknu-ops

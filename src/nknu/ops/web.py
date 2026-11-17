@@ -25,12 +25,12 @@ first request that needs it, stopped with the app), the site opened last first; 
 come. /check/list, the old entry's list, still answers.
 
 Four entries since the structure design of 2026-11-17 (docs/superpowers/specs/2026-11-17-panels-structure-design.md
-section 二; owner: 「可以按你的建议走吧，不用问我了」), the bar's (nknu/ops/theme/bar.py) 今晚 | 網站 | 試用 | 文件:
+section 二; owner: 「可以按你的建议走吧，不用问我了」), the bar's (nknu/ops/theme/bar.py) 每晚運行 | 網站 | 搜尋 | 找文件:
 - 今晚 is the home, /: tonight's run, last night's changes and the pipeline's steps, and only the sites to look at
   (every site is on 網站, 資料總覽);
 - one site is /site?site=… (nknu.ops.site_page), 網站's page in 檢視台: its steps, its last changes, its 網頁核查 and its
   documents. /pipeline/site?site= and /check?site= come here;
-- 試用 is /try (nknu.ops.try_page): the service as an agent sees it, and on its second tab (?tab=why) 搜尋測試's
+- 搜尋 is /try (nknu.ops.try_page): the service as an agent sees it, and on its second tab (?tab=why) 搜尋測試's
   explanation of the same question; with nothing asked, the scoreboard. /search comes here with what it was asked;
 - 文件 is /doc (nknu.ops.doc_page): one box that finds documents and archived pages, and the school's 網頁核查. /trace
   and /check with nothing or with words come here; a document's trace (/trace?ref=<id or address>) and one page's
@@ -53,7 +53,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -65,7 +65,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
-from nknu.ops import nightly, pagecheck
+from nknu.ops import history, nightly, pagecheck
 from nknu.ops.board import Board
 from nknu.ops.changes import Changes
 from nknu.ops.check_page import check_body, empty_raw
@@ -75,12 +75,13 @@ from nknu.ops.explain import explain_search
 from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
 from nknu.ops.pipeline import Pipeline, Where, site_detail
-from nknu.ops.pipeline_page import changes_title, pipeline_body, sites_html, tonight_html
+from nknu.ops.pipeline_page import changes_title
 from nknu.ops.search_page import board_html, search_body, why_head
 from nknu.ops.site_page import Kinds, now_line
 from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
 from nknu.ops.theme import bar as theme
+from nknu.ops.tonight_page import home_body, night_departures
 from nknu.ops.trace import WITHIN, site_exports, trace
 from nknu.ops.trace_page import FOUND_MAX, MARKUP, trace_body, trace_form
 from nknu.ops.try_page import TryPage
@@ -253,7 +254,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                today_fn: Callable[[], date] = today_tpe, code_root: Path | None = None,
                pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "",
                archive: Path | None = None, watch: tuple[tuple[str, str, str], ...] = (),
-               mcp_url: str = "") -> Starlette:
+               mcp_url: str = "", ops_db: Path | None = None, record: bool = True) -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
     browser reaches the archive viewer ('' : no link); questions and gold: load_questions; config: the search's
     settings (None: the server's); models: embedder and reranker in place of the process's shared ones (tests);
@@ -261,7 +262,9 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     source (default: root / src), compared by install_state; overview_url and tables_url: where the owner's browser
     reaches 资料总览 and Datasette (流水線 links them; the top bar's addresses are nknu/ops/theme/panels.json); archive: the
     crawler's archive folder (frontier.db and its WARC files) 網頁核查 reads, None: the page says it is not mounted;
-    watch: the services 流水線 asks whether they answer, (name, address from this process, how: 'mcp' or 'http')."""
+    watch: the services 流水線 asks whether they answer, (name, address from this process, how: 'mcp' or 'http');
+    ops_db: the nights' record this service keeps (nknu.ops.history; None: not kept, the pages say so); record: whether
+    its background thread runs (tests call app.state.recorder.tick themselves)."""
     db_path, root = Path(db_path), Path(root)
     code_root = Path(code_root) if code_root is not None else REPO_ROOT
     pipeline_src = Path(pipeline_src) if pipeline_src is not None else root / "src"
@@ -347,7 +350,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     where = Where(root=root, db=db_path, archive=archive, services=tuple(watch),
                   board=lambda: scores.snapshot(start=False), sweep=sweep_overview, today=today_fn)
     flow = Pipeline(where)
-    # where a step's links go by their short names: the scoreboard is on 試用, the school's 網頁核查 on 文件
+    # where a step's links go by their short names: the scoreboard is on 搜尋, the school's 網頁核查 on 文件
     panels = {"overview": overview_url, "board": "/try#board", "check": "/doc", "tables": tables_url,
               "crawl": f"{viewer_url}/progress" if viewer_url else ""}
     every_site = theme.entry_href("sites", "ops")  # 網站, the one list of every site (資料總覽)
@@ -356,20 +359,41 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     # 今晚 and 昨晚變了什麼 on top of the home (structure design 2026-11-17 三.2-三.4; nknu.ops.nightly, changes): the
     # night read on every request (small files), the two libraries compared in the background
     night_changes = Changes(where.library, root)
+    # 每晚紀錄 (panels v3 2026-11-17 一): the one file this service writes, never under /work or /crawl
+    store = history.Store(ops_db, forbidden=(root, archive))
+    recorder = history.Recorder(store, where, changes=night_changes, kinds=kinds)
 
     def tonight_now(request: Request) -> tuple[dict, dict]:
         changes = night_changes.snapshot()
         return nightly.tonight(where, night=request.query_params.get("night"), changes=changes), changes
 
+    def tonight_night(night: dict) -> date:
+        """The night 今晚 ends on: the one now is in (nightly.night_of)."""
+        return nightly.night_of(datetime.fromisoformat(night["now"]))
+
+    def labels_of(night: dict) -> dict[str, str]:
+        return {x["night"]: x["label"] for x in night.get("nights") or [] if x.get("label")}
+
     def home(request: Request) -> Response:
+        """今晚 (nknu.ops.tonight_page): five sections, each one of the owner's questions (panels v3 2026-11-17 三)."""
         snap = flow.snapshot(fresh=request.query_params.get("fresh") == "1")
         night, changes = tonight_now(request)
+        hist = history.home_history(store, tonight_night(night))
+        body = home_body(snap, night, changes, hist, panels, every_site)
         conn = connect(db_path)
         try:
-            return shell("今晚 · 檢視台", pipeline_body(snap, panels, sites_html(snap, every_site),
-                                                     tonight_html(night, changes)), db_info(conn), tab="tonight")
+            return shell("每晚運行 · 檢視台", body, db_info(conn), tab="tonight")
         finally:
             conn.close()
+
+    def history_api(request: Request) -> Response:
+        """The nights' record as data: the fourteen nights 今晚 draws, or one site's (?site=)."""
+        night, _changes = tonight_now(request)
+        today = tonight_night(night)
+        site = request.query_params.get("site", "").strip()
+        got = history.site_history(store, site, today) if site else history.home_history(store, today)
+        return JSONResponse({**got, "recorder": recorder.last, "file": str(store.path or "")},
+                            headers={"Cache-Control": "no-store"})
 
     def tonight_api(request: Request) -> Response:
         """今晚 as data: the night shown (?night=YYYY-MM-DD, else the default one), the last seven nights, the first
@@ -409,12 +433,15 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         lib = (detail or {}).get("site") or {}
         named = ((view or {}).get("site") or {})
         name = lib.get("name") or (row or {}).get("name") or named.get("name") or (mine or {}).get("name") or key
+        reasons = changes.get("reasons") or {}
         body = one_site_body(
             key, name=name, unit=lib.get("unit") or "", home=named.get("home") or "",
-            now=now_line(row, mine, changes.get("reasons") or {}, read=bool(snap.get("steps"))),
+            now=now_line(row, mine, reasons, read=bool(snap.get("steps"))),
             detail=detail, changes=changes, changes_title=changes_title(changes, night), view=view,
             archive=sw is not None, kinds=None if counted is None else counted.get(key, {}),
-            tables=tables)
+            tables=tables, row=row,
+            hist=history.site_history(store, key, tonight_night(night)), labels=labels_of(night),
+            departures=night_departures(night))
         return shell(f"{name} · 檢視台", body, info, tab="sites")
 
     def pipeline_site(request: Request) -> Response:
@@ -426,7 +453,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                             headers={"Cache-Control": "no-store"})
 
     def search_page(request: Request) -> Response:
-        """Moved: 搜尋測試 is 試用's second tab (/try?tab=why…), with what it was asked; asked nothing, 試用 itself (its
+        """Moved: 搜尋測試 is 搜尋's second tab (/try?tab=why…), with what it was asked; asked nothing, 搜尋 itself (its
         scoreboard)."""
         p = request.query_params
         kept = [(k, v) for k in ("qid", "q", "doc", "limit") for v in p.getlist(k)]
@@ -435,7 +462,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return moved("/try", [("tab", "why"), *kept], "result")
 
     def why_of(request: Request, conn: sqlite3.Connection) -> tuple[str, str] | None:
-        """試用's second tab, when asked for (?tab=why with a question or a test question): (the question, search_page's
+        """搜尋's second tab, when asked for (?tab=why with a question or a test question): (the question, search_page's
         explanation of it on the library, under the test questions' picker and the box for documents to follow)."""
         if request.query_params.get("tab") != "why":
             return None
@@ -469,7 +496,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             if not ref or (resolve(conn, ref).doc_id is None and not as_address(ref)):
                 return moved("/doc", [("q", ref)])
             body = trace_form(ref, focus=False) + trace_body(traced(conn, ref), viewer_url, today_fn())
-            return shell(f"{ref} · 文件", body, db_info(conn), tab="doc")
+            return shell(f"{ref} · 找文件", body, db_info(conn), tab="doc")
         finally:
             conn.close()
 
@@ -494,7 +521,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             sw = swept()
             inner = doc_found(conn, q) if q else school_html(sw.overview() if sw is not None else None,
                                                              archive=sw is not None)
-            return shell(f"{q} · 文件" if q else "文件 · 檢視台", doc_body(q, inner), db_info(conn), tab="doc")
+            return shell(f"{q} · 找文件" if q else "找文件 · 檢視台", doc_body(q, inner), db_info(conn), tab="doc")
         finally:
             conn.close()
 
@@ -732,6 +759,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/api/board", guarded(board_api, True), methods=["GET"]),
               Route("/api/pipeline", guarded(pipeline_api, True), methods=["GET"]),
               Route("/api/tonight", guarded(tonight_api, True), methods=["GET"]),
+              Route("/api/history", guarded(history_api, True), methods=["GET"]),
               Route("/pipeline/site", guarded(pipeline_site, False), methods=["GET"]),
               Route("/file", guarded(original, True), methods=["GET"]),
               Route("/check", guarded(check_panel, False), methods=["GET"]),
@@ -744,12 +772,12 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/api/check", guarded(check_api, True), methods=["GET"]),
               Route("/api/check/sweep", guarded(sweep_api, True), methods=["GET"])]
 
-    # 試用 (nknu.ops.try_page; structure design 2026-11-17 section 三.1): the search service as a student's AI agent
+    # 搜尋 (nknu.ops.try_page; structure design 2026-11-17 section 三.1): the search service as a student's AI agent
     # sees it, called from here through mcp_url ('' : the page says it is not set)
     trying = TryPage(mcp_url)
 
     def try_view(request: Request) -> Response:
-        """試用: the service called as an agent calls it; its second tab, 搜尋測試's explanation (why_of); with nothing
+        """搜尋: the service called as an agent calls it; its second tab, 搜尋測試's explanation (why_of); with nothing
         asked, the scoreboard of the test questions under the forms."""
         conn = connect(db_path)
         try:
@@ -765,22 +793,27 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette):
-        """The sweep's thread is stopped with the app, so the container stops cleanly."""
+        """The nights' recorder starts with the app; it and the sweep's thread are stopped with it, so the container
+        stops cleanly."""
+        if record:
+            recorder.start()
         try:
             yield
         finally:
+            await run_in_threadpool(recorder.close)
             if sweep is not None:
                 await run_in_threadpool(sweep.close)
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.sweep = sweep
     app.state.kinds = kinds
+    app.state.store, app.state.recorder = store, recorder
     app.add_middleware(LocalOnly)
     return app
 
 
 def mcp_url_of(given: str, watch: list[tuple[str, str, str]] | tuple = ()) -> str:
-    """The service 試用 calls: --mcp-url, else the first --watch entry watched as 'mcp', else '' (not set)."""
+    """The service 搜尋 calls: --mcp-url, else the first --watch entry watched as 'mcp', else '' (not set)."""
     return given.strip() or next((url for _name, url, how in watch if how == "mcp"), "")
 
 
@@ -805,8 +838,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="流水线页要问「有没有回应」的服务（从这个程序连得到的网址），可以给好几次。方式：mcp（握手，"
                          "每小时真的搜一次）、datasette（看它开着的库是不是正式库）、overview（资料总览的 /stamp）、"
                          "http（只看有没有回应）")
+    ap.add_argument("--ops-db", default="",
+                    help="每晚纪录的档（检视台自己写的小资料库；实验室是 /ops/ops.db，磁碟区 nknu-ops）；不给或写不进去时，"
+                         "页面照常、只说没有在记")
     ap.add_argument("--mcp-url", default="",
-                    help="「試用」那一页调用的搜索服务（MCP）网址，从这个程序连得到的（实验室是 http://mcp:8766/mcp）；"
+                    help="「搜尋」那一页调用的搜索服务（MCP）网址，从这个程序连得到的（实验室是 http://mcp:8766/mcp）；"
                          "不给就用 --watch 里方式是 mcp 的那一个，都没有就是那一页说没有设定")
     add_model_flags(ap)
     args = ap.parse_args(argv)
@@ -825,7 +861,8 @@ def main(argv: list[str] | None = None) -> int:
     app = create_app(args.db, args.root, viewer_url=args.viewer_url, questions=args.questions, gold=args.gold,
                      overview_url=args.overview_url, tables_url=args.tables_url,
                      config=config_from(args), archive=Path(args.archive) if args.archive else None,
-                     watch=tuple(watch), mcp_url=mcp_url_of(args.mcp_url, watch))
+                     watch=tuple(watch), mcp_url=mcp_url_of(args.mcp_url, watch),
+                     ops_db=Path(args.ops_db) if args.ops_db else None)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

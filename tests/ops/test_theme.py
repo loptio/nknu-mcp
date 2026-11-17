@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from nknu.ops import check_page, check_sites, doc_page, look, pipeline_page, site_page
+from nknu.ops import check_page, check_sites, doc_page, look, pipeline_page, site_page, tonight_page
 from nknu.ops.theme import bar
 
 REPO = Path(__file__).resolve().parents[2]
@@ -18,6 +18,9 @@ SHEETS = {
     "look.py": look.CSS,
     "pipeline_page.py": pipeline_page.CSS,
     "site_page.py": site_page.CSS,  # the four entries' new pages (structure design 2026-11-17 section 二)
+    "tonight_page.py": tonight_page.CSS,  # panels v3 (2026-11-17): 今晚
+    # the charts' card and script, whole: its drawings read every colour from theme.css when they draw
+    "charts.py": (REPO / "src/nknu/ops/charts.py").read_text(encoding="utf-8"),
     "doc_page.py": doc_page.CSS,
     "check_page.py": (REPO / "src/nknu/ops/check_page.py").read_text(encoding="utf-8"),
     "check_sites.py": (REPO / "src/nknu/ops/check_sites.py").read_text(encoding="utf-8"),
@@ -86,8 +89,8 @@ def _entries(html: str) -> list[str]:
 def test_the_bar_has_four_entries_and_a_tools_menu_and_links_its_own_host_by_path():
     # structure design 2026-11-17 section 二: 今晚 | 網站 | 試用 | 文件, and 資料庫, 爬蟲進度 in the 工具 menu
     html = bar.bar("try", "ops", "資料截至 x")
-    assert _entries(html) == ["今晚", "網站", "試用", "文件"]
-    assert "aria-current='page'>試用</a>" in html and html.count("aria-current") == 1
+    assert _entries(html) == ["每晚運行", "網站", "搜尋", "找文件"]
+    assert "aria-current='page'>搜尋</a>" in html and html.count("aria-current") == 1
     assert "href='/'" in html and "href='/try'" in html and "href='/doc'" in html  # its own host's: by path
     assert "href='http://127.0.0.1:18879/'" in html  # 網站 is 資料總覽, its own server
     menu = html.split("<details class='nk-tools'>", 1)[1].split("</details>", 1)[0]
@@ -121,6 +124,6 @@ def test_the_overview_server_puts_the_theme_and_the_bar_on_its_page():
     spec.loader.exec_module(server)
     page = server.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
     assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>網站</a>" in page
-    assert _entries(page) == ["今晚", "網站", "試用", "文件"] and "<details class='nk-tools'>" in page
+    assert _entries(page) == ["每晚運行", "網站", "搜尋", "找文件"] and "<details class='nk-tools'>" in page
     # its links to a site's page and to 資料庫 come from panels.json, as the bar's do
     assert '"site": "http://127.0.0.1:18878/site?site="' in page and '"tables": "http://127.0.0.1:18001"' in page

@@ -1,5 +1,5 @@
 {
-  "_": "The panels' top bar (nknu/ops/theme/bar.py): every page of every panel shows the four entries of pages, in this order, and the 工具 menu of tools at its right end. hosts are the addresses on the owner's Mac (scripts/inspect-tunnel.sh); a page links an entry of its own host by path alone. site is where one site's page is (網站's list and 資料庫's sites link to it). Four entries and a menu: structure design 2026-11-17 section 二 (owner: 「可以按你的建议走吧，不用问我了」); redesign 2026-11-17 【Claude】.",
+  "_": "The panels' top bar (entries renamed 2026-11-17 on the owner's 「一个页面叫\"今晚\"你觉得合理吗」: 每晚運行 | 網站 | 搜尋 | 找文件, picked with a cold reader; 搜尋試用 became 搜尋 on the owner's 「叫搜索就好」) (nknu/ops/theme/bar.py): every page of every panel shows the four entries of pages, in this order, and the 工具 menu of tools at its right end. hosts are the addresses on the owner's Mac (scripts/inspect-tunnel.sh); a page links an entry of its own host by path alone. site is where one site's page is (網站's list and 資料庫's sites link to it). Four entries and a menu: structure design 2026-11-17 section 二 (owner: 「可以按你的建议走吧，不用问我了」); redesign 2026-11-17 【Claude】.",
   "hosts": {
     "ops": "http://127.0.0.1:18878",
     "overview": "http://127.0.0.1:18879",
@@ -7,10 +7,10 @@
     "crawler": "http://127.0.0.1:18877"
   },
   "pages": [
-    {"key": "tonight", "name": "今晚", "host": "ops", "path": "/", "tip": "現在正不正常、今晚跑到哪一步、昨晚變了什麼"},
-    {"key": "sites", "name": "網站", "host": "overview", "path": "/", "tip": "每個網站收了多少、缺什麼；點網站名看它從抓取到進庫的全部"},
-    {"key": "try", "name": "試用", "host": "ops", "path": "/try", "tip": "像學生的 AI 一樣呼叫搜尋服務：它收到什麼、為什麼這樣排、33 題的成績"},
-    {"key": "doc", "name": "文件", "host": "ops", "path": "/doc", "tip": "找一份文件或一個網頁：它從抓取到搜尋的每一步、存檔裡的樣子"}
+    {"key": "tonight", "name": "每晚運行", "host": "ops", "path": "/", "tip": "每晚從爬取到換庫跑得正不正常、各步花多久、要你處理什麼"},
+    {"key": "sites", "name": "網站", "host": "overview", "path": "/", "tip": "每個網站收了多少、缺什麼；點網站名看它從抓取到進庫的每一步"},
+    {"key": "try", "name": "搜尋", "host": "ops", "path": "/try", "tip": "像學生的 AI 一樣搜尋：它收到什麼、為什麼這樣排、33 題的成績"},
+    {"key": "doc", "name": "找文件", "host": "ops", "path": "/doc", "tip": "一份文件或網頁從抓取到搜尋的每一步、存檔裡的樣子"}
   ],
   "tools": [
     {"key": "tables", "name": "資料庫", "host": "tables", "path": "/", "tip": "庫裡的每張表：篩選、找網站、看沒日期的原因"},

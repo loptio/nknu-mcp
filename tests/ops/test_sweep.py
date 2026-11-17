@@ -365,7 +365,7 @@ def test_the_entry_is_the_doc_pages_school_numbers_and_its_sites_are_on_their_ow
     # structure design 2026-11-17 section 二: 網頁核查's entry is 文件's (its four numbers and the school's lists); its
     # table of sites went to each site's page (/site), so one list of sites is left (網站)
     page = client.get("/check")
-    assert page.status_code == 200 and str(page.url).endswith("/doc") and "aria-current='page'>文件</a>" in page.text
+    assert page.status_code == 200 and str(page.url).endswith("/doc") and "aria-current='page'>找文件</a>" in page.text
     tree = LexborHTMLParser(page.text)
     assert not tree.css("a.srow") and tree.css_first("h2.sec").text() == "全校網頁核查"
     assert "已核查 8 頁" in page.text and "正文區有漏" in page.text and "選單沒抓到" in page.text
@@ -708,7 +708,7 @@ def test_the_deciding_numbers_are_four_tiles_never_a_line_joined_by_dots(client)
     assert "class='ck-fig z'" in zero and "class='ck-fig'" in zero  # a 0 is faint, a count violet
     running = summary_line({"phase": "checking", "running": True, "ready": True, "done": 1, "total": 4},
                            {"pages": 4, "checked": 1, "gap": 1})
-    assert "核查中 1 / 4 頁" in running and "class='prog'" in running and "class='ck-figs'" in running
+    assert "正在逐頁核查 1 / 4 頁" in running and "class='prog'" in running and "class='ck-figs'" in running
     nothing = summary_line({"phase": "checking", "running": True, "ready": True, "done": 0, "total": 4},
                            {"pages": 4, "checked": 0})
     assert "ck-fig" not in nothing  # nothing checked yet: no 0 that reads as 「nothing missed」
@@ -753,19 +753,23 @@ def test_one_sites_page_holds_everything_about_it_in_order(client):
     head = tree.css_first(".st-head h1")
     assert head.text() == "教務處" and ACA in head.attributes["data-tip"] and HOME in head.attributes["data-tip"]
     assert tree.css_first(".st-now").attributes["aria-label"] == "這個網站現在" and tree.css_first(".st-now .pill")
-    heads = [(h.attributes.get("id"), h.text().strip()) for h in tree.css("h2.st-sec")]
-    assert [i for i, _ in heads] == ["steps", "changes", "check", "docs"]
-    assert heads[0][1] == "處理流程" and heads[2][1].startswith("網頁核查") and heads[3][1] == "文件"
+    # panels v3 四: the five questions in order, then the steps' detail folded, then 網頁核查 at the bottom
+    assert tree.css_first("header.st-head").attributes["data-q"] == "1"
+    secs = [(x.attributes["id"], x.attributes["data-q"], x.css_first("h2").text().strip()) for x in tree.css("section.st-q")]
+    assert secs == [("flow", "2", "整體流程（累計）"), ("reasons", "3", "丟掉的原因"), ("docs", "4", "文件"),
+                    ("changes", "5", "最近幾晚")]
+    text = page.text
+    assert text.index("id='changes'") < text.index("各步驟細節") < text.index("<h2 class='sec st-sec' id='check'>網頁核查")
     assert "沒有前一份庫可以比" in page.text  # the last swap's comparison says why it has nothing to show
     assert tree.css_first("#chk-site").attributes["data-path"] == "/site"  # its 網頁核查, kept on this page
-    kinds = [li.text() for li in tree.css(".st-kinds li")]
+    kinds = [tr.text() for tr in tree.css("table.st-kinds tbody tr")]
     assert any(k.startswith("公告") for k in kinds) and kinds[-1].startswith("合計")
     links = {a.text(): a.attributes["href"] for a in tree.css(".st-links a")}
     assert links["沒日期的原因"] == "http://127.0.0.1:18001/aca/site_undated_why?site=c.nknu.edu.tw%2Faca"
     assert links["全部文件"].endswith("/aca/site_docs?site=c.nknu.edu.tw%2Faca")
     assert client.get("/site", params={"site": "nowhere.example"}).status_code == 404
     old = client.get("/pipeline/site", params={"site": ACA})
-    assert str(old.url).endswith("/site?site=c.nknu.edu.tw%2Faca") and "處理流程" in old.text
+    assert str(old.url).endswith("/site?site=c.nknu.edu.tw%2Faca") and "id='flow'" in old.text
 
 
 def test_the_doc_box_finds_documents_pages_and_sites_and_says_which_is_which(client):

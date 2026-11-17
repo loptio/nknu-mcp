@@ -511,7 +511,8 @@ def shell(title: str, body: str, db: dict, status: int = 200, *, tab: str = "") 
     hover = "\n".join(x for x in (
         f"正式庫 {built} 建好" + (f"（{db['schema']}）" if db.get("schema") else ""),
         f"檢視台的程式 {state['installed'][:16].replace('T', ' ')} 裝" if state else "") if x)
-    meta = f"<span data-tip='{e(hover)}'>資料截至 {e(built)}</span>" if built else ""
+    # 庫建於, not 資料截至: beside a section's 「頁面更新」 a cold reader took two times for one (the lab, 11-17)
+    meta = f"<span data-tip='{e(hover)}'>庫建於 {e(built[5:])}</span>" if built else ""
     note = ""
     if state and state["drift"]:
         some = "、".join(state["drift"][:3]) + (" 等" if len(state["drift"]) > 3 else "")

@@ -14,7 +14,7 @@ from typing import ClassVar
 
 import pytest
 
-from nknu.ops import pipeline, pipeline_page
+from nknu.ops import pipeline, pipeline_page, tonight_page
 from nknu.ops.pipeline import BAD, CONTENT, INTERFACE, NONE, OK, PANEL, WARN, Pipeline, Step, Where
 
 TODAY = date(2026, 11, 16)
@@ -283,16 +283,21 @@ def test_the_snapshot_is_kept_and_read_again_when_old(where):
     assert len(calls) == 2
 
 
+TONIGHT = {"now": "2026-11-17T09:00:00+08:00", "default": "2026-11-16", "nights": [], "live": False, "sig": "x",
+           "sentence": {"state": "ok", "text": "昨晚正常：換了新庫", "fix": ""}}
+
+
 def test_the_page_draws_every_step_and_escapes_what_it_prints(where):
     step = Step("x", "某一步", "做<某事>", state=WARN, say="<b>壞</b>", fix=CONTENT,
                 into=[("份", 3)], out=[("份", 2)], lost=[("理由<i>", 1)], more=[("看細節", "overview")])
     snap = {"at": "2026-11-16T19:00:00+08:00", "took": "1 秒", "state": WARN, "say": "有 1 處要看：某一步",
             "steps": [asdict_(step)], "running": False}
-    page = pipeline_page.pipeline_body(snap, {"overview": "http://127.0.0.1:18879"})
+    page = tonight_page.home_body(snap, TONIGHT, None, {"enabled": False, "why": ""}, {"overview": "http://127.0.0.1:18879"})
     assert "&lt;b&gt;壞&lt;/b&gt;" in page and "<b>壞</b>" not in page and "理由&lt;i&gt;" in page
-    assert "交給內容（建庫）session" in page and "http://127.0.0.1:18879" in page
-    assert "data-state='warn'" in page and "有 1 處要看：某一步" in page
-    assert "讀取中" in pipeline_page.pipeline_body({"steps": [], "running": True}, {})
+    assert "交給" not in page and "http://127.0.0.1:18879" in page  # nobody named to fix it (spec 八.2)
+    assert "data-state='warn'" in page and "#step-x'>某一步</a>" in page  # a step not normal is a problem
+    reading = tonight_page.home_body({"steps": [], "running": True}, TONIGHT, None, {"enabled": False}, {})
+    assert "正在讀每一步的紀錄" in reading and "location.replace" in reading
 
 
 def asdict_(step: Step) -> dict:
@@ -301,24 +306,26 @@ def asdict_(step: Step) -> dict:
 
 
 def test_the_home_lists_only_the_sites_to_look_at_and_leads_to_every_site():
-    # one list of every site, on 網站 (structure design 2026-11-17 section 二): the home keeps the ones to look at
+    # 要處理的網站 (panels v3 三.5): what, at which step, who; the most urgent first; every site is on 網站
     snap = {"site_cols": [("docs", "文件", "庫裡的文件")],
             "sites": [{"key": "a.example", "name": "甲處", "q": "甲处 甲處 a.example", "worst": WARN,
                        "href": "/site?site=a.example",
                        "cells": {"docs": {"n": 0, "state": WARN, "tip": "導出有 3 行，庫裡 0 份"}},
-                       "why": ["導出有東西，庫裡沒有"]},
+                       "why": ["庫裡一份文件也沒有（交給內容 session 看是學校沒東西還是建庫丟了）"]},
                       {"key": "b.example", "name": "乙處", "q": "乙处 b.example", "worst": OK,
                        "cells": {"docs": {"n": 12}}, "why": []}]}
-    html = pipeline_page.sites_html(snap, "http://127.0.0.1:18879/")
-    assert "甲處" in html and "乙處" not in html and "要留意的網站<span class='faint'>1</span>" in html
-    assert "href='http://127.0.0.1:18879/'" in html and "全部 2 個網站 →" in html and "id='sitefind'" not in html
+    rows = tonight_page.handle_rows(snap, None)
+    assert [r["key"] for r in rows] == ["a.example"]
+    assert rows[0]["issues"] == [{"sev": WARN, "what": "庫裡一份文件也沒有（看是學校沒東西還是建庫丟了）", "step": "建庫"}]
+    html = tonight_page.sites_section(rows, "http://127.0.0.1:18879/", False)
+    assert "甲處" in html and "乙處" not in html and "data-q='5'" in html
+    assert "href='http://127.0.0.1:18879/'" in html and "全部網站 →" in html
     assert "<a href='/site?site=a.example' data-tip='a.example'>甲處</a>" in html
-    calm = pipeline_page.sites_html({**snap, "sites": snap["sites"][1:]}, "http://127.0.0.1:18879/")
-    assert "沒有要留意的網站" in calm and "全部 1 個網站 →" in calm
-    # one number per cell; a step to look at is a small mark with an icon, never a coloured number (redesign 11-17)
-    assert "<td data-v='0' data-tip='導出有 3 行，庫裡 0 份'><span class='pl-m warn'" in html and "<svg" in html
-    assert "class='warn'" not in html
-    assert pipeline_page.sites_html({"sites": [], "site_cols": []}) == ""
+    assert "<td>建庫</td></tr>" in html and "交給" not in html and "<svg" in html  # the mark has its icon
+    assert "沒有要處理的網站" in tonight_page.sites_section([], "", False)
+    many = [{**rows[0], "key": f"s{i}.example", "name": f"站{i}"} for i in range(13)]
+    capped = tonight_page.sites_section(many, "http://127.0.0.1:18879/", False)
+    assert capped.count("<tr data-site=") == tonight_page.SHOWN_SITES and "還有 3 個 · 全部網站 →" in capped
 
 
 def test_times_and_spans_read_as_people_say_them():
@@ -597,13 +604,17 @@ def test_the_first_line_counts_the_sites_that_need_a_look():
     assert pipeline.overall(steps, []) == (OK, "每一步都正常")
 
 
-def test_the_flow_map_shows_each_steps_state_by_an_icon_and_its_number():
-    steps = [asdict_(Step("crawl", "爬取", "", state=OK, figure="74,962", unit="個抓到了")),
-             asdict_(Step("nightly", "每晚進庫", "", state=NONE))]
-    html = pipeline_page.flow_map(steps)
-    assert html.count("class='pl-node'") == 2 and html.count("class='pl-wire'") == 1
-    assert "href='#step-crawl'" in html and "74,962" in html and "<svg" in html  # the state is never colour alone
-    assert "還沒結果" in html  # a step without its number says its state
+def test_the_home_has_no_flow_map_and_folds_the_steps_detail_at_its_bottom():
+    # panels v3 三: the flow map and the state said three times are gone; the seven rows are 各步驟細節, closed
+    steps = [asdict_(Step("crawl", "爬取", "", state=OK, figure="5", unit="個")),
+             asdict_(Step("build", "建庫", "", state=WARN, figure="3", unit="份"))]
+    snap = {"at": "", "took": "", "state": WARN, "say": "有 1 處要留意：建庫", "steps": steps, "running": False}
+    page = tonight_page.home_body(snap, TONIGHT, None, {"enabled": False}, {})
+    assert "pl-flowmap" not in page and "pl-node" not in page
+    assert "<details class='card v3-more' id='steps'>" in page  # folded: no open attribute
+    for key in ("crawl", "build"):
+        assert f"id='step-{key}'" in page
+    assert page.index("data-q='5'") < page.index("各步驟細節")
 
 
 def test_a_step_bar_is_drawn_only_for_one_unit_and_the_rest_of_the_reasons_float():
@@ -747,7 +758,7 @@ def test_a_held_site_says_so_on_its_row_and_its_page(tmp_path, monkeypatch):
     assert step.state == WARN and step.fix == pipeline.CRAWLER and "攔下 1 站" in step.say
     row = next(r for r in pipeline.site_table(where) if r["key"] == made.SITE)
     state, said = site_page.now_line(row, None, {}, read=True)
-    assert state == WARN and "新導出被攔下" in said and "照舊用前一份導出" in said and "交給爬蟲 session" in said
+    assert state == WARN and said == "新導出被攔下：1 行用 10-24 舊存檔補的，新導出沒補上"  # the crawler's own words
 
 
 def _batch_ledger(events: list, meta: dict) -> sqlite3.Connection:
@@ -805,11 +816,11 @@ def test_rows_filled_from_an_older_answer_are_counted_shown_and_listed(tmp_path,
     manifest.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     where = Where(root=tmp_path, db=w.db, today=lambda: TODAY)
     step = pipeline.export_step(where)
-    assert step.notes[0].startswith("用舊資料補的 1 筆") and "1 筆抓壞了、用舊資料補上" in step.flow_words
+    assert step.notes[0].startswith("這次沒抓好、用舊存檔頂替的 1 筆") and "1 筆這次沒抓好、用舊存檔頂替" in step.flow_words
     cell = where.sites[made.SITE]["cells"]["refill"]
     assert cell["n"] == 1 and cell["state"] == OK and "10-24 舊存檔：1" in cell["tip"]
     page = pipeline_page.site_steps(pipeline.site_detail(where, made.SITE))
-    assert "改用舊資料補上的 1 筆" in page and "頁面幾乎是空的" in page and "/check?ref=" in page
+    assert "這次沒抓好、用舊存檔頂替的 1 筆" in page and "頁面幾乎是空的" in page and "/check?ref=" in page
 
 
 def test_a_newer_export_with_more_refilled_rows_is_for_the_crawler(tmp_path, monkeypatch):
@@ -829,13 +840,13 @@ def test_a_newer_export_with_more_refilled_rows_is_for_the_crawler(tmp_path, mon
     monkeypatch.setattr(pipeline, "now_tpe", lambda: datetime(2026, 11, 17, 9, 0, tzinfo=pipeline.TAIPEI))
     where = Where(root=tmp_path, db=w.db, today=lambda: TODAY)
     step = pipeline.export_step(where)
-    assert step.state == WARN and step.fix == pipeline.CRAWLER and "用舊資料補的變多了" in step.say
+    assert step.state == WARN and step.fix == pipeline.CRAWLER and "用舊存檔頂替的變多了" in step.say
     assert where.sites[made.SITE]["cells"]["refill"]["state"] == WARN
 
 
 # ---------------------------------------------------------------- the page's layout (redesign 2026-11-17)
 
-def test_a_normal_step_is_one_closed_row_and_a_step_to_look_at_opens_on_who_fixes_it():
+def test_a_normal_step_is_one_closed_row_and_a_step_to_look_at_opens_on_what_is_wrong():
     ok = pipeline_page.stage_html(asdict_(Step("a", "甲步", "做甲", state=OK, say="都好", fix=CONTENT,
                                                notes=["細一", "細二"])), {})
     warn = pipeline_page.stage_html(asdict_(Step("b", "乙步", "做乙", state=WARN, say="少了", fix=CONTENT,
@@ -843,34 +854,30 @@ def test_a_normal_step_is_one_closed_row_and_a_step_to_look_at_opens_on_who_fixe
     bad = pipeline_page.stage_html(asdict_(Step("c", "丙步", "做丙", state=BAD, say="壞了", fix=CONTENT)), {})
     assert "<details class='pl-stage' id='step-a' data-state='ok'>" in ok  # closed
     assert "data-state='warn' open>" in warn and "data-state='bad' open>" in bad
-    assert "交給內容（建庫）session" in warn and "某理由 <b>3</b>" in warn and "少了" in warn
-    assert "交給" not in ok  # a normal step names no one to fix it
+    assert "某理由 <b>3</b>" in warn and "少了" in warn
+    assert "交給" not in ok + warn + bad  # no step names anyone to fix it (spec 八.2)
     # the state once: a mark with an icon and a word; no pill, no 「細節（滑過去看）」; the notes float
     for row in (ok, warn, bad):
         assert "class='pill" not in row and "滑過去看" not in row and row.count("class='pl-mark'") == 1
     assert "正常</span>" in ok and "<svg" in ok and "data-tip='細一\n細二'" in ok
 
 
-def test_the_flow_map_is_the_overview_and_a_click_opens_that_steps_row():
-    steps = [asdict_(Step("crawl", "爬取", "", state=OK, figure="5", unit="個")),
-             asdict_(Step("build", "建庫", "", state=WARN, figure="3", unit="份"))]
-    page = pipeline_page.pipeline_body({"at": "", "took": "", "state": WARN, "say": "有 1 處要留意：建庫",
-                                        "steps": steps, "running": False}, {})
-    for key in ("crawl", "build"):
-        assert f"href='#step-{key}'" in page and f"id='step-{key}'" in page
-    assert "pl-node" in page and "d.open=true" in page  # PIPE_JS opens the row it scrolls to
-    assert page.index("class='pl-flowmap'") < page.index("class='pl-chain")
-
-
-def test_a_site_cells_second_line_and_the_sites_address_float():
-    snap = {"site_cols": [("crawl", "抓到", "抓到的網址")],
-            "sites": [{"key": "a.example", "name": "甲處", "q": "a.example", "worst": WARN, "href": "/site?site=a",
-                       "cells": {"crawl": {"n": 4, "state": OK, "tip": "連接失敗：2", "sub": "共 6 個網址"}},
-                       "why": ["某理由"]}]}
-    html = pipeline_page.sites_html(snap)
-    assert "<td data-v='4' data-tip='共 6 個網址\n連接失敗：2'>4</td>" in html
-    assert "pl-sub" not in html and "data-tip='a.example'>甲處</a>" in html
-
+def test_a_sites_issues_name_the_step_and_a_reading_without_them_still_works():
+    row = {"key": "a.example", "name": "甲處", "worst": WARN, "href": "/site?site=a",
+           "cells": {"crawl": {"n": 4, "state": OK}, "refill": {"n": 3, "state": WARN}},
+           "why": ["新導出用舊資料補的從 0 筆變成 3 筆（最近抓壞的變多；交給爬蟲 session）"]}
+    old = tonight_page.handle_rows({"sites": [row]}, None)  # a reading from before cells kept their issues
+    new = tonight_page.handle_rows({"sites": [{**row, "issues": [{"col": "refill", "state": WARN, "why": row["why"][0]}]}]},
+                                   None)
+    for rows in (old, new):
+        assert rows[0]["issues"] == [{"sev": WARN, "what": "新導出用舊資料補的從 0 筆變成 3 筆（最近抓壞的變多）",
+                                      "step": "導出"}]
+    # the last swap's departures nobody can explain make a site the most urgent, the build's to look at
+    changes = {"state": "ready", "reasons": {}, "sites": [{"site": "b.example", "name": "乙處", "unexplained": 2,
+                                                            "look": 0, "reasons": {}}]}
+    both = tonight_page.handle_rows({"sites": [row]}, changes)
+    assert [r["key"] for r in both] == ["b.example", "a.example"] and both[0]["sev"] == BAD
+    assert both[0]["issues"][0] == {"sev": BAD, "what": "上次換庫說不出原因地離開 2 份", "step": "換庫"}
 
 
 # ---------------------------------------------------------------- one site's page (structure design 2026-11-17 二)
@@ -893,16 +900,18 @@ def test_one_sites_changes_show_its_figures_reasons_and_lists_or_why_there_are_n
     assert "沒有前一份" in pipeline_page.one_site_changes({"state": "none", "words": "沒有前一份庫可以比"}, "a.example")
 
 
-def test_a_sites_line_says_whether_it_is_fine_and_who_fixes_what_is_not():
+def test_a_sites_line_says_whether_it_is_fine_and_what_is_not():
     from nknu.ops.site_page import kinds_html, now_line
     reasons = {"miss": {"kind": "look", "fix": pipeline.CRAWLER}}
     assert now_line({"worst": OK, "why": []}, None, {}, read=True) == (OK, "每一步都正常")
     assert now_line(None, None, {}, read=False)[0] == pipeline.NONE
     state, said = now_line({"worst": WARN, "why": ["導出少了（交給爬蟲 session）"]},
                            {"unexplained": 2, "look": 1, "reasons": {"miss": 1}}, reasons, read=True)
-    assert state == BAD and "導出少了" in said and "2 份離開了、查不出原因（交給內容（建庫）session）" in said
-    assert "1 份離開了、可能是我們漏的（交給爬蟲 session）" in said
-    html = kinds_html("a.example", {"notice": [3, 1], "event": [2, 2]}, "http://127.0.0.1:18001")
-    assert "公告" in html and "行事曆" in html and "<span class='num'>5</span>" in html  # 合計
-    assert "/aca/site_undated_why?site=a.example" in html and "var(--k0)" in html
-    assert "計算中" in kinds_html("a.example", None, "") and "/aca/" not in kinds_html("a.example", None, "")
+    assert state == BAD and "導出少了" in said and "上次換庫說不出原因地離開 2 份" in said
+    assert "上次換庫可能是我們這邊漏掉的 1 份" in said
+    html, table = kinds_html("a.example", {"notice": [3, 1], "event": [2, 2]}, "http://127.0.0.1:18001")
+    assert "公告" in html and "行事曆" in html and "<td class=n>5</td>" in table  # 合計
+    assert "/aca/site_undated_why?site=a.example" in html and "var(--k0)" in html and "var(--k3)" in html
+    assert "<b>1</b> 份" in html and "33%" in html  # 沒日期: of 公告、網頁、附件 only
+    counting, empty_table = kinds_html("a.example", None, "")
+    assert "計算中" in counting and "/aca/" not in counting and empty_table == ""
