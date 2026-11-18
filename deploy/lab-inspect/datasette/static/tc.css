@@ -140,6 +140,7 @@ details.swap .sitefind { padding: 0 16px 10px; }
 .pick .sets a:hover { color: var(--ink); }
 .pick .sets a[aria-current] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
 /* a column of counts on a query's page: a bar behind each number (the script at the foot of templates/query.html) */
+.rows-and-columns td.numc, .rows-and-columns th.numc { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rows-and-columns td.amount .c { display: grid; grid-template-columns: 3.6em minmax(60px, 1fr); gap: 10px; align-items: center; text-align: right; font-variant-numeric: tabular-nums; }
 .rows-and-columns td.amount .c::after { content: ""; height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--amt) var(--w), var(--mark2) var(--w)); }
 .tools.sqltools { margin-top: 8px; }
@@ -149,6 +150,8 @@ details.swap .sitefind { padding: 0 16px 10px; }
 .card.do select, .card.do input[type=text] { flex: 1 1 140px; min-width: 0; width: auto; height: 36px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 13px; }
 .card.do button { height: 36px; padding: 0 14px; border: 0; border-radius: 9px; background: var(--act); color: var(--on-act); font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .card.do button:hover { opacity: .88; }
+/* the box's button is a magnifier, as 檢視台's boxes have it (look.go_button), 2026-11-18 */
+.card.do button.go { width: 40px; padding: 0; display: grid; place-items: center; flex: none; }
 .atlas { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; align-items: start; }
 @media (max-width: 1080px) { .atlas { grid-template-columns: minmax(0, 1fr); } }
 .mapbox { padding: 10px 12px 8px; }

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from nknu.ops import check_page, check_sites, doc_page, look, pipeline_page, site_page, tonight_page
+from nknu.ops import check_page, check_sites, doc_page, home_page, look, pipeline_page, site_page, tonight_page
 from nknu.ops.theme import bar
 
 REPO = Path(__file__).resolve().parents[2]
@@ -18,7 +18,8 @@ SHEETS = {
     "look.py": look.CSS,
     "pipeline_page.py": pipeline_page.CSS,
     "site_page.py": site_page.CSS,  # the four entries' new pages (structure design 2026-11-17 section 二)
-    "tonight_page.py": tonight_page.CSS,  # panels v3 (2026-11-17): 今晚
+    "tonight_page.py": tonight_page.CSS,  # the pieces the home and a site's page share
+    "home_page.py": home_page.CSS,  # 每晚運行, rebuilt 2026-11-18
     # the charts' card and script, whole: its drawings read every colour from theme.css when they draw
     "charts.py": (REPO / "src/nknu/ops/charts.py").read_text(encoding="utf-8"),
     "doc_page.py": doc_page.CSS,
@@ -89,8 +90,8 @@ def _entries(html: str) -> list[str]:
 def test_the_bar_has_four_entries_and_a_tools_menu_and_links_its_own_host_by_path():
     # structure design 2026-11-17 section 二: 今晚 | 網站 | 試用 | 文件, and 資料庫, 爬蟲進度 in the 工具 menu
     html = bar.bar("try", "ops", "資料截至 x")
-    assert _entries(html) == ["每晚運行", "網站", "搜尋", "找文件"]
-    assert "aria-current='page'>搜尋</a>" in html and html.count("aria-current") == 1
+    assert _entries(html) == ["每晚運行", "網站", "測試", "文件搜尋"]
+    assert "aria-current='page'>測試</a>" in html and html.count("aria-current") == 1
     assert "href='/'" in html and "href='/try'" in html and "href='/doc'" in html  # its own host's: by path
     assert "href='http://127.0.0.1:18879/'" in html  # 網站 is 資料總覽, its own server
     menu = html.split("<details class='nk-tools'>", 1)[1].split("</details>", 1)[0]
@@ -116,6 +117,31 @@ def test_the_entries_and_a_sites_page_are_one_address_wherever_they_are_linked_f
     assert bar.site_prefix("overview") == "http://127.0.0.1:18878/site?site="
 
 
+def test_a_page_opened_on_the_serving_machine_rights_its_links_to_that_machines_ports():
+    # 2026-11-18: opened on the lab PC itself (127.0.0.1:8878) every jump to another panel went to a port starting
+    # with 1, the Mac's tunnel, where nothing listens there
+    conf = bar.panels()
+    assert bar.ports(conf) == {"18878": "8878", "18879": "8879", "18001": "8001", "18877": "8877"}
+    assert set(conf["local"]) == set(conf["hosts"])  # a panel with no line would keep the Mac's port over there
+    for html in (bar.bar("tonight", "ops"), bar.bar("tables", "tables"), bar.bar("sites", "overview")):
+        js = html.rsplit("<script>", 1)[1]
+        assert 'const M={"18001": "8001", "18877": "8877", "18878": "8878", "18879": "8879"}' in js
+        assert "Object.values(M).includes(location.port)" in js  # opened through the tunnel: nothing is touched
+        assert "u.port=M[u.port]" in js and "H.includes(u.hostname)" in js  # only a panel's address, never a school's
+        assert "DOMContentLoaded" in js and "'pointerdown'" in js and "'contextmenu'" in js  # links drawn later too
+    assert bar.port_js({"hosts": {"ops": "http://127.0.0.1:18878"}}) == ""  # no ports of its own named: no script
+    assert bar.ports({"hosts": {"a": "http://x:1"}, "local": {"a": "http://x:1", "b": "http://x:2"}}) == {}
+
+
+def test_the_ports_the_bar_rights_links_to_are_the_ones_the_compose_files_publish():
+    conf = bar.panels()
+    files = {"ops": "deploy/lab-inspect/compose.yaml", "tables": "deploy/lab-inspect/compose.yaml",
+             "overview": "deploy/lab-overview/compose.yaml"}  # the crawler's viewer is published by the crawler's own
+    for key, file in files.items():
+        port = conf["local"][key].rsplit(":", 1)[1]
+        assert f'"127.0.0.1:{port}:{port}"' in (REPO / file).read_text(encoding="utf-8"), key
+
+
 def test_the_overview_server_puts_the_theme_and_the_bar_on_its_page():
     import importlib.util
 
@@ -124,6 +150,7 @@ def test_the_overview_server_puts_the_theme_and_the_bar_on_its_page():
     spec.loader.exec_module(server)
     page = server.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
     assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>網站</a>" in page
-    assert _entries(page) == ["每晚運行", "網站", "搜尋", "找文件"] and "<details class='nk-tools'>" in page
+    assert _entries(page) == ["每晚運行", "網站", "測試", "文件搜尋"] and "<details class='nk-tools'>" in page
     # its links to a site's page and to 資料庫 come from panels.json, as the bar's do
     assert '"site": "http://127.0.0.1:18878/site?site="' in page and '"tables": "http://127.0.0.1:18001"' in page
+    assert "Object.values(M).includes(location.port)" in page  # and are righted on the lab PC's own ports, as the bar's

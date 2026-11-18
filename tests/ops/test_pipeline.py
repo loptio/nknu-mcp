@@ -14,7 +14,7 @@ from typing import ClassVar
 
 import pytest
 
-from nknu.ops import pipeline, pipeline_page, tonight_page
+from nknu.ops import home_page, pipeline, pipeline_page, tonight_page
 from nknu.ops.pipeline import BAD, CONTENT, INTERFACE, NONE, OK, PANEL, WARN, Pipeline, Step, Where
 
 TODAY = date(2026, 11, 16)
@@ -292,11 +292,13 @@ def test_the_page_draws_every_step_and_escapes_what_it_prints(where):
                 into=[("份", 3)], out=[("份", 2)], lost=[("理由<i>", 1)], more=[("看細節", "overview")])
     snap = {"at": "2026-11-16T19:00:00+08:00", "took": "1 秒", "state": WARN, "say": "有 1 處要看：某一步",
             "steps": [asdict_(step)], "running": False}
-    page = tonight_page.home_body(snap, TONIGHT, None, {"enabled": False, "why": ""}, {"overview": "http://127.0.0.1:18879"})
+    page = home_page.home_body(snap, TONIGHT, None, {"enabled": False, "why": ""}, {"overview": "http://127.0.0.1:18879"})
     assert "&lt;b&gt;壞&lt;/b&gt;" in page and "<b>壞</b>" not in page and "理由&lt;i&gt;" in page
     assert "交給" not in page and "http://127.0.0.1:18879" in page  # nobody named to fix it (spec 八.2)
     assert "data-state='warn'" in page and "#step-x'>某一步</a>" in page  # a step not normal is a problem
-    reading = tonight_page.home_body({"steps": [], "running": True}, TONIGHT, None, {"enabled": False}, {})
+    # a step the page has no node for is still a node with its panel (nothing a probe reports is left out)
+    assert "data-pick='step-x'" in page and "data-panel='step-x'" in page and "repeat(8,minmax(0,1fr))" in page
+    reading = home_page.home_body({"steps": [], "running": True}, TONIGHT, None, {"enabled": False}, {})
     assert "正在讀每一步的紀錄" in reading and "location.replace" in reading
 
 
@@ -317,15 +319,16 @@ def test_the_home_lists_only_the_sites_to_look_at_and_leads_to_every_site():
     rows = tonight_page.handle_rows(snap, None)
     assert [r["key"] for r in rows] == ["a.example"]
     assert rows[0]["issues"] == [{"sev": WARN, "what": "庫裡一份文件也沒有（看是學校沒東西還是建庫丟了）", "step": "建庫"}]
-    html = tonight_page.sites_section(rows, "http://127.0.0.1:18879/", False)
-    assert "甲處" in html and "乙處" not in html and "data-q='5'" in html
-    assert "href='http://127.0.0.1:18879/'" in html and "全部網站 →" in html
-    assert "<a href='/site?site=a.example' data-tip='a.example'>甲處</a>" in html
-    assert "<td>建庫</td></tr>" in html and "交給" not in html and "<svg" in html  # the mark has its icon
-    assert "沒有要處理的網站" in tonight_page.sites_section([], "", False)
+    # since 2026-11-18 a site to look at is a row of 問題, once (the separate table said the same sites again)
+    html = home_page.problems_section(tonight_page.problems(TONIGHT, {"steps": []}, rows), False)
+    assert "甲處" in html and "乙處" not in html and "data-q='3'" in html
+    assert "<a href='/site?site=a.example'>甲處</a>" in html
+    assert "交給" not in html and "<svg" in html  # the mark has its icon
+    assert "沒有問題" in home_page.problems_section([], False)
     many = [{**rows[0], "key": f"s{i}.example", "name": f"站{i}"} for i in range(13)]
-    capped = tonight_page.sites_section(many, "http://127.0.0.1:18879/", False)
-    assert capped.count("<tr data-site=") == tonight_page.SHOWN_SITES and "還有 3 個 · 全部網站 →" in capped
+    capped = home_page.problems_section(tonight_page.problems(TONIGHT, {"steps": []}, many), False)
+    assert capped.count("<li data-sev=") == 13 and "還有 1 個" in capped  # the rest is folded, never dropped
+    assert "<span class='hm-count num'>13</span>" in capped
 
 
 def test_times_and_spans_read_as_people_say_them():
@@ -409,7 +412,10 @@ def test_a_steps_list_shows_five_of_each_kind_of_loss_and_folds_the_rest():
 def test_what_an_export_says_is_missing_is_counted_by_the_words_it_holds():
     assert pipeline.missing_parts("连接失败（1 个）、缺图片（1 个）") == ["連線失敗", "圖片沒抓到"]
     # a part with its own 「、」 is one kind, never split on it
-    assert pipeline.missing_parts("要人看、内文区是空的（公告的标题栏和内文栏都没有内容）") == ["內文區是空的", "要人看"]
+    assert pipeline.missing_parts("要人看、内文区是空的（公告的标题栏和内文栏都没有内容）") == ["內文區是空的", "待確認"]
+    # a page left out by rule (the crawler of 11-18) is no kind of what is missing; with a real lack beside it, only that
+    assert pipeline.missing_parts("按规则不抓：整页跳到校外页（用户 11-17 决定不抓）") == []
+    assert pipeline.missing_parts("缺附件（2 个）、按规则不抓：整页跳到校外页（用户 11-17 决定不抓）") == ["附件沒抓到"]
     assert pipeline.missing_parts("") == []
 
 
@@ -604,17 +610,18 @@ def test_the_first_line_counts_the_sites_that_need_a_look():
     assert pipeline.overall(steps, []) == (OK, "每一步都正常")
 
 
-def test_the_home_has_no_flow_map_and_folds_the_steps_detail_at_its_bottom():
-    # panels v3 三: the flow map and the state said three times are gone; the seven rows are 各步驟細節, closed
+def test_the_home_draws_the_steps_as_nodes_and_shows_first_the_one_to_look_at():
+    # 2026-11-18: the pipeline is the page's second section, a node a step, a picked node's detail beside the row
     steps = [asdict_(Step("crawl", "爬取", "", state=OK, figure="5", unit="個")),
              asdict_(Step("build", "建庫", "", state=WARN, figure="3", unit="份"))]
     snap = {"at": "", "took": "", "state": WARN, "say": "有 1 處要留意：建庫", "steps": steps, "running": False}
-    page = tonight_page.home_body(snap, TONIGHT, None, {"enabled": False}, {})
-    assert "pl-flowmap" not in page and "pl-node" not in page
-    assert "<details class='card v3-more' id='steps'>" in page  # folded: no open attribute
+    page = home_page.home_body(snap, TONIGHT, None, {"enabled": False}, {})
+    assert "pl-flowmap" not in page and "各步驟細節" not in page
     for key in ("crawl", "build"):
-        assert f"id='step-{key}'" in page
-    assert page.index("data-q='5'") < page.index("各步驟細節")
+        assert f"data-pick='step-{key}'" in page and f"<article class='hm-panel' data-panel='step-{key}'" in page
+        assert f"id='step-{key}'" not in page  # no id of the address's name: the browser must not jump to a panel
+    assert "data-first='step-build'" in page  # 留意 before what is normal
+    assert page.index("data-q='2'") < page.index("data-q='3'") < page.index("data-q='4'")
 
 
 def test_a_step_bar_is_drawn_only_for_one_unit_and_the_rest_of_the_reasons_float():
@@ -901,17 +908,24 @@ def test_one_sites_changes_show_its_figures_reasons_and_lists_or_why_there_are_n
 
 
 def test_a_sites_line_says_whether_it_is_fine_and_what_is_not():
-    from nknu.ops.site_page import kinds_html, now_line
+    from selectolax.lexbor import LexborHTMLParser
+
+    from nknu.ops.site_page import kinds_html, now_line, site_problems
     reasons = {"miss": {"kind": "look", "fix": pipeline.CRAWLER}}
     assert now_line({"worst": OK, "why": []}, None, {}, read=True) == (OK, "每一步都正常")
     assert now_line(None, None, {}, read=False)[0] == pipeline.NONE
-    state, said = now_line({"worst": WARN, "why": ["導出少了（交給爬蟲 session）"]},
-                           {"unexplained": 2, "look": 1, "reasons": {"miss": 1}}, reasons, read=True)
-    assert state == BAD and "導出少了" in said and "上次換庫說不出原因地離開 2 份" in said
-    assert "上次換庫可能是我們這邊漏掉的 1 份" in said
-    html, table = kinds_html("a.example", {"notice": [3, 1], "event": [2, 2]}, "http://127.0.0.1:18001")
-    assert "公告" in html and "行事曆" in html and "<td class=n>5</td>" in table  # 合計
+    assert now_line(None, None, {}, read=True)[0] == pipeline.NONE  # not in 流水線's table: no green mark
+    row = {"worst": WARN, "why": ["導出少了（交給爬蟲 session）"]}
+    mine = {"unexplained": 2, "look": 1, "reasons": {"miss": 1}}
+    assert now_line(row, mine, reasons, read=True) == (BAD, "有 3 個問題")  # the rows are in 問題, the worst first
+    assert [(x["where"], x["state"], x["reason"]) for x in site_problems(row, mine)] == [
+        ("上次換庫", "出錯", "說不出原因地離開 2 份"), ("這個網站", "留意", "導出少了"),
+        ("上次換庫", "留意", "可能是我們這邊漏掉的 1 份")]
+    assert now_line(row, None, reasons, read=True) == (WARN, "導出少了")  # one problem: in its own words
+    html = kinds_html("a.example", {"notice": [3, 1], "event": [2, 2]}, "http://127.0.0.1:18001")
+    assert "公告" in html and "行事曆" in html and "共 5 份" in html
     assert "/aca/site_undated_why?site=a.example" in html and "var(--k0)" in html and "var(--k3)" in html
-    assert "<b>1</b> 份" in html and "33%" in html  # 沒日期: of 公告、網頁、附件 only
-    counting, empty_table = kinds_html("a.example", None, "")
-    assert "計算中" in counting and "/aca/" not in counting and empty_table == ""
+    assert "<b>1</b> 份" in html and "公告、網頁、附件共 3 份" in html  # 沒日期: of those kinds only
+    assert "%" not in LexborHTMLParser(html).text()  # counts, no shares
+    counting = kinds_html("a.example", None, "")
+    assert "計算中" in counting and "/aca/" not in counting

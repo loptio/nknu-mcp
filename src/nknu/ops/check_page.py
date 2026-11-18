@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote, urlencode, urlsplit
 
-from nknu.ops.look import e, icon, tw
+from nknu.ops.look import e, go_button, icon, tw
 from nknu.ops.pagecheck import BUCKET_NAME, BUCKET_TIP, BUCKETS, STATES, WHATS, WHO_WORDS, live_url
 
 PROBLEMS_SHOWN = 300  # rows listed at most; the rest counted 【Claude】
@@ -107,11 +107,12 @@ form.ask.chk-ask .follow[aria-pressed=true]{background:var(--ink);color:var(--su
 .chk-facts .url{min-width:0;max-width:min(100%,640px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 color:var(--ink3);font-size:12px}
 .chk{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;margin-top:12px;align-items:start}
-@media (max-width:1000px){.chk{grid-template-columns:minmax(0,1fr)}}
 .chk-page{overflow:hidden;padding:0}
 .chk-frame{display:block;width:100%;height:calc(100vh - 190px);min-height:460px;border:0;background:#fff}
 .chk-side{display:flex;flex-direction:column;gap:12px;min-width:0}
 @media (min-width:1001px){.chk-side{position:sticky;top:64px;max-height:calc(100vh - 80px);overflow:auto}}
+@media (max-width:1000px){.chk{grid-template-columns:minmax(0,1fr)}.chk-side{order:-1}
+.chk-frame{height:70vh;min-height:360px}}
 .chk-side h2{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);font-weight:650;margin:0 0 8px}
 .chk-side h2 .faint{font-weight:400;margin-left:auto}
 [data-b]{--c:var(--ink3)}[data-b=got],[data-b=look]{--c:var(--good)}[data-b=next],[data-b=review]{--c:var(--warn)}
@@ -239,10 +240,10 @@ def check_form(value: str, url: str, *, focus: bool = True, live: bool = True,
               "<button type='button' class='live' disabled data-tip='先給一個網址'>開真實網頁</button>")
     button += ("<button type='button' class='follow' data-follow aria-pressed='false' data-tip-h='跟著跳' "
                "data-tip='開著時，在這裡換一頁，學校網頁的視窗也跟著換到那一頁；關著時只換這裡'>跟著跳</button>")
-    return (f"<form class='ask chk-ask' id='chk-ask' action='/check' method='get'><label class='box'>{icon('search', 16)}"
+    return (f"<form class='ask chk-ask' id='chk-ask' action='/check' method='get'><div class='box'>"
             f"<input name='url' value='{e(value)}' placeholder='{e(placeholder)}' aria-label='要核查的網頁'"
             " autocomplete='off'"
-            f"{' autofocus' if focus else ''}></label><button>核查</button>{button if live else ''}</form>")
+            f"{' autofocus' if focus else ''}>{go_button('核查這一頁')}</div>{button if live else ''}</form>")
 
 
 def _when(text: str | None) -> str:

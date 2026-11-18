@@ -15,7 +15,7 @@ import pytest
 from selectolax.lexbor import LexborHTMLParser
 from starlette.datastructures import QueryParams
 
-from nknu.ops import nightly, site_page, tonight_page
+from nknu.ops import home_page, nightly, site_page, tonight_page
 from nknu.ops.pipeline import PIPE, Where
 from nknu.ops.try_page import TryPage
 from tests.ops.test_nightly import NIGHT, SAID, at, crawler_log, crawler_status, ingest, library, run
@@ -83,7 +83,7 @@ def test_no_page_says_who_should_fix_anything(where, mcp):
     ingest(where, [run("failed", step="build", error="build_exit_1")], SAID[:4],
            build="2026-11-17 03:00:00 failed step 5 (exit 1)")
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
-    home = tonight_page.home_body(snap(), t, None, hist(), {})
+    home = home_page.home_body(snap(), t, None, hist(), {})
     row, detail = row_and_detail()
     site = site_page.site_body("a.example", name="甲處", unit="", home="", now=site_page.now_line(row, None, {}, read=True),
                                detail=detail, changes={"state": "none", "words": ""}, changes_title="", view=None,
@@ -101,7 +101,7 @@ def test_the_headline_is_one_template_and_the_problems_carry_each_sources_own_re
     ingest(where, [run("failed", step="build", error="build_exit_1")], SAID[:4],
            build="2026-11-17 03:00:00 failed step 5 (exit 1)")
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
-    html = tonight_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
+    html = home_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
     tree = LexborHTMLParser(html)
     assert tree.css_first(".v3-say").text() == "11-16 夜：出錯（建庫）；有 1 個問題"
     rows = [li.text() for li in tree.css(".v3-problems li")]
@@ -114,7 +114,7 @@ def test_an_unknown_code_is_shown_as_it_is_and_lights_the_night(where):
     ingest(where, [run("exploded", error="mystery_code_7")], SAID)
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
     assert t["shown"]["state"] != "ok"
-    html = tonight_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
+    html = home_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
     tree = LexborHTMLParser(html)
     assert tree.css_first(".v3-state").attributes["data-state"] in ("warn", "bad")
     text = " ".join(li.text() for li in tree.css(".v3-problems li"))
@@ -136,13 +136,13 @@ def test_a_night_with_three_attempts_draws_three_runs_and_says_nothing_special(w
     assert sorted({s["run"] for s in segs if s.get("run")}) == [1, 2, 3]
     states = {s["run"]: s["tone"] for s in segs if s.get("run") in (1, 2)}
     assert states == {1: "warn", 2: "bad"}
-    page = json.dumps(data, ensure_ascii=False) + tonight_page.home_body({"steps": []}, t, None, {"enabled": False}, {})
+    page = json.dumps(data, ensure_ascii=False) + home_page.home_body({"steps": []}, t, None, {"enabled": False}, {})
     assert "排程" not in page and "手動" not in page and "補上" not in page
 
 
 def test_the_search_page_builds_its_controls_from_whatever_tools_are_listed(mcp):
     title, body = TryPage(mcp).page(QueryParams(""))
-    assert title == "搜尋"
+    assert title == "測試"
     tree = LexborHTMLParser(body)
     form = tree.css_first("form.sr-form")
     assert form.attributes["data-tool"] == "ask"

@@ -15,7 +15,8 @@ NO_DATA, the area marks and the 列表翻页 page kind; documents.GONE_FILE_SUFF
   5. the row of its address in the export the new library read (sites.export → manifest.json): what 缺什么 says
      (学校已删除, 学校把这则公告转到别的页, 学校回答没有资料, an empty or missing notice area), 页别 列表翻页, every page
      linking it deleted by the school (a file that went with them), no file saved this time: the school's when its
-     分类 is 学校那边已经不存在 (build.SCHOOL_GONE, as the build's swap guard reads it), else ours (结果 says why)
+     分类 is 学校那边已经不存在 (build.SCHOOL_GONE, as the build's swap guard reads it), another size of the same Wix
+     picture kept by rule when the new library holds that picture (build's same_image, 11-18), else ours (结果 says why)
   6. no row for it: when the site's export changed, the crawler's new export does not list it; when it did not, the
      input was the same and the build changed (its program or its settings)
   7. else 查不出原因: the export lists it, the crawler got it, and the build left it out
@@ -35,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -60,6 +62,20 @@ try:
     from nknu.content.build import SCHOOL_GONE
 except ImportError:
     SCHOOL_GONE = "学校那边已经不存在"
+# a Wix picture's other sizes: the export keeps one and lists the rest without a file (分类 规则不抓); a document of such
+# a row left for a reason when the new library holds a document of the same picture (nknu.content.build, 11-18)
+try:
+    from nknu.content.build import RULE_DECLINED
+except ImportError:
+    RULE_DECLINED = "规则不抓"
+WIX_PICTURE = re.compile(r"^(?:https?:)?//static\.wixstatic\.com/media/([^/?#]+)")
+# a kind decided out of the library (11-18 night: teachers' publications in full) leaves for a reason: the export names
+# the rule in 原因代码 and the build counts the leaving as explained (nknu.content.build.DECIDED_OUT); so does this
+try:
+    from nknu.content.build import DECIDED_OUT
+except ImportError:
+    DECIDED_OUT = {"out:skip_path:teacher_fulltext": "decided_teacher_fulltext"}
+DECIDED_WORDS = {"decided_teacher_fulltext": "教師著作全文"}  # the kind, said after the reason's name
 CALENDAR_SINCE = date(2023, 1, 1)  # documents.CALENDAR_SINCE: the library holds events from this day on
 
 # key: (the short name the page shows, the sentence its floating card holds, its kind, who fixes it when it is ours)
@@ -71,6 +87,8 @@ REASONS = {
     "gone_file": ("跟著刪掉的附件", "連到它的網頁都被學校刪了，附件一起不收", OK_KIND, ""),
     "school_gone": ("學校那邊已經不存在", "爬蟲這一次去抓，學校那邊已經沒有這個網址了（錯誤頁、跳回首頁），導出沒有檔，建庫不收",
                     OK_KIND, ""),
+    "same_image": ("同一張圖留了別的尺寸", "Wix 網站同一張圖有好幾個尺寸，導出只留一個；新庫裡有這張圖的另一份", OK_KIND, ""),
+    "decided_out": ("定了不收", "這一類資料決定不收，名單寫明不抓，導出不給檔，建庫不收；是哪一類寫在後面", OK_KIND, ""),
     "pager": ("公告列表的分頁", "列表翻頁的網頁不進庫，每一則公告另外收了", OK_KIND, ""),
     "copy": ("併成副本", "別處有一模一樣的一份，合成一份；留下的那份見它的編號", OK_KIND, ""),
     "format": ("其他格式", "同一個檔的另一種格式（例如 PDF 和 Word），只留一份", OK_KIND, ""),
@@ -102,7 +120,7 @@ def file_key(path: Path) -> tuple | None:
 def read_library(db: Path) -> dict:
     """A library's fingerprint: {'docs': {doc_id: (site, kind, title, url, date, chars, digest)}, 'meta': built_at
     and vec_built_at, 'sites': {site: {name, export, docs}}, 'aliases': {alias: (doc_id, why)}, 'urls': {url:
-    doc_id}}. The text is hashed, never kept."""
+    doc_id}, 'pictures': the Wix pictures it holds a document of, any size}. The text is hashed, never kept."""
     conn = open_ro(db)
     try:
         meta = {r[0]: r[1] for r in conn.execute(
@@ -124,7 +142,12 @@ def read_library(db: Path) -> dict:
                 urls.setdefault(url, doc_id)
     finally:
         conn.close()
-    return {"docs": docs, "meta": meta, "sites": sites, "aliases": aliases, "urls": urls}
+    return {"docs": docs, "meta": meta, "sites": sites, "aliases": aliases, "urls": urls, "pictures": pictures_of(urls)}
+
+
+def pictures_of(urls) -> set[str]:
+    """The Wix pictures among addresses, by the name every size of one shares."""
+    return {m.group(1) for u in urls if (m := WIX_PICTURE.match(u))}
 
 
 # ------------------------------------------------------------------------------------------------ the exports
@@ -241,6 +264,13 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
     if not row.get("本地档案"):
         if str(row.get("分类") or "") == SCHOOL_GONE:  # the school's, as the build's swap guard counts it
             return "school_gone", ""
+        picture = WIX_PICTURE.match(url or "")
+        if picture and str(row.get("分类") or "") == RULE_DECLINED:
+            held = new["pictures"] if "pictures" in new else pictures_of(new["urls"])
+            if picture.group(1) in held:
+                return "same_image", ""
+        if str(row.get("分类") or "") == RULE_DECLINED and (kind := DECIDED_OUT.get(str(row.get("原因代码") or ""))):
+            return "decided_out", DECIDED_WORDS.get(kind, kind)
         return "not_fetched", tw(str(row.get("结果") or "")) or "沒有檔案"
     if same_folder:
         return "same_export", ""

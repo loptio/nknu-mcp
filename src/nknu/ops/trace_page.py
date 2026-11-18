@@ -14,7 +14,7 @@ from datetime import date
 from urllib.parse import unquote, urlencode
 
 from nknu.ops.explain import WHY
-from nknu.ops.look import KIND_ICON, e, icon, kind_tag, tw
+from nknu.ops.look import KIND_ICON, e, go_button, icon, kind_tag, tw
 from nknu.ops.search_page import why_url
 from nknu.ops.trace import (
     DATE_KINDS,
@@ -45,9 +45,9 @@ UNSEEN = "沒有紀錄"  # a step that left nothing of this document
 
 
 def trace_form(ref: str, *, focus: bool = True) -> str:
-    return (f"<form class='ask' action='/trace' method='get'><label class='box'>{icon('trace', 16)}"
-            f"<input name='ref' value='{e(ref)}' placeholder='標題裡的字、網址或文件編號' aria-label='要追的文件'"
-            f"{' autofocus' if focus else ''}></label><button>追蹤</button></form>")
+    return (f"<form class='ask' action='/trace' method='get'><div class='box'>"
+            f"<input name='ref' value='{e(ref)}' placeholder='標題裡的字、網址或文件編號' aria-label='要找的文件或網頁'"
+            f"{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form>")
 
 
 def examples_html(found: list[dict]) -> str:
@@ -246,12 +246,25 @@ def _who(report: dict) -> str:
             f"<div class='addr'>{addr}</div></div><div>{place}</div></section>")
 
 
-def _original(x: dict) -> str:
+def _original(x: dict, page_url: str = "") -> str:
     """The exported file beside its text: a page in a frame that loads nothing, a PDF in the browser's own viewer, a
-    picture as a picture, anything else as a link (the spec's 「原档和文字并排」)."""
+    picture as a picture, anything else as a link (the spec's 「原档和文字并排」). page_url: the page's address when the
+    crawler's ledger has it: the frame then shows 網頁核查's copy of the page (/check/raw: made safe, the area the
+    library reads framed, the rest under grey), which says what was read; the bare export, with its styles gone, had
+    its menus drawn over one another (2026-11-18)."""
     src = "/file?" + urlencode({"folder": x["folder"], "path": x["file"]})
     beside = f"<a href='{e(src)}' target='_blank'>新分頁打開</a>"
     name = x["file"].lower()
+    if name.endswith(MARKUP) and page_url:
+        raw = "/check/raw?" + urlencode({"url": page_url})
+        check = f"<a href='/check?{urlencode({'url': page_url})}' data-tip='看這一頁哪些連結、圖片、按鈕抓到了'>核查這一頁</a>"
+        return ("<header><span data-tip='存檔裡的這一頁，不連網，所以沒有學校的樣式和圖。虛線框是建庫讀的正文區，蓋灰的不進庫'>"
+                f"存檔裡的這一頁</span><span class='side'>{check}</span></header>"
+                # opened at the area the library reads (the page's own menus come first and are long); the frame's own
+                # scroll is set, never scrollIntoView, which would move the page around the frame as well
+                f"<iframe class='orig' sandbox=\"allow-same-origin\" src='{e(raw)}' title='存檔裡的這一頁' "
+                "onload=\"try{const w=this.contentWindow,a=w.document.querySelector('.nk-in');"
+                "if(a)w.scrollTo(0,a.getBoundingClientRect().top+w.scrollY-8)}catch(_){}\"></iframe>")
     if name.endswith(MARKUP):
         return (f"<header><span data-tip='這裡打開時不連網，所以沒有圖'>原檔</span><span class='side'>{beside}</span></header>"
                 f"<iframe class='orig' sandbox src='{e(src)}'></iframe>")
@@ -289,7 +302,7 @@ def _export_card(x: dict | None) -> str:
             if x.get("site") else e(tw(x["name"])))
     facts = _facts([("網站", site), ("類型", e(tw(row["类型"]))),
                     ("網頁上寫的日期", written), ("日期來源", e(tw(row["日期来源"]))), ("頁別", e(tw(row["页别"]))),
-                    ("最後修改時間", e(row["最后修改时间"]))])
+                    ("最後修改時間", e(when(str(row["最后修改时间"] or ""))))])
     fold = _fold([("標題", e(row["标题"])), ("網址", e(row["网址"])), ("檔案", e(x["file"])),
                   ("列表上的類別", e(row["列表上的类别"])), ("公告單位", e(row.get("公告单位"))),
                   ("連結文字", e(row["链接文字"])), ("備註", e(tw(row["备注"]))), ("資料夾", e(x["folder"]))],
@@ -297,7 +310,7 @@ def _export_card(x: dict | None) -> str:
     return f"<div class='in'>{facts}{fold}</div>"
 
 
-def _totext_card(report: dict) -> str:
+def _totext_card(report: dict, archive: bool = False) -> str:
     t, x = report["totext"], report["export"]
     if not t:
         return f"<div class='in faint'>{UNSEEN}</div>"
@@ -315,7 +328,8 @@ def _totext_card(report: dict) -> str:
     if isinstance(t["ocr_mean_score"], int | float):
         meters.append(_meter("認字信心", float(t["ocr_mean_score"]), f"{t['ocr_mean_score']:.2f}"))
     meter = f"<div class='meter' style='margin-top:10px'>{''.join(meters)}</div>" if meters else ""
-    left = _original(x) if x and x["file"] else "<header>原檔</header><div class='none'>沒有檔</div>"
+    page_url = (x["row"].get("网址") or "") if archive and x and x.get("row") else ""
+    left = _original(x, page_url) if x and x["file"] else "<header>原檔</header><div class='none'>沒有檔</div>"
     full = (f"<details class='fold' style='padding:0 12px 10px'><summary>整頁文字（{t['full_chars']:,} 字）</summary>"
             f"<pre class='raw'>{e(t['full'])}</pre></details>" if t["full"] is not None else "")
     right = (f"<header>轉出的文字<span class='side'>{t['text_chars']:,} 字</span></header><pre>{e(t['text'])}</pre>{full}")
@@ -413,8 +427,9 @@ def _library_card(report: dict, today: date) -> str:
     return "".join(out)
 
 
-def trace_body(report: dict, viewer_url: str, today: date) -> str:
-    """One document followed: itself, the five steps' states, what cannot be seen and why, then a card per step."""
+def trace_body(report: dict, viewer_url: str, today: date, *, archive: bool = False) -> str:
+    """One document followed: itself, the five steps' states, what cannot be seen and why, then a card per step.
+    archive: whether the crawler's archive is mounted (a page then shows as 網頁核查's copy beside its text)."""
     r, s = report["resolved"], report["search"]
     out = []
     if r["via"] == "alias":
@@ -427,16 +442,18 @@ def trace_body(report: dict, viewer_url: str, today: date) -> str:
         out.append("<ul class='gaps'>" + "".join(f"<li>{e(m)}</li>" for m in report["missing"]) + "</ul>")
     cards = (_crawl_card(report["crawl"], viewer_url) if report["crawl"] else "",
              _export_card(report["export"]) if report["export"] else "",
-             _totext_card(report) if report["totext"] else "", _library_card(report, today))
-    for i, card in enumerate(cards):
-        if card:  # a step that left nothing has no card: the line of steps says so, the notes above say why
-            out.append(f"<section class='card step' id='s{i + 1}'><h2>{STEP_MARKS[i]} {STEP_NAMES[i]}</h2>{card}</section>")
+             _totext_card(report, archive) if report["totext"] else "", _library_card(report, today))
+    drawn = [f"<section class='card step' id='s{i + 1}'><h2>{STEP_MARKS[i]} {STEP_NAMES[i]}</h2>{card}</section>"
+             if card else "" for i, card in enumerate(cards)]  # a step that left nothing has no card: the line of
+    # steps says so, the notes above say why. The first two hold a few facts each: side by side on a wide screen
+    out.append(f"<div class='step-pair'>{drawn[0]}{drawn[1]}</div>" if drawn[0] and drawn[1] else drawn[0] + drawn[1])
+    out.extend(drawn[2:])
     if s is not None:
         place = (f"<span class='pill good'>第 {s['rank']} 名</span>" if s["rank"]
                  else f"<span class='pill bad'>前 {s['within']} 名裡沒有</span>")
         href = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
         why = (f"<a class='btn' href='{e(href)}' "
-               f"data-tip='搜尋的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
+               f"data-tip='測試的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
         last = (f"<div class='in' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
                 f"<span data-tip='拿它的標題當問題搜一次'>標題搜尋</span>{place}{why}</div>")
         out.append(f"<section class='card step' id='s5'><h2>{STEP_MARKS[4]} {STEP_NAMES[4]}</h2>{last}</section>")

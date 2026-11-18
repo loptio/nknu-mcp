@@ -89,6 +89,7 @@ class Step:
     bar: list[int] = field(default_factory=list)  # [what came out, what went in], one unit: the step's bar; [] none
     share: bool = True  # whether the bar says its percentage (not where the rest is by design, as the build's merges)
     flow_words: str = ""  # one sentence in place of the in/out, where they are not a loss (the export's rows)
+    paused: bool = False  # the nightly ingest is switched off by hand (ingest.pause): the home says so on top
 
 
 @dataclass
@@ -596,9 +597,15 @@ def crawl_buckets(conn: sqlite3.Connection, sites: set[str], batch_sites: list[s
     return out, batch
 
 
+PLAIN_BUCKET = {"要人看": "待確認"}
+
+
 def bucket_words() -> dict[str, str]:
     _outcome, progress = _crawler()
-    return {k: tw(v).replace("登錄", "登入") for k, v in getattr(progress, "BUCKET_ZH", {}).items()}  # Taiwan usage
+    # Taiwan usage; the crawler's 要人看 (fetched but maybe incomplete or wrong, or left alone by its own limits: a
+    # dozen causes in one bucket) is 待確認 here: the owner (11-16) named 要人看 among the names that say nothing
+    return {k: PLAIN_BUCKET.get(tw(v), tw(v)).replace("登錄", "登入")
+            for k, v in getattr(progress, "BUCKET_ZH", {}).items()}
 
 
 def crawl_step(where: Where) -> Step:
@@ -689,11 +696,11 @@ def page_check_cells(where: Where, step: Step) -> None:
     totals, progress = view["totals"], view.get("progress") or {}
     done = "核完" if progress.get("phase") == "done" else f"核了 {progress.get('done', 0):,}/{progress.get('total', 0):,} 頁"
     step.notes.append(f"網頁核查（{done}）：正文區有漏 {totals['gap']:,} 頁、沒抓下來 {totals['nofetch']:,} 頁、"
-                      f"要人看 {totals['check']:,} 頁")
+                      f"要查 {totals['check']:,} 頁")
     for site in view.get("sites") or []:
         lost = (site.get("gap") or 0) + (site.get("nofetch") or 0)
         tip = (f"網頁 {site.get('pages', 0):,} 頁；正文區有漏 {site.get('gap', 0):,}、沒抓下來 {site.get('nofetch', 0):,}、"
-               f"要人看 {site.get('check', 0):,}、選單沒抓到的連結 {site.get('menu_links', 0):,}")
+               f"要查 {site.get('check', 0):,}、選單沒抓到的連結 {site.get('menu_links', 0):,}")
         cell(where, site["key"], "check", lost, tip=tip, sub=f"{site.get('pages', 0):,} 頁裡" if lost else "",
              name=site.get("name") or "")
 
@@ -761,13 +768,18 @@ MISSING_WORDS = (("学校回答没有资料", "學校回答「沒有資料」"),
                  ("找不到内文区", "找不到內文區"), ("列表没翻完", "列表沒翻完"), ("待判定", "待判定"),
                  ("缺内嵌页或按钮", "頁面裡的內嵌頁或按鈕沒抓到"), ("学校那边已不存在", "連到的資源學校已不存在或要登入"),
                  ("连接失败", "連線失敗"), ("缺附件", "附件沒抓到"), ("缺图片", "圖片沒抓到"), ("下一轮", "留到下一輪補抓"),
-                 ("要人看", "要人看"))
+                 ("要人看", "待確認"))
 
 
 # 来源 of a row whose file is an older answer than this round's (nknu.archive.export ORIGIN_OLD, ORIGIN_PREV): this
 # round's answer was broken or empty, so the export gave the last good one and its 结果 stays this round's (owner 11-17:
 # 「他说爬下来的坏了，目前是用旧的资料补上的，我要去哪个面板看到」)
 REFILL = {"10-24 旧存档": "10-24 舊存檔", "上一次抓到的": "每晚更新前一次抓到的"}
+
+
+# a page the rules leave out says so in 缺什么 (the crawler of 11-18: 「按规则不抓：整页跳到校外页（用户 11-17 决定不抓）」,
+# outcome.OFFSITE_LANDED's label): that is a decision, not something missing
+RULE_MARK = "按规则不抓"
 
 
 def missing_parts(words: str) -> list[str]:
@@ -777,6 +789,8 @@ def missing_parts(words: str) -> list[str]:
     if not words:
         return []
     found = [name for mark, name in MISSING_WORDS if mark in words]
+    if not found and RULE_MARK in words:  # left out by rule: nothing is missing (no kind of its own, no gap drawn)
+        return []
     return found or [tw(words.split("（", 1)[0])]
 
 
@@ -1158,7 +1172,8 @@ def build_step(where: Where) -> Step:
         say = f"正在建庫：步驟 {status.get('step')}（{stamp(status.get('since'))} 開始）；正在用的是 {stamp(swapped)} 那份"
         if since is not None and since > BUILD_LONG:
             state, fix = WARN, CONTENT
-            say = f"建庫跑了 {span(since)} 還沒完（停在步驟 {status.get('step')}）"
+            say = (f"建庫的狀態檔停在步驟 {status.get('step')}：{stamp(status.get('since'))} 寫的，之後 {span(since)} "
+                   "沒有更新（可能被中斷）")
     elif status["state"] == "failed" and status.get("code") != 3:
         state, fix = WARN, CONTENT
         say = (f"上一次建庫（{stamp(status.get('at'))}，可能是試建）停在步驟 {status.get('step')}、退出碼 "
@@ -1487,6 +1502,7 @@ def nightly_step(where: Where) -> Step:
         step.notes.append("建庫查出的新問題：" + "、".join(f"{r.get('site')} {FLAG_WORDS.get(r.get('kind'), r.get('kind'))}"
                                                 for r in status["new_reminders"][:8] if isinstance(r, dict)))
     if (pipe / "ingest.pause").exists():
+        step.paused = True
         step.notes.append("現在是暫停的（有 ingest.pause）：每晚只轉文字、不換庫")
     state = NIGHT_STATE.get(outcome, WARN)
     fix = CONTENT if state != OK else ""

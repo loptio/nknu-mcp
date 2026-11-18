@@ -589,15 +589,23 @@ class Sweep:
         self.thread: threading.Thread | None = None
         self.stopping = threading.Event()
         self.finished = threading.Event()
+        self.held = False  # asked for while the nightly update was fetching: not started, the last results stay
 
     # ------------------------------------------------ running
 
-    def ensure(self) -> None:
+    def ensure(self, hold: bool = False) -> None:
         """Start the sweep the first time 網頁核查 is asked for; sweep again when the ledger has changed since the
         last one started (at most every resweep_seconds, never while one runs); try again a while after a sweep
-        that could not read the ledger."""
+        that could not read the ledger. hold: the nightly update is fetching or exporting, so no sweep is started
+        now (a sweep reads the whole archive for about 17 minutes on the disk the crawler writes: opening a page at
+        night must not start that; 2026-11-18, found when a look at 找文件 at 03:32 began one); one already running
+        goes on, the results of the last one stay, and the pages say so (progress['held'])."""
         with self.lock:
             if self.phase in ("reading", "checking", "closed"):
+                self.held = False
+                return
+            self.held = hold
+            if hold:
                 return
             now = self.clock()
             if self.phase == "failed" and now - self.started < RETRY_SECONDS:
@@ -734,7 +742,8 @@ class Sweep:
         running = self.phase in ("reading", "checking")
         whole = self.phase == "done"  # a sweep that ended: every page has its result
         out = {"phase": self.phase, "running": running, "done": total if whole else sum(self.done.values()),
-               "total": total, "older": self.carried, "failure": self.failure, "ready": listing is not None}
+               "total": total, "older": self.carried, "failure": self.failure, "ready": listing is not None,
+               "held": self.held}
         if site:
             pages = len(listing.site_pages.get(site, [])) if listing is not None else 0
             out["site_total"] = pages

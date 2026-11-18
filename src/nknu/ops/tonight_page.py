@@ -1,21 +1,18 @@
-"""每晚運行 (今晚 until the owner's 「一个页面叫"今晚"你觉得合理吗」, 11-17), the home of 檢視台 (panels v3: docs/superpowers/specs/2026-11-17-panels-v3-questions.md 三; owner 11-17: 「我觉得
-你设计的页面在数据可视化和整个网页逻辑层面还是完全没办法给人用」, then 「你再按照安装的插件和发现的问题再优化dashboard吧，
-我看一下」). The page is five sections, top to bottom, each answering one of the owner's questions in the form the
-Dashboard Design plugin's data-display table gives it, then one folded section with each step's detail:
+"""The data and the shared pieces of 每晚運行 (nknu.ops.home_page, the home of 檢視台) and of a site's page (nknu.ops.
+site_page), read from nknu.ops.pipeline's snapshot, nknu.ops.nightly's night and nknu.ops.history's record:
 
-  1 最近一晚正不正常？要我做什麼嗎？    a state with its icon and word, the night's sentence, 要你做的事 (or 不用做什麼)
-  2 每晚跑到哪一步、哪一步卡住、花多久？  每晚各步時間: seven nights × the night clock, a segment a step (ECharts)
-  3 資料有沒有在變？進來多少、離開多少？  每晚新進與離開: fourteen nights from the nights' record (nknu.ops.history),
-                                      new up, left down, a red dot where some left for no reason found (ECharts);
-                                      a night picked shows its sites
-  4 每一步進多少、出多少、丟在哪？        整體流程（累計）: four bars (抓到 → 導出有檔 → 轉成文字 → 庫裡文件, pipeline.py's numbers),
-                                      what each step did not put out between them, its reasons a click away
-  5 哪些網站要我管？                    要處理的網站: at most ten, the most urgent first, what, at which step, who
+  problems, handle_rows   every step or site that is not normal, once, the worse first; the sites to look at
+  headline, mark_state    the one line on top in its fixed template and the one state (spec 2026-11-17-panels-v3-
+                          questions.md 八.4)
+  timeline_data           each night's parts as segments of the night's clock (every ingest run of the night)
+  nightbars_data/_table   the fourteen nights of the record: what came in, changed and left
+  funnel_data/_html, reason_rows, reconcile_words   a step's in and out on its own terms and its reasons as bars (a
+                          site's page draws them)
+  build_items             the build's own list of what left for no reason it could give
 
-Every section carries data-q (its number) and data-question; a chart has its table twin (nknu.ops.charts). The big
-flow map and the state said three times (dot, row mark, pill) are gone: the state is said once, on top. Words are
-Traditional Chinese, Taiwan usage; who fixes what is the sessions' names (pipeline.FIXERS). The forms, the names and
-the order inside a section are 【Claude】 (redesign 2026-11-17, research/dashboard_redesign_2026-11-17/diagnosis.md)."""
+Until 2026-11-18 this module also drew the home as five sections (panels v3); the owner then handed the panels over
+(「之前的session没有做好」) and the home is home_page's. Words are Traditional Chinese, Taiwan usage; nobody is named to
+fix anything (spec 八.2)."""
 
 from __future__ import annotations
 
@@ -28,25 +25,20 @@ from nknu.ops.history import hours_of
 from nknu.ops.look import e, icon
 from nknu.ops.nightly import DONE, RUN, STOP, clock
 from nknu.ops.pipeline import BAD, NONE, OK, WARN, span, stamp, when_of
-from nknu.ops.pipeline_page import AGAIN, stage_html, strip_fixer
-from nknu.ops.pipeline_page import CSS as STAGE_CSS
+from nknu.ops.pipeline_page import strip_fixer
 
 # the four steps of 流水線, each on its own terms (a cold reader of the lab's page, 11-17, read four bars of four units
 # on one scale as one quantity flowing, and 導出 6,028 > 抓到 5,898 as a mistake): the step, what is said of what it
 # did not put out, the unit of what went in, the word and unit of what came out 【Claude】
 FUNNEL = (("crawl", "爬取", "沒抓到", "個網址", "出", "個網址"), ("export", "導出", "沒存檔", "筆", "有檔", "筆"),
           ("totext", "轉文字", "沒轉成文字", "個檔", "出", "個檔"), ("build", "建庫", "沒成為文件", "筆", "出", "份文件"))
-PIPE_TIP = "這是到現在為止的總數（正式庫和爬蟲帳本），不是哪一晚的；每晚的變化看「每晚新進與離開」"
+PIPE_TIP = "這是到現在為止的總數（正式庫和爬蟲帳本），不是哪一晚的；每晚的變化看「每晚運行」的「每晚紀錄」"
 STEP_OF_COL = {"crawl": "爬取", "check": "爬取", "export": "導出", "refill": "導出", "text": "轉文字", "docs": "建庫"}
 STEP_OF_CELL = {"crawl": "crawl", "export": "export", "totext": "totext", "build": "build", "swap": "build"}
-SHOWN_SITES = 10  # rows of 要處理的網站 (spec 三.5)
 SHOWN_REASONS = 8  # reasons a drop lists before 其他 (spec 四.3)
 SHOWN_NIGHT_SITES = 8  # sites listed for a night picked on the bars 【Claude】
 SHOWN_UNEXPLAINED = 10  # documents of 查不出原因 listed 【Claude】
 STATE_ICON = {OK: "ok", WARN: "warn", BAD: "no", NONE: "dash", "run": "dash"}
-PAGE_WORDS = {OK: "正常", WARN: "留意", BAD: "出錯", "run": "跑中", NONE: "還沒結果"}
-QUESTIONS = {1: "最近一晚正不正常？有什麼問題？", 2: "每晚跑到哪一步、哪一步卡住、花多久？",
-             3: "資料有沒有在變？每晚進來多少、離開多少？", 4: "整條流水線每一步進多少、出多少、丟在哪？", 5: "哪些網站要我管？"}
 # a clock: the mark of what runs (look has no such drawing; currentColor only)
 CLOCK = ("<svg class='ic' viewBox='0 0 16 16' width='{s}' height='{s}' fill='none' stroke='currentColor' "
          "stroke-width='1.6' stroke-linecap='round' aria-hidden='true'><circle cx='8' cy='8' r='5.6'/>"
@@ -55,20 +47,6 @@ CLOCK = ("<svg class='ic' viewBox='0 0 16 16' width='{s}' height='{s}' fill='non
 
 def n(value: int | None) -> str:
     return "—" if value is None else f"{value:,}"
-
-
-def section(q: int, sec_id: str, title: str, body: str, *, aside: str = "", card: bool = True,
-            title_tip: str = "") -> str:
-    """One of the page's sections: data-q its question's number, a plain-noun title (its floating card: title_tip),
-    an aside on the right (a chart's 看表格), the body in a card."""
-    tip = f" data-tip='{e(title_tip)}'" if title_tip else ""
-    head = f"<div class='v3-h'><h2{tip}>{e(title)}</h2>{aside}</div>" if title else ""
-    inner = f"<div class='card pad'>{body}</div>" if card else body
-    return (f"<section class='v3-q' id='{e(sec_id)}' data-q='{q}' data-question='{e(QUESTIONS.get(q, ''))}' "
-            f"aria-label='{e(title or QUESTIONS.get(q, ''))}'>{head}{inner}</section>")
-
-
-# ------------------------------------------------------------------------------------------------ 5 要處理的網站
 
 
 def handle_rows(snap: dict, changes: dict | None) -> list[dict]:
@@ -111,35 +89,6 @@ def handle_rows(snap: dict, changes: dict | None) -> list[dict]:
         row["sev"] = row["issues"][0]["sev"] if row["issues"] else OK
     return sorted(rows.values(), key=lambda r: (rank.get(r["sev"], 2), -r["unexplained"], -r["docs"], r["name"]))
 
-
-def sites_section(rows: list[dict], all_href: str, reading: bool) -> str:
-    if reading:
-        body = "<p class='v3-empty'>正在讀每一步的紀錄</p>"
-    elif not rows:
-        body = "<p class='v3-empty'>沒有要處理的網站</p>"
-    else:
-        trs = []
-        for r in rows[:SHOWN_SITES]:
-            first = r["issues"][0]
-            more = len(r["issues"]) - 1
-            tip = "\n".join(f"{it['step']}：{it['what']}" for it in r["issues"])
-            mark = f"<span class='v3-m' data-state='{e(r['sev'])}'>{icon(STATE_ICON.get(r['sev'], 'dash'), 11)}</span>"
-            trs.append(
-                f"<tr data-site='{e(r['key'])}'><td class='v3-sn'>{mark}<a href='{e(r['href'])}' data-tip='{e(r['key'])}'>"
-                f"{e(r['name'])}</a></td><td data-tip='{e(tip)}'>{e(first['what'])}"
-                + (f" <span class='faint'>還有 {more} 件</span>" if more else "")
-                + f"</td><td>{e(first['step'])}</td></tr>")
-        body = (f"<div class='v3-table'><table class='v3-t v3-sites'><thead><tr><th>網站</th><th>原因</th>"
-                f"<th>在哪一步</th></tr></thead><tbody>{''.join(trs)}</tbody></table></div>")
-    rest = len(rows) - SHOWN_SITES
-    aside = ""
-    if all_href:
-        aside = (f"<a class='v3-tog v3-link' href='{e(all_href)}'>"
-                 + (f"還有 {rest} 個 · " if rest > 0 else "") + "全部網站 →</a>")
-    return section(5, "sites", "要處理的網站", body, aside=aside)
-
-
-# ------------------------------------------------------------------------------------------------ 1 最近一晚
 
 # a night's parts: their state in the fixed words (spec 2026-11-17-panels-v3-questions.md 八.1)
 SHOWN_PROBLEMS = 12  # rows of 問題 before 還有 N 個 【Claude】
@@ -258,31 +207,6 @@ def problem_html(x: dict) -> str:
             f"<span class='v3-pt num'>{e(x['when'])}</span></li>")
 
 
-def status_section(t: dict, changes: dict | None, rows: list[dict], state: str, api: str) -> str:
-    said = headline(t, changes, rows)
-    mark = CLOCK.format(s=20) if state == "run" else icon(STATE_ICON.get(state, "dash"), 20)
-    if rows:
-        lis = "".join(problem_html(x) for x in rows[:SHOWN_PROBLEMS])
-        more = len(rows) - SHOWN_PROBLEMS
-        listing = (f"<ul class='v3-problems'>{lis}</ul>"
-                   + (f"<p class='v3-more-p'><a href='#sites'>還有 {more} 個</a></p>" if more > 0 else ""))
-    else:
-        listing = "<p class='v3-none'>沒有問題</p>"
-    live = " data-live" if t.get("live") else ""
-    # the word under the mark is the headline's own (the night's last state, the spec's five words); its colour and
-    # icon are the worst of the night and its problems, so 完成 with problems is amber (round 3: one word, both places)
-    night = next((x for x in t.get("nights") or [] if x.get("night") == t.get("default")), None)
-    word = night_word(night)[0] if night else PAGE_WORDS.get(state, state)
-    body = (f"<div class='v3-now' data-tonight='{e(api)}' data-sig='{e(t.get('sig'))}'{live}>"
-            f"<div class='v3-state' data-state='{e(state)}'><span class='v3-dot'>{mark}</span>"
-            f"<b>{e(word)}</b></div>"
-            f"<div class='v3-main'><p class='v3-say'>{e(said)}</p><h3 class='v3-problems-h'>問題</h3>{listing}</div></div>")
-    return section(1, "now", "", body)
-
-
-# ------------------------------------------------------------------------------------------------ 2 每晚時間
-
-
 def _tone(c: dict) -> str:
     sev = c.get("sev") or ""
     if sev == BAD:
@@ -291,15 +215,6 @@ def _tone(c: dict) -> str:
         return "warn"
     return "run" if c.get("state") == RUN else "done"
 
-
-# what the marks of the two charts mean (a cold reader of the first version could not tell 「!」 from 「✕」 or the
-# grey dates): one row under each chart, shown with the drawing only
-TIMELINE_KEY = ("<div class='v3-key'><span><i class='k-done'></i>完成</span><span><i class='k-run'>◷</i>跑中</span>"
-                "<span><i class='k-warn'>!</i>停了、要看</span><span><i class='k-bad'>✕</i>出錯</span>"
-                "<span>滑過去看每一步的時間和原因</span></div>")
-NIGHTBARS_KEY = ("<div class='v3-key'><span><i class='k-new'></i>新進</span><span><i class='k-left'></i>離開</span>"
-                 "<span><i class='k-dot'></i>查不出原因的離開</span><span>日期淡色：那一晚沒有紀錄</span>"
-                 "<span>點一晚看它的網站</span></div>")
 
 
 def nightly_words(outcome: str | None) -> str:
@@ -387,41 +302,6 @@ def timeline_data(t: dict, now: datetime) -> dict:
     return {"nights": rows, "max": top_h}
 
 
-def timeline_table(data: dict) -> str:
-    names = ("爬取", "導出", "轉文字", "建庫", "換庫")
-    out = []
-    for row in data["nights"]:
-        by = {s["name"]: s for s in row["segs"] if not s["key"].startswith("run")}
-        cells = [f"<span data-tip='{e(row.get('tip'))}'>{e(row['title'])}</span>"]
-        for name in names:
-            s = by.get(name)
-            if s is None:
-                cells.append("<span class='faint'>—</span>" if row["segs"] else "")
-                continue
-            word = s["word"] if s["tone"] != "done" else ""
-            cells.append(f"{e(s['when'])}" + (f"<br><span class='v3-word' data-tone='{e(s['tone'])}'>{e(word)}</span>"
-                                              if word else ""))
-        others = [s for s in row["segs"] if s["key"].startswith("run")]
-        if others:  # every other run of the night, in the 轉文字 column where the night's own begins
-            cells[3] = "".join(f"<span class='v3-word' data-tone='{e(x['tone'])}'>進庫第 {x['run']} 次 {e(x['word'])}"
-                               f"</span> {e(x['when'])}<br>" for x in others) + cells[3]
-        if not row["segs"]:
-            cells[1] = e(row["mark"])
-        out.append(cells)
-    return charts.table(["晚上", *names], out)
-
-
-def timeline_section(t: dict, now: datetime) -> str:
-    data = timeline_data(t, now)
-    fig = charts.figure("fig-timeline", chart="timeline", src="data-timeline", table=timeline_table(data),
-                        label="最近 7 晚每一步的時間", height=56 * max(1, len(data["nights"])) + 40, key=TIMELINE_KEY)
-    return section(2, "nights", "每晚各步時間", charts.data_tag("data-timeline", data) + fig,
-                   aside=charts.toggle("fig-timeline"))
-
-
-# ------------------------------------------------------------------------------------------------ 3 每晚進出
-
-
 def source_words(rec: dict) -> str:
     """Where a night's numbers come from, for the floating card: the unexplained from the build's own check (and
     what the panels' comparison counted when it differs), new and changed from the comparison or the ingest line."""
@@ -452,25 +332,6 @@ def nightbars_data(hist: dict, labels: dict[str, str]) -> dict:
                                               s.get("name") or s["site"]))
         sites[day] = [{**s, "href": "/site?site=" + quote(s["site"], safe="")} for s in ordered]
     return {"nights": nights, "sites": sites, "shown": SHOWN_NIGHT_SITES}
-
-
-def _night_panel(data: dict) -> str:
-    """The sites of the latest night with counts and changes (a bar picked fills it again: charts.JS)."""
-    pick = next((x for x in reversed(data["nights"]) if x["counted"] and data["sites"].get(x["night"])), None)
-    if pick is None:  # no night has its sites recorded: nothing to show (no 「沒有網站有變動」 that is not known)
-        return ""
-    rows = data["sites"].get(pick["night"], [])
-    title = f"{pick['date']} 有變動的網站" if pick else "有變動的網站"
-    lis = []
-    for s in rows[:SHOWN_NIGHT_SITES]:
-        flag = (f"<span class='v3-flag'>✕ 查不出原因 {s['unexplained']:,}</span>" if s.get("unexplained") else "")
-        lis.append(f"<li><a href='{e(s['href'])}'>{e(s.get('name') or s['site'])}</a>"
-                   f"<span class='n'>新進 {n(s.get('new') or 0)}</span><span class='n'>離開 {n(s.get('left') or 0)}</span>"
-                   f"{flag}</li>")
-    if not lis:
-        lis.append("<li class='v3-empty'>這一晚沒有網站有變動</li>")
-    return (f"<div class='v3-panel' data-night-panel><h3 data-night-title>{e(title)}</h3>"
-            f"<ul class='v3-nsites'>{''.join(lis)}</ul></div>")
 
 
 def night_departures(t: dict | None) -> dict | None:
@@ -540,24 +401,6 @@ def nightbars_table(data: dict) -> str:
                       if x["unexplained"] else "0"),
                      n(x["docs"])])
     return charts.table(["晚上", "新進", "改了", "離開", "查不出原因", "庫裡文件"], rows, nums=(1, 2, 3, 4, 5))
-
-
-def flow_section(hist: dict, changes: dict | None, labels: dict[str, str], t: dict | None = None) -> str:
-    if not hist.get("enabled"):
-        body = (f"<p class='v3-empty'><span class='v3-m' data-state='warn'>{icon('warn', 11)}</span> 沒有在記每晚的紀錄："
-                f"{e(hist.get('why') or '')}</p>" + _unexplained(changes, t))
-        return section(3, "flow", "每晚新進與離開", body)
-    data = nightbars_data(hist, labels)
-    if not any(x["counted"] for x in data["nights"]):
-        body = "<p class='v3-empty'>還沒有紀錄：第一晚跑完以後就有</p>" + _unexplained(changes, t)
-        return section(3, "flow", "每晚新進與離開", body)
-    fig = charts.figure("fig-flow", chart="nightbars", src="data-flow", table=nightbars_table(data),
-                        label="最近 14 晚新進和離開的文件", height=240, key=NIGHTBARS_KEY)
-    body = charts.data_tag("data-flow", data) + fig + _night_panel(data) + _unexplained(changes, t)
-    return section(3, "flow", "每晚新進與離開", body, aside=charts.toggle("fig-flow"))
-
-
-# ------------------------------------------------------------------------------------------------ 4 流水線
 
 
 def flow_words(into: int | None, value: int | None, unit_in: str, out_word: str, unit_out: str) -> str:
@@ -669,32 +512,6 @@ def funnel_table(stages: list[dict]) -> str:
     return charts.table(["步驟", "進", "出", "留下", "少了", "單位"], rows, nums=(1, 2, 3, 4))
 
 
-def funnel_section(snap: dict, reading: bool) -> str:
-    """整體流程（累計）: standing totals, not last night (its title says so, the tip says where to look for a night)."""
-    tip = PIPE_TIP + (f"；各步驟的紀錄每 5 分鐘讀一次，頁面更新 {stamp(snap.get('at'))}" if snap.get("at") else "")
-    if reading:
-        return section(4, "pipeline", "整體流程（累計）", "<p class='v3-empty'>正在讀每一步的紀錄</p>", title_tip=tip)
-    stages = funnel_data(snap)
-    fig = charts.figure("fig-funnel", plot=funnel_html(stages), table=funnel_table(stages),
-                        label="流水線每一步進多少、出多少")
-    return section(4, "pipeline", "整體流程（累計）", fig, aside=charts.toggle("fig-funnel"), title_tip=tip)
-
-
-# ------------------------------------------------------------------------------------------------ the details
-
-
-def details_section(snap: dict, panels: dict[str, str]) -> str:
-    """The seven steps' rows (pipeline_page.stage_html), folded: what each step does, its numbers, notes, reasons."""
-    if not snap.get("steps"):
-        return ""
-    when = (f"頁面更新 {e(stamp(snap.get('at')))}"
-            + ("（正在重新讀）" if snap.get("running") else " · <a href='/?fresh=1'>現在重讀</a>"))
-    chain = "<ol class='pl-chain'>" + "".join(stage_html(s, panels) for s in snap["steps"]) + "</ol>"
-    return (f"<details class='card v3-more' id='steps'><summary>{icon('right', 14)}<span>各步驟細節</span>"
-            f"<span class='faint small v3-when' data-tip='每 5 分鐘重新讀一次各步驟的紀錄；這次讀了 {e(snap.get('took'))}'>"
-            f"{when}</span></summary>{chain}</details>")
-
-
 TONIGHT_JS = """(()=>{const box=document.querySelector('[data-tonight]');if(!box)return;
 const words=s=>s<90?Math.round(s)+' 秒':s<5400?Math.round(s/60)+' 分鐘':Math.floor(Math.round(s/60)/60)+' 小時 '+Math.round(s/60)%60+' 分';
 const tick=()=>document.querySelectorAll('[data-since]').forEach(el=>{el.textContent='已經 '+words(Date.now()/1000-Number(el.dataset.since))});
@@ -794,20 +611,7 @@ font-size:13px}
 .rs-b{height:10px;min-width:0}.rs-b i{display:block;height:100%;border-radius:0 4px 4px 0;background:var(--amt)}
 .rs-n{text-align:right;font-variant-numeric:tabular-nums}
 
-table.v3-sites td{font-size:13px}
-table.v3-sites td.v3-sn{white-space:nowrap}
-table.v3-sites td.v3-sn a{font-weight:600;text-decoration:none;margin-left:6px}
-table.v3-sites td.v3-sn a:hover{text-decoration:underline}
-table.v3-sites tbody tr:hover td{background:var(--hover)}
 
-.v3-more{margin-top:26px}
-.v3-more>summary{display:flex;align-items:center;gap:8px;padding:12px 18px;cursor:pointer;list-style:none;font-size:16px;
-font-weight:650}
-.v3-more>summary::-webkit-details-marker{display:none}
-.v3-more>summary .ic{color:var(--ink3);transition:transform .15s}.v3-more[open]>summary .ic{transform:rotate(90deg)}
-.v3-more>summary .v3-when{margin-left:auto;font-weight:400}
-.v3-more .pl-chain{margin:0;border-top:1px solid var(--line);border-radius:0}
-@media (prefers-reduced-motion:reduce){.v3-more>summary .ic{transition:none}}
 @media (prefers-reduced-motion:no-preference){.v3-state[data-state=run] .v3-dot .ic{animation:v3-turn 2.4s linear infinite}}
 @keyframes v3-turn{to{transform:rotate(360deg)}}
 
@@ -822,35 +626,7 @@ gap:4px 10px;padding:6px 2px}
 .fn-why{padding:2px 0 8px}
 .rs li{grid-template-columns:minmax(0,1fr) 64px;grid-template-areas:"w n" "b b";gap:2px 10px}
 .rs-w{grid-area:w}.rs-n{grid-area:n}.rs-b{grid-area:b}
-table.v3-sites thead{display:none}
-table.v3-sites tr{display:grid;grid-template-columns:minmax(0,1fr) auto;padding:8px 0;border-bottom:1px solid var(--line)}
-table.v3-sites td{border:0;padding:0 0 2px}
-table.v3-sites td:nth-child(2){grid-column:1/-1}
-table.v3-sites td:nth-child(3){color:var(--ink2)}table.v3-sites td:nth-child(4){grid-column:1/-1;color:var(--ink2);font-size:12px}
-.v3-more>summary{flex-wrap:wrap}.v3-more>summary .v3-when{margin-left:0;width:100%}
 }
 """
 
 
-def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dict[str, str], all_href: str = "",
-              now: datetime | None = None) -> str:
-    """The page under the top bar (the module docstring). snap: pipeline.Pipeline.snapshot; t: nightly.tonight;
-    changes: changes.Changes.snapshot; hist: history.home_history; panels: where the steps' links go; all_href:
-    網站 (every site)."""
-    if now is None:
-        now = datetime.fromisoformat(t["now"]) if t.get("now") else datetime.now().astimezone()
-    reading = not snap.get("steps")
-    handle = [] if reading else handle_rows(snap, changes)
-    rows = problems(t, snap, handle)
-    state = mark_state(t, rows)
-    api = "/api/tonight?brief=1"
-    labels = {x["night"]: x["label"] for x in t.get("nights") or [] if x.get("label")}
-    again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if reading or snap.get("running") else ""
-    return (f"<style>{STAGE_CSS}{charts.CSS}{CSS}</style>"
-            + status_section(t, changes, rows, state, api)
-            + timeline_section(t, now)
-            + flow_section(hist, changes, labels, t)
-            + funnel_section(snap, reading)
-            + sites_section(handle, all_href, reading)
-            + details_section(snap, panels)
-            + again + f"<script>{TONIGHT_JS}</script>" + charts.scripts())

@@ -1,6 +1,8 @@
-"""文件 (檢視台 /doc): one box to find a document of the library or a page of the crawler's archive, by a few words of
-its title, its address or its id, typed in Simplified or Traditional; and, with nothing typed, the school's 網頁核查
-(the four deciding numbers and the misses merged across sites, which are about pages).
+"""文件搜尋 (檢視台 /doc): one box to find a document of the library or a page of the crawler's archive, by a few words
+of its title, its address or its id, typed in Simplified or Traditional. With nothing typed the page says what the box
+takes (empty_html). Until 2026-11-18 it showed the school's 網頁核查 there (the four deciding numbers and the misses
+merged across sites): that is about the crawl, not about finding a document, and now has its own page, /check with
+nothing asked (school_body), in the bar's 工具 menu.
 
 Structure design docs/superpowers/specs/2026-11-17-panels-structure-design.md section 二 (owner: 「可以按你的建议走吧，不用
 问我了」): 文件追蹤 and 網頁核查's entry were two boxes that each found half (a document's title; a page's name or a site),
@@ -21,10 +23,12 @@ from urllib.parse import quote, urlencode
 
 from nknu.ops.check_page import CHECK_CSS, CHECK_JS
 from nknu.ops.check_sites import DRAWER, SITES_CSS, SITES_JS, page_rows, school_section
-from nknu.ops.look import KIND_ICON, e, icon
+from nknu.ops.look import KIND_ICON, e, go_button, icon
 from nknu.ops.trace import KINDS
 
 DOCS_SHOWN = 40  # documents listed for what is typed; the rest counted 【Claude】
+# a kind's colour number (theme.css --k0…--k4: 公告, 一般網頁, 附件, 行事曆, 校外連結)
+KIND_COLOUR = {"notice": 0, "page": 1, "attachment": 2, "event": 3, "link": 4}
 
 CSS = """
 form.ask.dc-ask{margin:0 0 14px}
@@ -37,7 +41,20 @@ form.ask.dc-ask{margin:0 0 14px}
 background:var(--surface);color:var(--ink);text-decoration:none}.dc-sites a:hover{background:var(--hover)}
 .dc-sites a .ic{color:var(--ink3)}
 a.prow .pn .ic{margin-right:6px;color:var(--ink3);vertical-align:-2px}
+a.prow .pn .dc-k .ic{color:inherit}.dc-k0{color:var(--k0)}.dc-k1{color:var(--k1)}.dc-k2{color:var(--k2)}.dc-k3{color:var(--k3)}.dc-k4{color:var(--k4)}
 .dc-school h2.sec{margin-top:18px}
+form.ask.chk-ask+#doc-list{margin-top:14px}
+.dc-empty{padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.dc-empty h2{font-size:14px;font-weight:650;margin:0}
+.dc-hints{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.dc-hints li{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:10px;background:var(--sunk);font-size:13px}
+.dc-hints b{font-weight:650}.dc-hints span{color:var(--ink2);line-height:1.5}
+.dc-try{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px}
+.dc-try .lab{color:var(--ink3);font-size:12px;margin-right:2px}
+.dc-try a{padding:4px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--surface);color:var(--ink);
+text-decoration:none}.dc-try a:hover{background:var(--hover)}
+.dc-two-say{margin:0;font-size:13px;color:var(--ink2);line-height:1.6}
+.dc-empty .dc-more{display:inline-flex;align-items:center;gap:4px;font-size:13px}
 """
 
 # As one types, the list follows (one request a moment after the last key, the answer to the latest kept), and while the
@@ -55,11 +72,24 @@ const load=asked=>{const q=box.value.trim();if(!asked&&busy()){poll();return}con
 box.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>load(true),200)});poll()})();
 """
 
+# 全校網頁核查's own page (/check with nothing asked): while the sweep runs, its numbers and lists fill themselves in,
+# never under the pointer or the keyboard.
+SCHOOL_JS = """
+(()=>{const list=document.getElementById('doc-list');if(!list)return;let timer=null;
+const busy=()=>list.matches(':hover')||list.contains(document.activeElement);
+const poll=()=>{clearTimeout(timer);if(list.querySelector('[data-running]'))timer=setTimeout(load,4000)};
+const load=()=>{if(busy()){poll();return}
+  fetch('/doc/find?school=1',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{if(j)list.innerHTML=j.html;poll()})
+  .catch(()=>{})};poll()})();
+"""
+
+EXAMPLES = ("學雜費", "選課", "宿舍")  # words a student's question has, to try the box with 【Claude】
+
 
 def doc_form(q: str, *, focus: bool = True) -> str:
-    return (f"<form class='ask dc-ask' id='doc-ask' action='/doc' method='get'><label class='box'>{icon('search', 16)}"
+    return (f"<form class='ask dc-ask' id='doc-ask' action='/doc' method='get'><div class='box'>"
             f"<input name='q' value='{e(q)}' placeholder='標題裡的字、網址或文件編號' aria-label='要找的文件或網頁'"
-            f" autocomplete='off'{' autofocus' if focus else ''}></label><button>找</button></form>")
+            f" autocomplete='off'{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form>")
 
 
 def _doc_rows(docs: list[dict]) -> str:
@@ -69,7 +99,8 @@ def _doc_rows(docs: list[dict]) -> str:
         under = " · ".join(y for y in (x.get("name") or x.get("site"), kind, x.get("date") or "無日期") if y)
         out.append(f"<li><a class='prow' href='/trace?{urlencode({'ref': x['doc_id']})}' "
                    f"data-tip-h='{e(x['doc_id'])}' data-tip='看它從抓取到搜尋的每一步'>"
-                   f"<span class='pn'>{icon(KIND_ICON.get(x.get('kind'), 'page'), 13)}{e(x.get('title') or x['doc_id'])}"
+                   f"<span class='pn'><span class='dc-k dc-k{KIND_COLOUR.get(x.get('kind'), 1)}'>"
+                   f"{icon(KIND_ICON.get(x.get('kind'), 'page'), 13)}</span>{e(x.get('title') or x['doc_id'])}"
                    f"</span><span class='pp'>{e(under)}</span></a></li>")
     return f"<ol>{''.join(out)}</ol>"
 
@@ -118,10 +149,32 @@ def results_html(q: str, docs: list[dict], found: dict | None, *, page_ref: str 
     return f"{out}<div class='dc-two'>{lib}{web}</div>"
 
 
+def empty_html() -> str:
+    """With nothing typed: what the box takes, a few words to try it with, what the two lists it answers with are,
+    and where the school's 網頁核查 went."""
+    hints = (("標題裡的幾個字", "簡體、繁體都可以，打幾個字就開始找"), ("網址", "學校網頁或檔案的網址，貼上就找那一頁"),
+             ("文件編號", "庫裡每份文件自己的編號"), ("網站名", "列出那個網站，點了看它的每一步"))
+    lis = "".join(f"<li><b>{e(a)}</b><span>{e(b)}</span></li>" for a, b in hints)
+    tries = "".join(f"<a href='/doc?{urlencode({'q': w})}'>{e(w)}</a>" for w in EXAMPLES)
+    return (f"<section class='card dc-empty'><h2>可以打什麼</h2><ul class='dc-hints'>{lis}</ul>"
+            f"<div class='dc-try'><span class='lab'>試試</span>{tries}</div>"
+            "<p class='dc-two-say'>找到的分兩邊：<b>庫裡的文件</b>點了看它從抓取到搜尋的每一步；<b>抓到的網頁</b>點了看存檔裡的"
+            "那一頁有沒有漏抓。</p>"
+            f"<a class='dc-more' href='/check'>全校網頁核查{icon('right', 12)}</a></section>")
+
+
 def school_html(view: dict | None, *, archive: bool = True) -> str:
-    """With nothing typed: the school's 網頁核查 (check_sites.school_section)."""
-    return (f"<div class='dc-school'><h2 class='sec'>全校網頁核查</h2>"
-            f"{school_section(view, archive=archive)}</div>")
+    """The school's 網頁核查 (check_sites.school_section): the part /doc/find?school=1 sends again while the sweep
+    runs."""
+    return f"<div class='dc-school'>{school_section(view, archive=archive)}</div>"
+
+
+def school_body(form: str, inner: str) -> str:
+    """全校網頁核查's own page (/check with nothing asked): the box that checks one page (form: check_page's), then the
+    four deciding numbers and the misses merged across sites (inner: school_html), the drawer a merged row opens in,
+    and the scripts."""
+    return (f"<style>{CHECK_CSS}{SITES_CSS}{CSS}</style>{form}<div id='doc-list'>{inner}</div>"
+            f"{DRAWER}<script>{CHECK_JS}</script><script>{SITES_JS}</script><script>{SCHOOL_JS}</script>")
 
 
 def doc_body(q: str, inner: str) -> str:

@@ -361,13 +361,20 @@ def client(made, lib, tmp_path):
         yield c
 
 
-def test_the_entry_is_the_doc_pages_school_numbers_and_its_sites_are_on_their_own_pages(client):
-    # structure design 2026-11-17 section 二: 網頁核查's entry is 文件's (its four numbers and the school's lists); its
-    # table of sites went to each site's page (/site), so one list of sites is left (網站)
+def test_the_schools_page_check_is_its_own_page_and_the_doc_search_opens_on_what_it_takes(client):
+    # 2026-11-18: 全校網頁核查 is /check with nothing asked, in the bar's 工具 menu (the four numbers and the school's
+    # lists; the table of sites is on each site's page since 2026-11-17); 文件搜尋 with nothing typed says what its box
+    # takes and does not start the sweep
     page = client.get("/check")
-    assert page.status_code == 200 and str(page.url).endswith("/doc") and "aria-current='page'>找文件</a>" in page.text
+    assert page.status_code == 200 and str(page.url).endswith("/check") and "<title>全校網頁核查" in page.text
+    assert "aria-current='page'>網頁核查<svg" in page.text and "<details class='nk-tools nk-on'>" in page.text
     tree = LexborHTMLParser(page.text)
-    assert not tree.css("a.srow") and tree.css_first("h2.sec").text() == "全校網頁核查"
+    assert not tree.css("a.srow") and tree.css_first("form#chk-ask input[name=url]") is not None
+    empty = LexborHTMLParser(client.get("/doc").text)
+    assert empty.css_first("#doc-list .dc-empty h2").text() == "可以打什麼" and len(empty.css(".dc-hints li")) == 4
+    assert empty.css_first(".dc-try a").attributes["href"].startswith("/doc?q=") and not empty.css("#doc-list .lists")
+    assert empty.css_first("a.dc-more").attributes["href"] == "/check" and "已核查" not in empty.text()
+    assert "dc-empty" in client.get("/doc/find").json()["html"]
     assert "已核查 8 頁" in page.text and "正文區有漏" in page.text and "選單沒抓到" in page.text
     assert "帳本裡沒有這個網址" not in page.text and "<iframe" not in page.text
     assert " title=" not in page.text.split("<main>", 1)[1]
@@ -584,15 +591,16 @@ def test_the_entry_lists_the_schools_misses_merged_across_sites_the_most_pages_f
 
 
 def test_the_entry_shows_the_schools_lists_and_its_old_list_still_sorts(client):
-    tree = LexborHTMLParser(client.get("/doc").text)
+    tree = LexborHTMLParser(client.get("/check").text)
     lists = tree.css("#doc-list .lists section")
     assert len(lists) == 2 and "漏了的辦法" in lists[0].text() and "教務處 · 正文區 · 帳本沒有" in lists[0].text()
     assert "很薄的頁" in lists[1].text() and "選單沒抓到" not in lists[0].text()
-    assert client.get("/doc/find").json()["html"].count("class='lists") == 1  # the part its script asks for again
+    # the part its script asks for again
+    assert client.get("/doc/find", params={"school": "1"}).json()["html"].count("class='lists") == 1
     listed = LexborHTMLParser(client.get("/check/list", params={"sort": "check"}).json()["html"])
     check = next(a for a in listed.css(".sl-head a") if a.text() == "要查")
     assert check.attributes["aria-pressed"] == "true"
-    assert str(client.get("/check", params={"sort": "check"}).url).endswith("/doc")
+    assert "<title>全校網頁核查" in client.get("/check", params={"sort": "check"}).text  # the school's page itself
     assert client.app_state.sweep.overview("drop table")["sort"] == "gap"
     found = client.get("/check/list", params={"q": "教務", "sort": "check"}).json()["html"]
     assert "class='lists" not in found and "<a href" not in found.split("sl-head", 1)[1].split("</div>", 1)[0]
@@ -698,7 +706,7 @@ def test_the_school_window_follows_only_while_its_switch_is_on():
 def test_the_deciding_numbers_are_four_tiles_never_a_line_joined_by_dots(client):
     """research/dashboard_redesign_2026-11-17/diagnosis.md: the line 「…正文區有漏 67 頁 · 選單沒抓到…」 became tiles."""
     from nknu.ops.check_sites import summary_line
-    tree = LexborHTMLParser(client.get("/doc").text)
+    tree = LexborHTMLParser(client.get("/check").text)
     tiles = tree.css("#doc-list .sv .ck-fig")
     assert [t.css_first(".ck-w").text() for t in tiles] == ["正文區有漏", "選單沒抓到", "要查", "沒抓下來"]
     assert [t.css_first("b").text() for t in tiles] == ["2", "1", "2", "1"]
@@ -752,18 +760,20 @@ def test_one_sites_page_holds_everything_about_it_in_order(client):
     tree = LexborHTMLParser(page.text)
     head = tree.css_first(".st-head h1")
     assert head.text() == "教務處" and ACA in head.attributes["data-tip"] and HOME in head.attributes["data-tip"]
-    assert tree.css_first(".st-now").attributes["aria-label"] == "這個網站現在" and tree.css_first(".st-now .pill")
-    # panels v3 四: the five questions in order, then the steps' detail folded, then 網頁核查 at the bottom
+    assert tree.css_first(".st-head .v3-state b").text() and len(tree.css(".hm-nodes .hm-node")) == 4
+    # the site page of 2026-11-18 (spec 十): the state, the steps with a picked one's detail beside them, what is not
+    # normal, the documents, the nights, the last swap; then 網頁核查 across the page
     assert tree.css_first("header.st-head").attributes["data-q"] == "1"
     secs = [(x.attributes["id"], x.attributes["data-q"], x.css_first("h2").text().strip()) for x in tree.css("section.st-q")]
-    assert secs == [("flow", "2", "整體流程（累計）"), ("reasons", "3", "丟掉的原因"), ("docs", "4", "文件"),
-                    ("changes", "5", "最近幾晚")]
+    assert secs == [("flow", "2", "流程"), ("problems", "3", "問題"), ("docs", "4", "文件"), ("nights", "5", "每晚紀錄"),
+                    ("changes", "6", "上次換庫的變動")]
     text = page.text
-    assert text.index("id='changes'") < text.index("各步驟細節") < text.index("<h2 class='sec st-sec' id='check'>網頁核查")
+    assert text.index("id='changes'") < text.index("<h2 class='sec st-sec st-check' id='check'>網頁核查")
+    assert "各步驟細節" not in text and "echarts" not in text  # a step's facts are in its panel; no chart library
     assert "沒有前一份庫可以比" in page.text  # the last swap's comparison says why it has nothing to show
     assert tree.css_first("#chk-site").attributes["data-path"] == "/site"  # its 網頁核查, kept on this page
-    kinds = [tr.text() for tr in tree.css("table.st-kinds tbody tr")]
-    assert any(k.startswith("公告") for k in kinds) and kinds[-1].startswith("合計")
+    kinds = [li.text() for li in tree.css("#docs .st-legend li")]
+    assert any(k.startswith("公告") for k in kinds) and tree.css("#docs .st-kbar i")
     links = {a.text(): a.attributes["href"] for a in tree.css(".st-links a")}
     assert links["沒日期的原因"] == "http://127.0.0.1:18001/aca/site_undated_why?site=c.nknu.edu.tw%2Faca"
     assert links["全部文件"].endswith("/aca/site_docs?site=c.nknu.edu.tw%2Faca")
@@ -785,3 +795,30 @@ def test_the_doc_box_finds_documents_pages_and_sites_and_says_which_is_which(cli
     found = client.get("/doc/find", params={"q": "第一則"}).json()["html"]
     assert "庫裡的文件" in found and "<form" not in found  # the list alone, for the page's script
     assert "全校網頁核查" in client.get("/doc/find").json()["html"]  # nothing typed: the school's lists again
+
+
+def test_a_sweep_is_not_started_while_the_nightly_update_fetches_and_the_pages_say_so(made, lib):
+    # 2026-11-18: opening 找文件 at 03:32 began a sweep (about 17 minutes of reads of the archive) beside the nightly
+    # update; with hold nothing starts, the last results stay, and a page says why
+    from nknu.ops.check_sites import summary_line
+
+    sw = sweep.Sweep(made.archive, lib, resweep_seconds=0)
+    sw.ensure(hold=True)
+    assert sw.phase == "idle" and sw.thread is None and sw.progress()["held"] and not sw.progress()["ready"]
+    waiting = summary_line(sw.progress(), None)
+    assert "每晚更新正在抓網頁，核查等它跑完再開始" in waiting and "prog" not in waiting  # no bar: nothing runs
+    sw.ensure()  # the night's fetching over: the next look starts it
+    assert sw.wait(30) and sw.phase == "done" and not sw.progress()["held"]
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE meta SET value = value WHERE 0")  # nothing changed, then a change the crawler would make
+    new = C("https://c.nknu.edu.tw/ch/Held.aspx")
+    offset, = _records(made.archive / WARC, [(new, "200", [("Content-Type", "text/html")], _page("", "<p>新的</p>"))])
+    _url(conn, new, warc=WARC, offset=offset)
+    conn.close()
+    sw.ensure(hold=True)  # the ledger changed, but the nightly update is fetching: the last results stay
+    progress = sw.progress()
+    assert sw.gen == 1 and sw.phase == "done" and progress["held"] and progress["ready"]
+    line = summary_line(progress, sw.overview()["totals"])
+    assert "每晚更新在跑，先看上次的結果" in line and "已核查 8 頁" in line
+    sw.ensure()
+    assert sw.wait(30) and sw.gen == 2 and not sw.progress()["held"]

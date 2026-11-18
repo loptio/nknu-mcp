@@ -11,7 +11,7 @@ from datetime import date
 import pytest
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.ops import history, nightly, site_page, tonight_page
+from nknu.ops import history, home_page, nightly, site_page, tonight_page
 from nknu.ops.pipeline import BAD, CONTENT, OK, PIPE, WARN, Where
 from tests.ops.test_nightly import NIGHT, SAID, at, crawler_log, crawler_status, ingest, library, run
 
@@ -146,7 +146,7 @@ def test_the_home_and_a_site_list_the_build_s_unexplained_items_in_words(where):
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     ingest(where, [run("swapped", unexplained_left=3, departures=departures())], SAID)
     t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
-    html = tonight_page.flow_section({"enabled": False, "why": ""}, {"state": "none"}, {}, t)
+    html = home_page.changes_section({"state": "none"}, t)
     tree = LexborHTMLParser(html)
     rows = tree.css(".v3-bad li")
     assert len(rows) == 3 and "說不出原因" in tree.css_first(".v3-bad h3").text()
@@ -155,9 +155,10 @@ def test_the_home_and_a_site_list_the_build_s_unexplained_items_in_words(where):
     assert first.css_first("a.v3-doc").text() == "第一份<b>" and "<b>" not in html.replace("&lt;b&gt;", "")
     assert "導出那一行沒有檔了" in first.text()  # the build's Simplified words, shown Traditional
     assert rows[1].css_first("a.v3-doc").text() == "https://a.example/2"  # no title: its address
-    one = site_page.unexplained_items(t["shown"]["departures"], "a.example")
-    assert one.count("<li") == 2 and "b.example" not in one and "/trace?ref=" in one
-    assert site_page.unexplained_items(t["shown"]["departures"], "c.example") == ""
+    none = {"state": "none", "words": "沒有前一份庫可以比"}
+    one = site_page.changes_html(none, "a.example", t["shown"]["departures"])  # a site's page: its own items only
+    assert len(LexborHTMLParser(one).css(".v3-bad li")) == 2 and "b.example" not in one and "/trace?ref=" in one
+    assert "v3-bad" not in site_page.changes_html(none, "c.example", t["shown"]["departures"])
 
 
 def test_a_held_night_changed_nothing_in_the_library_whatever_the_held_one_lost(where, tmp_path_factory):

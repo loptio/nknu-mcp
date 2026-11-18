@@ -43,7 +43,11 @@
 {%- for name in named_parameter_values or {} if not (has_site and name == "site") %}{% set at.shown = at.shown + 1 %}{% endfor %}
 <div class="page-header">
     <h1>{% if canned_query %}{{ metadata.title or canned_query }}{% else %}自己寫的查詢{% endif %}{% if private %} 🔒{% endif %}</h1>
-    {% if display_rows %}<span class="count">{% if truncated %}超過 {% endif %}{{ "{:,}".format(display_rows|length) }} 列</span>{% endif %}
+    {% if display_rows %}<span class="count">
+        {%- if canned_query == "site_docs" and at.cur and at.cur.docs > display_rows|length -%}
+        只列最新的 {{ "{:,}".format(display_rows|length) }} 份，共 {{ "{:,}".format(at.cur.docs) }} 份
+        {%- else %}{% if truncated %}超過 {% endif %}{{ "{:,}".format(display_rows|length) }} 列{% endif -%}
+    </span>{% endif %}
 </div>
 
 {% if has_site %}
@@ -188,6 +192,24 @@
       td.classList.add('amount');
       td.style.setProperty('--w', (100 * values[k] / most).toFixed(1) + '%');
     });
+  });
+})();
+</script>
+
+<script>
+// a column of numbers reads from the right: one most of whose filled cells are numbers (a few may say 沒讀到字)
+(() => {
+  const table = document.querySelector('table.rows-and-columns');
+  if (!table || !table.tHead || !table.tBodies[0]) return;
+  const rows = [...table.tBodies[0].rows];
+  [...table.tHead.rows[0].cells].forEach((th, i) => {
+    const cells = rows.map(r => r.cells[i]).filter(Boolean);
+    if (cells.some(td => td.classList.contains('amount'))) return;
+    const said = cells.map(td => td.textContent.trim()).filter(Boolean);
+    const numbers = said.filter(t => /^-?\d[\d,]*(\.\d+)?%?$/.test(t)).length;
+    if (!numbers || numbers < 0.8 * said.length) return;
+    th.classList.add('numc');
+    cells.forEach(td => td.classList.add('numc'));
   });
 })();
 </script>

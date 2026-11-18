@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.ops import charts, check_sites, look, nightly, site_page, tonight_page
+from nknu.ops import charts, check_sites, home_page, look, nightly, site_page, tonight_page
 from nknu.ops.pipeline import OK, PIPE, Where
 from tests.ops.test_nightly import MANUAL_SAID, NIGHT, at, crawler_log, ingest, library, run
 from tests.ops.test_panels_v3 import hist, row_and_detail, snap, tonight
@@ -50,28 +50,30 @@ def test_the_pipeline_is_four_steps_each_its_own_share_and_says_it_is_a_standing
     assert [round(s["share"], 3) for s in stages] == [0.833, 0.55, 0.945, 0.673]
     assert stages[0]["flow"] == "進 120 個網址 → 出 100 個網址" and stages[1]["flow"] == "進 200 筆 → 有檔 110 筆"
     assert stages[3]["flow"] == "進 104 筆 → 出 70 份文件"
-    html = tonight_page.home_body(snap(), tonight(), None, hist(), {})
+    html = tonight_page.funnel_html(stages)  # a site's page draws these rows
     tree = LexborHTMLParser(html)
-    sec = tree.css_first("section[data-q='4']")
-    assert sec.css_first(".v3-h h2").text() == "整體流程（累計）" and "不是哪一晚" in sec.css_first(".v3-h h2").attributes["data-tip"]
-    fills = [r.css_first(".fn-fill").attributes["style"] for r in sec.css(".fn-row")]
+    fills = [r.css_first(".fn-fill").attributes["style"] for r in tree.css(".fn-row")]
     assert fills[0].startswith("width:83.3") and fills[1].startswith("width:55.0")  # the share, not one scale
-    assert "fn-whole" not in html and sec.css_first(".fn-row .fn-flow").text() == stages[0]["flow"]
+    assert "fn-whole" not in html and tree.css_first(".fn-row .fn-flow").text() == stages[0]["flow"]
+    # the home (2026-11-18) says no share at all: a node's panel splits what went in into what came out and each
+    # reason of what did not, in counts (建庫's 67% read as a loss where it is merges)
+    side = LexborHTMLParser(home_page.home_body(snap(), tonight(), None, hist(), {})).css_first(".hm-side")
+    assert "%" not in side.text() and side.css("[data-panel='step-build'] .hm-split i")
 
 
 def test_a_sites_reasons_add_up_to_the_losses_they_explain():
     row, detail = row_and_detail()
-    bars, _table, _count = site_page.reasons_html(site_page.site_stages(row, detail))
-    heads = [h.text() for h in LexborHTMLParser(bars).css(".rs-head")]
-    assert heads == ["爬取　少 10 個網址，都分了類", "導出　沒存檔 25 筆；清單上註明缺東西的 6 處（一筆可能缺好幾樣）",
-                     "轉文字　少 7 個檔，都分了類", "建庫　分得出的 9 份文件（這一步比不出這個網站總共少多少）"]
+    nodes = site_page.site_nodes(site_page.site_stages(row, detail), row, detail)
+    said = [LexborHTMLParser(site_page.step_panel(x, detail)).css_first(".hm-words").text() for x in nodes]
+    assert said == ["少 10 個網址，都分了類", "沒存檔 25 筆；清單上註明缺東西的 6 處（一筆可能缺好幾樣）",
+                    "少 7 個檔，都分了類", "分得出的 9 份文件（這一步比不出這個網站總共少多少）"]
 
 
 def test_two_times_are_named_for_what_they_are():
     page = look.shell("x", "", {"built_at": "2026-11-17T04:02:00+08:00"}).body.decode()
     assert "庫建於 11-17 04:02</span>" in page and "資料截至 2026" not in page
-    html = tonight_page.home_body(snap(), tonight(), None, hist(), {})
-    assert "讀於" not in html and "頁面更新 11-17 08:00" in html
+    html = home_page.home_body(snap(), tonight(), None, hist(), {})
+    assert "讀於" not in html and "各步驟的紀錄每 5 分鐘讀一次，這次 11-17 08:00" in html
 
 
 def test_no_sentence_is_written_about_a_run_that_was_made_good():
@@ -85,8 +87,8 @@ def test_the_small_bars_count_whole_documents_and_the_last_swap_is_named():
         "a.example", name="甲處", unit="", home="", now=(OK, "每一步都正常"), detail=detail,
         changes={"state": "none", "words": "沒有前一份庫可以比"}, changes_title="昨晚變了什麼", view=None,
         archive=False, kinds={}, tables="", row=row, hist={"enabled": False, "why": "x"})
-    lt = LexborHTMLParser(html).css_first(".st-lt")
-    assert lt.text().startswith("上次換庫的變動") and "前一份庫" in lt.attributes["data-tip"]
+    last = LexborHTMLParser(html).css_first("section#changes")  # named for what it is, not 昨晚 (a cold reader, 11-17)
+    assert last.css_first("h2").text() == "上次換庫的變動" and "沒有前一份庫可以比" in last.text()
 
 
 def test_a_page_check_just_begun_says_so_and_how_long_it_takes():

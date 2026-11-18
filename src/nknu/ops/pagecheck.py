@@ -111,6 +111,10 @@ REASON_WORDS = {
     "out:never_host": "不抓的網站", "out:bad_host": "網址寫壞了", "cap:depth": "撞到深度上限", "cap:site": "撞到整站上限",
     "out:internal_service": "學校內部的服務", "out:scheme": "不是網頁的網址",
     "out:skip_path": "名單寫明這條路徑不往下翻",  # round1.Site's skip paths (11-17): a rule, never missing
+    # 11-19 (the crawler's rules batch): a skip path with its own name, a site's pictures past its cap declined by
+    # the list, and the other sizes of a Wix picture already kept: all three are rules, never missing
+    "out:skip_path:teacher_fulltext": "教師著作全文，定了不收", "out:cap_image": "這一站超過圖片上限，名單寫明不抓",
+    "out:wix_size": "同一張圖的另一個尺寸",
     "media:drive_video": "雲端影片，只記檔名和大小", "media:drive_audio": "雲端聲音檔，只記檔名和大小",
     "media:drive_installer": "安裝檔，只記檔名和大小", "media": "影音或安裝檔，只記檔名和大小",
     "too_large": "檔案太大", "media_type": "影音或安裝檔", "gsimg_stale": "協作平台的舊圖", "server_down": "伺服器一直連不上",
@@ -1067,6 +1071,17 @@ system-ui,sans-serif;pointer-events:none;white-space:nowrap}
 @keyframes nkflash{from{box-shadow:0 0 0 0 rgba(196,141,37,0)}to{box-shadow:0 0 0 6px rgba(196,141,37,.75)}}
 """
 
+# After the page's own <style> blocks and the marks: nothing is drawn over anything else. The archive holds no style
+# sheet files, so a page comes with only the scraps of style written into it (a bar's fixed height, a block pulled up
+# by a negative margin, a menu placed absolutely) and its menus lay over one another (工業設計學系's pages, 2026-11-18).
+# Every element of the page goes back into the plain flow with the browser's own margins; the marks keep theirs. The
+# two :not(#…) only raise the rule over a page's own rules that name an id.
+FLOW_CSS = """
+body *:not(#nk-a):not(#nk-b):not(.nk-label):not(.nk-box):not(.nk-noimg):not(.nk-bg):not(img){position:static!important;
+float:none!important;height:auto!important;max-height:none!important;min-height:0!important;transform:none!important;
+margin:revert!important}
+"""
+
 
 def clean_css(text: str) -> str:
     """A style sheet of the school's that loads nothing by itself: url(…) as none, image-set(…) made void (its
@@ -1352,7 +1367,7 @@ class Marked:
                          if (css := clean_css(node.text(deep=True) or "")))
         title = self.tree.css_first("title")
         head = (f"<!doctype html><html><head><meta charset='utf-8'><title>{html.escape(title.text() if title else '')}"
-                f"</title>{styles}<style>{MARK_CSS}</style></head>")
+                f"</title>{styles}<style>{MARK_CSS}{FLOW_CSS}</style></head>")
         if self.tree.body is None:  # a frameset: its frames as boxes to click
             frames = "".join(self._open(n)[0] for n in self.tree.css("frame, iframe") if n.mem_id in self.marks)
             return head + f"<body class='nk-page'>{frames}</body></html>"

@@ -98,7 +98,7 @@ def test_an_empty_search_page_is_try_with_its_board(lib):
     page = lib.get("/search", follow_redirects=False)
     assert page.status_code == 307 and page.headers["location"] == "/try#board"
     page = lib.get("/search")
-    assert page.status_code == 200 and "aria-current='page'>搜尋</a>" in page.text and "名次" not in page.text
+    assert page.status_code == 200 and "aria-current='page'>測試</a>" in page.text and "名次" not in page.text
 
 
 def test_the_old_addresses_go_where_their_pages_went(lib):
@@ -111,7 +111,8 @@ def test_the_old_addresses_go_where_their_pages_went(lib):
     assert to("/search", qid="Q01", limit="20") == "/try?tab=why&qid=Q01&limit=20#result"
     assert to("/trace") == "/doc" and to("/trace", ref="停修") == "/doc?q=%E5%81%9C%E4%BF%AE"
     assert to("/pipeline/site", site="a.example/x") == "/site?site=a.example%2Fx"
-    assert to("/check") == "/doc" and to("/check", url="教務") == "/doc?q=%E6%95%99%E5%8B%99"
+    assert to("/check", url="教務") == "/doc?q=%E6%95%99%E5%8B%99"  # words: 文件搜尋 finds them
+    assert lib.get("/check", follow_redirects=False).status_code == 200  # nothing asked: 全校網頁核查 itself (11-18)
     assert to("/check", site="a.example", only="gap") == "/site?site=a.example&only=gap#check"
     assert lib.get("/trace", params={"ref": "d3"}, follow_redirects=False).status_code == 200  # a trace stays
     assert to("/site") == "http://127.0.0.1:18879/"  # no site asked: 網站, where every site is
@@ -119,10 +120,10 @@ def test_the_old_addresses_go_where_their_pages_went(lib):
 
 def test_the_second_tab_of_try_explains_the_search_on_the_library(lib):
     page = lib.get("/try", params={"tab": "why", "q": "停修", "doc": "dx"}).text
-    assert "aria-current='page'>搜尋</a>" in page and "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in page
+    assert "aria-current='page'>測試</a>" in page and "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in page
     assert "class='rhead'" in page and "id='r-dx'" in page and "class='star'" in page  # search_page's rows, dx marked
     assert "<form class='ask follow' action='/try'" in page and "name='doc' value='dx'" in page
-    assert "<title>停修 · 搜尋</title>" in page
+    assert "<title>停修 · 測試</title>" in page
 
 
 def test_the_questions_are_offered_and_their_gold_is_followed(db, tmp_path):
@@ -265,7 +266,7 @@ def test_words_that_are_no_id_find_documents_by_title(site):
     # 文件 (/doc) finds them since the structure design of 2026-11-17; the trace's box sends words there
     page = site.get("/trace", params={"ref": "停修"}).text
     assert "庫裡的文件" in page and "/trace?ref=" in page and "① 抓取" not in page
-    assert "aria-current='page'>找文件</a>" in page and "value='停修'" in page
+    assert "aria-current='page'>文件搜尋</a>" in page and "value='停修'" in page
     none = site.get("/trace", params={"ref": "沒有這幾個字"}).text
     assert "標題裡沒有「沒有這幾個字」的文件" in none
 
@@ -280,7 +281,7 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
         assert "href='/doc'" in page and "href='/'" in page and "class='nk-bar'" in page, path
         assert ">資料庫<svg" in page and "<summary>工具" in page and "翻庫" not in page, path
     marked = {path: page.split("aria-current='page'>", 1)[1].split("<", 1)[0] for path, page in pages.items()}
-    assert marked == {"/": "每晚運行", "/try": "搜尋", "/doc": "找文件", "/trace?ref=d3": "找文件"}
+    assert marked == {"/": "每晚運行", "/try": "測試", "/doc": "文件搜尋", "/trace?ref=d3": "文件搜尋"}
     assert "data-tip='每個網站收了多少、缺什麼" in pages["/"]  # what each entry is floats over its name
 
 
@@ -450,7 +451,7 @@ def test_a_test_question_is_shown_in_traditional_chinese_and_searched_as_written
         page = client.get("/try", params={"tab": "why", "qid": "Q01"}).text
         report = client.get("/api/search", params={"qid": "Q01"}).json()
     assert "<b>Q01</b>怎麼申請停修</span>" in listed and "怎么申请停修" not in listed
-    assert "Q01　怎麼申請停修</option>" in page and "<title>怎么申请停修 · 搜尋</title>" in page
+    assert "Q01　怎麼申請停修</option>" in page and "<title>怎么申请停修 · 測試</title>" in page
     assert report["query"] == "怎么申请停修"
 
 
@@ -473,4 +474,4 @@ def test_the_words_the_index_folds_to_simplified_are_shown_in_traditional(lib):
 def test_the_trace_page_leads_to_the_page_check_of_its_address(site):
     """design 2026-11-16-page-check-design.md section 一: a document with an address offers 「核查這一頁」."""
     page = site.get("/trace", params={"ref": NOTICE_URL}).text
-    assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>找文件</a>" in page
+    assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>文件搜尋</a>" in page

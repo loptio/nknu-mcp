@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 
 from nknu.content import build
 from nknu.ops import changes as ch
-from nknu.ops import nightly, tonight_page, web
+from nknu.ops import home_page, nightly, tonight_page, web
 from nknu.ops.pipeline import BAD, CONTENT, CRAWLER, OK, PIPE, TAIPEI, WARN, Where
 from tests.ops.library import models
 from tests.retrieval.test_search import TODAY
@@ -172,8 +172,10 @@ def test_an_export_waiting_on_its_lock_may_be_stuck_and_the_page_keeps_asking(wh
     assert seg["export"]["tone"] == "warn" and seg["export"]["to"] == pytest.approx(2 + 40 / 60, abs=0.01)
     rows = tonight_page.problems(t, {"steps": []}, [])  # spec 八.5: where, state, the source's own words, when
     assert [(x["where"], x["state"]) for x in rows] == [("導出", "可能卡住")] and "01:52" in rows[0]["reason"]
-    page = tonight_page.status_section(t, None, rows, tonight_page.mark_state(t, rows), "/api/tonight?brief=1")
+    page = home_page.status_section({"steps": []}, t, None, rows, tonight_page.mark_state(t, rows),
+                                    "/api/tonight?brief=1", at("2026-11-17T02:40:00"))
     assert "data-live" in page and "交給" not in page and "data-state='warn'" in page
+    assert "導出可能卡住（01:52 以後沒有動靜）" in page  # the line on top names the part that went silent
     later = nightly.tonight(where, now=at("2026-11-17T04:03:00"))
     export = cells(later)["export"]
     assert export["state"] == nightly.STOP and export["sev"] == BAD and export["say"] == "沒有收尾（紀錄停在 01:51）"
@@ -640,6 +642,50 @@ def test_a_file_the_school_took_away_is_explained_as_the_builds_swap_guard_count
     assert ch.SCHOOL_GONE == build.SCHOOL_GONE
 
 
+def test_another_size_of_a_picture_the_new_library_holds_left_for_a_reason(tmp_path):
+    # 11-18: the export keeps one size of a Wix picture; the build counts the other sizes' leaving as explained
+    # (same_image) when the new library holds the picture, and so does the panels' own comparison
+    wix = "https://static.wixstatic.com/media/"
+    declined = {"分类": build.RULE_DECLINED, "结果": "按规则不抓", "本地档案": "", "缺什么": ""}
+    folder = manifest(tmp_path, "exp/a-2", [{"网址": wix + "pic1.jpg/v1/fill/w_200/pic1.jpg", **declined},
+                                             {"网址": wix + "pic2.jpg/v1/fill/w_200/pic2.jpg", **declined},
+                                             {"网址": U + "declined.pdf", **declined}])
+    urls = {wix + "pic1.jpg/v1/fill/w_980/pic1.jpg": "d9"}
+    new = {"aliases": {}, "urls": urls, "pictures": ch.pictures_of(urls),
+           "sites": {"a": {"name": "範例所", "export": folder, "docs": 1}}, "docs": {}}
+    prev = {"sites": {"a": {"name": "範例所", "export": "exp/a-1", "docs": 3}}}
+    m = ch.Manifests(tmp_path)
+
+    def left(url: str) -> str:
+        return ch.why_left("d1", ("a", "attachment", "圖", url, "", 100, "x"), new, prev, m)[0]
+
+    assert left(wix + "pic1.jpg/v1/fill/w_200/pic1.jpg") == "same_image"
+    assert left(wix + "pic2.jpg/v1/fill/w_200/pic2.jpg") == "not_fetched"  # no size of this picture is in the library
+    assert left(U + "declined.pdf") == "not_fetched"  # declined by rule, and no picture: still looked at
+    assert ch.REASONS["same_image"][2] == ch.OK_KIND and ch.RULE_DECLINED == build.RULE_DECLINED
+    assert build._WIX_PICTURE.match(build._address(wix + "pic1.jpg/x")).group(1) == "pic1.jpg"  # one name both ways
+
+
+def test_a_kind_decided_out_left_for_a_reason(tmp_path):
+    # 11-19: a rule with its own name (teachers' publications in full) says so in the export's 原因代码; the build
+    # counts those leavings as explained (DECIDED_OUT), and so does the panels' own comparison
+    declined = {"分类": build.RULE_DECLINED, "结果": "按规则不抓", "本地档案": "", "缺什么": ""}
+    code = next(iter(build.DECIDED_OUT))
+    folder = manifest(tmp_path, "exp/a-2", [{"网址": U + "works/1.pdf", "原因代码": code, **declined},
+                                             {"网址": U + "other.pdf", "原因代码": "out:skip_path", **declined}])
+    new = {"aliases": {}, "urls": {}, "sites": {"a": {"name": "範例處", "export": folder, "docs": 0}}, "docs": {}}
+    prev = {"sites": {"a": {"name": "範例處", "export": "exp/a-1", "docs": 2}}}
+    m = ch.Manifests(tmp_path)
+
+    def left(url: str) -> tuple[str, str]:
+        return ch.why_left("d1", ("a", "attachment", "檔", url, "", 100, "x"), new, prev, m)
+
+    assert left(U + "works/1.pdf") == ("decided_out", "教師著作全文")
+    assert left(U + "other.pdf")[0] == "not_fetched"  # a path rule with no name explains nothing: still looked at
+    assert ch.REASONS["decided_out"][2] == ch.OK_KIND and ch.DECIDED_OUT == build.DECIDED_OUT
+    assert set(ch.DECIDED_WORDS) == set(build.DECIDED_OUT.values())  # every kind decided out has its words here
+
+
 def test_the_comparison_runs_in_the_background_and_never_writes_the_libraries(two, tmp_path):
     prev, new = two
     before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in two}
@@ -693,7 +739,7 @@ def test_the_home_draws_seven_nights_and_lists_what_left_for_no_reason(where, tw
     assert [x["name"] for x in data["nights"][0]["segs"]] == ["爬取", "導出", "轉文字", "建庫", "換庫"]
     assert {x["tone"] for x in data["nights"][0]["segs"]} == {"done"}  # no hue for a step that is done
     hist = {"enabled": False, "why": "沒有設定紀錄檔（--ops-db）"}
-    page = tonight_page.flow_section(hist, got, {})
+    page = home_page.home_body({"steps": []}, t, got, hist, {}, now=at("2026-11-17T09:00:00"))
     assert "查不出原因" in page and "/check?ref=" + "https%3A%2F%2Fschool.example%2Flost" in page
     assert "沒有在記每晚的紀錄" in page
 
@@ -703,12 +749,12 @@ def test_the_page_escapes_what_it_prints(where):
     t = nightly.tonight(where, now=at("2026-11-17T01:40:00"))
     t["nights"][-1]["cells"][0]["say"] = "<b>x</b>"
     t["nights"][-1]["label"] = "<i>y</i>"
-    page = tonight_page.home_body({"steps": []}, t, {"state": "none", "words": "<i>z</i>"},
-                                  {"enabled": False, "why": "<u>w</u>"}, {}, now=at("2026-11-17T01:40:00"))
+    page = home_page.home_body({"steps": []}, t, {"state": "none", "words": "<i>z</i>"},
+                               {"enabled": False, "why": "<u>w</u>"}, {}, now=at("2026-11-17T01:40:00"))
     for raw in ("<b>x</b>", "<i>y</i>", "<u>w</u>"):
         assert raw not in page
     assert "&lt;i&gt;y&lt;/i&gt;" in page and "&lt;u&gt;w&lt;/u&gt;" in page
-    assert "\\u003cb>x\\u003c/b>" in page  # the chart's JSON: no < from the data reads as markup
+    assert "&lt;b&gt;x&lt;/b&gt;" in page and "&lt;i&gt;z&lt;/i&gt;" in page and "<i>z</i>" not in page
     assert "data-live" in page  # the night runs: the page keeps asking
     later = nightly.tonight(where, now=at("2026-11-17T01:45:00"))
     assert later["sig"] == nightly.tonight(where, now=at("2026-11-17T01:40:00"))["sig"]  # minutes never reload

@@ -219,6 +219,9 @@ def _check_href(url: str, n: int | None = None) -> str:
     return "/check?" + urlencode(params)
 
 
+HELD_TIP = "核查要把存檔裡的網頁讀一遍（約 17 分鐘），和每晚更新用同一顆硬碟；每晚更新抓完、導完以後，再打開這一頁就會重新核查"
+
+
 def summary_line(progress: dict, sums: dict | None, *, unit_tip: str = "") -> str:
     """The answer first (design section 六 1): how far the check has come in one short line (with its bar while the
     sweep runs), then the four deciding numbers as tiles, each its number big and its plain noun under it, the
@@ -226,6 +229,10 @@ def summary_line(progress: dict, sums: dict | None, *, unit_tip: str = "") -> st
     if progress.get("phase") == "failed" and not progress.get("ready"):
         return (f"<div class='sv-line'><span class='pill bad' data-tip-h='讀不了帳本' data-tip='{e(progress['failure'])}'>"
                 "讀不了帳本</span></div>")
+    if progress.get("held") and (not progress.get("ready") or sums is None):
+        # nothing checked yet and the nightly update is fetching: the check waits (sweep.Sweep.ensure's hold)
+        return (f"<div class='sv-line'><span class='hd' data-tip='{e(HELD_TIP)}'>每晚更新正在抓網頁，核查等它跑完再開始"
+                "</span></div>")
     if not progress.get("ready") or sums is None:
         # the ledger is being read: how long it takes is not known, so the bar moves rather than fills
         running = " data-running='1'" if progress.get("running") else ""
@@ -247,7 +254,10 @@ def summary_line(progress: dict, sums: dict | None, *, unit_tip: str = "") -> st
     head = (f"<span class='hd' data-tip='{e(unit_tip or '帳本裡抓下來的網頁，一頁一頁照網頁核查的同一套規則核查')}'>"
             f"{said}</span>")
     older = ""
-    if progress.get("older"):
+    if progress.get("held"):
+        older = (f"<span class='pill none' data-tip-h='先看上次的結果' data-tip='{e(HELD_TIP)}'>每晚更新在跑，先看上次的結果"
+                 "</span>")
+    elif progress.get("older"):
         older = ("<span class='pill none' data-tip-h='有舊的結果' data-tip='帳本改過了，正在重新核查；"
                  f"還有 {_n(progress['older'])} 頁是改之前的結果，核查到就換掉'>有舊的結果</span>")
     if progress.get("phase") == "failed":

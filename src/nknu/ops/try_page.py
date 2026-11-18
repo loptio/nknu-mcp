@@ -46,7 +46,7 @@ import threading
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlsplit
 
-from nknu.ops.look import e, icon
+from nknu.ops.look import e, go_button, icon
 from nknu.ops.mcp_client import Exchange, McpClient, Session, approx_tokens
 from nknu.ops.search_page import why_url
 
@@ -264,7 +264,7 @@ def field_html(f: Field, value: str | None, *, wide: bool) -> str:
     name = ARG + f.name
     req = " required" if f.required else ""
     head = f"{f.name}　{type_words(f)}" + ("　必填" if f.required else "")
-    label = (f"<span class='tr-k' data-tip-h='{e(head)}' data-tip='{e(f.description)}'>{e(f.name)}"
+    label = (f"<span class='tr-k' data-tip-h='{e(head)}' data-tip='{e(f.description)}'>{name_html(f)}"
              + (REQUIRED if f.required else "") + "</span>")
     default = _shown_default(f)
     hint = f" placeholder='{e('預設 ' + default)}'" if default and default != "空白" else ""
@@ -325,7 +325,7 @@ def form_html(tool: dict, values: dict[str, str], *, shown: bool) -> str:
         rows = "<p class='faint small tr-none'>這個工具沒有參數</p>"
     allowed = read_only(tool)
     lock = "" if allowed else " disabled"
-    why = "" if allowed else ("<span class='pill none' data-tip='工具清單沒有把它標成只讀（readOnlyHint）；搜尋頁只呼叫只讀的工具'>"
+    why = "" if allowed else ("<span class='pill none' data-tip='工具清單沒有把它標成只讀（readOnlyHint）；這一頁只呼叫只讀的工具'>"
                               f"{icon('no', 12)}不呼叫</span>")
     return (f"<form class='tr-form' method='get' action='/try#result' data-tool='{e(name)}'"
             f"{'' if shown else ' hidden'}><input type='hidden' name='{CALL}' value='{e(name)}'>"
@@ -368,12 +368,34 @@ def option_tip(description: str, option: object) -> str:
     return description
 
 
+# a parameter's plain name when its description does not open with one (search's sort opens with its first option);
+# only a reading aid: the name the agent sends stays beside it, and a name not here simply has none 【Claude】
+PLAIN_NAMES = {"query": "要找什麼", "sort": "排序", "limit": "幾筆", "detail": "每筆多少原文", "unit": "單位", "id": "哪一份",
+               "part": "哪一節"}
+GLOSS_MAX = 12  # characters a description's opening clause may have to stand as the parameter's plain name
+
+
+def gloss(f: Field) -> str:
+    """A parameter's name in plain words, for the person reading the form: the opening clause of the service's own
+    description when it is a short one in the reader's language (每筆給多少原文, 要幾筆), else PLAIN_NAMES', else ''."""
+    first = re.split(r"[，。：；、（(]", " ".join((f.description or "").split()), maxsplit=1)[0].strip()
+    if first and not first[0].isascii() and len(first) <= GLOSS_MAX:
+        return first
+    return PLAIN_NAMES.get(f.name, "")
+
+
+def name_html(f: Field) -> str:
+    """A parameter's label: its plain name (gloss) and, beside it, the name the agent sends."""
+    plain = gloss(f)
+    return (f"<span class='tr-g'>{e(plain)}</span><code>{e(f.name)}</code>" if plain else f"<code>{e(f.name)}</code>")
+
+
 def param_html(f: Field, value: str | None, instructions: str, tool: str) -> str:
     """One parameter of the search form, as compact as its schema allows: an enum as a row of buttons (its default
     picked and marked 預設), an integer or a number as a small number field with its range, a text box with the
     names the instructions list (suggestions), anything else as the general form's field."""
     label = (f"<span class='tr-k' data-tip-h='{e(f.name)}　{e(type_words(f))}' data-tip='{e(f.description)}'>"
-             f"{e(f.name)}" + (REQUIRED if f.required else "") + "</span>")
+             f"{name_html(f)}" + (REQUIRED if f.required else "") + "</span>")
     name = ARG + f.name
     if f.control == "select":
         picked = value if value is not None and value != "" else (str(f.default) if f.has_default else "")
@@ -416,10 +438,10 @@ def search_form_html(tool: dict, values: dict[str, str], instructions: str) -> s
     fs = fields(tool.get("inputSchema"))
     q = next((f for f in fs if f.name == asked), None)
     hint = _first_line(q.description, 40) if q is not None else ""
-    top = (f"<div class='sr-top'><label class='sr-box'>{icon('search', 18)}<input class='sr-q' type='text' "
+    top = (f"<div class='sr-top'><div class='sr-box'><input class='sr-q' type='text' "
            f"name='{e(ARG + asked)}' value='{e(values.get(asked) or '')}' placeholder='{e(hint)}' "
            f"aria-label='{e(asked)}' data-tip-h='{e(asked)}' data-tip='{e(q.description if q else '')}' required "
-           f"autocomplete='off'></label><button type='submit'>搜尋</button></div>")
+           f"autocomplete='off'>{go_button('搜尋', submit=True)}</div></div>")
     rest = "".join(param_html(f, values.get(f.name), instructions, name) for f in fs if f.name != asked)
     return (f"<form class='sr-form card pad' method='get' action='/try#result' data-tool='{e(name)}'>"
             f"<input type='hidden' name='{CALL}' value='{e(name)}'><fieldset>{top}"
@@ -473,8 +495,8 @@ def _tool_text(tool: dict) -> str:
 
 
 def first_look_html(s: Session, *, open_: bool) -> str:
-    """The handshake and the tool list: the bytes and the readable rendering side by side, under a head that says how
-    much of the agent's context they take before its first call."""
+    """The handshake and the tool list: the readable rendering, and beside it the bytes as received (two_html's
+    layout), under a head that says how much of the agent's context they take before its first call."""
     result = s.hello.result or {}
     words = str(result.get("instructions") or "")
     info = result.get("serverInfo") if isinstance(result.get("serverInfo"), dict) else {}
@@ -487,7 +509,7 @@ def first_look_html(s: Session, *, open_: bool) -> str:
     raws = raw_block(s.hello.raw, f"initialize　{_seconds(s.hello.ms)}")
     if s.listing is not None:
         raws += raw_block(s.listing.raw, f"tools/list　{_seconds(s.listing.ms)}")
-    left = f"<div class='pane'><header>原文</header><div class='tr-scroll'>{raws}</div></div>"
+    raw = f"<aside class='pane tr-raw'><header>原文</header><div class='tr-scroll'>{raws}</div></aside>"
     server = " ".join(x for x in (str(info.get("name") or ""), str(info.get("version") or "")) if x)
     proto = str(result.get("protocolVersion") or "")
     top = (f"<div class='tr-srv'><b class='mono'>{e(server or '（沒有名字）')}</b>"
@@ -498,10 +520,9 @@ def first_look_html(s: Session, *, open_: bool) -> str:
         tools = f"<p class='tr-bad'><span class='pill bad'>{icon('no', 12)}拿不到工具清單</span>{e(s.listing.error)}</p>"
     else:
         tools = "".join(tool_card(t) for t in s.tools) or "<p class='faint small'>服務沒有列出工具</p>"
-    right = (f"<div class='pane'><header>排版</header><div class='tr-scroll tr-read'>{top}{said}"
-             f"<h3 class='tr-h'>工具</h3>{tools}</div></div>")
+    laid = f"<div class='tr-main tr-read'>{top}{said}<h3 class='tr-h'>工具</h3>{tools}</div>"
     return (f"<details class='tr-first' id='first'{' open' if open_ else ''}>{head}"
-            f"<div class='tr-two'>{left}{right}</div></details>")
+            f"<div class='tr-two'>{laid}{raw}</div></details>")
 
 
 def tool_card(tool: dict) -> str:
@@ -515,7 +536,7 @@ def tool_card(tool: dict) -> str:
     table = (f"<table class='grid tr-params'><tr><th>參數</th><th>類型</th><th>預設</th><th>說明</th></tr>{rows}</table>"
              if rows else "<p class='faint small'>沒有參數</p>")
     ro = ("<span class='tag' data-tip='工具清單標成只讀（readOnlyHint）'>只讀</span>" if read_only(tool)
-          else "<span class='pill none' data-tip='工具清單沒有標成只讀；搜尋頁不呼叫它'>沒標只讀</span>")
+          else "<span class='pill none' data-tip='工具清單沒有標成只讀；這一頁不呼叫它'>沒標只讀</span>")
     return (f"<article class='tr-tool'><header><b class='mono'>{e(tool.get('name'))}</b>"
             + (f"<span class='faint'>{e(title)}</span>" if title and title != tool.get("name") else "")
             + f"{ro}{counts_html(desc)}</header><div class='tr-words'>{e(desc)}</div>{table}</article>")
@@ -809,7 +830,9 @@ def why_html(query: str, inner: str, tool: dict | None) -> str:
 
 
 def result_html(tool: dict, args: dict, got: Exchange, tools: list[dict]) -> str:
-    """One call: what was sent, then what came back, as received (left) and laid out (right). The question 「為什麼
+    """One call: what was sent, then what came back: laid out, the page's main column, and beside it the text as
+    received in a narrower box that stays in view and scrolls by itself (2026-11-18: the two were halves of the
+    page, the raw text a wall as wide as the results). The question 「為什麼
     這樣排」 asks 搜尋測試 about is the tool's question parameter, and only for an answer that ranks results."""
     sent = json.dumps({"name": tool.get("name"), "arguments": args}, ensure_ascii=False)
     result = got.result
@@ -828,18 +851,19 @@ def result_html(tool: dict, args: dict, got: Exchange, tools: list[dict]) -> str
                  "工具回報錯誤</span>")
     else:
         state = f"<span class='pill good'>{icon('ok', 12)}有結果</span>"
+    # how much of the agent's context the answer takes, with what was sent: the number the page is opened for, at the
+    # top at every width (the text itself is beside the results, under them on a narrow screen)
     line = (f"<div class='tr-sent'><span class='mono faint'>tools/call</span><code>{e(sent)}</code>{state}"
-            f"<span class='num faint'>{_seconds(got.ms)}</span></div>")
+            f"{counts_html(text if result is not None else got.raw, got.ms)}</div>")
     if result is None:
-        left = (f"<div class='pane'><header>原文{counts_html(got.raw, got.ms)}</header><div class='tr-scroll'>"
-                + (raw_block(got.raw) if got.raw else "<p class='faint small tr-none'>沒有回應內容</p>")
-                + "</div></div>")
-        right = (f"<div class='pane'><header>排版</header><div class='tr-scroll tr-read'><p class='tr-plain'>"
-                 f"{e(got.error)}</p></div></div>")
-        return f"<section id='result' class='tr-result'>{result_tabs(query)}{line}<div class='tr-two'>{left}{right}</div></section>"
+        raw = ("<aside class='pane tr-raw'><header>原文</header><div class='tr-scroll'>"
+               + (raw_block(got.raw) if got.raw else "<p class='faint small tr-none'>沒有回應內容</p>")
+               + "</div></aside>")
+        laid = f"<div class='tr-main tr-read'><p class='tr-plain'>{e(got.error)}</p></div>"
+        return f"<section id='result' class='tr-result'>{result_tabs(query)}{line}<div class='tr-two'>{laid}{raw}</div></section>"
     envelope = _fold("整個回應（JSON-RPC）", raw_block(got.raw), "傳輸層收到的整段，agent 的模型讀的是上面的文字")
-    left = (f"<div class='pane'><header>原文{counts_html(text, got.ms)}</header><div class='tr-scroll'>"
-            f"{raw_block(text)}{envelope}</div></div>")
+    raw = (f"<aside class='pane tr-raw'><header data-tip='agent 的模型讀到的就是這段文字，一字不差'>原文</header>"
+           f"<div class='tr-scroll'>{raw_block(text)}{envelope}</div></aside>")
     if isinstance(parsed, dict):
         key = reader_key(tool)
         reading = (tool, key, str(args.get(key))) if key and args.get(key) is not None else None
@@ -848,8 +872,8 @@ def result_html(tool: dict, args: dict, got: Exchange, tools: list[dict]) -> str
         laid = f"<p class='tr-plain'>{e(text)}</p>" if text else "<p class='faint small'>沒有文字</p>"
     if isinstance(result.get("structuredContent"), (dict, list)):
         laid += _fold("structuredContent", raw_block(json.dumps(result["structuredContent"], ensure_ascii=False)))
-    right = f"<div class='pane'><header>排版</header><div class='tr-scroll tr-read'>{laid}</div></div>"
-    return f"<section id='result' class='tr-result'>{result_tabs(query)}{line}<div class='tr-two'>{left}{right}</div></section>"
+    return (f"<section id='result' class='tr-result'>{result_tabs(query)}{line}"
+            f"<div class='tr-two'><div class='tr-main tr-read'>{laid}</div>{raw}</div></section>")
 
 
 # ---------------------------------------------------------------- the page
@@ -884,13 +908,13 @@ class TryPage:
         asker = search_tool(s.tools)
         others = [t for t in s.tools if t is not asker and not reader_key(t)]
         called = (_all(params, CALL) or [""])[-1] if why is None else ""
-        result, values, title, filled = "", {}, "搜尋", called
+        result, values, title, filled = "", {}, "測試", called
         if why is not None:  # the second tab: the question in its tool's box, the explanation under it
             query, inner = why
             result = why_html(query, inner, asker)
             if asker is not None:
                 values, filled = {query_field(asker): query}, str(asker["name"])
-            title = f"{query} · 搜尋" if query else "搜尋"
+            title = f"{query} · 測試" if query else "測試"
         elif called:
             tool = by_name.get(called)
             if tool is None:
@@ -909,7 +933,7 @@ class TryPage:
                         self.busy.release()
                     result = result_html(tool, args, got, s.tools)
                     asked = args.get(query_field(tool)) if query_field(tool) else None
-                    title = f"{asked} · 搜尋" if isinstance(asked, str) and asked else f"{called} · 搜尋"
+                    title = f"{asked} · 測試" if isinstance(asked, str) and asked else f"{called} · 測試"
                 else:
                     result = (f"<section id='result' class='tr-result card pad tr-state'><span class='pill warn'>"
                               f"{icon('warn', 12)}正在查</span><span>另一個查詢還沒查完，查完再送一次</span></section>")
@@ -929,11 +953,11 @@ class TryPage:
         from the service)."""
         query = why[0] if why is not None else ""
         ask = (f"<form class='ask tr-alone' action='/try' method='get'><input type='hidden' name='tab' value='why'>"
-               f"<label class='box'>{icon('search', 16)}<input name='q' value='{e(query)}' "
-               "placeholder='問一個學生會問的問題，看搜尋怎麼排' aria-label='問題'></label><button>搜尋</button></form>")
+               f"<div class='box'><input name='q' value='{e(query)}' "
+               f"placeholder='問一個學生會問的問題，看搜尋怎麼排' aria-label='問題'>{go_button('搜尋')}</div></form>")
         if why is not None:
-            return (f"{query} · 搜尋" if query else "搜尋"), top + ask + why_html(query, why[1], None)
-        return "搜尋", top + ask + board
+            return (f"{query} · 測試" if query else "測試"), top + ask + why_html(query, why[1], None)
+        return "測試", top + ask + board
 
 
 def _keys(params: object) -> list[str]:
@@ -950,18 +974,21 @@ CSS = """
 .tr-first>summary::before{content:"›";display:inline-block;transition:transform .15s;color:var(--ink3)}
 .tr-first[open]>summary::before{transform:rotate(90deg)}
 .tr-figs{display:inline-flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;font-weight:400;color:var(--ink2)}
-.tr-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
-@media (max-width:900px){.tr-two{grid-template-columns:minmax(0,1fr)}}
+.tr-two{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:18px;align-items:start}
+.tr-main{min-width:0}
 .tr-two .pane{background:var(--surface)}
 .tr-two .pane>header{flex-wrap:wrap}
+.tr-raw{position:sticky;top:12px}
 .tr-count{display:inline-flex;flex-wrap:wrap;gap:2px 12px}
-.tr-scroll{max-height:76vh;overflow:auto;padding:12px 14px;min-width:0}
+.tr-sent .tr-count{margin-left:0;color:var(--ink3)}
+.tr-scroll{max-height:calc(100vh - 72px);overflow:auto;padding:12px 14px;min-width:0}
+@media (max-width:900px){.tr-two{grid-template-columns:minmax(0,1fr)}.tr-raw{position:static}
+.tr-scroll{max-height:50vh}}
 .tr-rawb+.tr-rawb{margin-top:14px}
 .tr-cap{display:flex;align-items:center;gap:10px;margin:0 0 6px;font-size:12px;color:var(--ink3)}
 .tr-cap .btn{margin-left:auto;padding:2px 10px;font-size:12px}
 .tr-rawb .tr-pre{margin:0;padding:0;max-height:none;overflow:visible;white-space:pre-wrap;word-break:break-word;
 font:12px/1.6 var(--mono);color:var(--ink)}
-.tr-first .tr-scroll{max-height:60vh}
 .tr-rawb .tr-pre[hidden]{display:none}
 .tr-read{font-size:13px}
 .tr-srv{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -977,13 +1004,12 @@ font-weight:600}.tr-h .side{margin-left:auto;font-weight:400}
 .sr-form{margin:0 0 8px}.sr-form fieldset{border:0;margin:0;padding:0;min-width:0}
 .sr-top{display:flex;gap:10px;align-items:stretch}
 .sr-box{position:relative;flex:1 1 auto;min-width:0;display:flex}
-.sr-box .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--ink3);pointer-events:none}
-.sr-q{flex:1 1 auto;min-width:0;width:100%;padding:13px 16px 13px 42px;border:1px solid var(--line2);border-radius:12px;
+.sr-q{flex:1 1 auto;min-width:0;width:100%;padding:13px 60px 13px 16px;border:1px solid var(--line2);border-radius:12px;
 background:var(--surface);font-size:16px}
 .sr-q:focus,.sr-num:focus,.sr-txt:focus{outline:2px solid var(--act);outline-offset:1px}
-.sr-top button{flex:none;padding:0 26px;min-height:48px;border:0;border-radius:12px;background:var(--act);
-color:var(--on-act);font-weight:650;cursor:pointer}.sr-top button:hover{opacity:.88}
-.sr-top button[disabled]{opacity:.5;cursor:default}
+.sr-box .go{position:absolute;right:5px;top:5px;bottom:5px;width:46px;display:grid;place-items:center;padding:0;border:0;
+border-radius:9px;background:var(--act);color:var(--on-act);cursor:pointer}.sr-box .go:hover{opacity:.88}
+.sr-box .go[disabled]{opacity:.5;cursor:default}
 .sr-opts{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 22px;margin-top:14px}
 .sr-p{display:flex;flex-direction:column;gap:5px;min-width:0}
 .sr-seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--line2);border-radius:10px;
@@ -1000,13 +1026,14 @@ font-size:14px;font-variant-numeric:tabular-nums}
 .sr-txt{width:240px;max-width:100%;padding:7px 10px;border:1px solid var(--line2);border-radius:9px;
 background:var(--surface);font-size:14px}
 .tr-others{margin-top:18px}.tr-others>summary{cursor:pointer;list-style:none}
-@media (max-width:640px){.sr-top{flex-direction:column}.sr-top button{min-height:44px}.sr-txt{width:100%}}
+@media (max-width:640px){.sr-txt{width:100%}}
 .tr-call{margin-top:8px;scroll-margin-top:64px}
 .tr-form{margin-top:12px}.tr-form[hidden]{display:none}
 .tr-form fieldset{border:0;margin:0;padding:0;min-width:0}
 .tr-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px 14px;align-items:end}
 .tr-f{display:flex;flex-direction:column;gap:5px;min-width:0}.tr-f.wide{grid-column:1/-1}
-.tr-k{display:inline-flex;align-items:center;font:12px/1.4 var(--mono);color:var(--ink2);cursor:help}
+.tr-k{display:inline-flex;align-items:baseline;gap:6px;font-size:13px;line-height:1.4;color:var(--ink);cursor:help}
+.tr-k code{font:11px/1.4 var(--mono);color:var(--ink3)}.tr-k .tr-g{font-weight:550}
 .tr-f input[type=text],.tr-f input[type=number],.tr-f select,.tr-f textarea{width:100%;min-width:0;padding:9px 12px;
 border:1px solid var(--line2);border-radius:10px;background:var(--surface);font-size:14px}
 .tr-f textarea{font-family:var(--mono);font-size:13px;resize:vertical}
@@ -1072,7 +1099,7 @@ overflow-wrap:anywhere;line-height:1.65;font-size:13px}
 .tr-extra{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:6px;font-size:12px;color:var(--ink3)}
 .tr-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .tr-toc{margin:0;padding-left:20px}
-@media (max-width:640px){.tr-scroll,.tr-first .tr-scroll{max-height:50vh}.tr-figs{gap:2px 12px}
+@media (max-width:640px){.tr-figs{gap:2px 12px}
 .tr-params tr:first-child{display:none}.tr-params tr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;
 gap:2px 10px;padding:6px 0;border-bottom:1px solid var(--line)}.tr-params tr:last-child{border-bottom:0}
 table.grid.tr-params td{padding:0;border:0}.tr-params td:last-child{grid-column:1/-1;color:var(--ink2)}}

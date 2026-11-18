@@ -273,9 +273,9 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
         _settled(client)
     assert "aria-current='page'>每晚運行</a>" in home and "action='/search'" not in home
     assert str(search.url).endswith("/try#board") and "data-board='/api/board'" in search.text
-    assert "aria-current='page'>搜尋</a>" in search.text
+    assert "aria-current='page'>測試</a>" in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
-    assert "aria-current='page'>找文件</a>" in page_of_trace.text
+    assert "aria-current='page'>文件搜尋</a>" in page_of_trace.text
 
 
 # ---------------------------------------------------------------- a document's dates on one line
@@ -345,6 +345,9 @@ def test_every_step_that_left_something_has_its_card(site):
     page = site.get("/trace", params={"ref": NOTICE_URL}).text
     for step in ("s1", "s2", "s3", "s4", "s5"):
         assert f"id='{step}'" in page
+    # 2026-11-18: the first two cards hold a few facts each and stand side by side on a wide screen
+    assert "<div class='step-pair'><section class='card step' id='s1'>" in page
+    assert page.index("id='s2'") < page.index("id='s3'") and "step-pair" not in page[page.index("id='s3'"):]
     assert "class='tline'" in page and "class='strip'" in page
     assert page.count("data-chunk='c") == 2 and page.count("<details class='chunk'") == 2  # one of each per chunk
     assert "class='chunks'" in page and "chunks many" not in page
@@ -395,3 +398,32 @@ def test_a_documents_kind_is_an_icon_and_its_word_never_a_hue():
     assert "<svg" in tag and "公告" in tag and "style=" not in tag
     assert look.kind_tag(None, {}) == "" and "<svg" in look.kind_tag("something new", {})
     assert look.icon("no such icon") == ""
+
+
+def test_a_page_beside_its_text_is_the_page_checks_copy_when_the_archive_is_there():
+    # 2026-11-18: the bare export, its styles gone, drew its menus over one another; 網頁核查's copy frames the area
+    # the library reads and greys the rest, which is what the pane is for
+    from nknu.ops.trace_page import _original
+
+    x = {"folder": "a.example-1", "file": "pages/p1.html"}
+    with_copy = _original(x, "https://a.example/p?x=1")
+    assert "src='/check/raw?url=https%3A%2F%2Fa.example%2Fp%3Fx%3D1'" in with_copy and "存檔裡的這一頁" in with_copy
+    assert "href='/check?url=https%3A%2F%2Fa.example%2Fp%3Fx%3D1'" in with_copy and "/file?" not in with_copy
+    assert "w.scrollTo(" in with_copy and "scrollIntoView" not in with_copy  # the frame scrolls, the page stays
+    bare = _original(x)  # no archive mounted: the export as before
+    assert "/file?folder=a.example-1" in bare and "/check/raw" not in bare
+    assert "/check/raw" not in _original({"folder": "a.example-1", "file": "files/f1.pdf"}, "https://a.example/f1.pdf")
+
+
+def test_the_stored_page_is_drawn_in_plain_flow_after_its_own_scraps_of_style():
+    # 2026-11-18: a page's own <style> scraps (no style sheet file is archived) drew its menus over one another
+    from nknu.ops import pagecheck
+
+    css = pagecheck.FLOW_CSS
+    assert "position:static!important" in css and "margin:revert!important" in css and "height:auto!important" in css
+    for kept in (".nk-label", ".nk-box", ".nk-noimg", ".nk-bg", "img"):  # the marks and pictures keep their own
+        assert f":not({kept})" in css
+    import inspect
+
+    src = inspect.getsource(pagecheck.Marked.html)
+    assert "{styles}<style>{MARK_CSS}{FLOW_CSS}</style>" in src  # after the page's own styles and the marks

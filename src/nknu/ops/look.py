@@ -66,10 +66,14 @@ color:var(--ink2);font-size:12px;white-space:nowrap}
 /* the two forms */
 form.ask{display:flex;gap:8px;flex-wrap:wrap;margin:0}
 form.ask .box{position:relative;flex:1 1 320px;min-width:0;display:flex}
-form.ask .box .ic{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--ink3);pointer-events:none}
+form.ask .box>.ic{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--ink3);pointer-events:none}
 form.ask input{flex:1 1 auto;min-width:0;width:100%;padding:11px 14px 11px 38px;border:1px solid var(--line2);
 border-radius:12px;background:var(--surface);font-size:16px}
 form.ask input:focus{outline:2px solid var(--act);outline-offset:1px}
+/* a box one types into and sends: the magnifier at its end is the button (go_button), so nothing wraps under it */
+form.ask .box:has(>.go) input{padding-left:16px;padding-right:54px}
+form.ask .box>.go{position:absolute;right:5px;top:5px;bottom:5px;width:40px;min-height:0;padding:0;display:grid;
+place-items:center;border-radius:9px}
 form.ask .box.narrow{flex:0 1 300px}form.ask .box.narrow input{font-size:13px;padding-left:36px}
 form.ask button{padding:0 22px;min-height:44px;border:0;border-radius:12px;background:var(--act);color:var(--on-act);
 font-weight:650;cursor:pointer}form.ask button:hover{opacity:.88}
@@ -281,7 +285,10 @@ border:2px solid var(--line2);color:var(--ink3);position:relative;z-index:1}
 .steps b{font-size:14px}.steps small{display:block;color:var(--ink2);font-size:12px;max-width:100%;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap}
 .steps a:hover b{text-decoration:underline}.steps .a b{color:var(--ink3);font-weight:500}
-@media (max-width:640px){.steps small{display:none}}
+.steps b{white-space:nowrap}
+@media (max-width:640px){.steps small{display:none}.steps b{font-size:12px}.steps a,.steps .a{padding:0 2px 4px}}
+.step-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px;align-items:stretch}
+@media (max-width:900px){.step-pair{grid-template-columns:minmax(0,1fr)}}
 .step{margin-top:16px;scroll-margin-top:64px}
 .step>h2{display:flex;align-items:center;gap:10px;padding:14px 18px 0;font-size:16px}
 .step>h2 .n{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--hover);
@@ -451,6 +458,14 @@ KIND_ICON = {"notice": "notice", "page": "page", "attachment": "attachment", "ev
 def e(value: object) -> str:
     """value as text in a page ('' for None)."""
     return html.escape("" if value is None else str(value))
+
+
+def go_button(label: str = "搜尋", *, submit: bool = False) -> str:
+    """The button of a box one types into and sends: a magnifier in place of a word (找, 搜尋, 追蹤, 核查 each said the
+    same thing: send what was typed; 2026-11-18), with the word for a screen reader and in its floating card. It goes
+    inside the box, at its end, so it never wraps under the box on a narrow page."""
+    kind = " type='submit'" if submit else ""
+    return (f"<button class='go'{kind} aria-label='{e(label)}' data-tip='{e(label)}'>{icon('search', 18)}</button>")
 
 
 def icon(name: str, size: int = 14) -> str:

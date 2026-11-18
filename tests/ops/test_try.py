@@ -178,7 +178,7 @@ def test_tokens_are_estimated_wide_characters_one_each():
 
 def test_on_open_the_page_shows_what_the_agent_reads_first(mcp):
     title, body = TryPage(mcp).page({})
-    assert title == "搜尋"
+    assert title == "測試"
     assert "這是編的開場說明。\n第二行。" in body and "made-up 9.9" in body and "2025-06-18" in body
     assert "<details class='tr-first' id='first'>" in body  # folded: the search box comes first
     assert body.index("form class='sr-form") < body.index("id='first'")
@@ -210,12 +210,15 @@ def test_the_forms_follow_whatever_tools_the_list_names(mcp):
 def test_a_call_shows_the_text_as_received_and_the_same_laid_out(mcp):
     title, body = TryPage(mcp).page(QueryParams("call=lookup&a.term=測試"))
     text = json.dumps(ANSWER, ensure_ascii=False)
-    assert title == "測試 · 搜尋"
+    assert title == "測試 · 測試"
     assert _calls()[-1][1] == {"name": "lookup", "arguments": {"term": "測試"}}
     called = body[body.index("id='result'"):body.index("id='first'")]  # the answer, before the folded first look
-    left, right = called.split("<header>排版</header>")[-2:]
+    # 2026-11-18: the results lead as the page's main column, the text as received in a narrower box beside them
+    right, left = called.split("<aside class='pane tr-raw'>")
+    assert "<div class='tr-two'><div class='tr-main tr-read'>" in right and "<header>排版</header>" not in called
     assert f"<pre class='tr-pre' data-asis>{try_page.e(text)}</pre>" in left  # unchanged
-    assert f"{len(text):,} 字" in left and f"約 {approx_tokens(text):,} token" in left
+    sent = right[right.index("class='tr-sent'"):right.index("class='tr-two'")]  # its size with what was sent
+    assert f"{len(text):,} 字" in sent and f"約 {approx_tokens(text):,} token" in sent
     assert "第一則測試公告" in right and "第二份附件" in right and "2 筆" in right
     assert "<details class='tr-first' id='first'>" in body  # folded under a call
     assert "class='tr-kind tr-k0'" in right and "class='tr-kind tr-k2'" in right  # 公告, 附件 in their kinds' marks
@@ -241,7 +244,7 @@ def test_the_second_tab_draws_the_explanation_here_and_calls_no_tool(mcp):
     before = len(_calls())
     title, body = TryPage(mcp).page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'>理由</div>"),
                                     board="<div id='made-up-board'></div>")
-    assert len(_calls()) == before and title == "測試 · 搜尋"
+    assert len(_calls()) == before and title == "測試 · 測試"
     assert "<div id='made-up-why'>理由</div>" in body and "made-up-board" not in body
     tabs = re.search(r"<nav class='tr-tabs'.*?</nav>", body).group(0)
     assert "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in tabs
@@ -259,7 +262,7 @@ def test_the_scoreboard_is_under_the_forms_when_nothing_is_asked(mcp):
 def test_the_second_tab_and_the_board_show_while_the_service_is_down():
     page = TryPage("http://127.0.0.1:9/mcp")
     title, body = page.page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'></div>"))
-    assert "連不上" in body and "made-up-why" in body and title == "測試 · 搜尋"
+    assert "連不上" in body and "made-up-why" in body and title == "測試 · 測試"
     assert "aria-disabled='true' data-tip='搜尋服務沒有回應" in body  # no tool to call: the first tab waits
     assert "<form class='ask tr-alone' action='/try'" in body and "name='q' value='測試'" in body  # a box to ask in
     assert "made-up-board" in page.page({}, board="<div id='made-up-board'></div>")[1]
@@ -327,7 +330,7 @@ def test_a_call_that_takes_too_long_says_so_and_frees_the_page(mcp):
 
 def test_not_configured_and_not_answering_are_said(mcp):
     title, body = TryPage("").page({})
-    assert title == "搜尋" and "沒有設定" in body and "--mcp-url" in body
+    assert title == "測試" and "沒有設定" in body and "--mcp-url" in body
     _, body = TryPage("http://127.0.0.1:9/mcp").page({})
     assert "連不上" in body and "沒有設定" not in body
 
@@ -357,7 +360,7 @@ def served(db, tmp_path, mcp):
 
 def test_the_route_serves_the_page_with_its_tab_marked(served):
     got = served.get("/try")
-    assert got.status_code == 200 and "aria-current='page'>搜尋</a>" in got.text and "data-tool='lookup'" in got.text
+    assert got.status_code == 200 and "aria-current='page'>測試</a>" in got.text and "data-tool='lookup'" in got.text
     got = served.get("/try", params={"call": "lookup", "a.term": "測試"})
     assert got.status_code == 200 and "第一則測試公告" in got.text
     assert served.post("/try", data={"call": "lookup"}).status_code == 405
@@ -411,3 +414,20 @@ def test_the_page_style_keeps_the_panels_rules():
     assert "--k" not in css.replace("var(--k0)", "").replace("var(--k1)", "").replace("var(--k2)", "").replace(
         "var(--k3)", "")  # kinds' hues only on the kinds' marks
     assert "title=" not in try_page.form_html(FIND, {}, shown=True)  # detail floats in data-tip, never title=
+
+
+def test_a_parameter_has_a_plain_name_beside_the_name_the_agent_sends():
+    # 2026-11-18: detail, limit, unit, sort alone said little to the person reading the form; the plain name is the
+    # opening clause of the service's own description when that is a short one, else a small list's, else none
+    from nknu.ops.try_page import fields, gloss, name_html
+
+    schema = {"type": "object", "properties": {
+        "detail": {"type": "string", "enum": ["a", "b"], "description": "每筆給多少原文。a：短。b：長。"},
+        "limit": {"type": "integer", "description": "要幾筆，1～50，預設 10。"},
+        "sort": {"type": "string", "enum": ["relevance", "date"], "description": "relevance（預設）：最相關的在前。"},
+        "made_up": {"type": "string", "description": "A thing the list does not know."},
+        "long": {"type": "string", "description": "這一句開頭很長很長很長很長很長很長沒有標點所以不當名字"}}}
+    got = {f.name: gloss(f) for f in fields(schema)}
+    assert got == {"detail": "每筆給多少原文", "limit": "要幾筆", "sort": "排序", "made_up": "", "long": ""}
+    by = {f.name: name_html(f) for f in fields(schema)}
+    assert by["limit"] == "<span class='tr-g'>要幾筆</span><code>limit</code>" and by["made_up"] == "<code>made_up</code>"

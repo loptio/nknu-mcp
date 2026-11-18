@@ -17,7 +17,7 @@ from __future__ import annotations
 import html
 import json
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 HERE = Path(__file__).resolve().parent
 _OUT = ("<svg viewBox='0 0 16 16' width='11' height='11' fill='none' stroke='currentColor' stroke-width='1.5' "
@@ -33,12 +33,46 @@ _MENU_JS = ("<script>(()=>{const t=document.querySelector('.nk-bar details.nk-to
             "document.addEventListener('keydown',e=>{if(e.key==='Escape'&&t.open){t.open=false;s.focus()}});"
             "t.addEventListener('focusout',e=>{if(t.open&&e.relatedTarget&&!t.contains(e.relatedTarget))t.open=false})"
             "})();</script>")
+# Every link from one panel to another is written with the ports of the owner's Mac (panels.json "hosts": 18878…; so are
+# 資料庫's queries and 資料總覽's script). Opened on the machine that serves the panels (the lab PC: 127.0.0.1:8878),
+# nothing listens on those ports, and every jump failed (2026-11-18). A page opened on one of the serving machine's own
+# ports (panels.json "local") rights such links to that family of ports: the ones in the markup once the page has
+# loaded, the ones a script draws later as the pointer or the keyboard reaches them (before a click, a middle click or
+# the context menu acts on them). Opened through the tunnel it does nothing. %s is ports()'s map as JSON.
+_PORT_JS = ("<script>(()=>{const M=%s,H=['127.0.0.1','localhost','[::1]'];"
+            "if(!Object.values(M).includes(location.port))return;"
+            "const fix=a=>{if(!a)return;let u;try{u=new URL(a.href)}catch(e){return}"
+            "if(H.includes(u.hostname)&&M[u.port]){u.port=M[u.port];u.hostname=location.hostname;a.href=u.href}};"
+            "const all=()=>document.querySelectorAll('a[href]').forEach(fix);"
+            "all();document.addEventListener('DOMContentLoaded',all);"
+            "for(const t of['pointerdown','mousedown','focusin','keydown','click','auxclick','contextmenu'])"
+            "document.addEventListener(t,e=>fix(e.target&&e.target.closest&&e.target.closest('a[href]')),true)"
+            "})();</script>")
 
 
 def panels(folder: Path = HERE) -> dict:
-    """panels.json of folder: {'hosts': {host: origin}, 'pages': [{key, name, host, path, tip}], 'tools': [{key, name,
-    host, path, tip, away?}], 'site': {host, path}}."""
+    """panels.json of folder: {'hosts': {host: origin}, 'local': {host: origin}, 'pages': [{key, name, host, path,
+    tip}], 'tools': [{key, name, host, path, tip, away?}], 'site': {host, path}}."""
     return json.loads((folder / "panels.json").read_text(encoding="utf-8"))
+
+
+def ports(conf: dict) -> dict:
+    """{a panel's port on the owner's Mac: its port on the machine that serves it}, both as text, from panels.json's
+    "hosts" and "local" (a panel with one of the two, or the same port in both, has no line)."""
+    out = {}
+    for key, near in conf.get("local", {}).items():
+        far = conf.get("hosts", {}).get(key, "")
+        a, b = urlsplit(far).port, urlsplit(near).port
+        if a and b and a != b:
+            out[str(a)] = str(b)
+    return out
+
+
+def port_js(conf: dict) -> str:
+    """The script that rights the links to the other panels on a page opened on the serving machine's own ports ('' when
+    panels.json names no such ports)."""
+    table = ports(conf)
+    return _PORT_JS % json.dumps(table, sort_keys=True) if table else ""
 
 
 def theme_css(folder: Path = HERE) -> str:
@@ -92,4 +126,4 @@ def bar(current: str, here: str, meta: str = "", folder: Path = HERE) -> str:
             f"<div class='nk-menu'>{''.join(items)}</div></details>" if items else "")
     tail = f"<span class='nk-meta'>{meta}</span>" if meta else ""
     return (f"<header class='nk-bar'><nav class='nk-tabs' aria-label='面板'>{''.join(links)}</nav>"
-            f"<div class='nk-end'>{tail}{menu}</div></header>" + (_MENU_JS if items else ""))
+            f"<div class='nk-end'>{tail}{menu}</div></header>" + (_MENU_JS if items else "") + port_js(conf))

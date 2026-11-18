@@ -859,6 +859,11 @@ def test_the_list_of_sites_is_one_piece_the_home_page_and_a_sites_query_share():
     assert "dataset.k" in script and "inOrder" in script
     query = (templates / "query.html").read_text(encoding="utf-8")
     assert "沒有文件進庫" in query and "都有日期" in query  # why a site's query has no rows, not only that it has none
+    # 2026-11-18: a site's list is cut at the query's limit and says so with the site's whole count; a column of numbers
+    # reads from the right
+    assert 'canned_query == "site_docs" and at.cur and at.cur.docs > display_rows|length' in query
+    assert "只列最新的" in query and "classList.add('numc')" in query
+    assert "td.numc" in (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
     # the home's list: a site's name opens its page in 檢視台 (structure design 2026-11-17 section 二); a query's list
     # keeps switching that query's site
     assert 'name_go=site_page' in (templates / "index.html").read_text(encoding="utf-8")

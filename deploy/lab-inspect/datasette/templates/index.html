@@ -24,8 +24,8 @@
   </section>
   <div class="side">
     <form class="card do" action="{{ base }}/find_title" method="get">
-      <h3>找文件</h3>
-      <div class="row"><input type="text" name="words" placeholder="標題裡的字，繁體簡體都可以" aria-label="標題裡的字" required><button>找</button></div>
+      <h3>用標題找文件</h3>
+      <div class="row"><input type="text" name="words" placeholder="標題裡的字，繁體簡體都可以" aria-label="標題裡的字" required><button class="go" aria-label="搜尋" data-tip="搜尋"><svg class="ic" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.3"/><path d="m10.3 10.3 3.2 3.2"/></svg></button></div>
     </form>
     <section class="card do raw">
       <h3>原始資料<a href="{{ base }}?_show_hidden=1#tables" data-tip="連同章節、小段、索引這些平常用不到的表">全部 {{ guide.tables|length }} 張</a></h3>

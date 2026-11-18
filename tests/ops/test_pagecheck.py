@@ -702,6 +702,12 @@ def test_a_page_without_its_content_area_is_said_in_words_and_is_no_failure(made
 def test_a_path_the_site_list_does_not_walk_is_a_rule_said_in_words(made):
     """11-17 (the crawler session): url.reason out:skip_path, a path the site list says is not walked further."""
     assert pagecheck.reason_words("out:skip_path") == "名單寫明這條路徑不往下翻"
+    # 11-19: the crawler's three new rule codes read as words, and a named skip path nobody wrote words for falls
+    # back to the plain rule's
+    assert pagecheck.reason_words("out:skip_path:teacher_fulltext") == "教師著作全文，定了不收"
+    assert pagecheck.reason_words("out:cap_image") == "這一站超過圖片上限，名單寫明不抓"
+    assert pagecheck.reason_words("out:wix_size") == "同一張圖的另一個尺寸"
+    assert pagecheck.reason_words("out:skip_path:some_new_name") == "名單寫明這條路徑不往下翻"
     assert pagecheck.verdict_bucket("out:skip_path") == "rule"
     conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
     conn.execute("UPDATE url SET state = 'skipped', reason = 'out:skip_path', status = NULL"

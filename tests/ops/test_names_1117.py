@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.ops import charts, look, nightly, pipeline, site_page, tonight_page
+from nknu.ops import charts, home_page, look, nightly, pipeline, site_page, tonight_page
 from nknu.ops.pipeline import PIPE, Where
 from nknu.ops.theme import bar
 from tests.ops.test_nightly import NIGHT, SAID, at, crawler_log, crawler_status, ingest, library, run
@@ -29,7 +29,7 @@ def where(tmp_path) -> Where:
 
 def test_the_bar_names_each_page_for_what_it_answers():
     pages = json.loads((REPO / "src/nknu/ops/theme/panels.json").read_text(encoding="utf-8"))["pages"]
-    assert [p["name"] for p in pages] == ["每晚運行", "網站", "搜尋", "找文件"]
+    assert [p["name"] for p in pages] == ["每晚運行", "網站", "測試", "文件搜尋"]
     assert all(p["tip"] and "\n" not in p["tip"] and "今晚" not in p["tip"] for p in pages)
     html = bar.bar("tonight", "ops")
     assert "aria-current='page'>每晚運行</a>" in html
@@ -37,10 +37,10 @@ def test_the_bar_names_each_page_for_what_it_answers():
 
 
 def test_the_home_sections_have_their_new_titles_and_no_tonight_or_last_night():
-    html = tonight_page.home_body(snap(), tonight(), None, hist(), {})
+    html = home_page.home_body(snap(), tonight(), None, hist(), {})
     titles = [h.text() for h in LexborHTMLParser(html).css("section.v3-q .v3-h h2")]
-    assert titles == ["每晚各步時間", "每晚新進與離開", "整體流程（累計）", "要處理的網站"]
-    assert "今晚" not in html and "昨晚" not in html and "每晚新進與離開" in tonight_page.PIPE_TIP
+    assert titles == ["流程", "問題", "每晚紀錄", "上次換庫的變動"]
+    assert "今晚" not in html and "昨晚" not in html and "每晚紀錄" in tonight_page.PIPE_TIP
 
 
 def test_a_night_is_named_by_its_evening_and_the_sentence_starts_with_it(where):
@@ -84,11 +84,11 @@ def test_the_export_warning_is_the_counts_and_names_no_one(tmp_path, monkeypatch
 
 def test_a_sites_build_row_says_why_it_has_no_share_and_its_chip_matches_its_reasons():
     row, detail = row_and_detail()
-    stages = site_page.site_stages(row, detail)
-    tree = LexborHTMLParser(tonight_page.funnel_html(stages, site=True))
-    build = tree.css_first(".fn-row[data-stage='build']")
-    assert build.css_first(".fn-pct").attributes["data-tip"] == "這一步比不出這個網站總共該有多少"
-    assert build.css_first(".fn-drop").text() == "建庫沒收的 9"  # 7 merged + 2 the school took away: the reasons
-    assert build.css_first(".rs-head").text().startswith("分得出的 9 份文件")
-    html = tonight_page.funnel_html(stages, site=True)
-    assert "建庫拿掉的" not in html and "標出的缺漏" not in html
+    nodes = site_page.site_nodes(site_page.site_stages(row, detail), row, detail)
+    html = site_page.step_panel(nodes[3], detail)  # 建庫: no count of what went in for one site
+    build = LexborHTMLParser(html)
+    assert [d.text() for d in build.css(".hm-io dt")] == ["出"] and not build.css(".hm-split")
+    said = [p.text() for p in build.css(".hm-words")]
+    assert said[0].startswith("分得出的 9 份文件") and "只有「出」" in said[1]
+    assert [r.text() for r in build.css(".rs-n")] == ["7", "2"]  # 7 merged + 2 the school took away: the reasons
+    assert "建庫拿掉的" not in html and "標出的缺漏" not in html and "%" not in build.text()
