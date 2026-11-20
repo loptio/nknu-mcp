@@ -59,7 +59,9 @@ def test_half_or_more_is_swapped_in_and_so_is_a_forced_one(tmp_path, lib):
 def test_a_site_the_build_leaves_out_is_no_collapse(tmp_path, lib):
     paths, out = lib
     other = site(tmp_path, "tg", 4, tc.TG_SITE, tc.TG)
-    tm.run(paths, out, inputs=[other])
+    # this guard's own rule; since 11-17 the departure guard holds such a build (tests/content/test_departures_1117.py:
+    # the documents of a site the build was not given left for no reason), so it is switched off here
+    tm.run(paths, out, inputs=[other], departure_guard=False)
     assert count(out) == {tc.TG_SITE: 4}
 
 

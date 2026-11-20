@@ -237,9 +237,12 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 from nknu.archive.scope import site_key
-from nknu.content import ids, sites
+from nknu.content import documents as marks
+from nknu.content import ids, sites, vita
 from nknu.content.chunks import Chunk, make_chunks, split_sections
 from nknu.content.corpus import (
+    GONE,
+    MOVED,
     NO_DATA,
     TEMPLATE_PAGES,
     Event,
@@ -516,6 +519,11 @@ class BuildReport:
     # spec 2026-11-16 §二 (_date_spikes): on, min, days (site and day pairs past SPIKE_MIN), documents (the files left
     # undated) and by_site
     date_spikes: dict = field(default_factory=dict)
+    # vita.py (11-18): how many teachers' CVs stand under the department their 校內職務 tab names
+    vita_units: dict = field(default_factory=dict)
+    # spec 2026-11-17-ingest-guard-design §二 (_departures): the documents of the library in use that the new one
+    # lacks, by reason, and the ones no reason explains; {'checked': False} with no library to compare with
+    departures: dict = field(default_factory=dict)
     # 11-16 (documents.join_single_lines): on, documents (those it changed), joined (lines joined away), dropped (marks)
     single_lines: dict = field(default_factory=dict)
 
@@ -613,27 +621,395 @@ def alumni_page(kind_raw: str) -> bool:
     return kind_raw.partition("#")[0] in ALUMNI_KINDS
 
 
-def tier_of(doc_id: str, dtype: str, kind_raw: str = "", alumni: bool = True) -> str:
+# 11-19 (the owner through session judge: 「几百页的整本文件（论文集、学刊、大型报告这类）默认归背景……以后同类东西不用再
+# 一份份来问」, and not to catch the large files students do look for: handbooks, compiled regulations, admission
+# brochures, course handbooks). A whole volume is an attachment of VOLUME_CHARS characters or more whose title, the
+# title of the page that links it and its link text hold none of VOLUME_KEEP. Size alone does not tell them apart (a
+# 學生手冊 is as long as a volume of proceedings), and the words are read where the school named the file, not in its
+# text (a journal article's own title says 課程 often enough). The number and the words 【Claude】, set against the
+# library of 11-18 (research/pipeline_2026-11-02/volumes_1119/would_change.md): of 151 primary attachments this long,
+# 100 become background (journal volumes under 學報專區, proceedings, reports, catalogues, yearly statistics, course
+# readings) and 51 stay (學生手冊, 職涯手冊 under 課程規劃, 招生簡章, 法規選輯, 對照表, 申請表). Background is still found:
+# at most two of the first ten, at 0.8 of its score (HybridConfig.background_factor).
+VOLUME_CHARS = 100_000
+VOLUME_KEEP = re.compile("手冊|簡章|章則|規章|法規|辦法|要點|須知|課程|科目|對照表|行事曆|學則|申請|細則|準則|規定|規則")
+
+
+def whole_volumes(docs: Sequence[Document]) -> frozenset[str]:
+    """The doc_ids of the attachments that are whole volumes (VOLUME_CHARS, VOLUME_KEEP): background material."""
+    return frozenset(d.doc_id for d in docs if d.kind_class == "attachment" and len(d.text) >= VOLUME_CHARS
+                     and not VOLUME_KEEP.search(f"{d.title}\n{d.parent_title}\n{d.linktext}"))
+
+
+def tier_of(doc_id: str, dtype: str, kind_raw: str = "", alumni: bool = True,
+            volumes: frozenset[str] = frozenset()) -> str:
     """docs.tier (plan 2026-11-08 T1; addendum M2 by source): BACKGROUND for an archive member (its record id starts
-    with m, ids.record_id; an older corpus's a<序号>m<k>), for a journal, an exam or meeting minutes (doc_type) and,
-    since plan 2026-11-14 T2, for a page of the alumni directory by its page kind (alumni_page of kind_raw; not with
-    alumni=False, the build's --no-alumni-background, nor without a kind_raw: as before); PRIMARY else."""
+    with m, ids.record_id; an older corpus's a<序号>m<k>), for a journal, an exam or meeting minutes (doc_type), since
+    plan 2026-11-14 T2 for a page of the alumni directory by its page kind (alumni_page of kind_raw; not with
+    alumni=False, the build's --no-alumni-background, nor without a kind_raw: as before), and since 11-19 for a whole
+    volume (volumes: whole_volumes' ids; none with the build's --no-volumes); PRIMARY else."""
     if doc_id.startswith("dm") or _OLD_MEMBER.fullmatch(doc_id) or dtype in (JOURNAL, EXAM, MINUTES):
         return BACKGROUND
+    if doc_id in volumes:
+        return BACKGROUND
     return BACKGROUND if alumni and alumni_page(kind_raw) else PRIMARY
+
+
+SITE_CHECKED_KEY = "site_checked_json"
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def read_site_checked(path: Path) -> dict[str, str]:
+    """{site key: day} of the crawler's seen.tsv (spec 2026-11-16 nightly ingest §五; the file agreed with the crawler
+    session 11-16: tab-separated site key, when the site's home page and lists last answered well, in Asia/Taipei time,
+    and what happened tonight; written whole after a night's export). The day is the first YYYY-MM-DD of the second
+    column; a line without a site key or a day (a heading, a site never seen) gives nothing, and so does a missing
+    file: the build never stops for this file 【Claude】."""
+    out: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        cells = [c.strip() for c in line.split("\t")]
+        if len(cells) >= 2 and cells[0] and (day := _DAY.search(cells[1])):
+            out[cells[0]] = day.group(0)
+    return out
 
 
 class SwapHeld(Exception):
     """A rebuild that did not take the place of the library in use (spec 2026-11-16 §五): held, where the new library
     was put instead; sites, (site, documents in the library in use, documents in the new one) of each site that
-    fell below half."""
+    fell below half; left (spec 2026-11-17-ingest-guard-design §二), _departures' result when too many documents left
+    the library for no reason the build can give, or a site lost a wave of them to the school's side, else None. Both reasons are in <name>.swap.json beside the library
+    (build_sites writes it at every swap it decides), for the nightly ingest and the dashboards."""
 
-    def __init__(self, held: Path, sites: list[tuple[str, int, int]]) -> None:
-        self.held, self.sites = held, sites
-        shown = "；".join(f"{site} {before:,} → {after:,}" for site, before, after in sites[:5])
-        super().__init__(f"新库没有换上：{len(sites)} 个网站的文件数不到现在这份库的一半（{shown}"
-                         f"{' 等' if len(sites) > 5 else ''}）。新库留在 {held}，现在的库没动；"
-                         "看过确认要换，加 --force-swap 重建。")
+    def __init__(self, held: Path, sites: list[tuple[str, int, int]], left: dict | None = None) -> None:
+        self.held, self.sites, self.left = held, sites, left
+        said = []
+        if sites:
+            shown = "；".join(f"{site} {before:,} → {after:,}" for site, before, after in sites[:5])
+            said.append(f"{len(sites)} 个网站的文件数不到现在这份库的一半（{shown}{' 等' if len(sites) > 5 else ''}）")
+        if left and _too_many_left(left):
+            worst = "；".join(f"{site} {n}" for site, n in list(left["by_site"].items())[:5])
+            kinds = "、".join(f"{LEFT_WORDS.get(k, k)} {n}" for k, n in left["unexplained"].items())
+            said.append(f"{left['unexplained_total']} 份文件说不出原因地离开了库或被掏空（{kinds}；最多的网站：{worst}）")
+        if left and left.get("waves"):
+            shown = "；".join(f"{site} {n:,}/{of:,}" for site, (n, of) in list(left["waves"].items())[:5])
+            said.append(f"{len(left['waves'])} 个网站一次有超过一成的文件被标成学校那边删掉、转走或没有了（{shown}），"
+                        "要人看过是不是真的")
+        super().__init__("新库没有换上：" + "；另外 ".join(said) + f"。新库留在 {held}，逐份的原因在 "
+                         f"{swap_file(held).name}，现在的库没动；看过确认要换，加 --force-swap 重建。")
+
+
+def swap_file(db: Path) -> Path:
+    """Where a build says what its swap would take, and took, out of the library at db: aca.swap.json beside aca.db
+    (and beside aca.held.db, the same file)."""
+    return db.with_name(db.name.split(".")[0] + ".swap.json")
+
+
+# spec 2026-11-17-ingest-guard-design §二 (the owner's intent through session 爬虫judge, 11-17: 「上游不管哪一环漏了，
+# 都不会悄悄进到学生用的正式库，进库这一步自己就能拦住，并让人看得到被拦的原因」; the rule and the numbers 【Claude】,
+# from the three swaps of 11-16/17: 0 to 9 documents without a reason on a good night, 317 in one site on the bad one)
+LEFT_TOTAL = 30  # documents that left for no reason (or were emptied) the whole library may have before a swap is held
+LEFT_SITE = 15  # ... and one site
+EMPTIED_FROM, EMPTIED_TO = 200, 100  # a page or notice of 200+ characters that holds under 100, and under half, now
+EVENTS_SHARE = 0.05  # calendar events the school itself may take off in one night; more is no reason
+LEFT_SHOWN = 50  # how many of them are listed one by one
+# 11-18 【Claude】, from the trial of that day: 特教中心's sections number their notices alike, an id was one per host
+# and number, and 197 notices of the library in use came out of the build as another section's notice under their
+# own id; only the one that also shrank was seen. A document both libraries hold is "replaced" when its address and
+# its title are others, its old address is nowhere in the new library, and under REPLACED_SHARE of its old text's
+# two-character pieces are still in it (a notice the school re-titled keeps its words; an address that only moved to
+# another id is "renumbered", which explains a leaving).
+REPLACED_SHARE = 0.5
+# and a wave 【Claude】: the school's side explains a leaving, but a site that loses more than WAVE_MIN documents and more
+# than WAVE_SHARE of what it held to it in one build is looked at by a person before it is believed (a server that was
+# down must not read as a school that deleted its pages; the owner's rule of 10-24 for lists in the same thought:
+# 「列表大缩水时没列到的先保留、不下架」, and tell)
+WAVE_MIN, WAVE_SHARE = 50, 0.1
+SCHOOL_SIDE = frozenset({"school_deleted", "school_moved", "school_no_data", "school_emptied_notice", "school_gone"})
+SCHOOL_GONE = "学校那边已经不存在"  # the export's 分类 of a row it gives no file for because the school took it away
+# 11-18: the export keeps one size of a Wix picture and lists its other addresses without a file (分类 规则不抓, 原因代码
+# wix_size; the crawler's export._wix_sizes, 11-17). A document of such a row left for a reason when the new library
+# holds a document of the same picture (it has words: a picture that reads as nothing is no document); when it holds
+# none (11-18: the size kept was Wix's blurred preview, 232 documents of one site) the leaving has no reason.
+RULE_DECLINED = "规则不抓"
+# 11-18 night (the owner's decision through session judge: teachers' publications in full are not collected, they
+# would compete with the school's own documents; 287 of them were in the library): a kind decided out leaves for a
+# reason. Only the kinds named here, by the export's 原因代码 of that one rule (agreed with the crawler session: the
+# rule carries its own name; the plain out:skip_path of any other path rule explains nothing, which is how the Wix
+# blur rule was caught). {原因代码: the reason's key in LEFT_WORDS}; a new kind is a new line here.
+# 11-19 (the owner through session judge): the proceedings of 工教系's conference, whole volumes of papers, are not
+# collected either (out:skip_path:proceedings; none was in the library when the rule came, the line guards later ones)
+# ... and the download area of an outside unit's site, teaching materials for school teachers by the hundred
+# (out:skip_path:teaching_materials, cirn.k12ea.gov.tw; 14 rows of it were in the library)
+DECIDED_OUT = {"out:skip_path:teacher_fulltext": "decided_teacher_fulltext",
+               "out:skip_path:proceedings": "decided_proceedings",
+               "out:skip_path:teaching_materials": "decided_teaching_materials"}
+_WIX_PICTURE = re.compile(r"^static\.wixstatic\.com/media/([^/?#]+)")
+LEFT_WORDS = {"no_file": "导出那一行没有档了", "no_row": "导出里没有这一行了", "row_not_read": "有档却没读进来",
+              "no_text": "这次读不到字", "kind_not_kept": "页面种类变成不收的", "emptied": "内容被掏空",
+              "calendar_many": "行事历一次少了很多事件", "site_not_built": "这次建库没有这个网站",
+              "merged": "并进另一份", "school_deleted": "学校已删除",
+              "school_moved": "学校把公告转到别的页", "school_no_data": "学校回答没有资料",
+              "school_emptied_notice": "学校删到只剩空壳的公告", "school_gone": "导出判学校那边已经不存在",
+              "list_pager": "列表的翻页", "calendar": "行事历上学校拿掉的事件",
+              "replaced": "同一个编号换成了另一份", "renumbered": "编号改了、网址还在库里",
+              "same_image": "同一张图留了另一个尺寸", "decided_teacher_fulltext": "定了不收：教师著作全文",
+              "decided_proceedings": "定了不收：研讨会论文集",
+              "decided_teaching_materials": "定了不收：教材下载区",
+              "in_button_rows": "只有选单提示的页（内容在按钮行）",
+              "moved": "字都还在库里（换了网址，或并进了网页）"}
+
+
+def _why_left(key: str) -> tuple[str, bool]:
+    """(reason, whether it explains the leaving) of a record build_documents left out under key."""
+    for suffixes, why in (((marks.GONE_SUFFIX, marks.GONE_FILE_SUFFIX), "school_deleted"),
+                          ((marks.MOVED_SUFFIX,), "school_moved"), ((marks.NO_DATA_SUFFIX,), "school_no_data"),
+                          ((marks.DELETED,), "school_emptied_notice"), ((marks.PAGER_SUFFIX,), "list_pager"),
+                          ((marks.IN_BUTTONS_SUFFIX,), "in_button_rows"), ((marks.DUPLICATE,), "merged")):
+        if key.endswith(suffixes):
+            return why, True
+    return ("no_text", False) if key.endswith(marks.BLANK) else ("kind_not_kept", False)
+
+
+def _export_rows(exports: Sequence[Path]) -> dict[str, dict[str, dict]]:
+    """{site: {address: its manifest row}} of the inputs' exports, by 网址 and 最后落地网址; a row with a file before
+    one without at the same address. An export that cannot be read gives nothing."""
+    out: dict[str, dict[str, dict]] = {}
+    for export in exports:
+        try:
+            manifest = json.loads((Path(export) / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = out.setdefault(manifest.get("网站") or "", {})
+        for row in manifest.get("项目") or []:
+            for address in (row.get("网址"), row.get("最后落地网址")):
+                if address and (address not in rows or (row.get("本地档案") and not rows[address].get("本地档案"))):
+                    rows[address] = row
+    return out
+
+
+def _address(url: str | None) -> str:
+    """A document's address to compare two libraries by: without its scheme (ids.location_key's own start)."""
+    return ids._SCHEME.sub("", (url or "").strip(), count=1)
+
+
+def _text_kept(old: Path, new: Path, doc_id: str) -> float | None:
+    """The share of the two-character pieces of doc_id's text at old that its text at new still holds (whitespace
+    aside); 0.0 when the old text has no such piece and the new one has words, None when a library cannot be read."""
+    def pieces(path: Path) -> set[str] | None:
+        try:
+            with closing(sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True)) as conn:
+                row = conn.execute("SELECT text FROM docs WHERE doc_id = ?", (doc_id,)).fetchone()
+        except sqlite3.Error:
+            return None
+        text = "".join((row[0] or "").split()) if row else ""
+        return {text[i:i + 2] for i in range(len(text) - 1)}
+    before, after = pieces(old), pieces(new)
+    if before is None or after is None:
+        return None
+    if not before:
+        return 0.0 if after else 1.0
+    return len(before & after) / len(before)
+
+
+# 11-19: a document whose row is gone or has no file, while every word of it is in the new library, in a document of
+# the same site: inside a page or a notice (a picture now read into the page that shows it), or a document of its
+# own kind (the same picture at the address the export now writes for it: Google Sites gives a picture another
+# address each time a page is read, and the crawler's export of 11-19 writes the page's). Never a page or a notice
+# whose words are only in a picture or a file now: the words belong on the page (session judge, 11-19), and so a
+# page that leaves that way, like one that is emptied, explains nothing. Text of at least MOVED_MIN characters only
+# (whitespace aside), so that a few common words are no proof 【Claude】.
+# A picture row the export gives a file for, of which the build made no document, is a picture a kept page shows
+# (assemble.inline reads its words into that page and makes no record of it), or one read as too little text: its
+# words are looked for too, down to PICTURE_MOVED_MIN, the least a picture was a document of its own with
+# (assemble.IMAGE_DOC_CHARS); under MOVED_MIN only in the pages its row says link to it (链到它的网页): words that
+# short could be a page header every page carries, which proves nothing of a picture that is gone (session judge,
+# 11-19), and a row that names no page finds nothing. From MOVED_MIN on, anywhere the rule above looks: the same
+# picture kept as a document at another address (a unit's banner on counseling-center, 11-19 14:24) is no loss. The
+# first ingest with the crawler's re-addressed Google Sites pictures (11-19 12:43) had 188 such pictures leave; of the
+# 20 looked at one by one, each had its words in a page its row names, a quarter of them under 20 characters
+# (「第二階段 初步構想計畫申請」) 【Claude】.
+MOVED_MIN = 20
+PICTURE_MOVED_MIN = 10
+PICTURE_ROW = "图片"  # the export's 类型 of a picture row
+LINKED_FROM = "链到它的网页"  # the export's column of the pages that link to a row, " | " between them
+
+
+def _squash(text: str) -> str:
+    return "".join((text or "").split())
+
+
+def _page_at(url: str | None) -> str:
+    """A page's address to match a row's 链到它的网页 by: _address, percent-escapes read, no trailing slash."""
+    return unquote(_address(url)).rstrip("/")
+
+
+def _linked_from(row: Mapping) -> frozenset[str]:
+    """The pages a manifest row says link to it (LINKED_FROM), as _page_at gives them."""
+    value = row.get(LINKED_FROM) or ""
+    return frozenset(p for u in (value if isinstance(value, list) else value.split(" | ")) if (p := _page_at(u)))
+
+
+def _moved_words(old: Path, new: Path, cands: Sequence[tuple]) -> set[str]:
+    """The doc_ids of cands ((doc_id, site), or (doc_id, site, least[, pages]); documents of old) whose whole text,
+    whitespace aside and of `least` characters or more (MOVED_MIN unless given), is in a document of the same site of
+    new that is a page or a notice, or of the same kind_class as the document that left (MOVED_MIN's comment); with
+    pages (a set of _page_at addresses), a text shorter than MOVED_MIN only in a document at one of them. Empty when a
+    library cannot be read."""
+    try:
+        with closing(sqlite3.connect(f"file:{quote(str(old))}?mode=ro", uri=True)) as a, \
+                closing(sqlite3.connect(f"file:{quote(str(new))}?mode=ro", uri=True)) as b:
+            olds = {d: (cls, _squash(t)) for d, cls, t in a.execute(
+                f"SELECT doc_id, kind_class, text FROM docs WHERE doc_id IN ({','.join('?' * len(cands))})",
+                [c[0] for c in cands])}
+            by_site: dict[str, list[tuple[str, frozenset[str] | None]]] = {}
+            for doc_id, site, *more in cands:
+                if len(olds.get(doc_id, ("", ""))[1]) >= (more[0] if more else MOVED_MIN):
+                    by_site.setdefault(site or "", []).append((doc_id, more[1] if len(more) > 1 else None))
+            found = set()
+            for site, ids in by_site.items():
+                there: dict[str, list[str]] = {}
+                at: dict[str, list[tuple[str, str]]] = {}
+                for cls, url, text in b.execute("SELECT kind_class, url, text FROM docs WHERE site = ?", (site,)):
+                    there.setdefault(cls, []).append(_squash(text))
+                    at.setdefault(_page_at(url), []).append((cls, _squash(text)))
+                joined = {cls: "\x00".join(texts) for cls, texts in there.items()}
+                for d, pages in ids:
+                    cls, text = olds[d]
+                    homes = ("page", "notice") if cls in ("page", "notice") else ("page", "notice", cls)
+                    hit = (pages is None or len(text) >= MOVED_MIN) and any(text in joined.get(h, "") for h in homes)
+                    if pages is not None and not hit:  # words short of MOVED_MIN: in a page linking to it only
+                        hit = any(text in t for p in pages for c, t in at.get(p, ()) if c in homes)
+                    if hit:
+                        found.add(d)
+            return found
+    except sqlite3.Error:
+        return set()
+
+
+def _departures(old: Path, new: Path, left_out: Mapping[str, str], exports: Sequence[Path]) -> dict:
+    """What the swap would take out of the library in use (spec 2026-11-17-ingest-guard-design §二): every document at
+    old that new lacks, with its reason, every page or notice both hold that new holds next to nothing of, and every
+    document both hold that is another thing in new (replaced: REPLACED_SHARE, 11-18).
+    Reasons that explain a leaving: merged into another document (new's doc_alias, or a duplicate address), its
+    address held by a document of another id (renumbered: a rule of ids.py changed, 11-18), every word of it in a
+    document of the same site of new (moved: _moved_words, 11-19; a picture row with a file too: PICTURE_MOVED_MIN),
+    another size of the same
+    Wix picture kept where the export dropped this one by rule (same_image, 11-18), a kind decided out (DECIDED_OUT), the
+    school's side (the export's marks build_documents leaves a record out by: left_out; or a row the export gives no
+    file for and files under SCHOOL_GONE), a list's pager page, and calendar events the school took off, up to
+    EVENTS_SHARE of them (waves: the sites that lost more than WAVE_MIN documents and WAVE_SHARE of theirs to the
+    school's side at once, which holds the swap all the same). Anything else explains nothing: a site the new library was not built from (a line lost from
+    the list of exports), a row without a file for another cause (a failed fetch must not take a document out), no
+    row at all, a row with a file the corpus has no record of, a record that reads as blank or as a kind the build
+    does not keep.
+    {'checked': False} when there is no library at old or one of the two cannot be read (nothing to compare)."""
+    if not old.is_file():
+        return {"checked": False}
+    try:
+        with closing(sqlite3.connect(f"file:{quote(str(old))}?mode=ro", uri=True)) as a, \
+                closing(sqlite3.connect(f"file:{quote(str(new))}?mode=ro", uri=True)) as b:
+            was = a.execute("SELECT doc_id, kind_class, site, title, url, length(text) FROM docs").fetchall()
+            now = {r[0]: r[1:] for r in b.execute("SELECT doc_id, length(text), url, title FROM docs")}
+            alias = {r[0] for r in b.execute("SELECT alias FROM doc_alias")}
+            built = {r[0] for r in b.execute("SELECT site FROM sites")}
+    except sqlite3.Error:
+        return {"checked": False}
+    explained, unexplained, by_site = Counter(), Counter(), Counter()
+    held_by, school = Counter(r[2] or "" for r in was), Counter()  # per site: documents held, and lost to the school
+    held_at = {_address(r[1]) for r in now.values()} - {""}  # every address the new library holds a document at
+    pictures = {m.group(1) for a in held_at if (m := _WIX_PICTURE.match(a))}  # the Wix pictures it holds, any size
+    other: list[tuple] = []  # held by both under one id, at another address and under another title: their texts next
+    # left without a row, with a row without a file, or a picture with one: is their text in the new library? (the
+    # last: the pages its row names, or None for anywhere in the site)
+    maybe: list[tuple] = []
+    items: list[dict] = []
+    events = [r for r in was if r[1] == "event"]
+    events_left: list[tuple] = []
+    rows: dict[str, dict[str, dict]] | None = None
+    left = 0
+
+    def odd(why: str, site: str, title: str, url: str, detail: str = "") -> None:
+        unexplained[why] += 1
+        by_site[site or ""] += 1
+        if len(items) < LEFT_SHOWN:
+            items.append({"site": site or "", "title": (title or "")[:60], "url": url or "", "why": why, "detail": detail})
+
+    for doc_id, cls, site, title, url, n in was:
+        if doc_id in now:
+            kept, url_now, title_now = now[doc_id][0] or 0, now[doc_id][1] or "", now[doc_id][2] or ""
+            if cls in ("page", "notice") and (n or 0) >= EMPTIED_FROM and kept < EMPTIED_TO and kept * 2 < n:
+                odd("emptied", site, title, url, f"{n} → {kept} 字")
+            elif (cls != "event" and _address(url) and _address(url) != _address(url_now) and (title or "") != title_now
+                    and _address(url) not in held_at):
+                other.append((doc_id, site, title, url, title_now, url_now))
+            continue
+        left += 1
+        if doc_id in alias:
+            explained["merged"] += 1
+        elif cls == "event":
+            events_left.append((site, title, url))
+        elif _address(url) in held_at:
+            explained["renumbered"] += 1
+        elif site not in built:
+            odd("site_not_built", site, title, url)
+        elif (key := left_out.get(doc_id)) is not None:
+            why, ok = _why_left(key)
+            if ok:
+                explained[why] += 1
+                school[site or ""] += why in SCHOOL_SIDE
+            else:
+                odd(why, site, title, url, key)
+        else:
+            rows = _export_rows(exports) if rows is None else rows
+            row = rows.get(site or "", {}).get(url)
+            said = f"{row.get('分类') or ''}｜{(row.get('结果') or '')[:24]}" if row else ""
+            if row is None:
+                maybe.append((doc_id, site, title, url, "no_row", "", None))
+            elif row.get("本地档案") and row.get("类型") == PICTURE_ROW:  # read into a page? (PICTURE_MOVED_MIN)
+                maybe.append((doc_id, site, title, url, "row_not_read", said, _linked_from(row)))
+            elif row.get("本地档案"):
+                odd("row_not_read", site, title, url, said)
+            elif row.get("分类") == SCHOOL_GONE:
+                explained["school_gone"] += 1
+                school[site or ""] += 1
+            elif (row.get("分类") == RULE_DECLINED and (m := _WIX_PICTURE.match(_address(url)))
+                    and m.group(1) in pictures):
+                explained["same_image"] += 1
+            elif row.get("分类") == RULE_DECLINED and (why := DECIDED_OUT.get(row.get("原因代码") or "")):
+                explained[why] += 1
+            else:
+                maybe.append((doc_id, site, title, url, "no_file", said, None))
+    found = _moved_words(old, new, [(m[0], m[1], PICTURE_MOVED_MIN if m[4] == "row_not_read" else MOVED_MIN, m[6])
+                                    for m in maybe]) if maybe else set()
+    for doc_id, site, title, url, why, said, _ in maybe:
+        if doc_id in found:
+            explained["moved"] += 1
+        else:
+            odd(why, site, title, url, said)
+    for doc_id, site, title, url, title_now, url_now in other:
+        share = _text_kept(old, new, doc_id)
+        if share is not None and share < REPLACED_SHARE:
+            odd("replaced", site, title, url, f"现在是：{title_now[:40]}｜{url_now}")
+    if events_left and len(events_left) <= EVENTS_SHARE * len(events):
+        explained["calendar"] += len(events_left)
+    else:
+        for site, title, url in events_left:
+            odd("calendar_many", site, title, url)
+    waves = {site: [n, held_by[site]] for site, n in school.most_common()
+             if n > WAVE_MIN and n > WAVE_SHARE * held_by[site]}
+    return {"checked": True, "left": left, "explained": dict(explained), "unexplained": dict(unexplained),
+            "unexplained_total": sum(unexplained.values()), "by_site": dict(by_site.most_common()), "items": items,
+            "waves": waves, "limits": {"total": LEFT_TOTAL, "site": LEFT_SITE, "wave": [WAVE_MIN, WAVE_SHARE]},
+            "words": {why: LEFT_WORDS[why] for why in (*explained, *unexplained)}}
+
+
+def _too_many_left(left: Mapping) -> bool:
+    return bool(left.get("checked")) and (left["unexplained_total"] > LEFT_TOTAL
+                                          or max(left["by_site"].values(), default=0) > LEFT_SITE)
 
 
 def _collapsed(old: Path, new: Path) -> list[tuple[str, int, int]]:
@@ -846,7 +1222,7 @@ def _date_spikes(rows: list[_Row], on: bool = True, today: date | None = None) -
     return report
 
 
-def _retitle(rows: list[_Row], on: bool, labels: bool = False) -> dict:
+def _retitle(rows: list[_Row], on: bool, labels: bool = False, fixes: bool = True) -> dict:
     """BuildReport.titles (plan 2026-11-14 T4; direction 2026-11-13 第 4 件): documents.own_titles on the documents
     kept (rows: after _merge_copies, so the 20 that make a title no title are 20 documents of the database, and a
     copy's title, already in the kept one's link texts, counts no more), then, for each document it gave a new title,
@@ -859,8 +1235,14 @@ def _retitle(rows: list[_Row], on: bool, labels: bool = False) -> dict:
     title took it away (a file on a page of minutes whose own title is a rule)}}, the side of the new titles to look
     at after a build: both move documents between the primary and the background ones. labels (11-15, the build's
     label_titles): own_titles' TITLE_LABEL, a file whose page-given title is a label many files carry titled by its
-    file name again; what its title gives is read again as well."""
-    report = own_titles([r.doc for r in rows], sites.table().school, on=on, labels=labels)
+    file name again; what its title gives is read again as well.
+    fixes (the build's fixes_1116, --no-fixes-1116; the owner 11-16, 「听你的」 to the grouping that batches these two
+    with the next rebuild): the title a document lost is no longer kept among its link names (own_titles' keep_old;
+    'old_kept' in the report), and a file whose parent took a new title carries that title as its parent_title when
+    it carried the old one ('parent_titles': how many; the index and the passages read parent_title, and 1,175 files
+    of the 111 sites named a parent by a title it no longer has). A file keeps a merged page's title as before, and
+    its doc type is not read again for the new parent title 【Claude: the smallest change】."""
+    report = own_titles([r.doc for r in rows], sites.table().school, on=on, labels=labels, keep_old=not fixes)
     period, typed, untyped = 0, Counter(), Counter()
     for r in rows:
         if not (r.doc.title_from_text or r.doc.title_was_label):
@@ -872,7 +1254,16 @@ def _retitle(rows: list[_Row], on: bool, labels: bool = False) -> dict:
         if dtype != r.dtype:
             (typed if dtype else untyped)[dtype or r.dtype] += 1
         r.ay, r.sem, r.cohorts, r.dtype = ay, sem, _cohorts(r.doc), dtype
-    return {**report, "changed": {"period": period, "typed": dict(typed), "untyped": dict(untyped)}}
+    followed = 0
+    by_id = {r.doc.doc_id: r.doc for r in rows}
+    for r in rows if fixes else ():
+        parent = by_id.get(r.doc.parent_id or "")
+        if (r.doc.kind_class == "attachment" and parent is not None and parent.title_from_text
+                and r.doc.parent_title == parent.old_title):
+            r.doc.parent_title = parent.title
+            followed += 1
+    return {**report, "old_kept": not fixes, "parent_titles": followed,
+            "changed": {"period": period, "typed": dict(typed), "untyped": dict(untyped)}}
 
 
 def _event_lines(rows: list[_Row], events: Mapping[str, Event], on: bool) -> dict:
@@ -1370,6 +1761,23 @@ def _house(unit: str, units: Mapping[str, Unit]) -> str:
     return office_of(unit_id, units) or unit_id
 
 
+def _vita_units(docs: list[Document], records: list[Record], on: bool = True) -> dict:
+    """BuildReport.vita_units (vita.py; decided 11-15, written 11-18): every page of a teacher's CV, the main page and
+    each tab answer, under any export (english.nknu.edu.tw's export holds 47 of them), states the department its
+    校內職務 tab names, as a notice states its publisher (Document.stated_unit, which _stated_units then places in the
+    unit tree). A document that states a unit already keeps it. on False (--no-vita-units): nothing changes, the report
+    still counts."""
+    found = vita.departments(records)
+    report = {"on": on, "teachers": len(found), "joint": sum(n > 1 for _, n in found.values()), "documents": 0,
+              "departments": dict(Counter(dep for dep, _ in found.values()).most_common())}
+    for d in docs:
+        if (who := vita.teacher(d.url)) and who in found and not d.stated_unit:
+            report["documents"] += 1
+            if on:
+                d.stated_unit = found[who][0]
+    return report
+
+
 def _stated_units(docs: list[Document], units: Mapping[str, Unit] | None, on: bool = True) -> dict:
     """BuildReport.publishers (the owner, 11-15: 「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」; the
     crawler's 2989f60 reads the cell 「公告單位：」 of the announcement platform's notice pages into the export's
@@ -1778,11 +2186,18 @@ class _UnitScope:
     report: dict
 
 
-def publisher_of(unit: str, grp: str, units: Mapping[str, Unit]) -> str | None:
+def publisher_of(unit: str, grp: str, units: Mapping[str, Unit], own_sections: bool = True) -> str | None:
     """The unit that published a document (T7d): the section its 組別 names when that section is its unit or a part of
-    it (教務處's 和平教務組, 招生企劃組 ...), else its unit (教務處); None when its unit is not in the tree."""
+    it (教務處's 和平教務組, 招生企劃組 ...), else its unit (教務處); None when its unit is not in the tree.
+    own_sections (the build's fixes_1116; the owner 11-16, 「听你的」 to the grouping that batches it): a 組別 that
+    names no unit by itself is read once more with the unit's name before it, as the tree names a section whose bare
+    name would be another unit's (進修學院's 「教務組」 is 進修學院教務組 in the tree, units.yaml: the bare word means
+    the two campuses' sections of 教務處 everywhere else). 467 documents of 進修學院's own site had their 組別
+    unplaced for it on the library of 11-16."""
     site = resolve(unit, units)
     section = resolve(grp, units) if grp else None
+    if own_sections and grp and section is None and site is not None:
+        section = resolve(units[site].name + "".join(grp.split()), units)
     if site is not None and section is not None and site in ancestors(units, section):
         return section
     return site
@@ -1809,7 +2224,7 @@ def _not_prefixed(names: Sequence[str], base: Sequence[str], prefixes: Sequence[
 
 
 def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None,
-               applies: Sequence[str] = ()) -> UnitWords:
+               applies: Sequence[str] = (), own_sections: bool = True) -> UnitWords:
     """The unit words of a document (_own_unit_words), then the units of applies (its doc_scope applies_to, in the
     tree's order) that are a college, a department or a program (APPLIES_KINDS) and that those words do not name, each
     with its short names (owner 11-08 10:16 (b): 「如果一份文件的 doc_scope 把 applies_to 缩小到了具体的学院/系所/学程
@@ -1817,7 +2232,7 @@ def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None
     department find 「某系 + 某事」 in every chunk). The school is no such unit; an office or a center is left out too.
     Then the document's categories (Document.categories: the list rows linking its page; blueprint item 22, owner
     11-09 「照这个做」) that these words do not name already."""
-    own = _own_unit_words(d, units, school)
+    own = _own_unit_words(d, units, school, own_sections)
     tree = units or {}
     more = tuple((tree[u].name, tree[u].aliases) for u in applies
                  if u in tree and tree[u].kind in APPLIES_KINDS and tree[u].name not in own.words)
@@ -1826,7 +2241,8 @@ def unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None
     return dataclasses.replace(words, categories=categories) if categories else words
 
 
-def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None) -> UnitWords:
+def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str | None = None,
+                    own_sections: bool = True) -> UnitWords:
     """The unit words of a document (plan 2026-11-08 T4; the owner, 11-08 04:08: the unit name, the 組別 and the
     unit's short names, so 「某系 + 某事」 finds the department's pages that never name it): its unit (Document.unit,
     the site table's) by its name in the tree with its aliases (units.yaml and the site probe's), as written when the
@@ -1859,7 +2275,7 @@ def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str |
     said = named is not None and (named in (unit, office) or tree[named].parent_id is None)
     if not group or group in (name, *aliases) or said:
         return UnitWords(name, aliases, **head)
-    section = publisher_of(d.unit, group, tree) if tree else None
+    section = publisher_of(d.unit, group, tree, own_sections) if tree else None
     more = ()
     if section is not None and section != unit:
         more = tuple(n for n in dict.fromkeys((tree[section].name, *tree[section].aliases)) if n != group)
@@ -1869,7 +2285,7 @@ def _own_unit_words(d: Document, units: Mapping[str, Unit] | None, school: str |
 
 
 def _set_unit_words(rows: list[_Row], units: Mapping[str, Unit] | None, on: bool,
-                    applies: Mapping[str, Sequence[str]] | None = None) -> None:
+                    applies: Mapping[str, Sequence[str]] | None = None, own_sections: bool = True) -> None:
     """Each row's unit words (unit_words, with the units its doc_scope applies to: applies, doc_id -> unit ids), or
     none when on is False (--no-unit-words, plan 2026-11-08 T4 review): no unit line and no unit tokens, so every
     passage is version 1's (the vector cache of a build before T4 serves it) and a build of the same inputs with and
@@ -1877,7 +2293,8 @@ def _set_unit_words(rows: list[_Row], units: Mapping[str, Unit] | None, on: bool
     school = sites.table().school
     applies = applies or {}
     for r in rows:
-        r.unit = unit_words(r.doc, units, school, applies.get(r.doc.doc_id, ())) if on else UnitWords()
+        r.unit = (unit_words(r.doc, units, school, applies.get(r.doc.doc_id, ()), own_sections) if on
+                  else UnitWords())
 
 
 def _applies(scope: _UnitScope | None) -> dict[str, list[str]]:
@@ -1902,7 +2319,7 @@ def site_units_without_alias(units: Mapping[str, Unit]) -> list[str]:
     return list(out)
 
 
-def unit_scope(docs: list[Document], units: dict[str, Unit]) -> _UnitScope:
+def unit_scope(docs: list[Document], units: dict[str, Unit], own_sections: bool = True) -> _UnitScope:
     """Every document's doc_scope rows (addendum 2026-11-02 F; units.doc_scope, T6c): its publisher (publisher_of),
     applies_to (the publisher's reach narrowed by what the title and the text's first SCOPE_HEADER characters name,
     the first SCOPE_BODY characters telling a list the header cuts off, I3; one row per unit x campus x level in the
@@ -1920,8 +2337,9 @@ def unit_scope(docs: list[Document], units: dict[str, Unit]) -> _UnitScope:
     docs_with, publishers, unplaced, narrowed, named = Counter(), Counter(), Counter(), Counter(), Counter()
     campus, levels = Counter(), Counter()
     for d in docs:
-        pub = publisher_of(d.unit, d.grp, units)
-        if d.grp and pub is not None and pub != resolve(d.grp, units):
+        pub = publisher_of(d.unit, d.grp, units, own_sections)
+        # a 組別 is placed when it names the publisher, by itself or as the unit's own section (publisher_of)
+        if d.grp and pub is not None and pub == resolve(d.unit, units) and pub != resolve(d.grp, units):
             unplaced[d.grp] += 1
         applies, mentions = doc_scope(d.title, d.text[:SCOPE_HEADER], pub, units, body=d.text[:SCOPE_BODY])
         found = applies  # what the document itself says: the report's 'narrowed' counts read this
@@ -1984,7 +2402,7 @@ SITE_COLUMNS = ("site", "name", "unit", "data_as_of", "missing_pages", "missing_
 
 def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, scope: _UnitScope | None = None,
            aliases: list[tuple[str, str, str]] | None = None, site_rows: list[dict] | None = None,
-           alumni: bool = True) -> None:
+           alumni: bool = True, volumes: frozenset[str] = frozenset()) -> None:
     """The database at path: schema, docs (with their tier, site and unit line, and since plan 2026-11-14 T3, T6 and
     T2 their date line, expires, valid_ay and rank_date: _event_lines, _validity, _rank_dates), doc_alias (aliases:
     _aliases' rows),
@@ -2004,7 +2422,7 @@ def _write(path: Path, rows: list[_Row], meta: dict[str, str], counts: dict, sco
             [(r.doc.doc_id, r.doc.kind_class, r.doc.kind_raw, r.doc.title, r.doc.url, r.doc.unit, r.doc.grp,
               r.doc.parent_id, r.doc.parent_title, r.doc.linktext, int(r.doc.has_text), r.doc.text, len(r.doc.text),
               r.ay, r.sem, r.ident.date.isoformat() if r.ident else None, r.ident.kind if r.ident else None,
-              r.dtype, r.doc.source, tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni), r.doc.site,
+              r.dtype, r.doc.source, tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni, volumes), r.doc.site,
               r.unit.line, r.date_line, int(r.expires), r.valid_ay,
               r.rank_date.isoformat() if r.rank_date else None, int(r.rank_undated)) for r in rows])
         conn.executemany("INSERT INTO doc_alias(alias, doc_id, why) VALUES (?, ?, ?)", aliases or [])
@@ -2112,7 +2530,9 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                 own_titles: bool = True, platform_twins: bool = True, stated_units: bool = True,
                 label_titles: bool = False, copy_names: bool = True, date_spikes: bool = True,
                 cohort_expiry: bool = True, file_row_dates: bool = True, force_swap: bool = False,
-                single_lines: bool = True) -> BuildReport:
+                single_lines: bool = True, fixes_1116: bool = True,
+                site_checked: Mapping[str, str] | None = None, page_reread: bool = True,
+                departure_guard: bool = True, vita_units: bool = True, volumes: bool = True) -> BuildReport:
     """One database from inputs, each (corpus.json, the export folder it was assembled from), in order (plan
     2026-11-08 T4; the module docstring). Read every input first (a broken one stops the build before anything is
     written), then write out + '.tmp' and move it over out. today (default: Asia/Taipei today) bounds the server dates
@@ -2203,11 +2623,27 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     first = read[0]
     # the school's deleted notices build_documents leaves out, per site (owner 11-09, blueprint item 15)
     deleted = Counter(r.site or first.info["site"] for r in records if deleted_notice(r))
-    docs, excluded = build_documents(records, read_metas(first.export, records), events, site=first.info["site"],
-                                     single_lines=single_lines)
+    # spec 2026-11-16 (nightly ingest) §五: and the rows the nightly update marks 学校已删除, pages and files alike,
+    # which build_documents leaves out too: one number per site, in the same column 【Claude】
+    # and the notices the school sent to another page (MOVED: the crawler's export batch of 11-16)
+    deleted.update(r.site or first.info["site"] for r in records
+                   if r.area_mark in (GONE, MOVED) and kind_class(r.kind) is not None)
+    # blueprint 第五节 item 25 (another session's audit; the owner 11-16, 「听你的」: with a rebuild, once the export
+    # gives the same): page_reread False (--no-page-reread) takes a c.nknu notice's title, date and 組別 from the export
+    # (标题 through the page reading, 网页上写的日期, 组别 since the crawler's ef05cf1) and does not read its page once
+    # more here. Compared on the library of 11-16 (research/pipeline_2026-11-02/fixes_1116/reread_check_1116.json):
+    # 13,503 dates the same and none different, one wrong date of the year after gone, the titles the same but for 31
+    # notices the school had moved (MOVED now). Still on by default 【Claude, 11-16 night】: the tests' made-up exports
+    # date and group their notices by the page fields alone, and the night the new export came in was no night to
+    # change two things at once; the default turns, and the reading goes, once a library built without it was looked at
+    metas = read_metas(first.export, records) if page_reread else {}
+    left_out: dict[str, str] = {}  # spec 2026-11-17-ingest-guard-design §二: why each left-out record was left out
+    docs, excluded = build_documents(records, metas, events, site=first.info["site"], single_lines=single_lines,
+                                     left=left_out)
     # 11-16 (documents.join_single_lines; --no-single-lines): the runs of one-character lines put right
     joined = {"on": single_lines, "documents": sum(bool(d.lines_joined or d.marks_dropped) for d in docs),
               "joined": sum(d.lines_joined for d in docs), "dropped": sum(d.marks_dropped for d in docs)}
+    by_cv = _vita_units(docs, records, vita_units)  # 11-18: before _stated_units places what they state
     published = _stated_units(docs, units, stated_units)  # the owner, 11-15: before the copies are merged
     for kind, n in [*merged.items(), *repeated.items()]:
         excluded[kind] = excluded.get(kind, 0) + n
@@ -2228,11 +2664,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     copied = _copies_report(rows, copies, copy_rule, [inp.info["site"] for inp in read], twinned.get("linked", set()))
     copied["names_carried"] = twinned.pop("names_carried")  # 11-15: the copies' link names the kept ones took over
     ranked = _rank_dates(rows, copies)  # plan 2026-11-14 T2, completed: the date each merged document ranks by
-    titled = _retitle(rows, own_titles, label_titles)  # plan 2026-11-14 T4: before anything below reads a title
+    titled = _retitle(rows, own_titles, label_titles, fixes_1116)  # plan 2026-11-14 T4: before anything below reads a title
     dated = _event_lines(rows, by_event, event_dates)  # plan 2026-11-14 T3
     valid = _validity(rows, copies, cohort_expiry)  # plan 2026-11-14 T6; spec 2026-11-16 §二 (cohort_expiry)
-    scope = unit_scope(docs, units) if units is not None else None
-    _set_unit_words(rows, units, unit_words, _applies(scope))
+    scope = unit_scope(docs, units, fixes_1116) if units is not None else None
+    _set_unit_words(rows, units, unit_words, _applies(scope), fixes_1116)
     id_aliases = _aliases(rows, copies)  # doc_alias (not config/aliases.yaml, the synonym groups)
     if scope is not None:
         named = Counter(len(r.unit.applies) for r in rows if r.unit.applies)
@@ -2252,7 +2688,11 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     site_rows = _site_rows(read, docs, warnings, deleted, {site: again.get(site, 0) for site in judged})
 
     attachments = [d for d in docs if d.kind_class == "attachment"]
-    tiers = Counter(tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni_background) for r in rows)
+    # 11-19: whole volumes are background; counted here as the documents the rule alone makes so
+    books = whole_volumes([r.doc for r in rows]) if volumes else frozenset()
+    made = sum(tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni_background) == PRIMARY for r in rows
+               if r.doc.doc_id in books)
+    tiers = Counter(tier_of(r.doc.doc_id, r.dtype, r.doc.kind_raw, alumni_background, books) for r in rows)
     event_docs = sum(d.kind_class == "event" for d in docs)
     series_sites: dict[str, dict[str, int]] = {}  # site -> its recurring events merged and their instances
     for ev in events:
@@ -2268,6 +2708,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                       "events_before": event_docs + away, "events_after": event_docs, "by_site": series_sites},
         "alumni": {"on": alumni_background,
                    "background": sum(alumni_page(d.kind_raw) for d in docs) if alumni_background else 0},
+        "volumes": {"on": volumes, "chars": VOLUME_CHARS, "background": made},  # 11-19: whole volumes as background
         # the owner, 11-14 23:55 (_platform_twins): the pairs found (same; fuller, by whose copy says more), the copy groups
         # they made or widened and the documents that took away, a teaching unit's longer versions left alone
         # (department_longer) and the same-titled pairs left apart
@@ -2319,6 +2760,15 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
             # spec 2026-11-16 §二: the three date rules; hybrid reads cohort_expiry (validity's cohort_step)
             DATE_SPIKES_KEY: json.dumps(spikes, ensure_ascii=False),
             "single_lines_json": json.dumps(joined, ensure_ascii=False),
+            "fixes_1116": "on" if fixes_1116 else "off", "page_reread": "on" if page_reread else "off",
+            "vita_units": "on" if vita_units else "off",
+            "notice_folders": "on" if ids.NOTICE_FOLDERS else "off",  # ids.py, 11-18 (NKNU_NOTICE_FOLDERS=0: off)
+            # 11-19: whole volumes as background (--no-volumes: off); how long one is, and how many the rule made so
+            "volumes_json": json.dumps({"on": volumes, "chars": VOLUME_CHARS, "background": made}),
+            # spec 2026-11-16 (nightly ingest) §五, the key and its form agreed with the interface session 11-16:
+            # {site key: the Asia/Taipei day the nightly update last saw the site answer}, for the sites built
+            SITE_CHECKED_KEY: json.dumps({s["site"]: site_checked[s["site"]] for s in site_rows
+                                          if s["site"] in (site_checked or {})}, ensure_ascii=False),
             "cohort_expiry": "on" if cohort_expiry else "off", "cohort_years": str(COHORT_YEARS),
             "file_row_dates": "on" if file_row_dates else "off",
             DEDUPE_KEY: json.dumps(dedupe, ensure_ascii=False),
@@ -2338,15 +2788,27 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     tmp.unlink(missing_ok=True)
     vectors = None
     try:
-        _write(tmp, rows, meta, counts, scope, id_aliases, site_rows, alumni_background)
+        _write(tmp, rows, meta, counts, scope, id_aliases, site_rows, alumni_background, books)
         if embed:
             vectors = _embed(tmp, embedder, vec_cache, unit=unit_words and unit_in_vectors)
         # spec 2026-11-16 §五: a site fallen below half of what the library in use holds for it keeps that library in
-        # place (the new one stays beside it); force_swap, --force-swap, puts the new one in whatever it holds
-        if not force_swap and (gone := _collapsed(out, tmp)):
-            held = out.with_name(f"{out.stem}.held{out.suffix}")
+        # place (the new one stays beside it); spec 2026-11-17-ingest-guard-design §二: and so do too many documents
+        # that left it for no reason the build can give (departure_guard off, --no-departure-guard: only counted).
+        # force_swap, --force-swap, puts the new library in whatever it holds
+        left = _departures(out, tmp, left_out, [inp.export for inp in read])
+        gone = [] if force_swap else _collapsed(out, tmp)
+        too_many = departure_guard and not force_swap and _too_many_left(left)
+        wave = departure_guard and not force_swap and bool(left.get("waves"))
+        held = out.with_name(f"{out.stem}.held{out.suffix}") if gone or too_many or wave else None
+        if left.get("checked") or held is not None:
+            swap_file(out).write_text(json.dumps(
+                {"swapped": held is None, "held": held.name if held else None, "forced": force_swap,
+                 "collapsed": [list(g) for g in gone], "too_many_left": too_many, "school_wave": wave,
+                 "departures": left},
+                ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        if held is not None:
             os.replace(tmp, held)
-            raise SwapHeld(held, gone)
+            raise SwapHeld(held, gone, left if too_many or wave else None)
         os.replace(tmp, out)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -2363,7 +2825,7 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
                                 "unit_in_vectors": unit_words and unit_in_vectors,
                                 "note": PASSAGE_NOTE if unit_words else PASSAGE_NOTE_OFF},
                        dedupe=dedupe, event_dates=dated, titles=titled, validity=valid, publishers=published,
-                       date_spikes=spikes, single_lines=joined)
+                       date_spikes=spikes, single_lines=joined, departures=left, vita_units=by_cv)
 
 
 def _progress_to_stderr() -> Callable[[], None]:
@@ -2425,6 +2887,11 @@ def _dedupe_words(dedupe: dict) -> list[str]:
         out.append("所友名录没算背景（--no-alumni-background）")
     elif a["background"]:
         out.append(f"所友名录 {a['background']} 份算背景")
+    v = dedupe.get("volumes") or {}  # 11-19; a report of before has none
+    if v and not v["on"]:
+        out.append("整本的大档没算背景（--no-volumes）")
+    elif v.get("background"):
+        out.append(f"整本的大档 {v['background']} 份算背景（{v['chars'] // 10000} 万字以上、标题没有手冊簡章這類字的附件）")
     t = dedupe.get("twins") or {}  # the owner, 11-14 23:55 (_platform_twins); a report of before has none
     if t and not t["on"]:
         out.append("公告平台和单位网站各一份的公告没合并（--no-platform-twins）")
@@ -2535,9 +3002,27 @@ def main(argv: list[str] | None = None) -> int:
                     help="网页给附件的叫法是同一网站 20 份以上附件共用的（「檔案連結」「公文」）不当标题，档名有汉字的改回用档名"
                          "（11-15 做的，默认不开：量过，111 站 894 份标题更具体，但 33 题里「學號」那题从第 4 掉到第 15 名，"
                          "等用户定）")
+    ap.add_argument("--no-fixes-1116", action="store_true",
+                    help="不做 11-16 攒着的三条小修（重现之前的库）：换掉的旧标题照旧留在链接叫法里、附件的上层标题不跟着上层网页的"
+                         "新标题改、单位自己的组（進修學院写的「教務組」）照旧认不出")
     ap.add_argument("--no-single-lines", action="store_true",
                     help="转出来一字一行的地方照原样留着（11-16：默认把连续的单字行接成一行、丢掉公文左边那条装订虚线的点；"
                          "直排的标签转出来就是一字一行，字和顺序都对）")
+    ap.add_argument("--no-page-reread", action="store_true",
+                    help="c.nknu 公告页的标题、日期、组别只用导出给的，建库不再自己读一次网页（导出清单要有「组别」一栏："
+                         "爬虫 11-16 晚以后的导出；旧导出加了这个，这些公告会没有组别）。默认照旧再读一次")
+    ap.add_argument("--site-checked", type=Path, default=None,
+                    help="爬虫每晚写的 seen.tsv（网站键、最后一次看过的时间、今晚的情形）；给了就把每站最后一次看过的日期"
+                         "存进库的 meta site_checked_json（每晚进库设计稿 2026-11-16 第五节）；没有这个档就当没给")
+    ap.add_argument("--no-vita-units", action="store_true",
+                    help="教师履历页（dataopen2search/vita.aspx）不照「校內職務」分页上的现职教职改挂系所，照旧算全校")
+    ap.add_argument("--no-volumes", action="store_true",
+                    help=f"整本的大档不算背景（默认：{VOLUME_CHARS // 10000} 万字以上的附件，标题、上层网页标题、链接文字里"
+                         "没有手冊、簡章、法規、課程、申請这类字的，算背景资料）")
+    ap.add_argument("--no-departure-guard", action="store_true",
+                    help=f"不因为「说不出原因地离开库的文件太多」而不换库（全库超过 {LEFT_TOTAL} 份或一站超过 {LEFT_SITE} 份才会拦；"
+                         f"一站一次有超过 {WAVE_MIN} 份、超过一成的文件被标成学校删掉的也会拦；"
+                         "关掉以后照样逐份对、写进报告，只是不拦；方案 2026-11-17-ingest-guard-design 第二节）")
     ap.add_argument("--force-swap", action="store_true",
                     help=f"某个网站的文件数不到现在这份库的一半（现在至少 {GUARD_MIN} 份）时照样换库；默认不换，新库留在旁边的 "
                          "<名字>.held.db、退出码 3（设计稿 2026-11-16 第五节）")
@@ -2578,7 +3063,12 @@ def main(argv: list[str] | None = None) -> int:
                              stated_units=not args.no_stated_units, label_titles=args.label_titles,
                              copy_names=not args.no_copy_names, date_spikes=not args.no_date_spikes,
                              cohort_expiry=not args.no_cohort_expiry, file_row_dates=not args.no_file_row_dates,
-                             force_swap=args.force_swap, single_lines=not args.no_single_lines)
+                             force_swap=args.force_swap, single_lines=not args.no_single_lines,
+                             fixes_1116=not args.no_fixes_1116,
+                             site_checked=read_site_checked(args.site_checked) if args.site_checked else None,
+                             page_reread=not args.no_page_reread,
+                             departure_guard=not args.no_departure_guard, vita_units=not args.no_vita_units,
+                             volumes=not args.no_volumes)
     except SwapHeld as exc:
         print(str(exc), file=sys.stderr)
         return 3

@@ -32,7 +32,9 @@ AFTER_REASONS = "要人看（1 个）、缺内嵌页或按钮（1 个）、待�
 
 def test_contents_copy_is_the_exports_word_and_read_before_the_area_marks():
     assert NO_DATA == archive_export.NO_DATA == "学校回答没有资料"
-    assert ROW_MARKS == (NO_DATA, *AREA_MARKS)
+    # 11-16: the nightly update's 学校已删除 (corpus.GONE) is read before them all (tests/content/test_nightly_1116.py)
+    # 学校已删除, the moved notices first; 11-19: 内容在按钮行 before the school's answer (tests/content/test_in_buttons_1119.py)
+    assert ROW_MARKS[-3:] == (NO_DATA, *AREA_MARKS) and len(ROW_MARKS) == 6
     assert NO_DATA_SUFFIX == "(学校回答没有资料)"
 
 

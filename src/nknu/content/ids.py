@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import os
 import re
 import unicodedata
 from urllib.parse import parse_qsl, urlsplit
@@ -38,7 +39,14 @@ _SSO_NEWS_HOSTS = frozenset({"news.nknu.edu.tw", "sso.nknu.edu.tw"})  # one noti
 _SSO_NEWS = re.compile(r"(?i)/lastnews\.aspx$")  # profiles.SSO_NEWS's detail page, UNID
 _DRIVE_HOST = "www.googleapis.com"
 _DRIVE_FILE = re.compile(r"/drive/v3/files/([A-Za-z0-9_-]+)(?:/export)?/?")  # item, media and export of one file
-_C_NKNU = "c.nknu.edu.tw"  # the one c.nknu-template host whose first path segment names the site (aca, ccee …)
+_C_NKNU = "c.nknu.edu.tw"  # the c.nknu-template host whose first path segment names the site (aca, ccee …)
+# 11-18: a covered host of its own domain may hold sections too, each numbering its notices from 1 (特教中心:
+# ksped.nknu.edu.tw/resource, /ebd-asd and the root, 200 numbers in more than one of them once round two crawled the
+# other sections; the other seven such hosts keep their notices at the root). A notice in a folder is that folder's,
+# on any covered host; one at the root keeps the host's key. NKNU_NOTICE_FOLDERS=0 in the environment (assemble
+# writes the keys and the build joins by them, so both read it there; the build's meta notice_folders says which):
+# the key of before, one notice per host and number.
+NOTICE_FOLDERS = os.environ.get("NKNU_NOTICE_FOLDERS", "1") != "0"
 
 
 def _param(query: str, name: str) -> str:
@@ -50,8 +58,9 @@ def _param(query: str, name: str) -> str:
 def location_key(url: str) -> str:
     """The identity of anything addressed by a URL. Overrides, checked in this order:
     - a c.nknu-template notice (newsdetail.aspx or newsview.aspx with an nid, on any host profiles.CNKNU covers):
-      cnknu:<host>[/<first path segment, only on c.nknu.edu.tw>]:<nid>, so 教務處's nid 578 is not ccee's (notices
-      are numbered per site) and its gi or &amp; spelling makes no second notice;
+      cnknu:<host>[/<first path segment, when the page sits in a folder>]:<nid>, so 教務處's nid 578 is not ccee's
+      and 特教中心's /resource nid 172 is not its /ebd-asd one (notices are numbered per site, and per section of a
+      host of its own domain: NOTICE_FOLDERS, 11-18), and its gi or &amp; spelling makes no second notice;
     - SSO news (lastnews.aspx with a unid, on news.nknu.edu.tw or sso.nknu.edu.tw): sso-news:<UNID in upper case>;
     - a Drive API file (www.googleapis.com/drive/v3/files/<id>, its item, media or export URL): drive:<id>;
     - anything else: url:<the address without its scheme>."""
@@ -63,7 +72,7 @@ def location_key(url: str) -> str:
         return URL + bare
     if _NOTICE.search(parts.path) and profiles.CNKNU.covers(host) and (nid := _param(parts.query, "nid")):
         segs = [s for s in parts.path.split("/") if s]
-        site = f"{host}/{segs[0].lower()}" if host == _C_NKNU and len(segs) >= 2 else host
+        site = f"{host}/{segs[0].lower()}" if len(segs) >= 2 and (host == _C_NKNU or NOTICE_FOLDERS) else host
         return f"{CNKNU}{site}:{nid}"
     if host in _SSO_NEWS_HOSTS and _SSO_NEWS.search(parts.path) and (unid := _param(parts.query, "unid")):
         return SSO_NEWS + unid.upper()

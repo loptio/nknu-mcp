@@ -97,7 +97,17 @@ from selectolax.lexbor import LexborHTMLParser
 from nknu.archive import profiles, scope
 from nknu.archive.links import _base as link_base  # the crawler's <base href> rule, as links.page_links uses it
 from nknu.content import build, ids
-from nknu.content.corpus import CALENDAR_FILES, LIST_PAGER, NO_DATA, PAGES_SEP, ROW_MARKS, TEMPLATE_PAGES
+from nknu.content.corpus import (
+    CALENDAR_FILES,
+    GONE,
+    IN_BUTTONS,
+    LIST_PAGER,
+    MOVED,
+    NO_DATA,
+    PAGES_SEP,
+    ROW_MARKS,
+    TEMPLATE_PAGES,
+)
 from nknu.content.documents import _FILE_SIZE, MENU_IMAGE, UNKNOWN_ZONE, _link_key, kind_class, site_root
 from nknu.content.links import PageLink, match_key, page_links
 from nknu.totext.accounting import Account, account
@@ -459,7 +469,9 @@ class _Assembly:
                 "modified": row.get("最后修改时间") or "", "origin": row.get("来源") or "",
                 "area_mark": next((m for m in ROW_MARKS if m in (row.get("缺什么") or "")), ""),
                 "list_kind": row.get("页别") or "", "list_category": row.get("列表上的类别") or "",
-                "publisher": " ".join((row.get("公告单位") or "").split())}
+                "publisher": " ".join((row.get("公告单位") or "").split()),
+                # the crawler's export batch of 11-16 (ef05cf1): the 31st column, a c.nknu notice's own 組別
+                "group": " ".join((row.get("组别") or "").split())}
 
     # ------------------------------------------------------------ texts
 
@@ -621,9 +633,9 @@ class _Assembly:
                 continue
             base = self.pages.base(row)
             # a list page of any platform is left out (T3), and so is a page the crawler marks 列表翻页 (item 22) or
-            # one the school answered with no data (NO_DATA, the crawler's fa81f41)
+            # one the school answered with no data (NO_DATA, the crawler's fa81f41) or deleted (GONE, 11-16)
             kept_page = (kind_class(record["kind"]) is not None and record["list_kind"] != LIST_PAGER
-                         and record["area_mark"] != NO_DATA)
+                         and record["area_mark"] not in (NO_DATA, GONE, MOVED, IN_BUTTONS))
             lines = []
             for line in record["text"].split("\n"):
                 m = IMG_LINE.fullmatch(line)

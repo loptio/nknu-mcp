@@ -224,7 +224,9 @@ def built(tmp_path):
     inputs = [site(tmp_path, chair_rows())]
     paths = tm.tree_files(tmp_path / "tree")
     out = tmp_path / "db" / "on.db"
-    report = tm.run(paths, out, inputs=inputs)
+    # fixes_1116=False: the build of 11-14, which kept a replaced title among the link names; since 11-16 the default
+    # build does not (tests/content/test_fixes_1116.py)
+    report = tm.run(paths, out, inputs=inputs, fixes_1116=False)
     conn = open_ro(out)
     yield report, conn, inputs, paths
     conn.close()
@@ -259,6 +261,7 @@ def test_the_build_gives_the_new_titles_after_the_copies_are_merged(built):
                       "label": {"titles": 0, "documents": 0, "retitled": 0, "kept": 0, "why": {}, "by_site": {},
                                 "examples": []},
                       "by_site": {CHAIR_SITE: {"shared": {"retitled": 20, "kept": 0}, "file": {"retitled": 2, "kept": 1}}},
+                      "old_kept": True, "parent_titles": 0,  # 11-16: tests/content/test_fixes_1116.py
                       "changed": {"period": 21, "typed": {MINUTES: 1}, "untyped": {}}}
     assert len(examples["shared"]) == 20 and [e["old"] for e in examples["file"]] == ["643-79-8.odt", "115-1a.pdf"]
     meta = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('own_titles', 'titles_json')"))
@@ -281,7 +284,7 @@ def test_both_titles_find_the_document(built):
 def test_without_the_switch_the_build_is_the_one_of_before(built, tmp_path, capsys):
     report, conn, inputs, paths = built
     out = tmp_path / "db" / "off.db"
-    off = tm.run(paths, out, inputs=inputs, own_titles=False)
+    off = tm.run(paths, out, inputs=inputs, own_titles=False, fixes_1116=False)
     plain = open_ro(out)
     try:
         got = by_url(plain, "title, linktext, period_ay, period_sem, doc_type, tier")

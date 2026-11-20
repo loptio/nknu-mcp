@@ -138,7 +138,10 @@ from nknu.content.corpus import (
     AREA_EMPTY,
     AREA_MARKS,
     CATEGORY_SEP,
+    GONE,
+    IN_BUTTONS,
     LIST_PAGER,
+    MOVED,
     NO_DATA,
     NOTICE_KINDS,
     Event,
@@ -187,6 +190,12 @@ PAGER_SUFFIX = "(列表翻页)"  # excluded-count suffix: a page marked 列表�
 # excluded-count suffix: a page the school answered with no data (corpus.NO_DATA, the crawler's fa81f41) its kind alone
 # would keep (_class); the key, and that it goes before PAGER_SUFFIX (_left_out_as), are 【Claude】
 NO_DATA_SUFFIX = "(学校回答没有资料)"
+# excluded-count suffix: a row the school deleted (corpus.GONE; spec 2026-11-16 nightly ingest §五), before the others
+GONE_SUFFIX = "(学校已删除)"
+# excluded-count suffix: a file that only pages the school deleted link (build_documents; 11-16 【Claude】)
+GONE_FILE_SUFFIX = "(学校已删除的网页带的附件)"
+MOVED_SUFFIX = "(学校把公告转到别的页)"  # excluded-count suffix: corpus.MOVED
+IN_BUTTONS_SUFFIX = "(内容在按钮行)"  # excluded-count suffix: corpus.IN_BUTTONS (11-19), a page of a teachers' menu only
 UNKNOWN_ZONE = "unknown"  # a linking page whose link to the file was not found (a button), or the 10-29 corpus
 ZONE_ORDER = {"attachments": 0, "content": 1, UNKNOWN_ZONE: 2, "nav": 3}  # the zone a page's reference is shown with
 
@@ -489,7 +498,8 @@ def _class(r: Record) -> str | None:
     no detail path names (GEO, ID, WordPress profiles: 2,253 pages on 11-09), dated by that field (sub-step 4, spec
     2026-11-08 §四) 【Claude】. Its kind_raw stays. One helper for both places that ask (the notices kept at one
     address, and the documents), so they never disagree."""
-    if r.list_kind == LIST_PAGER or r.area_mark == NO_DATA:
+    # GONE: any row, a page or a file (11-16); IN_BUTTONS: a page whose content is its button rows' (11-19)
+    if r.list_kind == LIST_PAGER or r.area_mark in (NO_DATA, GONE, MOVED, IN_BUTTONS):
         return None
     cls = kind_class(r.kind)
     return "notice" if cls == "page" and r.date_source == OWN_FIELD else cls
@@ -501,6 +511,12 @@ def _left_out_as(r: Record) -> str:
     any other list's pager page (PAGER_SUFFIX), when its kind alone would keep it; else its kind, as before."""
     if kind_class(r.kind) is None:
         return r.kind
+    if r.area_mark == GONE:
+        return r.kind + GONE_SUFFIX
+    if r.area_mark == MOVED:
+        return r.kind + MOVED_SUFFIX
+    if r.area_mark == IN_BUTTONS:
+        return r.kind + IN_BUTTONS_SUFFIX
     if r.area_mark == NO_DATA:
         return r.kind + NO_DATA_SUFFIX
     return r.kind + PAGER_SUFFIX if r.list_kind == LIST_PAGER else r.kind
@@ -809,9 +825,18 @@ def _context_title(named: list[tuple[date | None, str]]) -> str:
     return Counter(name for day, name in named if (day or date.min) == top).most_common(1)[0][0]
 
 
+def _note(left: dict[str, str] | None, r: Record, key: str) -> None:
+    """build_documents' left: the document id a left-out record would have had -> the key it is counted under."""
+    if left is not None:
+        left["d" + r.id] = key
+
+
 def build_documents(records: list[Record], metas: dict[str, PageMeta], events: list[Event],
-                    site: str = "", single_lines: bool = True) -> tuple[list[Document], dict[str, int]]:
-    """Documents in corpus order, then events; and the count of left-out records by kind. records: one per id
+                    site: str = "", single_lines: bool = True,
+                    left: dict[str, str] | None = None) -> tuple[list[Document], dict[str, int]]:
+    """Documents in corpus order, then events; and the count of left-out records by kind. left, when given, is filled
+    with each left-out record's document id and the key it is counted under (spec 2026-11-17-ingest-guard-design §二:
+    the build says of every document that left the library why it left). records: one per id
     (one_per_id); metas: the notice pages' header fields keyed by Record.id (corpus.read_metas). A page the crawler
     marks 列表翻页 (blueprint item 22) and one the school answered with no data (Record.area_mark NO_DATA, the
     crawler's fa81f41) are left out (_class) and counted as <kind>(列表翻页) and <kind>(学校回答没有资料) when the kind
@@ -839,12 +864,15 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         cls = _class(r)
         if cls is None:  # one a mark alone leaves out (its kind would keep it) is counted apart (_left_out_as)
             excluded[_left_out_as(r)] += 1
+            _note(left, r, _left_out_as(r))
             continue
         if deleted_notice(r):  # before the duplicate check: a shell is counted as deleted, never as (重复)
             excluded[r.kind + DELETED] += 1
+            _note(left, r, r.kind + DELETED)
             continue
         if cls == "notice" and keep.get(key, r.id) != r.id:
             excluded[r.kind + DUPLICATE] += 1
+            _note(left, r, r.kind + DUPLICATE)
             duplicate_of[r.id] = keep[key]
             continue
         m = metas.get(r.id) if cls == "notice" else None
@@ -853,6 +881,7 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         text, marks, joined = join_single_lines(clean_text(r.text)) if single_lines else (clean_text(r.text), 0, 0)
         if not title and not text:
             excluded[r.kind + BLANK] += 1
+            _note(left, r, r.kind + BLANK)
             continue
         stated = _stated(r) if cls in ("notice", "page") else None
         added, added_raw, added_source = None, m.added_raw if m else "", ""
@@ -864,7 +893,8 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         # spec 2026-11-16 §二: a file's own list row, the one export rule trusted for it (never a page's words)
         row = _stated(r) if cls == "attachment" and r.date_source == LIST_ROW else None
         d = Document(doc_id="d" + r.id, kind_class=cls, kind_raw=r.kind, title=title, url=r.url,
-                     unit=sites.unit_for(r.url, r.site or site), grp=m.group if m else "", parent_id=None,
+                     # the 組別 the page's own reading gave, else the export's 组别 (the crawler's ef05cf1)
+                     unit=sites.unit_for(r.url, r.site or site), grp=(m.group if m else "") or r.group, parent_id=None,
                      parent_title="", linktext=_link_text(r.linktext),
                      has_text=bool(text) and not r.kind.startswith(NO_TEXT_KINDS), text=text, added=added,
                      added_raw=added_raw, added_source=added_source, page_date=page_date, page_date_raw=page_raw,
@@ -905,6 +935,27 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
         """The order a file's linking pages are taken in (addendum 2026-11-02 B; 11-01: the latest): a notice's date,
         an undated notice before a page, the first in corpus order on ties."""
         return k.added or date.min, k.kind_class == "notice", -order[k.doc_id[1:]]
+
+    # spec 2026-11-16 (nightly ingest) §五 and §十 item 4 【Claude, after the crawler session's answers of 11-16】: a
+    # file goes with the pages the school deleted when every page that links it, from its text, its file area or its
+    # menus, is such a page (GONE: left out above), so a deleted notice leaves no file behind without a notice. A file
+    # another page still links stays, and so does one no page links (it was never a deleted page's alone). The
+    # crawler marks a file only when the file itself is found gone, and keeps a deleted page among the pages linking
+    # its files (its export batch of 11-17), which is what this reads.
+    orphaned = set()
+    for r in records:
+        d = doc_of.get(r.id)
+        if d is None or d.kind_class != "attachment":
+            continue
+        linking = at([*r.linked, *r.nav_linked])
+        if linking and all(lr.area_mark == GONE for lr in linking):
+            orphaned.add(r.id)
+            excluded[r.kind + GONE_FILE_SUFFIX] += 1
+            _note(left, r, r.kind + GONE_FILE_SUFFIX)
+    if orphaned:
+        docs = [d for d in docs if d.doc_id[1:] not in orphaned]
+        for rid in orphaned:
+            del doc_of[rid]
 
     for r in records:
         d = doc_of.get(r.id)
@@ -1087,7 +1138,8 @@ def _labels(docs: list[Document], on: bool) -> dict:
             "examples": _spread(retitled, TITLE_EXAMPLES)}
 
 
-def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: bool = False) -> dict:
+def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: bool = False,
+               keep_old: bool = True) -> dict:
     """Give each document whose title says nothing the title its own text gives (plan 2026-11-14 T4; the module
     docstring), in place, and report it. docs: the documents the build keeps, copies merged, so that 20 addresses of
     one page are one document 【Claude: the plan does not say when to count】. school: the school's name
@@ -1108,7 +1160,11 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
     with the school's name and the document's unit as names), or SAME_TITLE_MIN or more documents of its site would
     then carry that title, those that have it already counted in ('shared': a site's header on every page's first
     line). The old title goes to old_title and, when it is not there yet, to the end of linktext, so the keyword
-    index's title column still holds its words; title_from_text is set. Nothing else of the document changes here: the
+    index's title column still holds its words; title_from_text is set. Not with keep_old False (the build's
+    fixes_1116; the owner 11-16 on another session's audit, 「听你的」 to the grouping that batches it: the title
+    judged to say nothing, a site's name on every page or a file name of digits, stayed in the link names, which
+    the index weighs as a title, three times a body word: 1,831 documents of the 111 sites): old_title keeps it,
+    for the term and the cohort it may name, and the link names do not take it. Nothing else of the document changes here: the
     build reads again what a title gives (the term, the cohort, the doc type: build._retitle). on=False (the build's
     own_titles off) changes no document and still counts whose title says nothing.
 
@@ -1154,7 +1210,7 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
             continue
         count["retitled"] += 1
         d.old_title, d.title, d.title_from_text = d.title, new[id(d)], True
-        if d.old_title and d.old_title not in d.linktext.split(LINK_SEP):
+        if keep_old and d.old_title and d.old_title not in d.linktext.split(LINK_SEP):
             d.linktext = LINK_SEP.join(part for part in (d.linktext, d.old_title) if part)
         retitled[kind].append({"id": d.doc_id, "site": d.site, "old": d.old_title[:TITLE_SHOWN], "new": d.title})
 

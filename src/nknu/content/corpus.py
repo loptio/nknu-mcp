@@ -62,11 +62,29 @@ CATEGORY_SEP = " | "  # archive.export's joiner of 列表上的类别 (its list_
 # on 5 SSO unit sites carry the same 「#按钮=115學年度」
 # (research/crawler_lab_2026-11-04/item22_1109/peer_notes.md 第六、七则). Record.area_mark holds it 【Claude】
 NO_DATA = "学校回答没有资料"
+# spec 2026-11-16 (nightly ingest) §五, agreed with the crawler session 11-16: a page or a file the school deleted, which
+# the nightly update writes 「学校已删除」 for in 缺什么 once two fetches at least 24 hours apart both found it gone (the
+# row keeps the last good copy). Read as a substring, like NO_DATA; documents._class leaves such a row out and the
+# build counts it per site. A notice that only left its list is not marked and stays (the owner 10-24).
+GONE = "学校已删除"
+# the crawler's export batch of 11-16 (ef05cf1; its export.NOTICE_MOVED, 「学校把这则公告转到别的页（多半是删了）」, of which
+# this is the part before the brackets): a notice's address the school now sends to another page of the same host (its
+# home page, a list, an album), so the row's file and title are that page's, not a notice's (31 of c.nknu.edu.tw/uk's
+# notices showed an album page's title on 11-16). documents._class leaves such a row out and the build counts it with
+# the deleted ones: agreed with the crawler session 11-16 (「等你定了字样，照标记不收」) 【Claude】
+MOVED = "学校把这则公告转到别的页"
+# 11-19, agreed with the crawler session (its export of the course system, sso.nknu.edu.tw/stu): an outline page of a
+# course several teachers give shows only 「本課程多名老師合開，請先選擇教師」 and the teachers' menu; what each choice
+# brings is a row of its own (<the page>#按钮=<teacher>). The export writes 「内容在按钮行（…）」 at the start of such a
+# page's 缺什么; read as a substring like the others, documents._class leaves the page out (122 pages on 11-18, 13
+# documents of menu words once their copies were merged) and the build counts it under its own key.
+IN_BUTTONS = "内容在按钮行"
 # the 缺什么 marks a record's area_mark holds: the first of them, in this order, that the row's 缺什么 holds, so the
 # school's answer of no data comes first when a row has an area mark too: a page so marked is never kept, while
 # 找不到内文区 first would keep one with text (deleted_notice); no row had both on 11-09, the course tables' platform
 # naming no notice areas 【Claude】
-ROW_MARKS = (NO_DATA, *AREA_MARKS)
+# GONE, MOVED first: such a row is never kept, whatever else it says; IN_BUTTONS next (11-19), never kept either
+ROW_MARKS = (GONE, MOVED, IN_BUTTONS, NO_DATA, *AREA_MARKS)
 # c.nknu's notice templates, by their page kind (pagetext.page_kind): newsdetail (教务处), and newsview (总务处, 体育室
 # and 师培处, per the site probe; plan 2026-11-08 T3)
 NOTICE_KINDS = ("newsdetail", "newsview")
@@ -123,6 +141,10 @@ class Record:
     # joined by CATEGORY_SEP: documents.Document.categories); '' without them, and in an export or a corpus made before
     list_kind: str = ""
     list_category: str = ""
+    # the crawler's export batch of 11-16 (ef05cf1): the row's 组别, the words of a c.nknu notice page's own 組別 cell
+    # (#lbl_GroupName; newsdetail only), as written; '' on any other row and in an export or a corpus made before.
+    # The build reads it in place of its own reading of the page (build_sites' page_reread)
+    group: str = ""
     # the owner, 11-15 (「在你的程序里读第 30 栏「公告单位」（合并时拿它定原发单位）」), the crawler's 2989f60 export: the
     # row's 公告单位, the words of the announcement platform's 「公告單位：」 cell on the notice's page, as written
     # (「教務處註冊組」; not matched to the unit tree: build._stated_units does that); '' on every other row, on a
@@ -151,6 +173,7 @@ def load_corpus(path: Path) -> list[Record]:
             page_date_raw=r.get("page_date_raw") or "", date_source=r.get("date_source") or "",
             modified=r.get("modified") or "", origin=r.get("origin") or "", area_mark=r.get("area_mark") or "",
             under_read=None if r.get("under_read") is None else bool(r.get("under_read")),
+            group=r.get("group") or "",
             list_kind=r.get("list_kind") or "", list_category=r.get("list_category") or "",
             publisher=r.get("publisher") or "",
         )
