@@ -122,15 +122,26 @@ def test_partial_doc_merges(conn):
     assert conn.execute("SELECT excerpt FROM doc").fetchone()[0] == "摘錄"
 
 
-def test_row_turning_personal_drops_its_excerpt(conn):
-    # a stored notice re-read as honor content (title rule, G4) keeps no body text, and a detail page cannot add one
-    upsert_doc(conn, DOC, adapter="sso_news", now=T0)
-    upsert_doc(conn, replace(DOC, partial=True, title="", excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T0)
-    upsert_doc(conn, replace(DOC, title="恭賀本系陳O丙同學榮獲佳作", pii_level="personal"), adapter="sso_news", now=T1)
+def test_honor_rows_keep_their_body_text(conn):
+    # owner 10-25: honour lists are copied like every other notice, excerpt and attachments included
+    honor = replace(DOC, title="恭賀本系陳乙丙同學榮獲佳作")
+    upsert_doc(conn, honor, adapter="sso_news", now=T0)
+    upsert_doc(conn, replace(honor, partial=True, title="", excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T0)
+    upsert_doc(conn, replace(honor, excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T1)
     row = conn.execute("SELECT title, excerpt, attachments_json, pii_level FROM doc").fetchone()
-    assert (row[0], row[1], json.loads(row[2]), row[3]) == ("恭賀本系陳O丙同學榮獲佳作", None, [], "personal")
+    assert (row[0], row[1], json.loads(row[2]), row[3]) == ("恭賀本系陳乙丙同學榮獲佳作", "摘錄", ["名單.pdf"], "none")
+
+
+def test_row_stored_as_personal_is_read_again_in_full(conn):
+    # an older version stored honour rows as 'personal': masked title, no excerpt, no attachments. A detail page now
+    # fills them in, and the list row brings back the title as the school wrote it
+    upsert_doc(conn, replace(DOC, title="恭賀本系陳O丙同學榮獲佳作"), adapter="sso_news", now=T0)
+    conn.execute("UPDATE doc SET pii_level='personal'")
     upsert_doc(conn, replace(DOC, partial=True, title="", excerpt="摘錄", attachments=("名單.pdf",)), adapter="sso_news", now=T1)
-    assert tuple(conn.execute("SELECT excerpt, attachments_json FROM doc").fetchone()) == (None, "[]")
+    assert tuple(conn.execute("SELECT excerpt, attachments_json FROM doc").fetchone()) == ("摘錄", '["名單.pdf"]')
+    upsert_doc(conn, replace(DOC, title="恭賀本系陳乙丙同學榮獲佳作"), adapter="sso_news", now=T1)
+    row = conn.execute("SELECT title, excerpt, attachments_json, pii_level FROM doc").fetchone()
+    assert (row[0], row[1], json.loads(row[2]), row[3]) == ("恭賀本系陳乙丙同學榮獲佳作", "摘錄", ["名單.pdf"], "none")
 
 
 def test_list_row_never_blanks_stored_fields(conn):

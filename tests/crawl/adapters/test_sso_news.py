@@ -53,27 +53,22 @@ def test_dates_parsed(p1, p2):
     assert all(d.published_on and d.announce_until for d in p1 + p2)
 
 
-def test_good_titles_masked_no_excerpt(good):
-    assert len(good) == 10 and all(d.excerpt is None and d.pii_level == "personal" for d in good)
+def test_good_rows_are_ordinary_rows(good):
+    # owner 10-25: honour lists are copied like every other notice (title as written, detail page, excerpt)
+    assert len(good) == 10 and all(d.pii_level == "none" for d in good)
     t = read("sso_news", "list_good.html")
-    assert all(d.title in t for d in good)  # fixture is already masked; masking again changes nothing
+    assert all(d.title in t for d in good)
 
 
-def test_honor_title_masked_in_any_category():
-    # F-sso-crosspost-honor: the 恭賀 post cross-posted under 徵才就業 is masked and gets no excerpt, like GOOD
+def test_honor_titles_are_copied_as_the_school_wrote_them():
+    # owner 10-25: a name the school did not mask is given as written, in any category (GOOD or cross-posted to JOB)
     old = "【圖資處重要通知】校園資安提醒 PHP緊急安全更新"
-    html = read("sso_news", "list_p1.html").replace(old, "【恭賀】本所研究生謝乙丙考取苗栗縣115學年度國民中學正式教師")
-    recs = docs(A.parse(snap(f"{BASE}?cat=JOB", html, meta=list_meta("JOB"))))
-    d = next(x for x in recs if x.doc_key.startswith("63BBE83D"))
-    assert d.title == "【恭賀】本所研究生謝O丙考取苗栗縣115學年度國民中學正式教師" and d.pii_level == "personal"
-    assert all(x.pii_level == "none" for x in recs if x is not d)
-
-
-def test_honor_rows_get_no_detail_page():
-    old = "【圖資處重要通知】校園資安提醒 PHP緊急安全更新"
-    html = read("sso_news", "list_p1.html").replace(old, "賀 本系學生參加競賽 榮獲金牌")
-    recs = docs(A.parse(snap(f"{BASE}?cat=CAMPUS", html, meta=list_meta("CAMPUS"))))
-    assert next(x for x in recs if x.doc_key.startswith("63BBE83D")).pii_level == "personal"
+    title = "【恭賀】本所研究生謝乙丙考取苗栗縣115學年度國民中學正式教師"
+    html = read("sso_news", "list_p1.html").replace(old, title)
+    for cat in ("JOB", "GOOD"):
+        recs = docs(A.parse(snap(f"{BASE}?cat={cat}", html, meta=list_meta(cat))))
+        assert next(x for x in recs if x.doc_key.startswith("63BBE83D")).title == title
+        assert all(x.pii_level == "none" for x in recs)
 
 
 def test_detail_partial_excerpt():

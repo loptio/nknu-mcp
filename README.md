@@ -51,7 +51,7 @@ MCP（Model Context Protocol）是 AI 助理呼叫外部工具的共通規格。
 ## 隱私
 
 - 公告標題和摘錄一律照抄學校原文；學校已經遮罩的內容保持原樣，不還原也不重複遮罩。
-- 只有榮譽榜這類個人內容，學校沒遮罩的人名會用學校的格式遮成「陳O余」（保留頭尾字，中間換成 O；兩個字遮成「陳O」）。絕不編造名字。是不是榮譽內容看標題用詞（恭賀、榮獲、考取、錄取名單、榜單……），不看公告放在哪個分類；這類公告只收遮過的標題，不抓內文摘錄。
+- 榮譽榜、錄取名單、得獎名單這類公告也一樣照學校原文收：標題、內文摘錄和附件名稱都收，學校沒遮罩的人名照原樣給，本服務不另外遮罩（公開哪些個資由學校把關）。絕不編造名字。
 - 學校誤公開的內部內容（例如行事曆裡的職員請假、組長行程、內部會議，或「人名＋私人行程」如「林O，看牙」）在抓取階段就丟掉，不入資料庫，也不寫進 log。
 - 公開倉庫裡的測試資料不用假名，人名同樣用 O 遮罩。
 - 伺服器只收到 AI 助理送來的查詢參數（例如「圖書館」「2026-10-24」），看不到你和 AI 的整段對話。不需要帳號，伺服器也不記錄存取紀錄或 IP；限流用的 IP 只放在記憶體裡，最後一次請求後一、兩分鐘就忘掉。（對外網址經過的隧道服務商有它自己的紀錄，不在本服務的控制範圍內。）
@@ -335,7 +335,7 @@ sudo bash /opt/nknu/deploy/install.sh
 - log：`sudo journalctl -u nknu-crawl -n 100`、`sudo journalctl -u nknu-mcp -n 100`。
 - `/var/lib/nknu/misses.jsonl` 是查無資料的問題，用來補 `config/entities.yaml` 的別名。改完提交、推送，再到機器上跑一次 install.sh。檔案滿 5 MB 會輪替成 `misses.jsonl.1`～`.3`，更舊的丟掉。
 - **答案有問題時**：先 `nknu changes` 找到那一條，再 `nknu undo <key>`，這是長期有效的修法。`nknu build --rollback` 只是急救：只能退一步（第二次會說沒有上一版可換），而且下一次重建（每晚 00:05，或下一輪有變動的抓取）會照 facts.db 重新算回來。要讓某個來源整個先別出現，在 `/etc/nknu/env` 設 `NKNU_DISABLED_SOURCES=<來源>` 再 `nknu build`；`NKNU_READONLY=1` 只停止寫入，夜間重建仍會照現有資料算。
-- 遮名規則更新後，facts.db 裡已存的公告標題要等下一次全掃（每天第一輪抓取）才會用新規則重寫，重寫時順便清掉變成榮譽內容的公告摘錄；某則要立刻下架，用 `nknu undo sso_news:<UNID>`。
+- 榮譽公告以前只存遮過人名的標題、不抓摘錄；改成照原文全收以後，facts.db 裡這些舊資料在列表上再讀到時（每天第一次全掃會讀完整個列表）改寫成學校原文標題，摘錄和附件照「公告摘錄」那一條的速度補抓。某則要立刻下架，用 `nknu undo sso_news:<UNID>`（體育室公告用 `nknu undo pe_news:<Nid>`）。
 - 緊急開關（在 `/etc/nknu/env`）：`NKNU_READONLY=1` 讓抓取不寫入，`nknu review`、`nknu add`、`nknu undo` 也停用；`NKNU_DISABLED_SOURCES=<來源>` 停用某個來源，接著執行 `nknu build`。
 - 更新程式：重跑 `sudo bash /opt/nknu/deploy/install.sh`。它會升級 facts.db（`nknu init`）、重建 serve.db（新的回答措辭重建後才生效），並列出 `/etc/nknu/env` 缺少的新設定（沒寫的用預設值）。
 - 從備份還原 facts.db：

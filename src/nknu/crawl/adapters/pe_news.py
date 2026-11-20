@@ -3,8 +3,8 @@
 Every list row becomes a DocRecord (document layer, not facts). Detail pages add the excerpt and attachments; an
 announcement that says a venue 暫停開放 on explicitly written dates also yields closure FactRecords (written directly, U2).
 v1 does not extract opening hours from announcements (design §13.4). 暫停借用 (bookings suspended) is not a closure.
-Honor-roll style posts (獲獎名單 …, core.pii.is_honor_title, the rule sso_news uses) keep only the masked title: no detail
-fetch, no excerpt.
+Honor-roll style posts (獲獎名單 …) are copied like every other post, title as the school wrote it, detail page included
+(owner 10-25, as in sso_news).
 
 Detail pages, at most DETAIL_CAP per run: rows seen for the first time, then (full scans) announcements titled as
 closures again and pages that answered 404 (C2 took their closures down; a page that answers again brings them back),
@@ -23,7 +23,6 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.core.pii import is_honor_title, mask_honor_names
 from nknu.core.records import DocRecord, FactRecord, ParseIssue, Record, SourceRef
 from nknu.core.rocdate import parse_roc_date, parse_roc_range
 from nknu.crawl.adapter import Adapter, RunContext, Target, adapter
@@ -71,9 +70,8 @@ def _nid(url: str) -> str | None:
 def needs_detail(title: str, key: str, detailed: set[str], full_scan: bool, down: set[str] = frozenset(),
                  gone: set[str] = frozenset()) -> bool:
     """No excerpt stored yet, or (full scan) a closure announcement whose dates may have been edited, or (full scan) a
-    page that answered 404 (it may answer again). Never for honor posts (names) or announcements taken down by nknu
-    undo."""
-    if is_honor_title(title) or key in down:
+    page that answered 404 (it may answer again). Never for announcements taken down by nknu undo."""
+    if key in down:
         return False
     if key in gone:
         return full_scan
@@ -178,14 +176,13 @@ class PeNews(Adapter):
             nid = _nid(urljoin(BASE, a.attributes.get("href") or ""))
             cells = table_grid_row(tr)
             title = a.text(strip=True)
-            honor = is_honor_title(title)
             try:
                 published = parse_roc_date(cells[-1]) if cells else None
             except ValueError:
                 published = None
                 out.append(ParseIssue(f"pe_news:{nid}", "date", f"公告日期「{cells[-1] if cells else ''}」無法解析"))
-            out.append(DocRecord(f"pe_news:{nid}", nid, mask_honor_names(title) if honor else title, detail_url(nid), UNIT,
-                                 cells[2] if len(cells) > 2 else None, published, pii_level="personal" if honor else "none"))
+            out.append(DocRecord(f"pe_news:{nid}", nid, title, detail_url(nid), UNIT, cells[2] if len(cells) > 2 else None,
+                                 published))
         return out
 
     def counts_missing(self, key: str, kind: str, span, records: list[Record], today: date) -> bool:

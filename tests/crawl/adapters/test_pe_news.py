@@ -31,9 +31,9 @@ def docs(recs):
     return [r for r in recs if isinstance(r, DocRecord)]
 
 
-def test_honor_gate_is_the_shared_title_rule():
-    # one rule for both news adapters (core.pii.is_honor_title): a 恭喜 / 考取 post is honor content in pe_news too
-    assert not needs_detail("恭喜本校排球隊陳乙丙考取國手", "pe_news:1", set(), True)
+def test_honor_posts_get_their_detail_page_like_any_other():
+    # owner 10-25: honour lists are copied in full, so a 恭喜 / 考取 / 名單 post is read like every other post
+    assert needs_detail("恭喜本校排球隊陳乙丙考取國手", "pe_news:1", set(), False)
     assert needs_detail("游泳池暫停開放公告", "pe_news:1", set(), True)
 
 
@@ -44,11 +44,15 @@ def test_list_rows_parsed():
     assert first.published_on == date(2026, 10, 2) and first.category == "一般公告" and first.url == detail_url("882")
 
 
-def test_honor_list_rows_masked_and_personal():
-    d = docs(A.parse(snap(LIST_URL, read("pe_news", "list.html"), meta=LIST_META)))
+def test_honor_list_rows_copied_as_written():
+    html = read("pe_news", "list.html")
+    d = docs(A.parse(snap(LIST_URL, html, meta=LIST_META)))
     honor = [x for x in d if "名單" in x.title]
-    assert honor and all(x.pii_level == "personal" and x.excerpt is None for x in honor)
-    assert not needs_detail(honor[0].title, honor[0].key, set(), True)
+    assert honor and all(x.pii_level == "none" and x.title in html for x in honor)
+    assert all(needs_detail(x.title, x.key, set(), False) for x in honor)
+    title = "恭喜本校排球隊陳乙丙考取國手"
+    one = docs(A.parse(snap(LIST_URL, html.replace(honor[0].title, title), meta=LIST_META)))
+    assert next(x for x in one if x.key == honor[0].key).title == title
 
 
 def test_needs_detail_policy():

@@ -3,9 +3,9 @@
 Paging replays the page's own form state with __EVENTTARGET=gvFull / __EVENTARGUMENT=Page$N (no browser).
 Normal runs read the first 3 pages of every category; the first run of each day reads every page, and only those
 full scans count towards "missing 3 times = withdrawn". Rows are keyed by the stable 40-hex UNID.
-Honor-roll content keeps only the masked title, no detail fetch, no excerpt: every GOOD (榮譽典範) row, and a row of any
-other category whose title reads as honor content (core.pii.is_honor_title: the same 恭賀 post cross-posted under
-徵才就業, F-sso-crosspost-honor).
+Honor-roll content (every GOOD / 榮譽典範 row, 恭賀 posts in any category) is copied like every other notice: the title
+as the school wrote it, the detail page, the excerpt and attachments. A name the school did not mask is given as written
+(owner 10-25: honour lists and name lists are collected in full; masking them is the school's call).
 
 Detail pages (the excerpt) are read for every listed row that has none stored yet, at most DETAIL_CAP per run: rows
 seen for the first time first, then the backlog newest first (F-excerpt-backlog). A detail page that fails costs only
@@ -21,7 +21,6 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.core.pii import is_honor_title, mask_honor_names
 from nknu.core.records import DocRecord, ParseIssue, Record
 from nknu.core.rocdate import parse_roc_date
 from nknu.crawl.adapter import Adapter, ParseError, RunContext, Target, adapter
@@ -32,7 +31,6 @@ from nknu.crawl.webforms import find_postbacks, postback
 BASE = "https://sso.nknu.edu.tw/News/SubjectList.aspx"
 DETAIL = "https://sso.nknu.edu.tw/News/lastNews.aspx"
 CATEGORIES = ["SCHOOLADMIN", "ENTRANCEEXAM", "CAMPUS", "Lights", "LEARNING", "GOOD", "JOB"]
-HONOR_CATEGORY = "GOOD"
 PARTIAL_PAGES = 3
 MAX_PAGES = 50  # a pager that never ends means the site changed: void the run instead of guessing
 DETAIL_CAP = 30
@@ -86,7 +84,7 @@ class SsoNews(Adapter):
         for r in (r for s in snaps for r in self.parse(s) if isinstance(r, DocRecord)):
             rows.setdefault(r.key, r)
         # a page that answered 404 is asked for again on full scans only (once a day): when it answers, it is back
-        todo = [r for r in rows.values() if r.pii_level != "personal" and r.key not in ctx.down_keys
+        todo = [r for r in rows.values() if r.key not in ctx.down_keys
                 and (ctx.full_scan if r.key in ctx.gone_keys else r.key not in ctx.detailed_keys)]
         # first seen this run, then 404 pages checked again, then the backlog, then pages that failed last time; newest
         # first within each
@@ -103,7 +101,6 @@ class SsoNews(Adapter):
         grid = tree.css_first("#gvFull")
         if grid is None:
             return []
-        good = snap.target.meta.get("cat") == HONOR_CATEGORY
         out: list[Record] = []
         for a in grid.css("a[id$='_linkSubject_short']"):
             prefix = a.attributes["id"][: -len("linkSubject_short")]
@@ -118,15 +115,13 @@ class SsoNews(Adapter):
                 raise ParseError(f"row {prefix} has no UNID link: the list layout changed")
             unid = m.group(1).upper()
             title = a.text(strip=True) or (a.attributes.get("title") or "")
-            honor = good or is_honor_title(title)
             key = f"sso_news:{unid}"
             try:
                 published, until = _date(field("StartDate")), _date(field("EndDate"))
             except ValueError:
                 published = until = None
                 out.append(ParseIssue(key, "date", f"公告日期「{field('StartDate')}~{field('EndDate')}」無法解析"))
-            out.append(DocRecord(key, unid, mask_honor_names(title) if honor else title, detail_url(unid), field("DeptName"),
-                                 field("Category"), published, until, pii_level="personal" if honor else "none"))
+            out.append(DocRecord(key, unid, title, detail_url(unid), field("DeptName"), field("Category"), published, until))
         return out
 
     def _detail(self, snap: Snapshot) -> list[Record]:

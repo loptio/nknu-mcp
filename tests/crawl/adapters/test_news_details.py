@@ -18,7 +18,9 @@ TODAY = date(2026, 10, 22)
 EMPTY_GRID = "<html><body><table id='gvFull'></table></body></html>"
 SSO_P1 = read("sso_news", "list_p1.html")
 SSO_P2 = read("sso_news", "list_p2.html")
+SSO_GOOD = read("sso_news", "list_good.html")
 UNIDS = re.findall(r"UNID=([0-9A-F]{40})", SSO_P1 + SSO_P2)
+GOOD_UNIDS = sorted(set(re.findall(r"UNID=([0-9A-F]{40})", SSO_GOOD)))
 FIRST, SECOND = UNIDS[0], UNIDS[1]
 
 
@@ -30,7 +32,7 @@ def conn(tmp_path):
 
 
 def sso_route(details=None):
-    """SCHOOLADMIN has two pages, GOOD one (names, never detailed), every other category is empty."""
+    """SCHOOLADMIN has two pages, GOOD (榮譽典範) one, every other category is empty."""
     details = details or {}
 
     def route(t):
@@ -42,7 +44,7 @@ def sso_route(details=None):
         if t.url.endswith("cat=SCHOOLADMIN"):
             return SSO_P1
         if t.url.endswith("cat=GOOD"):
-            return read("sso_news", "list_good.html")
+            return SSO_GOOD
         return EMPTY_GRID
 
     return route
@@ -62,7 +64,7 @@ def excerpt(conn, doc_key):
 
 def test_detail_backlog_is_read_over_later_runs(conn, monkeypatch):
     # F-excerpt-backlog: rows over the per-run cap get their detail page on a later run, newest first; rows already
-    # detailed (or with names, GOOD) are not asked for again
+    # detailed are not asked for again (GOOD rows too: honour lists are read like any other notice, owner 10-25)
     monkeypatch.setattr(sso_news, "DETAIL_CAP", 8)
     first = FakeClient(sso_route())
     assert crawl(conn, SsoNews(), first).passed
@@ -74,10 +76,40 @@ def test_detail_backlog_is_read_over_later_runs(conn, monkeypatch):
     assert len(later) == 8 and not set(later) & set(got) and res.n_written == 8  # excerpts of unchanged rows count
     third = FakeClient(sso_route())
     crawl(conn, SsoNews(), third)
-    assert len(detail_unids(third)) == 4  # 20 rows, all detailed after three runs
-    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NULL AND pii_level <> 'personal'").fetchone()[0] == 0
+    assert len(detail_unids(third)) == 8
     fourth = FakeClient(sso_route())
-    assert crawl(conn, SsoNews(), fourth).n_written == 0 and detail_unids(fourth) == []
+    crawl(conn, SsoNews(), fourth)
+    assert len(detail_unids(fourth)) == 6  # 30 rows, all detailed after four runs
+    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NULL").fetchone()[0] == 0
+    fifth = FakeClient(sso_route())
+    assert crawl(conn, SsoNews(), fifth).n_written == 0 and detail_unids(fifth) == []
+
+
+def test_honor_rows_get_their_detail_page(conn):
+    # owner 10-25: honour lists (every GOOD row) are copied in full: detail page, excerpt and attachments, title as the
+    # school wrote it
+    client = FakeClient(sso_route())
+    assert crawl(conn, SsoNews(), client).passed
+    assert set(GOOD_UNIDS) <= set(detail_unids(client))
+    rows = conn.execute("SELECT title, excerpt, pii_level FROM doc WHERE category='榮譽典範'").fetchall()
+    assert len(rows) == len(GOOD_UNIDS) == 10
+    assert all(r[0] in SSO_GOOD and r[1] and r[2] == "none" for r in rows)
+
+
+def test_rows_stored_as_personal_are_read_again(conn):
+    # an older version stored honour rows as 'personal': masked title, no excerpt. The next runs read their detail
+    # pages and write the title as the school wrote it
+    crawl(conn, SsoNews(), FakeClient(sso_route()))
+    conn.execute("UPDATE doc SET title='恭賀本系陳O丙同學榮獲佳作', excerpt=NULL, attachments_json='[]', pii_level='personal' "
+                 "WHERE category='榮譽典範'")
+    conn.execute("UPDATE record_state SET content_hash='masked row' WHERE record_key IN "  # stored by the older version
+                 "(SELECT 'sso_news:' || doc_key FROM doc WHERE category='榮譽典範')")
+    conn.commit()
+    client = FakeClient(sso_route())
+    crawl(conn, SsoNews(), client)
+    assert set(GOOD_UNIDS) <= set(detail_unids(client))
+    rows = conn.execute("SELECT title, excerpt, pii_level FROM doc WHERE category='榮譽典範'").fetchall()
+    assert len(rows) == 10 and all(r[0] in SSO_GOOD and r[1] and r[2] == "none" for r in rows)
 
 
 def test_new_rows_are_detailed_before_the_backlog(conn, monkeypatch):
@@ -173,11 +205,11 @@ def test_detail_pages_that_keep_failing_go_to_the_back_of_the_queue(conn):
     second = FakeClient(route)
     crawl(conn, SsoNews(), second)
     assert set(detail_unids(second)[-3:]) == broken
-    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NOT NULL").fetchone()[0] == 17
+    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NOT NULL").fetchone()[0] == 27
     assert conn.execute("SELECT count(*) FROM alert WHERE code='detail_failed' AND resolved_at IS NULL").fetchone()[0] == 3
     state.update(fails=0, fixed=True)
     crawl(conn, SsoNews(), FakeClient(route))
-    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NULL AND pii_level <> 'personal'").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM doc WHERE excerpt IS NULL").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM alert WHERE code='detail_failed' AND resolved_at IS NULL").fetchone()[0] == 0
 
 
