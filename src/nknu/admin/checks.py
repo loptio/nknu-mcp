@@ -39,6 +39,8 @@ PII_SAMPLES: dict[str, set[str]] = {
     "tests/content/test_links.py": {"email:aca@example.edu"},
     "tests/content/test_minutes_1108.py": {"staff_leave:（修正學生請假"},
     "tests/content/test_multisite_1108.py": {"email:nknubf@gmail.com"},
+    # the 33-question check (11-19) names the calendar export's file, which carries the same public calendar ID
+    "deploy/lab-pipeline/eval/offline_eval.py": {"email:nknubf@gmail.com"},
 }
 _SAMPLES_FILE = "src/nknu/admin/checks.py"  # this file: it spells the samples out above, and only those
 _SELF_TESTS = {"test_checks.py"}  # writes the forbidden strings into temp files on purpose
