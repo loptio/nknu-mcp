@@ -1,0 +1,234 @@
+# The lab PC's services (lab_pc kit, 11-03; plan 2026-11-08 T5: many exports, lane B): Windows 11 + Docker Desktop
+# (WSL 2 engine), one NVIDIA GPU. 11-19: this file and the programs it runs are in the repository
+# (deploy/lab-pipeline; on the lab PC /work/deploy/lab-pipeline, the copy of this file C:\nknu-transfer\build\compose.yaml:
+# deploy/lab-pipeline/README.md says how they get there). What the programs write (locks, logs, status, the reports
+# kept from before) stays in /work/research/pipeline_2026-11-02/, which no commit holds.
+# On Windows this file is C:\nknu-transfer\build\compose.yaml, next to Dockerfile, pyproject.toml and uv.lock; ".."
+# is C:\nknu-transfer (base.tar, update.tar and their .sha256). Every command is one PowerShell line, for example:
+#   docker compose -f C:\nknu-transfer\build\compose.yaml build                     the image nknu-pipeline
+#   docker volume create nknu-work; docker volume create nknu-models                  the two volumes, once
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm extract            base.tar, then update.tar
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm check              is everything ready?
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm smoke              5 files vs the Mac's results
+#   $env:RETRY_FIRST="1"; docker compose -f C:\nknu-transfer\build\compose.yaml up -d lane-a lane-b lane-c; Remove-Item Env:RETRY_FIRST
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm progress
+#   docker compose -f C:\nknu-transfer\build\compose.yaml stop lane-a lane-b lane-c
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm build              phase 2 (T11 steps 4-8)
+#   docker compose -f C:\nknu-transfer\build\compose.yaml run --rm -e BUILD_OPTS="--db research/pipeline_2026-11-02/aca-pilot.db" build
+#                                                                                      a test build beside aca.db
+# The volumes are external: compose never creates or deletes them (docker compose down -v leaves them alone), so the
+# to-text cache in nknu-work survives anything done to the containers. Our code runs from the volume (/work/src), not
+# from the image. Only check builds the image; the other services use it and never pull it from a registry (build
+# first). extract, smoke, build and models-download have the profile "manual": a bare `docker compose up` (no service
+# named) never starts them, while naming one (run --rm extract) still runs it. extract refuses update.tar once the
+# lanes have run on this PC (it would put the Mac's older cache back); a code-only code.tar is always fine.
+# Which exports the lanes, progress and build go through (plan 2026-11-08 T5): the list
+# research/pipeline_2026-11-02/exports.txt in nknu-work (one export folder per line; without it, 教务处's 11-02 export
+# alone), or the file EXPORTS names (relative to /work), which the lanes, progress and build take from the caller's
+# environment ($env:EXPORTS="…" before up -d, or run --rm -e EXPORTS=… progress|build). Unset, compose passes "", which
+# the scripts read as unset.
+# Write $$ for a literal $ in this file: compose fills in ${VAR} from the caller's environment.
+name: nknu-lab
+
+x-pipeline: &pipeline  # every service that runs our code
+  image: nknu-pipeline
+  working_dir: /work
+  volumes:
+    - nknu-work:/work
+    - nknu-models:/models
+  init: true        # a small init as process 1: passes stop signals on and reaps soffice's leftover processes
+  shm_size: "8gb"   # shared memory for torch (Docker's default is 64 MB)
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  logging:          # docker logs keeps the last 3 x 50 MB; the lanes and the build also write their own log files
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
+
+services:
+  # base.tar and update.tar from C:\nknu-transfer into the volumes (every name in them starts with work/ or models/),
+  # each checked against its .sha256 first. Default: both, base first. Only one: ... run --rm extract update.tar
+  # Every name given is checked before anything is extracted. update.tar is refused once lab_pc/ holds a lane log, a
+  # lane's in-flight note or a retry_cut_members stamp (the lanes have run here; FORCE=1 overrides, for Claude only).
+  extract:
+    image: ubuntu:24.04
+    profiles: ["manual"]
+    environment:
+      LANG: C.UTF-8
+    volumes:
+      - nknu-work:/work
+      - nknu-models:/models
+      - type: bind
+        source: ..
+        target: /in
+        read_only: true
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -eu
+        [ $$# -gt 0 ] || set -- base.tar update.tar
+        LAB=/work/research/pipeline_2026-11-02/lab_pc
+        for t in "$$@"; do
+          if [ ! -f "/in/$${t}" ]; then
+            echo "缺 $${t}：C:\\nknu-transfer 里没有这个档（就是放 build 资料夹的那一层）"
+            exit 1
+          fi
+          if [ "$${t}" = update.tar ] && [ -z "$${FORCE:-}" ]; then
+            for f in "$${LAB}"/lane?.log "$${LAB}"/lane?.inflight "$${LAB}"/retry_cut_members.?.done; do
+              if [ -e "$${f}" ]; then
+                echo "不解 update.tar：这台已经开过转文字线（有 $${f}），再解一次会把 Mac 的旧缓存盖回来。什么都没解。"
+                echo "要更新程序，等 Claude 给你只有程序码的档（code.tar）。"
+                exit 1
+              fi
+            done
+          fi
+        done
+        for t in "$$@"; do
+          if [ -f "/in/$${t}.sha256" ]; then
+            echo "== 核对 $${t} 的 SHA-256（$$(du -h "/in/$${t}" | cut -f1)，要读一遍，几分钟）"
+            if ! (cd /in && sha256sum -c "$${t}.sha256"); then
+              echo "SHA-256 不符：$${t} 复制时坏了，从 Mac 重新复制一次（USB 或 SSH）"
+              exit 1
+            fi
+          else
+            echo "提醒：没有 $${t}.sha256，不核对，直接解开"
+          fi
+          echo "== 解开 $${t}，每 100 MB 印一个点"
+          tar --warning=no-unknown-keyword --no-same-owner --checkpoint=10000 --checkpoint-action=dot \
+              -xf "/in/$${t}" -C /
+          echo
+          echo "解开了：$${t}"
+        done
+        du -sh /work /models
+        echo "== 解开好了（EXTRACT OK）"
+      - extract
+    command: ["base.tar", "update.tar"]
+
+  # The image is built from this service's build section; the others use the same image by name. No profile: a bare
+  # `docker compose ... build` must still see this service.
+  check:
+    <<: *pipeline
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["bash", "deploy/lab-pipeline/check.sh"]
+
+  smoke:
+    <<: *pipeline
+    profiles: ["manual"]
+    pull_policy: never
+    command: ["bash", "research/pipeline_2026-11-02/lab_pc/smoke.sh"]
+
+  # The three to-text lanes, started together with up -d and left running; logs in lab_pc/laneA.log, laneB.log,
+  # laneC.log and in docker logs nknu-lane-A / nknu-lane-B / nknu-lane-C. Each walks every export of the list, in its
+  # order (lanes.sh). RETRY_FIRST comes from the caller's environment and is optional: lanes.sh puts back by itself the
+  # files the Mac's stop cut off (once, lanes A and C) and the files a forced stop here cut off (lab_pc/
+  # lane<X>.inflight, every lane); RETRY_FIRST=1 also retries, once in that lane start, every file whose crash marker is
+  # older than the start (files that really crashed or hung the converter too; one that crashes again is skipped by
+  # every later run, whichever export holds it). NKNU_ALLOW_CPU (1: lanes A and C without a GPU, much slower; see
+  # lanes.sh) and EXPORTS come from there too. Lane B (pages and images; plan 2026-11-08 T5: never run here before,
+  # and every page the 11-03 rule read is read again) needs no GPU. stop sends SIGTERM; lanes.sh asks the converter to
+  # put its file back and needs up to 2 minutes for it. No restart policy: a lane that ends (done, a setting error,
+  # stopped) stays ended until it is started again.
+  lane-a:
+    <<: *pipeline
+    pull_policy: never
+    container_name: nknu-lane-A
+    environment:
+      RETRY_FIRST: ${RETRY_FIRST:-}
+      NKNU_ALLOW_CPU: ${NKNU_ALLOW_CPU:-}
+      EXPORTS: ${EXPORTS:-}
+    stop_grace_period: 2m
+    command: ["bash", "deploy/lab-pipeline/lanes.sh", "A"]
+
+  lane-b:
+    <<: *pipeline
+    pull_policy: never
+    container_name: nknu-lane-B
+    environment:
+      RETRY_FIRST: ${RETRY_FIRST:-}
+      EXPORTS: ${EXPORTS:-}
+    stop_grace_period: 2m
+    command: ["bash", "deploy/lab-pipeline/lanes.sh", "B"]
+
+  lane-c:
+    <<: *pipeline
+    pull_policy: never
+    container_name: nknu-lane-C
+    environment:
+      RETRY_FIRST: ${RETRY_FIRST:-}
+      NKNU_ALLOW_CPU: ${NKNU_ALLOW_CPU:-}
+      EXPORTS: ${EXPORTS:-}
+    stop_grace_period: 2m
+    command: ["bash", "deploy/lab-pipeline/lanes.sh", "C"]
+
+  progress:
+    <<: *pipeline
+    pull_policy: never
+    environment:
+      EXPORTS: ${EXPORTS:-}
+    command: ["python", "deploy/lab-pipeline/totext_progress.py"]
+
+  # Phase 2: options through BUILD_OPTS, e.g. ... run --rm -e BUILD_OPTS="--first" build; --db PATH makes a test build
+  # beside aca.db, everything of it in a folder of its own (build.sh)
+  build:
+    <<: *pipeline
+    profiles: ["manual"]
+    pull_policy: never
+    environment:
+      EXPORTS: ${EXPORTS:-}
+    command: ["bash", "deploy/lab-pipeline/build.sh"]
+
+  # Nightly ingest (spec 2026-11-16-nightly-ingest-design; lab_pc/nightly_ingest.py): the crawler's nightly script
+  # runs C:\nknu-transfer\build\nightly_ingest.cmd when its own step has ended, which runs this service and then
+  # restarts Datasette when the library was swapped (the flag file in C:\nknu-transfer\out says so). The lanes run
+  # inside this container, so it has the GPU; a lane container started by hand at the same time makes this night fail
+  # at "convert" (lanes.sh: one lane of a letter at a time). Exit: 0, 3 (the swap guard held the library), 1.
+  #   last night in words:  docker compose -f C:\nknu-transfer\build\compose.yaml run --rm ingest status
+  #   back to the library of before, and paused:  ... run --rm ingest rollback   (then restart Datasette)
+  ingest:
+    <<: *pipeline
+    profiles: ["manual"]
+    pull_policy: never
+    container_name: nknu-ingest
+    volumes:
+      - nknu-work:/work
+      - nknu-models:/models
+      - type: bind
+        source: ../out
+        target: /out
+    stop_grace_period: 3m
+    entrypoint: ["python", "deploy/lab-pipeline/nightly_ingest.py"]
+    command: ["run"]
+
+  # Fallback when the two retrieval models from base.tar are missing or damaged: downloads them again at their pins
+  # (needs the network). Docling's models are not downloaded here: Docling's own download takes its layout model at
+  # revision "main", which may differ from the one behind the Mac's results (the smoke test would fail). They come
+  # only from base.tar (SHA-256 checked); to repair them, extract base.tar again before the lanes start.
+  models-download:
+    <<: *pipeline
+    profiles: ["manual"]
+    pull_policy: never
+    environment:
+      HF_HUB_OFFLINE: "0"
+    command: ["python", "-m", "nknu.core.models", "download", "--cache-dir", "/models/huggingface/hub"]
+
+  shell:
+    <<: *pipeline
+    pull_policy: never
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+volumes:
+  nknu-work:
+    external: true
+  nknu-models:
+    external: true
