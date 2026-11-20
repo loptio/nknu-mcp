@@ -43,7 +43,7 @@ x-ours: &ours   # 跑我们自己程序的两个服务：映像 nknu-pipeline（
       max-file: "3"
 
 services:
-  # 资料库（11-15 以前叫「翻库里的表」）。官方映像，版本固定。-i 是只读而且不上锁；有哪个库就开哪个（对照库被删了也照样开得起来）。
+  # 资料库（11-15 以前叫「翻库里的表」）。官方映像，版本固定。-i 是只读而且不上锁；只开正式库（11-15 的对照库 aca1115.db 11-19 清掉了，这一段照旧是有档才开）。
   # 不让整个库被下载（allow_download off），不自动猜分类栏（suggest_facets off：大表上很慢）；表格旁边的统计给 3 秒
   # （facet_time_limit_ms：预设 0.2 秒，文件表的「种类」算不完，页面上只剩一句「算太久」）。
   # --static 把 datasette/static/ 放在 /static/：每一页接上的 tc.css（繁体字的字型排在前面，metadata.yaml 指它）。
@@ -58,7 +58,7 @@ services:
       - -c
       - >-
         set --;
-        for f in aca.db aca1115.db; do
+        for f in aca.db; do
         if [ -f "/work/research/pipeline_2026-11-02/$$f" ]; then
         set -- "$$@" -i "/work/research/pipeline_2026-11-02/$$f"; fi;
         done;

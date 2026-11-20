@@ -342,7 +342,3 @@ databases:
                       when 'duplicate' then '重複的紀錄' else a.why end as "原因",
                  'http://127.0.0.1:18878/trace?ref=' || a.doc_id as "追蹤"
           from doc_alias a join docs d on d.doc_id = a.doc_id where a.alias = :alias
-  aca1115:
-    title: 對照庫
-    tables: *tables
-    queries: *queries

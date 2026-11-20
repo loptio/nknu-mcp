@@ -331,7 +331,7 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     assert table["column_names"]["kind_class"]["rest"].startswith("公告 notice")  # what floats over the name
     assert table["op_words"]["exact"] == "等於" and table["op_words"]["isnull"].startswith("是空的")
     assert table["trace_url"].endswith("/trace?ref=") and table["kind_classes"]["attachment"] == "k2"
-    assert table["db_titles"] == {"aca": "正式庫", "aca1115": "對照庫"}  # the crumbs name a database by these
+    assert table["db_titles"] == {"aca": "正式庫"}  # the crumbs name a database by these (對照庫 gone 11-19)
     assert _vars(guide, "query.html", ds, "aca", None)["column_names"] == {}
     assert "sites" in _vars(guide, "query.html", ds, "aca", None) and table["site_names"] == {}  # a facet's names
 
@@ -630,9 +630,11 @@ def test_the_why_queries_count_list_and_explain_on_a_small_library(empty):
     assert written[0]["怎麼辦"] == "改建庫規則可補" and written[0]["頁面上的日期"] == "活動日期* | 2017-12-21"
 
 
-def test_the_control_database_shares_the_descriptions():
-    databases = _metadata()["databases"]
-    assert databases["aca1115"]["tables"] == databases["aca"]["tables"]
+def test_only_the_library_in_use_is_opened():
+    # 11-19: the 11-15 control library (aca1115.db) was cleared from the lab PC; Datasette opens the library in use only
+    command = " ".join(_compose()["services"]["datasette"]["command"])
+    assert "aca1115" not in command and "aca.db" in command
+    assert list(_metadata()["databases"]) == ["aca"]
 
 
 def test_every_page_links_a_stylesheet_the_service_serves_and_it_puts_the_traditional_fonts_first():
