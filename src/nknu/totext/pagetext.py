@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
+import yaml
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from nknu.archive import profiles, scope
@@ -78,6 +79,7 @@ _STATIC_DIRS = ("spaper", "nknupaper", "sinfo")  # 教务处's: its school paper
 OTHER, OFFSITE = "其他", "外站"  # page_kind prefixes: a c.nknu-template address that is no .aspx page; not the school's
 PRESS, PAGER = "按钮=", "第"  # the export's fragment of a row a press brought: #按钮=<row> (detail), #第N页 (pager)
 ROUND1_LIST = "archive_round1.json"  # the crawler's site list, in the configuration directory (read only)
+SITE_TABLE = "site_units.yaml"  # the content side's site table (nknu.content.sites reads it): every site it builds
 _URL_JUNK = re.compile(r"[\t\n\r]")  # browsers drop these from a URL (WHATWG URL)
 _SIZE = re.compile(r"[\t\n\f\r ]*\+?([0-9]+)")  # a select's size: HTML's rules for parsing non-negative integers
 _SELECT_PARTS = frozenset({"option", "optgroup", "hr"})  # what a select holds when it is closed
@@ -129,6 +131,18 @@ def _round1_sites() -> frozenset[str]:
     return frozenset(str(s.get("site") or "") for s in data.get("sites", ()) if str(s.get("round")) == "1")
 
 
+@lru_cache(maxsize=1)
+def _table_sites() -> frozenset[str]:
+    """The site keys of the content side's site table (config/site_units.yaml, read as plain YAML so the to-text step
+    needs nothing of nknu.content): since 11-17 it holds the round-two sites the crawler handed over, the units' own
+    sites off the school's domain (a Wix site, a GitHub page, a Google Site under /view/), whose pages are the
+    school's as much as a round-1 site's (11-17: they read 外部連結 in answers). A missing table stops the caller, as
+    a missing round-1 list does. Which pages are read how does not change (page_reading never asks the kind; the
+    to-text cache keys a page without it: accounting), so no page is read again."""
+    data = yaml.safe_load((load_settings().config_dir / SITE_TABLE).read_text(encoding="utf-8")) or {}
+    return frozenset(str(k) for k in (data.get("sites") or {}))
+
+
 def _static_folder(parts: SplitResult) -> str:
     """The static folder of 教务处's a path is under ('' for none)."""
     path = parts.path.lower()
@@ -151,7 +165,8 @@ def page_kind(url: str, grid: str | None = None) -> str:
       WebIdx's ^webidx=N$ would make the home spelt cwebidx=N another kind; the URL alone says page:<profile>;
     - a school site no profile describes: page. That is a host under nknu.edu.tw or a round-1 site key such as a
       Google Site (the plan's two), or what else the crawler counts as the school's (scope.school_url: its 140.127.*
-      addresses, its accounts' Google Sites in round 2) 【Claude: school_url】;
+      addresses, its accounts' Google Sites in round 2) 【Claude: school_url】, or a site key of the content side's
+      site table (_table_sites: the round-two units' own sites, 11-18);
     - anything else: 外站:<host>."""
     bare, _, frag = url.partition("#")
     try:
@@ -178,7 +193,7 @@ def page_kind(url: str, grid: str | None = None) -> str:
         if profiles.page_kind(bare) == "detail":
             return f"detail:{profile.name}"
         return f"{'list' if grid else 'page'}:{profile.name}"
-    if scope.school_url(bare) or site in _round1_sites():  # school_url: nknu.edu.tw and its subdomains, and more
+    if scope.school_url(bare) or site in _round1_sites() or site in _table_sites():  # school_url: nknu.edu.tw, more
         return "page"
     return f"{OFFSITE}:{parts.netloc}"
 

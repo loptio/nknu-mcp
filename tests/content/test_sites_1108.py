@@ -78,8 +78,13 @@ def test_the_site_table_has_a_row_per_round_one_site_key():
     keys = [s["site"] for s in round1["sites"] if str(s.get("round")) == "1"]
     # archive_round1.json's extra seeds (7 SSO pages of round 1, on 4 site keys the crawl's 111 keys hold)
     extra = {"sso.nknu.edu.tw/recruit", "sso.nknu.edu.tw/staff", "sso.nknu.edu.tw/unit", "sso.nknu.edu.tw/studentprofile"}
-    assert len(keys) == 107 and set(table.rows) == set(keys) | extra and table.school == SCHOOL
-    hows = [r.how.split(":", 1)[0] for r in table.rows.values()]
+    # 11-17: and the round-two sites the crawler handed over (research/step3_2026-11-08/site_units.py ROUND2_IN), each
+    # a site of round two in the list
+    round2 = {s["site"] for s in round1["sites"] if str(s.get("round")) == "2"}
+    later = set(table.rows) - set(keys) - extra
+    assert len(keys) == 107 and set(keys) | extra <= set(table.rows) and table.school == SCHOOL
+    assert later <= round2 and len(later) == 35
+    hows = [r.how.split(":", 1)[0] for k, r in table.rows.items() if k not in later]
     assert hows.count("auto") == 83 and hows.count("hand") == 24 + len(extra)  # the research's 83, by hand 24 (+4)
     # shared: the platforms many units publish on, and nothing else
     assert {k for k, r in table.rows.items() if r.shared} == {"news.nknu.edu.tw", "sso.nknu.edu.tw/news",

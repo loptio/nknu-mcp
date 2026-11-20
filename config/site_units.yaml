@@ -1,8 +1,9 @@
 # 网站对单位小表（计划 2026-11-08 T3；设计稿 2026-11-08 §二 6）：第一轮名单 config/archive_round1.json 的每个网站键一行
-# （第一轮的 107 个网站，再加附加起点的 4 个网站键），对到单位树（nknu.content.units：网站普查
+# （第一轮的 107 个网站，再加附加起点的 4 个网站键；11-17 起再加爬虫交来的第二轮网站），对到单位树（nknu.content.units：网站普查
 # research/site_probe_2026-10-23/data.json 加 config/units.yaml）里的单位编号。nknu.content.sites 读它。
 # 由 research/step3_2026-11-08/site_units.py 产生，不要手改：要改先改脚本里的手填行（HAND、EXTRA），再跑
 #   uv run --no-sync python research/step3_2026-11-08/site_units.py
+# （第二轮的网站改脚本里的 ROUND2_IN、ROUND2）
 #   unit:   单位编号（单位树里的名字）。
 #   how:    auto: 程序对上的（第一轮名称、它的繁体、去掉「品保網站」、普查里网址在这个网站的单位）；hand: 手填，写理由，
 #           不确定的记全校并写明。
@@ -125,3 +126,38 @@ sites:
   sso.nknu.edu.tw/staff: {unit: "和平教務組", how: "hand: 第一轮附加起点（课务查询首页）：普查「課務查詢（選課）系統」（Staff/CourseEnrollInfo）的上级写和平教務組"}
   sso.nknu.edu.tw/unit: {unit: "秘書室", how: "hand: 第一轮附加起点（专案小组会议纪录）：普查「會議紀錄系統」（Unit/Info/ShowMeetingFiles）的上级写秘書室"}
   sso.nknu.edu.tw/studentprofile: {unit: "文書組", how: "hand: 第一轮附加起点（学生信件招领）：普查「學生郵件招領」（StudentProfile/stud_mails）的上级写「總務處 文書組」"}
+  114-yt3qscn.gamma.site: {unit: "電機工程學系", how: "hand: 第二轮名称「电机系 114 学年度实作专题成果发表展」：电机系的专题展"}
+  2060631web-repository.github.io: {unit: "高齡產業經營學士原住民專班", how: "hand: 第二轮名称「高龄产业经营学士原住民专班 AIM-I」，单位名后面多了 AIM-I，程序对不上"}
+  cirn.k12ea.gov.tw: {unit: "國中小自造及科技輔導中心", how: "auto: 第二轮名称「国中小自造及科技辅导中心」"}
+  cirn.moe.edu.tw: {unit: "綜合活動領域教學研究中心", how: "auto: 第二轮名称「综合活动领域教学研究中心」"}
+  eduhighschool.webflow.io: {unit: "教育學系", how: "hand: 第二轮名称「教育学系高中生专区（Webflow）」"}
+  gdg.community.dev: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：GDG on Campus NKNU 是学生社团（普查：课外活动指导组的社团一览列着它），单位树上没有社团"}
+  groups.google.com: {unit: "華語文教學研究所", how: "hand: 第二轮名称「华语学程论坛、华语所论坛」；普查：nknutc 是华语所（Facebook 同名粉专的上级写華語文教學研究所）"}
+  ix5961.wixstudio.com/2026nclcknu: {unit: "華語文教學研究所", how: "hand: 普查「2026NCL.NKNU 第二十七屆全國語言學論文研討會」的上级写華語文教學研究所"}
+  kppvrrc.bur.tw: {unit: "諮商心理與復健諮商研究所", how: "hand: 普查「身心障礙者職業重建服務資源中心網站」的上级写諮商心理與復健諮商研究所"}
+  lifedunknu.wixsite.com/life-education-nknu: {unit: "教育學系", how: "hand: 第二轮名称「教育学系生命教育研究学会（Wix）」；普查：生命教育研究學會（Facebook）的上级写教育學系"}
+  lit.link: {unit: "課外活動指導組", how: "hand: 第二轮名称「119 级新生定向共识营」；普查「新生定向共識營」（webIdx=601）的上级写課外活動指導組，sso web/601 这一行也是"}
+  nknu-edu.my.canva.site: {unit: "教育學系", how: "hand: 第二轮名称「教育学系高中生专区（Canva）」"}
+  nknuchinese.tw: {unit: "國文學系", how: "auto: 第二轮名称「国文学系」"}
+  nknufablab.github.io: {unit: "高師大數位跨域教育基地", how: "hand: 普查「NKNU-FABLAB 文件站」的上级写高師大數位跨域教育基地（FabLab）"}
+  pairnknu.wixstudio.io/pair-center: {unit: "閱讀評量與教學研究中心", how: "auto: 第二轮名称「閱讀評量與教學研究中心」"}
+  semfreshman.sdpmlab.org: {unit: "軟體工程與管理學系", how: "hand: 第二轮名称「软件工程与管理学系高中生专区」"}
+  sites.google.com/iec-nknu.page/iec: {unit: "資訊教育中心", how: "auto: 第二轮名称「资讯教育中心」"}
+  sites.google.com/site/empowerteacher: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：第二轮名称「生活科技科教师增能推动总召暨开班计划」没写哪个单位，普查没有这一项"}
+  sites.google.com/view/nknu-educational-review: {unit: "教育學系", how: "hand: 第二轮名称「教育学刊（教育学系）」"}
+  sites.google.com/view/nknu-shine-center: {unit: "教務創新組", how: "hand: 普查「SHINE Center 南區社會情緒學習與教育創新中心」的上级写「教務處 教務創新組」"}
+  sites.google.com/view/nknuite-forum2019: {unit: "工業科技教育學系", how: "hand: 第二轮名称「科技教育研究与发展学术研讨会」，网址的 nknuite 是工教系（ite.nknu.edu.tw）"}
+  sites.google.com/view/nknuite2022-18: {unit: "工業科技教育學系", how: "hand: 第二轮名称「科技教育研究与发展学术研讨会」，网址的 nknuite 是工教系（ite.nknu.edu.tw）"}
+  sites.google.com/view/nknuparking: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：普查的上级写「FabLab-NKNU 自造者基地」，单位树上没有这个名字（和数位跨域教育基地是不是同一个没查清）"}
+  sites.google.com/view/taiwanology: {unit: "超現代台灣學研究中心", how: "auto: 第二轮名称「超现代台湾学研究中心」"}
+  solink.soundon.fm: {unit: "性別教育研究所", how: "hand: 第二轮名称「性别教育研究所 Podcast」"}
+  streetphysics.blogspot.com: {unit: "物理學系", how: "hand: 第二轮名称「街头物理 Adept 实验室」：物理的实验室，记物理学系"}
+  ul2974.wixsite.com/nknuhakka: {unit: "客家文化研究所", how: "auto: 第二轮名称「客家文化研究所」"}
+  www.ted.com: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：TEDxNKNU 是学生办的活动，名称没写哪个单位"}
+  nknugender.wixsite.com/nknugender: {unit: "性別教育研究所", how: "auto: 第二轮名称「性别教育研究所」"}
+  github.com: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：GDG on Campus NKNU 的 GitHub 组织，学生社团，单位树上没有社团"}
+  w3.nknu.edu.tw: {unit: "國立高雄師範大學", how: "hand: 学校首页，记全校（程序照普查对到的是校長室：普查里网址在这个网站的单位有校長室、全校等好几个）"}
+  ord.nknu.edu.tw: {unit: "研究發展處", how: "auto: 第二轮名称「研究发展处」"}
+  ite.nknu.edu.tw: {unit: "工業科技教育學系", how: "auto: 第二轮名称「工业科技教育学系」"}
+  gauss.nknu.edu.tw: {unit: "數學系", how: "auto: 第二轮名称「数学系」"}
+  see.nknu.edu.tw: {unit: "科學教育暨環境教育研究所", how: "auto: 第二轮名称「科学教育暨环境教育研究所」"}

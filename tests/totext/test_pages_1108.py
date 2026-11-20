@@ -307,7 +307,9 @@ def test_roots_follow_the_rule_of_each_page():
     ("https://sites.google.com/mail.nknu.edu.tw/111/a", "page"),
     # everything else
     ("https://forms.gle/x", "外站:forms.gle"), ("https://docs.google.com/forms/d/e/1/viewform", "外站:docs.google.com"),
-    ("https://sites.google.com/view/nknuparking", "外站:sites.google.com"), ("https://reurl.cc/52Lly6", "外站:reurl.cc"),
+    ("https://sites.google.com/view/another-club", "外站:sites.google.com"), ("https://reurl.cc/52Lly6", "外站:reurl.cc"),
+    # a round-two unit's own site off the school's domain, in the content side's site table since 11-17
+    ("https://sites.google.com/view/nknuparking", "page"), ("https://ul2974.wixsite.com/nknuhakka/about", "page"),
 ])
 def test_page_kind(url, kind):
     assert page_kind(url) == kind == page_kind(url, "")  # the URL alone, or a page that shows no list grid
