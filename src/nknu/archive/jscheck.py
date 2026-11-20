@@ -70,9 +70,6 @@ over its type's unresolved js_page rows too, so that its pages follow it; a sign
 password box on a page of few links, or a login title or path); note tokens keep no comma (an address's comma is
 %2C, a person's note's is ，); the routing covers every page of the browser's context (context.route, a popup too).
 
-SpotChecker is reconcile's R6 (§18.2b): the same browser, dead proxy, bridge and queues, one page at a time with a
-picture of it (request rows purpose spotcheck), under the locks its caller holds.
-
 Where the requests are made from (11-03, P33; the crawl's B4, review 10-26): given campus_url (crawler.CAMPUS_URL),
 SSO's campus check page is asked on SSO's own queue (request purpose campus, the gap and rests as any request's)
 before the first request, hourly, and again when this machine's address changes, and every request row says what it
@@ -99,7 +96,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
@@ -825,7 +822,7 @@ class Sender:
         until = self.fr.paused_until(lane.name)
         if until > c.clock():
             return Answer(unsent="rest", until=until)
-        target = _target(a)
+        target = _target(a, json=getattr(c, "json_post", False))
         if isinstance(target, str):
             return Answer(unsent=target)
         if (wait := lane.next_at - c.clock()) > 0:
@@ -1003,9 +1000,11 @@ def _campus_system(url: str) -> str:
     return ""
 
 
-def _target(a: Ask) -> Target | str:
+def _target(a: Ask, json: bool = False) -> Target | str:
     """The request for our client: the browser's headers but those it does not pass on; a POST's form body as fields
-    (the client sends forms only: any other body is not sent, post_body). A string says why it is not sent."""
+    (the client sends forms only: any other body is not sent, post_body). json: a JSON body is sent as it is, its
+    Content-Type kept (11-17, the JS sites' handoff item ②: the school home's news box asks its data address so;
+    jsfetch's JsFetcher sets the check's json_post, jscheck never does). A string says why it is not sent."""
     method = a.method.upper()
     headers = {k: v for k, v in a.headers.items()
                if not k.startswith(":") and k.lower() not in _NOT_PASSED and not k.lower().startswith("sec-ch-ua")}
@@ -1015,6 +1014,8 @@ def _target(a: Ask) -> Target | str:
         return "method"
     ctype = next((v for k, v in a.headers.items() if k.lower() == "content-type"), "")
     body = a.body or b""
+    if body and json and ctype.split(";", 1)[0].strip().lower() == "application/json":
+        return Target(a.url, "POST", body=body, headers=headers)  # its Content-Type among the headers passed on
     if body and ctype.split(";", 1)[0].strip().lower() != _FORM:
         return "post_body"
     try:
@@ -1584,111 +1585,19 @@ def old_states(old: Path | None, urls: Iterable[str]) -> dict[str, str]:
     return out
 
 
-# ---------------------------------------------------------------- reconcile's R6: one page, as a person would see it
-@dataclass(frozen=True)
-class SpotLook:
-    """What the browser showed of one page (the fields of reconcile.SpotView): the rendered HTML, where the browser
-    ended, the picture it saved (relative to the archive directory), or why it could not open the page; incomplete:
-    why what it showed may be less than the page holds (incomplete()), so that it proves nothing."""
-
-    url: str
-    final_url: str | None = None
-    html: str | None = None
-    screenshot: str | None = None
-    error: str | None = None
-    incomplete: str | None = None
-    data_posts: tuple[str, ...] = ()  # the data addresses the page asked by a POST the round cannot make (data_post)
-
-
-class SpotChecker:
-    """Reconcile's R6 (design §18.2b): jscheck's browser, dead proxy, bridge and queues for one page at a time (request
-    rows purpose spotcheck, WARC files spotcheck-*), called as checker(url) -> SpotLook. It writes nothing but those
-    rows, the WARC and the pictures (<root>/spotcheck/<run>/…png): no url row, no verdict. The caller holds run.lock
-    and the machine-wide lock (reconcile does, for its whole run: design §6.9) and closes it (a with block). Its
-    browser lives on a loop of its own thread, so that a caller that is not asynchronous can call it."""
-
-    def __init__(self, root: Path, fr: Frontier, *, browser: Browser | None = None, gap: tuple[float, float] = GAP,
-                 client_factory: Callable[[WarcSink | None], Client] | None = None,
-                 resolver: Callable[[str], tuple] = resolve, clock: Callable[[], float] = wall,
-                 sleep: Callable[[float], None] = time.sleep, rng: random.Random | None = None, shots: bool = True,
-                 campus_url: str | None = None, local_address: Callable[[], str | None] = local_address):
-        self.check = JsCheck(root, gap=gap, browser=browser, client_factory=client_factory, resolver=resolver,
-                             clock=clock, sleep=sleep, rng=rng, purpose="spotcheck", campus_url=campus_url,
-                             local_address=local_address)
-        self.check.fr = fr
-        self.check.sender = Sender(self.check)
-        self.browser = browser or PlaywrightBrowser()
-        self.shots = shots
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._n = 0
-
-    def __enter__(self) -> Self:
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, name="spotcheck-browser", daemon=True)
-        self._thread.start()
-        try:
-            asyncio.run_coroutine_threadsafe(self.browser.start(), self._loop).result()
-        except BaseException:
-            self.close()
-            raise
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    def __call__(self, url: str) -> SpotLook:
-        if self._loop is None:
-            raise RuntimeError("SpotChecker is used inside a with block")
-        self._n += 1
-        rel = Path("spotcheck") / str(self.check.run_id) / f"{self._n:05d}.png" if self.shots else None
-        try:
-            obs = asyncio.run_coroutine_threadsafe(self._open(url, rel), self._loop).result()
-        except Exception as exc:  # noqa: BLE001 - the page could not be opened: say why
-            return SpotLook(url, error=f"{type(exc).__name__}: {exc}"[:300])
-        failed = next((e for e in obs.log if e.navigation and (e.error or e.unsent or e.blocked)), None)
-        error = obs.error or (f"{failed.url}: {failed.error or failed.unsent or failed.blocked}" if failed else None)
-        shot = None
-        if obs.screenshot:
-            with contextlib.suppress(ValueError):
-                shot = str(Path(obs.screenshot).relative_to(self.check.root))
-        return SpotLook(url, obs.final_url, obs.rendered or None, shot, error, None if error else incomplete(obs),
-                        tuple(dict.fromkeys(e.url[:300] for e in obs.log if data_post(e, obs.url))))
-
-    async def _open(self, url: str, rel: Path | None) -> Observation:
-        return await self.browser.open(url, PageBridge(self.check, url), None if rel is None else self.check.root / rel)
-
-    def close(self) -> None:
-        """The browser closes, the last answer's gap is waited out (as the crawl does before it lets the locks go), the
-        queues' clients and WARC files close."""
-        loop, self._loop = self._loop, None
-        if loop is None:
-            return
-        with contextlib.suppress(Exception):
-            asyncio.run_coroutine_threadsafe(self.browser.close(), loop).result(timeout=60)
-        if (wait := self.check.sender.last_answer_due() - self.check.clock()) > 0:
-            self.check.sleep(min(wait, SLOW_CAP_S + 10))
-        self.check.sender.close()
-        loop.call_soon_threadsafe(loop.stop)
-        if self._thread is not None:
-            self._thread.join(timeout=30)
-        loop.close()
-
-
 # ---------------------------------------------------------------- a person's verdict
 MANUAL_VERDICTS = ("ok", "js", "frame", "click")
 
 
-VERDICT_SET = "verdict_set"  # the event a person's verdict writes: monitor.Rounds counts it as a rejudge
+VERDICT_SET = "verdict_set"  # the event a person's verdict writes
 
 
 def set_verdict(root: Path, key: str, verdict: str, note: str | None = None) -> list[str]:
     """`nknu archive jscheck --set <key> ok|js|frame|click --note …` (design §8.4): a person's verdict on a type
     (source manual, tested_at now, the note kept as manual:<note>), and on its pages' unresolved js_page rows, so that
     its pages follow it. Sends nothing. Refused while a run (or jscheck) holds the directory; holds run.lock itself
-    while it writes (design §6.9). Returns the sites whose reconciliation it makes stale: an event verdict_set names
-    them (the sites with pages of the type, else the type's own), since what a reconciliation judged rests on the
-    verdict (thin is not judged on a js or frame page, review 10-26) 【Claude 的执行办法】."""
+    while it writes (design §6.9). Returns the sites with pages of the type (else the type's own), which an event
+    verdict_set names 【Claude 的执行办法】."""
     if verdict not in MANUAL_VERDICTS:
         raise JsCheckRefused(f"--set 只收 {'、'.join(MANUAL_VERDICTS)}（收到 {verdict!r}）")
     root = Path(root)
@@ -1736,25 +1645,7 @@ def set_verdict(root: Path, key: str, verdict: str, note: str | None = None) -> 
     return sites
 
 
-def last_end(fr: Frontier) -> dict[str, Any] | None:
-    """The last jscheck_end that counts (design §8.4, §10.5, §13 items 7 and 17): reason finished and written after
-    the last run_end (the order the events were written, as monitor.Rounds.jscheck_done reads it: two events in one
-    second are still one before the other); None when there is none. Its message as a dict, with its time (at)."""
-    run = fr.q("SELECT max(rowid) FROM event WHERE code='run_end'")[0][0]
-    for r in fr.q("SELECT rowid AS rid, at, message FROM event WHERE code='jscheck_end' ORDER BY rowid DESC"):
-        if run is not None and r["rid"] < run:
-            return None
-        try:
-            msg = json.loads(r["message"] or "{}")
-        except ValueError:
-            continue
-        if msg.get("reason") == "finished":
-            return {**msg, "at": r["at"]}
-    return None
-
-
 __all__ = ["CHROME_ARGS", "NO_WEBRTC", "Answer", "Ask", "Browser", "BrowserMissing", "Exchange", "JsCheck",
            "JsCheckRefused", "JsCheckReport", "Observation", "PageBridge", "PageVerdict", "PlaywrightBrowser",
-           "SpotChecker", "SpotLook", "chrome_env", "incomplete", "judge", "last_end", "old_states", "set_verdict",
-           "text_lines", "type_verdict"]
+           "chrome_env", "incomplete", "judge", "old_states", "set_verdict", "text_lines", "type_verdict"]
 

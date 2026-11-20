@@ -9,11 +9,13 @@ from __future__ import annotations
 import time
 
 from nknu.archive import export
+from tests.archive import test_update_stage2_1116 as stage2
 from tests.archive.test_export_1027 import BASE
 from tests.archive.test_export_prev_1116 import _again, _content
 from tests.archive.test_export_step3_1108 import _with
 from tests.archive.test_update_stage2_1116 import DAY, SITE, World, _answer, _change, _html, _night  # noqa: F401
-from tests.archive.test_update_stage2_1116 import world  # noqa: F401 - the fixture
+
+world = stage2.world  # the fixture, under the name the tests take it by
 
 NOTICE2 = BASE + "newsview.aspx?nid=2"
 

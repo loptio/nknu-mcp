@@ -1,6 +1,7 @@
-"""The three fixes after the first real night (11-16, c.nknu.edu.tw/ch; the owner: 「先修这三件」; the check
-wf_9c6e1448-2cc): a run reconciles no site under periodic update; a list page whose rows tell nothing (a teacher's
-page, a list of blank rows) still says it changed; the nightly script runs as one pinned command. Made-up pages."""
+"""The fixes after the first real night (11-16, c.nknu.edu.tw/ch; the owner: 「先修这三件」; the check
+wf_9c6e1448-2cc) that are still there: a list page whose rows tell nothing (a teacher's page, a list of blank rows)
+still says it changed; the nightly script runs as one pinned command. (The third, a run reconciling no site under
+periodic update, went with the run's own reconciliation in the judgment-layer cut of 11-19.) Made-up pages."""
 
 from __future__ import annotations
 
@@ -16,49 +17,21 @@ import pytest
 
 from nknu.archive import crawler as mod
 from nknu.archive import progress, update, watch
-from nknu.archive.reconcile import Sources
 from nknu.archive.viewer import home_html
 
 from . import test_progress
 from .test_progress import NOW, snap_of, visible
-from .test_run_only import ROUTES, _record_reconciliation, crawl, four, frontier, run
 from .test_update_rotations_1116 import _row
 from .test_update_select_1116 import _walk
 from .test_update_stage2_1116 import SCRIPT, World, _answer, _fake_python
 
-UPDATE = "c.nknu.edu.tw/aca"
 arch = test_progress.arch  # the dashboard's small archive (its fixture, shared)
-
-
-@pytest.fixture
-def idle_exit(monkeypatch):
-    """As test_run_only's: a worker with nothing due leaves at once (the fake clock moves only with requests)."""
-    monkeypatch.setattr(mod, "IDLE_EXIT_S", -1.0)
-
-
-def test_a_run_reconciles_no_site_under_periodic_update(tmp_path, monkeypatch, idle_exit):
-    """The nightly change list stands in for the run's offline reconcile on a site under update: on the whole school
-    it re-read every page of every site touched, about 1.5–3 h a night, and services' was thrown away at the 600 s
-    join (wf_9c6e1448-2cc). A site not under update is reconciled as before."""
-    calls = _record_reconciliation(monkeypatch)
-    four(tmp_path)
-    f = frontier(tmp_path)
-    f.meta(mod.UPDATE_SITES_KEY, json.dumps([UPDATE]))
-    f.close()
-    crawler, _, _ = crawl(tmp_path, ROUTES, reconcile_sources=Sources(cc_dir=None, old=None))
-    run(crawler)
-    assert crawler.end_reason == "finished"
-    done = {site for what, site in calls if what == "done"}
-    assert UPDATE not in done
-    assert done, "the other sites of the same run are still reconciled"
-    assert not crawler.frontier.q("SELECT 1 FROM reconcile_site WHERE site = ?", (UPDATE,))
 
 
 # ---------------------------------------------------------------- the nightly script (fix 3)
 
 
-
-needs_script = pytest.mark.skipif(not SCRIPT.is_file(), reason="the lab's scripts live in research/ (not in git)")
+needs_script = pytest.mark.skipif(not SCRIPT.is_file(), reason="deploy/lab-crawler/lab/ is not in this checkout")
 
 
 def _env(tmp_path: Path, py: Path, **over) -> dict:
@@ -66,7 +39,7 @@ def _env(tmp_path: Path, py: Path, **over) -> dict:
     (tmp_path / "archive" / "warc").mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "b"),
            "LOCKS": str(tmp_path / "locks"), "TZ": "Asia/Taipei",
-           "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school-requests.lock"), **over}
+           "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school-requests.lock"), "JS_SITES_FILE": str(tmp_path / "no-js-sites.txt"), **over}
     return {k: v for k, v in env.items() if v is not None}
 
 
@@ -162,8 +135,6 @@ def test_nightly_backups_are_named_apart_and_only_they_are_pruned(tmp_path):
 # ---------------------------------------------------------------- the dashboard's mark (fix 3: a missed night says so)
 
 
-
-
 def _night(f, root: Path, *, ago: float | None, **status) -> None:
     f.meta(mod.UPDATE_SITES_KEY, json.dumps(["c.nknu.edu.tw/aca"]))
     if ago is not None:
@@ -251,7 +222,6 @@ def test_the_dashboard_reads_the_keys_update_writes():
 
 
 # ---------------------------------------------------------------- a list page whose rows tell nothing (fix 1)
-
 
 
 CN = "https://c.nknu.edu.tw/x"

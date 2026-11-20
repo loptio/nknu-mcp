@@ -5,9 +5,9 @@ fresh rehearsal called it 「页面几乎是空的」).
 thin is not set on a page that holds, outside its layout areas, a data: picture of 1 KB or more (a small icon or a 1×1
 placeholder is not one) or a picture left for round two (need round2: Google Sites' runtime pictures, §23 B3); such a
 page, whose words alone would be thin, carries the mark in_image instead: never a gap (not one of PAGE_FLAGS), said on
-the page's row of the dashboard, in verify's item 6 and in item 15's sample as 「内容在图片里（整理阶段做文字识别）」. A
-page with a picture it needs (need must) was never thin, being one with a needed resource, and gets no mark (the 10-27
-rehearsal: 277 such pages, most of them with a site's icons and banners, would all have said 内容在图片里).
+the page's row of the dashboard as 「内容在图片里（整理阶段做文字识别）」. A page with a picture it needs (need must)
+was never thin, being one with a needed resource, and gets no mark (the 10-27 rehearsal: 277 such pages, most of them
+with a site's icons and banners, would all have said 内容在图片里).
 
 Offline: the frontier and WARC are written straight in (test_reconcile's Arch), the page_res rows as the crawler
 writes them (links.extract's pictures: a data: picture by its first characters, its zone). Made-up words and pictures;
@@ -19,8 +19,9 @@ import base64
 
 import pytest
 
-from nknu.archive import links, monitor, outcome, progress, reconcile, viewer
-from tests.archive.test_reconcile import BODY, SITE, Arch, W, _thin, _tpl
+from nknu.archive import links, outcome, progress, reconcile, viewer
+from nknu.archive.frontier import Frontier
+from tests.archive.test_reconcile import BODY, PLAN, SITE, Arch, W, _thin, _tpl
 
 IN_IMAGE_WORDS = "内容在图片里（整理阶段做文字识别）"
 
@@ -123,15 +124,17 @@ def test_a_page_with_words_enough_carries_no_mark_and_the_mark_comes_off_when_it
     assert again.thin == [clinic] and flags(arch, clinic) == {"thin"}
 
 
-def test_reconcile_judges_the_same_as_thin_pages(arch):
+def test_rejudge_judges_the_same_as_thin_pages(arch):
+    """Since the cut of 11-19 a rejudge is the one command that sets the marks (the reconciliation batch that also did
+    is gone): it reads the stored pages again, writes the pictures' rows itself, and judges as thin_pages does."""
     layout_pages(arch)
     clinic = stored(arch, "/clinic.html", _tpl(f'<p>門診表</p><img src="{TIMETABLE}">'))
     empty = stored(arch, "/empty.html", _tpl("<p>短</p>"))
-    from tests.archive.test_reconcile import PLAN
-
-    res = reconcile.reconcile_sites(arch.f, arch.root, [SITE], batch="t", plan=PLAN,
-                                    sources=reconcile.Sources(cc_dir=None), spot=None).sites[0]
-    assert res.thin_set == 1
+    arch.close()
+    got = reconcile.rejudge(arch.root, [SITE], plan=PLAN)
+    arch.f = Frontier(arch.root / "frontier.db")  # the fixture closes what it opened
+    arch.sink._fh = open(arch.sink.path, "ab", buffering=0)  # noqa: SIM115
+    assert got.thin_set == 1
     assert flags(arch, clinic) == {"in_image"} and flags(arch, empty) == {"thin"}
 
 
@@ -139,13 +142,17 @@ def test_in_image_is_a_known_flag_and_never_a_gap():
     assert "in_image" in outcome.FLAGS and "in_image" not in outcome.PAGE_FLAGS
 
 
-def test_verify_and_the_dashboard_say_the_content_is_in_the_picture(arch):
+def test_the_ledger_and_the_dashboard_say_the_content_is_in_the_picture(arch):
     layout_pages(arch)
     clinic = stored(arch, "/clinic.html", _tpl(f'<p>門診表</p><img src="{TIMETABLE}">'))
     _thin(arch)
-    checks = {c.no: c for c in monitor.checks(arch.f)}
-    assert "内容在图片里 1 页" in checks["6"].detail and checks["6"].status == monitor.PASS
-    assert any(IN_IMAGE_WORDS in x and f"{W}/clinic.html" in x for x in checks["15"].lines), checks["15"].lines
+    # the ledger (what verify's items 6 and 15 read before the cut of 11-19): the one round-1 page carrying the mark,
+    # and no page with an empty page's result
+    marked = arch.f.q(f"SELECT u.url FROM url u WHERE u.kind = 'page' AND u.tier IN (0, 1) AND "
+                      f"{outcome._has('in_image')} ORDER BY u.id")
+    assert [r["url"] for r in marked] == [f"{W}/clinic.html"]
+    assert arch.f.q("SELECT count(*) FROM url_result WHERE tier IN (0, 1) AND result IN "
+                    "('thin', 'looks_gone', 'not_file')")[0][0] == 0
     arch.f.x("INSERT INTO site_plan(site, name, imp, round, platform, home) VALUES (?,?,?,?,?,?)",
              (SITE, "测试单位", "全校重要", "1", None, f"{W}/"))
     conn = progress.connect(arch.f.path)

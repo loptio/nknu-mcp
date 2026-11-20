@@ -1,10 +1,12 @@
-"""Round 1 from its seeds to its acceptance, end to end (design §5, §8.4, §10.5, §13, §14, §18.2a step 3, §18.2b): a
-made-up school site is seeded (seed_round1: the list, a made-up 10-24 archive, a Common Crawl index, a v1 notice and
-the 10-25 page types), crawled on a fake network (Crawler.run, which reconciles the site offline in its own process
-as it finishes), its page types checked in a made-up browser (jscheck), reconciled with R6 through jscheck's spot
-checker and the same browser (reconcile), and accepted (verify). After every step where something is still missing,
-neither the dashboard (progress.Dashboard, drawn by viewer) nor verify says the site is 「✓ 爬完」; only once everything
-is there do both say so. Then each way something can be missing, one at a time, on its own copy of the site.
+"""Round 1 from its seeds to a site that is 爬完, end to end (design §5, §8.4, §10.5, §18.2a): a made-up school site
+is seeded (seed_round1: the list, a made-up 10-24 archive, a Common Crawl index and a v1 notice; the page types a
+browser test judged before the round written as rows), crawled on a fake network (Crawler.run), and its page types
+checked in a made-up browser (jscheck). After every step where something is still missing, neither the dashboard
+(progress.Dashboard, drawn by viewer) nor monitor.site_status says the site is 「✓ 爬完」; only once everything is
+there do both say so. Then each way something can be missing, one at a time, on its own copy of the site, and the
+commands a person runs after a crawl (jscheck --set, rejudge, enqueue, review). What came after these steps until
+the judgment-layer cut of 11-19 (the reconciliation, the acceptance) is gone: every page whole and nothing waiting
+is 爬完.
 
 No address leaves this machine: the school is httpx.MockTransport's, behind the crawl's own client (and
 tests/conftest.py's guard). Every text is made up; no person's name."""
@@ -27,8 +29,6 @@ from nknu.admin.cli import app
 from nknu.archive import crawler as mod
 from nknu.archive import jscheck, monitor, pagetypes, progress, reconcile, round1, scope, seeds, viewer
 from nknu.archive.frontier import Frontier
-from nknu.archive.reconcile import Sources
-from nknu.crawl import schoollock
 from tests.archive.plans import plan, site
 from tests.archive.test_jscheck import FakeBrowser, FakePage
 from tests.archive.test_round1_e2e import FastClock
@@ -42,7 +42,7 @@ PLAN = plan(site(SITE, imp="全校重要", name="测试单位", home=HOME))
 PDF = b"%PDF-1.4\n%made up for a test\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
 BODY = "這是一段測試用的內文，介紹本單位的業務與服務項目，內容足夠長，不會被當成空白的頁面。" * 2
 QUOTE = "關於我們的內文"
-TESTED = (HOME, ABOUT, NEWS)  # the 10-25 test knew these types: contact.html's is new this round (todo until jscheck)
+TESTED = (HOME, ABOUT, NEWS)  # a browser test judged these types before: contact.html's is new (todo until jscheck)
 
 
 def page(title: str, main: str) -> str:
@@ -58,7 +58,7 @@ def pages(*, empty: bool = False) -> dict[str, str]:
     out = {HOME: page("首頁", home), ABOUT: page("關於", f"<p>{QUOTE}：{BODY}</p>"),
            NEWS: page("消息", f"<p>最新消息列表。{BODY}</p>"), CONTACT: page("聯絡", f"<p>聯絡方式。{BODY}</p>")}
     if empty:
-        out[EMPTY] = page("說明", "<p>敬請期待</p>")  # almost nothing of its own: thin once reconciled
+        out[EMPTY] = page("說明", "<p>敬請期待</p>")  # almost nothing of its own: thin once rejudged
     return out
 
 
@@ -89,7 +89,7 @@ class School:
 
 
 class Clock(FastClock):
-    """One clock for every step (crawl, jscheck, R6): the politeness audit reads their requests together."""
+    """One clock for every step (crawl, jscheck): the politeness audit reads their requests together."""
 
     async def asleep(self, s: float) -> None:
         self.sleep(s)
@@ -100,7 +100,7 @@ def _resolver(host: str):
     return f"ip:{host}", None, host
 
 
-# ---------------------------------------------------------------- the sources the reconciliation compares with
+# ---------------------------------------------------------------- what seeding reads, and the types known before
 
 
 def _old(root: Path) -> Path:
@@ -126,7 +126,7 @@ def _cc(root: Path) -> Path:
 
 
 def _facts(root: Path) -> Path:
-    """v1's facts.db as seeds.v1_known reads it: one notice v1 knew (verify item 12)."""
+    """v1's facts.db as seeds.v1_known reads it: one notice v1 knew."""
     path = root / "facts.db"
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE doc(url TEXT, unit TEXT, title TEXT, category TEXT, withdrawn_at TEXT)")
@@ -136,18 +136,15 @@ def _facts(root: Path) -> Path:
     return path
 
 
-def _jstest(root: Path) -> Path:
-    """The five files of the 10-25 test, for the made-up site: each type it knew tested ok."""
-    d = root / "jstest"
-    d.mkdir()
-    lines = [{"type": pagetypes.type_key(u), "url": u, "direct_status": 200, "direct_chars": 120,
-              "rendered_chars": 120, "method": "direct"} for u in TESTED]
-    (d / pagetypes.RESULTS).write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
-    (d / pagetypes.RETEST).write_text("", encoding="utf-8")
-    (d / pagetypes.TYPES).write_text(json.dumps({x["type"]: [x["url"]] for x in lines}), encoding="utf-8")
-    (d / pagetypes.REVIEW).write_text(json.dumps({"kinds": []}), encoding="utf-8")
-    (d / pagetypes.CLICK_SCAN).write_text(json.dumps({"kinds": []}), encoding="utf-8")
-    return d
+def known_types(f: Frontier, urls) -> None:
+    """These pages' types as a browser test before the round left them (the 10-25 test's import did, until the cut of
+    11-19; nothing imports one now): each judged ok (the same text directly and in the browser), source import, no
+    page of this round counted yet."""
+    for u in urls:
+        parts = pagetypes.type_parts(u)
+        f.x("INSERT INTO page_type(key, site, host, path_tpl, params, verdict, method, direct_chars, rendered_chars, "
+            "sample_url, source) VALUES (?,?,?,?,?,'ok','direct',120,120,?,'import')",
+            (parts.key, parts.site, parts.host, parts.path_tpl, json.dumps(list(parts.params)), u))
 
 
 # ---------------------------------------------------------------- one site, step by step
@@ -158,8 +155,10 @@ class World:
     root: Path
     clock: Clock
     school: School
-    sources: Sources
+    old: Path  # the made-up 10-24 archive (read only)
+    cc_dir: Path | None  # the Common Crawl index seeding reads
     shown: dict[str, str] = field(default_factory=dict)  # what the browser shows of each page (the page itself)
+    known: tuple[str, ...] = TESTED  # the pages whose types a browser test judged ok before the round
 
     def client(self, warc):
         return mod.archive_client(warc, transport=httpx.MockTransport(self.school), clock=self.clock,
@@ -171,14 +170,17 @@ class World:
     def crawler(self) -> mod.Crawler:
         return mod.Crawler(self.root, plan=PLAN, clock=self.clock, sleep=self.clock.sleep, resolver=_resolver,
                            client_factory=self.client, netcheck=lambda: True, disk_free=lambda p: 10**12,
-                           campus_url=None, reconcile_sources=self.sources)
+                           campus_url=None)
+
+    def seed(self) -> mod.Crawler:
+        """Seeded, the types known before the round written, nothing fetched yet: the caller runs it or closes it."""
+        c = self.crawler()
+        seeds.seed_round1(c, old=self.old, facts_db=self.root.parent / "facts.db", cc_dir=self.cc_dir, probe=None)
+        known_types(c.frontier, self.known)
+        return c
 
     def seed_and_run(self) -> mod.Crawler:
-        c = self.crawler()
-        seeds.seed_round1(c, old=self.sources.old, facts_db=self.root.parent / "facts.db", cc_dir=self.sources.cc_dir,
-                          probe=None, jstest=self.root.parent / "jstest")
-        self.run(c)
-        return c
+        return self.run(self.seed())
 
     def run(self, c: mod.Crawler | None = None) -> mod.Crawler:
         c = c or self.crawler()
@@ -189,26 +191,21 @@ class World:
         return c
 
     def jscheck(self) -> jscheck.JsCheckReport:
-        check = jscheck.JsCheck(self.root, old=self.sources.old, browser=self.browser(), client_factory=self.client,
+        check = jscheck.JsCheck(self.root, old=self.old, browser=self.browser(), client_factory=self.client,
                                 resolver=_resolver, netcheck=lambda: True, plan=PLAN, clock=self.clock,
                                 sleep=self.clock.sleep, asleep=self.clock.asleep, rng=random.Random(7))
         return check.run()
 
-    def reconcile(self, *, r6: bool = True, sources: Sources | None = None) -> reconcile.Reconciled:
-        def spot(fr):
-            return jscheck.SpotChecker(self.root, fr, browser=self.browser(), client_factory=self.client,
-                                       resolver=_resolver, clock=self.clock, sleep=self.clock.sleep,
-                                       rng=random.Random(3))
+    def rejudge(self) -> reconcile.Rejudged:
+        return reconcile.rejudge(self.root, [SITE], plan=PLAN)
 
-        src = sources or self.sources
-        if not r6:
-            return reconcile.reconcile(self.root, batch="e2e", plan=PLAN, sources=src)[0]
-        with schoollock.hold():
-            return reconcile.reconcile(self.root, batch="e2e", plan=PLAN, sources=src, spot_factory=spot)[0]
-
-    def verify(self) -> monitor.Verified:
-        return monitor.verify(self.root, plan=PLAN, resource_check=monitor.extract_check(PLAN),
-                              write=False)
+    def status(self) -> monitor.SiteStatus:
+        """The site's state as monitor.site_status reads it from the ledger."""
+        f = Frontier(self.root / "frontier.db", readonly=True)
+        try:
+            return monitor.site_status(f)[SITE]
+        finally:
+            f.close()
 
     def dashboard(self) -> tuple[dict, str]:
         """The site's page of the dashboard (its state and what it lacks: the cards say only progress and 错 N since
@@ -222,34 +219,29 @@ class World:
         assert site is not None and "problem" not in site, (site or {}).get("problem")
         return site, viewer.progress_site_html(site)
 
-    def state(self) -> tuple[str, str, monitor.Verified]:
-        """The site's state as the dashboard shows it and as verify gives it, with verify's whole answer."""
+    def state(self) -> tuple[str, str, monitor.SiteStatus]:
+        """The site's state as the dashboard shows it and as monitor.site_status gives it, with the whole status."""
         dash, html = self.dashboard()
-        got = self.verify()
+        got = self.status()
         assert ("✓ 爬完" in html) == (dash["state"] == "done")  # the mark drawn is the state worked out
-        return dash["state"], got.sites[SITE].state, got
+        return dash["state"], got.state, got
 
-    def not_done(self, *expected: str, reconciled: bool = False) -> monitor.Verified:
-        """Neither the dashboard nor verify says 爬完, and verify's conclusion is 还没完成; both give one of these
-        states. reconciled: whether verify's item 18 (a fresh reconciliation, every gate passed) holds; it says
-        nothing of the pages (the other items do), so a site may pass it and still lack a file."""
+    def not_done(self, *expected: str) -> monitor.SiteStatus:
+        """Neither the dashboard nor monitor.site_status says 爬完; both give one of these states."""
         dash, ver, got = self.state()
-        assert dash != "done" and ver != monitor.DONE, (dash, ver, got.sites[SITE].why)
+        assert dash != "done" and ver != monitor.DONE, (dash, ver, got.why)
         assert dash == ver, (dash, ver)  # the dashboard shows monitor.site_status's state, never one of its own
         if expected:
-            assert ver in expected, (ver, got.sites[SITE].why)
-        assert _by_no(got.checks)["18"].status == (monitor.PASS if reconciled else monitor.FAIL)
-        assert got.text.splitlines()[4].startswith("- 结论：还没完成") and got.code != 0
+            assert ver in expected, (ver, got.why)
         return got
 
 
 def make_world(tmp_path: Path, *, missing: tuple[str, ...] = (), erring: tuple[str, ...] = (), empty: bool = False,
                cc: bool = True, shown: dict[str, str] | None = None) -> World:
-    _jstest(tmp_path)
     _facts(tmp_path)
     html = pages(empty=empty)
-    world = World(tmp_path / "archive", Clock(), School(html, missing, erring),
-                  Sources(cc_dir=_cc(tmp_path) if cc else None, old=_old(tmp_path)))
+    world = World(tmp_path / "archive", Clock(), School(html, missing, erring), old=_old(tmp_path),
+                  cc_dir=_cc(tmp_path) if cc else None)
     world.shown = {**html, **(shown or {})}
     return world
 
@@ -259,88 +251,70 @@ def _fast(monkeypatch):
     monkeypatch.setattr(mod, "IDLE_POLL_S", 0.02)
 
 
-def _by_no(cs) -> dict[str, monitor.Check]:
-    return {c.no: c for c in cs}
-
-
 # ---------------------------------------------------------------- the whole way, the site never 爬完 before it is
 
 
-def test_seed_run_jscheck_reconcile_verify_says_done_only_once_everything_is_there(tmp_path):
+def test_seed_run_jscheck_says_done_only_once_everything_is_there(tmp_path):
     w = make_world(tmp_path)
     # seeded only: nothing fetched yet
-    c = w.crawler()
-    seeds.seed_round1(c, old=w.sources.old, facts_db=tmp_path / "facts.db", cc_dir=w.sources.cc_dir, probe=None,
-                      jstest=tmp_path / "jstest")
-    c.frontier.close()
-    w.not_done()
-    # crawled: the crawler reconciled the finished site offline itself, R6 left for later (gates_ok 0)
+    w.seed().frontier.close()
+    w.not_done(monitor.CRAWLING)
+    # crawled: every page fetched, contact.html's type new and judged by nobody
     w.run()
     f = Frontier(w.root / "frontier.db", readonly=True)
     try:
-        rec = f.q("SELECT batch, gates_ok, checks FROM reconcile_site WHERE site=?", (SITE,))[0]
-        assert rec["batch"].startswith("run:") and rec["gates_ok"] == 0
-        checks = json.loads(rec["checks"])
-        assert checks["R6"]["status"] == "skip"
-        assert {k for k, v in checks.items() if v["status"] != "pass"} == {"R6"}  # the offline ones all pass
-        events = [r["code"] for r in f.q("SELECT code FROM event WHERE code IN ('reconcile', 'run_end') ORDER BY rowid")]
-        assert events == ["reconcile", "run_end"]  # reconciled before the run ended: older than that run_end
-        assert f.q("SELECT verdict FROM page_type WHERE key=?", (pagetypes.type_key(CONTACT),))[0][0] == "todo"
+        end = json.loads(f.q("SELECT message FROM event WHERE code='run_end' ORDER BY rowid DESC LIMIT 1")[0][0])
+        assert end["reason"] == "finished"
+        new = f.q("SELECT verdict, why, source FROM page_type WHERE key=?", (pagetypes.type_key(CONTACT),))[0]
+        assert tuple(new) == ("todo", "new", "crawl")
     finally:
         f.close()
-    # contact.html's type is new and no browser judged it: got since the owner's 11-16 decision (export batch T5),
-    # nothing 待判定 any more
+    # the page itself is got since the owner's 11-16 decision (export batch T5), nothing 待判定 any more; its type
+    # waits for the browser: yellow
     got = w.not_done(monitor.LOOK)
-    assert SITE not in got.sites or not any("待判定" in x for x in got.sites[SITE].why)
-    # the browser judged the new type: what is left is a reconciliation newer than the run
+    assert not any("待判定" in x for x in got.why)
+    assert any("还没判定" in x and "jscheck 还没跑完" in x for x in got.why), got.why
+    # the browser judged the new type: every page whole, nothing waiting, the site is 爬完 on both
     report = w.jscheck()
     assert report.reason == "finished" and report.todo_left == 0
-    got = w.not_done(monitor.UNRECONCILED)
-    assert any("旧" in x for x in got.sites[SITE].why)  # the crawler's own reconciliation is older than its run_end
-    # reconciled without the browser: R6 not checked, never 爬完
-    res = w.reconcile(r6=False)
-    assert res.sites[0].checks["R6"].status == reconcile.SKIP and not res.sites[0].gates_ok
-    got = w.not_done(monitor.UNRECONCILED)
-    assert any("R6" in x for x in got.sites[SITE].why)
-    # reconciled with R6 through jscheck's spot checker: every gate passes, the site is 爬完 on both
-    res = w.reconcile()
-    assert {k: v.status for k, v in res.sites[0].checks.items() if v.status != reconcile.PASS} == {}
     dash, ver, got = w.state()
-    assert (dash, ver) == ("done", monitor.DONE), got.sites[SITE].why
-    cs = _by_no(got.checks)
-    assert {no: c.status for no, c in cs.items() if c.status != monitor.PASS} == {"16": monitor.WARN}, \
-        {no: (c.status, c.lines[:3]) for no, c in cs.items() if c.status != monitor.PASS}
-    assert "结论：第一轮完成，有已知缺口" in got.text and got.code == 1  # never all green while a known gap is open
-    # what was sent: one request at a time per server, nothing out of scope, R6 and jscheck in the request log
+    assert (dash, ver) == ("done", monitor.DONE), got.why
+    assert got.why == ["每一页都完整，没有还在等的"] and got.jscheck_done
+    # what was sent: one request at a time per server, nothing out of scope, jscheck's in the request log
     f = Frontier(w.root / "frontier.db", readonly=True)
     try:
         purposes = {r[0] for r in f.q("SELECT DISTINCT purpose FROM request")}
-        assert {"jscheck", "spotcheck"} <= purposes
+        assert "jscheck" in purposes
         assert monitor.politeness(f) == [] and monitor.scope_audit(f, PLAN) == []
     finally:
         f.close()
-    # a rejudge, then a run, each make the reconciliation stale: 爬完 no more until it is reconciled again
-    reconcile.rejudge(w.root, [SITE], plan=PLAN)
-    w.not_done(monitor.UNRECONCILED)
-    w.reconcile()
+    # a rejudge, then a run with nothing left to fetch, change nothing of that: still 爬完
+    w.rejudge()
     assert w.state()[:2] == ("done", monitor.DONE)
     w.run()
-    w.not_done(monitor.UNRECONCILED)
+    assert w.state()[:2] == ("done", monitor.DONE)
 
 
 # ---------------------------------------------------------------- each way something can be missing, on its own
 
 
-def _all_steps(w: World, *, jscheck_too: bool = True, r6: bool = True, sources: Sources | None = None) -> None:
+def _result(w: World, url: str) -> str:
+    f = Frontier(w.root / "frontier.db", readonly=True)
+    try:
+        return f.q("SELECT result FROM url_result WHERE url=?", (url,))[0][0]
+    finally:
+        f.close()
+
+
+def _all_steps(w: World, *, jscheck_too: bool = True) -> None:
     w.seed_and_run()
     if jscheck_too:
         assert w.jscheck().reason == "finished"
-    w.reconcile(r6=r6, sources=sources)
 
 
 def test_an_attachment_that_errs_keeps_the_site_from_done(tmp_path):
     w = make_world(tmp_path, erring=(PDF_URL,))
-    _all_steps(w)  # the run ends waiting (B1: only a retry is left), the site reconciled as it finished
+    _all_steps(w)  # the run ends waiting (B1: only a retry is left)
     f = Frontier(w.root / "frontier.db", readonly=True)
     try:
         assert f.q("SELECT result FROM url_result WHERE url=?", (PDF_URL,))[0][0] == "retry"
@@ -348,13 +322,13 @@ def test_an_attachment_that_errs_keeps_the_site_from_done(tmp_path):
         assert end["reason"] == "waiting"
     finally:
         f.close()
-    got = w.not_done(monitor.CRAWLING, reconciled=True)  # every gate passed: the page lacks its file all the same
-    assert any("等重试" in x for x in got.sites[SITE].why)
+    got = w.not_done(monitor.CRAWLING)  # the page lacks its file
+    assert any("等重试" in x for x in got.why)
 
 
 def test_an_attachment_the_school_no_longer_has_is_complete_on_the_schools_side(tmp_path):
     # design §10.2, §10.4: a 404 asked twice is 学校那边已经不存在, the page 完整（学校那边缺）, which §10.5 counts as
-    # complete: the site may be 爬完 (verify lists it among what the school lacks)
+    # complete: the site may be 爬完
     w = make_world(tmp_path, missing=(PDF_URL,))
     _all_steps(w)
     f = Frontier(w.root / "frontier.db", readonly=True)
@@ -367,58 +341,39 @@ def test_an_attachment_the_school_no_longer_has_is_complete_on_the_schools_side(
     assert w.state()[:2] == ("done", monitor.DONE)
 
 
-def test_a_page_with_almost_nothing_on_it_is_thin_once_reconciled_and_red(tmp_path):
+def test_a_page_with_almost_nothing_on_it_is_thin_once_rejudged_and_red(tmp_path):
     w = make_world(tmp_path, empty=True)
     _all_steps(w)
-    f = Frontier(w.root / "frontier.db", readonly=True)
-    try:
-        assert f.q("SELECT result FROM url_result WHERE url=?", (EMPTY,))[0][0] == "thin"
-    finally:
-        f.close()
-    got = w.not_done(monitor.ERROR, reconciled=True)
-    assert _by_no(got.checks)["6"].status == monitor.FAIL
-
-
-def test_what_only_the_browser_shows_fails_r6(tmp_path):
-    more = pages()[ABOUT].replace("</main>", "<p><a href='/files/only-in-browser.pdf'>另一份附件.pdf</a></p></main>")
-    w = make_world(tmp_path, shown={ABOUT: more})
-    _all_steps(w)
-    f = Frontier(w.root / "frontier.db", readonly=True)
-    try:
-        checks = json.loads(f.q("SELECT checks FROM reconcile_site WHERE site=?", (SITE,))[0][0])
-    finally:
-        f.close()
-    assert checks["R6"]["status"] == "fail"
+    assert _result(w, EMPTY) == "ok"  # a run marks no page thin: only a rejudge reads the pages back for that
+    done = w.rejudge()
+    assert (done.thin_set, done.thin_cleared) == (1, 0)
+    assert _result(w, EMPTY) == "thin"
     got = w.not_done(monitor.ERROR)
-    assert any("R6" in x for x in got.sites[SITE].why)
+    assert any(i.url == EMPTY and i.result == "thin" for i in got.issues), [i.line() for i in got.issues]
 
 
-def test_without_jscheck_a_new_type_waits_yellow_whatever_the_reconciliation_says(tmp_path):
+def test_without_jscheck_a_new_type_waits_yellow(tmp_path):
     w = make_world(tmp_path)
     _all_steps(w, jscheck_too=False)
-    got = w.not_done(monitor.LOOK, reconciled=True)
-    assert _by_no(got.checks)["7"].status == monitor.WARN  # jscheck has not run: yellow, not yet red
-
-
-def test_without_r6_the_site_is_recorded_never_done(tmp_path):
-    w = make_world(tmp_path)
-    _all_steps(w, r6=False)
-    w.not_done(monitor.UNRECONCILED)
-
-
-def test_without_the_common_crawl_index_r3_is_not_checked_and_the_site_never_done(tmp_path):
-    w = make_world(tmp_path)
-    _all_steps(w, sources=Sources(cc_dir=None, old=w.sources.old))
-    got = w.not_done(monitor.UNRECONCILED)
-    assert any("R3a" in x for x in got.sites[SITE].why)
+    got = w.not_done(monitor.LOOK)
+    assert not got.jscheck_done  # jscheck has not run: yellow, not yet red
+    assert got.why == ["1 类有网页的类型还没判定（jscheck 还没跑完）"]
 
 
 def test_a_type_the_browser_cannot_judge_is_red_once_jscheck_ended(tmp_path):
     w = make_world(tmp_path)
     w.shown = {u: h for u, h in w.shown.items() if u != CONTACT}  # the browser shows nothing of it: no conclusion
     _all_steps(w)
+    f = Frontier(w.root / "frontier.db", readonly=True)
+    try:
+        types = f.q("SELECT verdict FROM page_type WHERE n_pages > 0 AND key=?", (pagetypes.type_key(CONTACT),))
+        assert [r[0] for r in types] == ["unresolved"]  # the browser's own conclusion: none (a person says, --set)
+    finally:
+        f.close()
+    assert _result(w, CONTACT) == "unresolved"
     got = w.not_done(monitor.ERROR)
-    assert _by_no(got.checks)["7"].status == monitor.FAIL
+    assert got.jscheck_done and got.why == ["1 个网页或资源要人看"]
+    assert [(i.url, i.result) for i in got.issues] == [(CONTACT, "unresolved")]
 
 
 # ---------------------------------------------------------------- the commands
@@ -433,31 +388,19 @@ def done_world(tmp_path, monkeypatch):
     return w
 
 
-def test_verify_command_writes_its_report_and_exits_by_its_worst_item(done_world):
-    w = done_world
-    got = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root)])
-    assert got.exit_code == 1, got.output  # item 16 stays open until the owner agrees to use Wayback
-    assert "第一轮完成，有已知缺口" in got.output and "✓ 爬完" in got.output
-    assert list((w.root / "reports").glob("verify-*.md"))
-    missing = CliRunner().invoke(app, ["archive", "verify", "--dir", str(w.root / "no-archive")])
-    assert missing.exit_code == 1 and "找不到" in missing.output
-
-
-def test_reconcile_rejudge_and_review_commands(done_world):
+def test_rejudge_enqueue_and_review_commands(done_world):
     w = done_world
     runner = CliRunner()
     got = runner.invoke(app, ["archive", "rejudge", "--dir", str(w.root), "--sites", SITE])
     assert got.exit_code == 0, got.output
-    assert "过期" in got.output
-    got = runner.invoke(app, ["archive", "reconcile", "--dir", str(w.root), "--batch", "cli", "--no-r6"])
-    assert got.exit_code == 1, got.output  # R6 not checked: not every gate passed
-    assert f"{SITE}：没过" in got.output and "R6" in got.output
-    got = runner.invoke(app, ["archive", "reconcile", "--dir", str(w.root), "--no-r6"])
-    assert got.exit_code == 1 and "--batch" in got.output
+    assert "重算 1 个网站：网页 4 页" in got.output
+    assert w.state()[:2] == ("done", monitor.DONE)  # worked out again from what is stored: nothing changed
     listed = w.root.parent / "to-fetch.txt"
     listed.write_text(f"{W}/later.html\t人看过，要抓\n# 不抓的写理由\n", encoding="utf-8")
-    got = runner.invoke(app, ["archive", "reconcile", "--dir", str(w.root), "--enqueue", str(listed)])
+    got = runner.invoke(app, ["archive", "enqueue", str(listed), "--dir", str(w.root)])
     assert got.exit_code == 0 and "写进待抓清单 1 个" in got.output, got.output
+    got = runner.invoke(app, ["archive", "enqueue", str(w.root.parent / "no-such-list.txt"), "--dir", str(w.root)])
+    assert got.exit_code == 1 and "找不到清单" in got.output
     f = Frontier(w.root / "frontier.db", readonly=True)
     try:
         assert f.row(f"{W}/later.html")["found_via"] == "reconcile"
@@ -484,9 +427,11 @@ def test_jscheck_set_and_refusals(done_world):
     assert w.state()[0] != "done"  # a page that needs JavaScript is round two's: no longer 爬完
     got = runner.invoke(app, ["archive", "jscheck", "--dir", str(w.root), "--set", key, "maybe"])
     assert got.exit_code == 1
+    listed = w.root.parent / "to-fetch.txt"
+    listed.write_text(f"{W}/later.html\n", encoding="utf-8")
     lock = mod.hold_run_lock(w.root)
     try:
-        for args in (["jscheck"], ["reconcile", "--batch", "x", "--no-r6"], ["rejudge", "--sites", SITE],
+        for args in (["jscheck"], ["enqueue", str(listed)], ["rejudge", "--sites", SITE],
                      ["review", "--mark", "school_side", "1", "--note", "x"]):
             got = runner.invoke(app, ["archive", *args, "--dir", str(w.root)])
             assert got.exit_code == 1 and "pid" in got.output, (args, got.output)
@@ -499,51 +444,17 @@ def test_the_old_archive_is_refused_by_every_command_that_writes(tmp_path, monke
     old = _old(tmp_path)
     before = (old / "frontier.db").read_bytes()
     runner = CliRunner()
-    for args in (["jscheck"], ["reconcile", "--batch", "x", "--no-r6"], ["rejudge", "--sites", SITE],
-                 ["review"], ["jscheck", "--set", "k", "ok"]):
+    listed = tmp_path / "to-fetch.txt"
+    listed.write_text(f"{W}/later.html\n", encoding="utf-8")
+    for args in (["jscheck"], ["enqueue", str(listed)], ["rejudge", "--sites", SITE], ["review"],
+                 ["jscheck", "--set", "k", "ok"]):
         got = runner.invoke(app, ["archive", *args, "--dir", str(old)])
         assert got.exit_code == 1 and "旧爬虫的存档" in got.output, (args, got.output)
-    got = runner.invoke(app, ["archive", "verify", "--dir", str(old)])
-    assert got.exit_code == 1, got.output
     assert (old / "frontier.db").read_bytes() == before
     assert scope.site_key(HOME) == SITE
 
 
 # ---------------------------------------------------------------- the wiring, one piece at a time
-
-
-def test_the_crawler_reconciles_a_finished_site_once_and_a_failure_never_stops_it(tmp_path, monkeypatch):
-    w = make_world(tmp_path)
-    calls = []
-
-    def broken(fr, root, site_, *, plan, batch, sources, stop=None):
-        calls.append((site_, batch, sources))
-        raise RuntimeError("a reconciliation that broke")
-
-    monkeypatch.setattr(reconcile, "site_done", broken)
-    c = w.seed_and_run()
-    assert c.end_reason == "finished"
-    assert calls == [(SITE, f"run:{c.run_id}", w.sources)]  # once: the site finished once in this run
-    f = Frontier(w.root / "frontier.db", readonly=True)
-    try:
-        codes = [r[0] for r in f.q("SELECT code FROM event WHERE code IN ('reconcile_failed', 'run_end') ORDER BY rowid")]
-        assert codes == ["reconcile_failed", "run_end"]
-        assert f.q("SELECT count(*) FROM url WHERE state IN ('pending', 'active')")[0][0] == 0
-    finally:
-        f.close()
-
-
-def test_a_crawl_without_sources_reconciles_nothing(tmp_path):
-    w = make_world(tmp_path)
-    w.sources = None
-    c = w.crawler()
-    seeds.seed_round1(c, old=None, facts_db=None, cc_dir=None, probe=None, jstest=tmp_path / "jstest")
-    w.run(c)
-    f = Frontier(w.root / "frontier.db", readonly=True)
-    try:
-        assert not f.q("SELECT 1 FROM reconcile_site") and not f.q("SELECT 1 FROM event WHERE code='reconcile'")
-    finally:
-        f.close()
 
 
 def _requests(root: Path, rows) -> Frontier:
@@ -566,79 +477,6 @@ def test_the_scope_audit_lets_the_browser_check_ask_what_judging_needs_but_never
     assert len(out) == 2
     assert any(login in x and "login" in x for x in out)  # what jscheck.NEVER_SEND names is a breach for it too
     assert any(sheet in x and "never_host" in x for x in out)  # the crawl's own page request: a breach as before
-
-
-def test_a_reconciliation_is_newer_than_a_run_by_the_order_the_events_were_written(tmp_path):
-    """Same second, either way: the event order decides (monitor.reconciled and reconcile.fresh agree)."""
-    f = Frontier(tmp_path / "frontier.db")
-    try:
-        at = "2026-10-26T01:00:00+00:00"
-        checks = json.dumps({g: {"status": "pass"} for g in monitor.GATES})
-        f.x("INSERT INTO reconcile_site(site, batch, at, checks, gates_ok) VALUES (?,?,?,?,1)", (SITE, "b", at, checks))
-
-        def ev(code: str, sites) -> None:
-            f.x("INSERT INTO event(at, level, code, message) VALUES (?, 'info', ?, ?)",
-                (at, code, json.dumps({"reason": "finished", "sites": sites})))
-
-        def fresh() -> tuple[bool, bool]:
-            rec = monitor.reconciled(f, monitor.Rounds(f))[SITE]
-            return rec.fresh, reconcile.fresh(f, SITE)
-
-        ev("run_end", [SITE])
-        ev("reconcile", [SITE])  # written after the run_end, in the same second
-        assert fresh() == (True, True)
-        ev("run_end", ["other.nknu.edu.tw"])
-        assert fresh() == (True, True)
-        ev("rejudge", None)  # covers every site
-        assert fresh() == (False, False)
-        ev("reconcile", [SITE])
-        ev("run_end", [SITE])  # the same second again, after it this time
-        assert fresh() == (False, False)
-    finally:
-        f.close()
-
-
-def test_the_dashboard_lists_what_the_reconciliation_found_with_no_row(tmp_path):
-    f = Frontier(tmp_path / "frontier.db")
-    try:
-        f.x("INSERT INTO site_plan(site, name, imp, round, home) VALUES (?,?,?,?,?)", (SITE, "测试单位", "全校重要", "1",
-                                                                                    HOME))
-        checks = {
-            "R1": {"status": "fail", "menu_links": 3, "has": 1, "waiting": 1, "missing": 1,
-                   "items": [{"target": f"{W}/menu-a.html", "page": HOME, "status": "missing"},
-                             {"target": f"{W}/menu-b.html", "page": HOME, "status": "waiting"}]},
-            "R3a": {"status": "fail", "known": 30, "ruled_out": 0, "missing": 25,
-                    "items": [{"url": f"{W}/cc-{i}.html"} for i in range(20)], "more": 5},
-            "R4a": {"status": "pass", "known": 2, "ruled_out": 0, "missing": 0},
-            "R6": {"status": "skip", "note": "浏览器抽查要等 run 停下"},
-        }
-        f.x("INSERT INTO reconcile_site(site, batch, at, checks, gates_ok) VALUES (?,?,?,?,0)",
-            (SITE, "b", "2026-10-26T01:00:00+00:00", json.dumps(checks)))
-    finally:
-        f.close()
-    conn = progress.connect(tmp_path / "frontier.db")
-    try:
-        rec, found = progress._reconciled(conn)
-    finally:
-        conn.close()
-    assert rec[SITE]["failed"] == ["R1", "R3a"]
-    assert [(m["item"], m["n"], len(m["urls"])) for m in found] == [("R1", 1, 1), ("R3a", 25, 10)]
-    assert found[0]["urls"] == [f"{W}/menu-a.html"]  # a menu item still waiting is no address the crawl lacks
-
-
-def test_verify_reads_every_answer_back_and_names_a_position_that_holds_another_address(tmp_path):
-    w = make_world(tmp_path)
-    w.seed_and_run()
-    f = Frontier(w.root / "frontier.db")
-    try:
-        assert monitor.warc_readback(w.root, f)[0] == []
-        about, news = f.row(ABOUT), f.row(NEWS)
-        f.x("UPDATE url SET warc=?, warc_offset=?, sha256=? WHERE id=?",
-            (news["warc"], news["warc_offset"], news["sha256"], about["id"]))  # its row points at news.html's record
-        problems, n = monitor.warc_readback(w.root, f)
-    finally:
-        f.close()
-    assert n > 0 and problems == [f"这个位置存的是别的网址：{ABOUT}（存档里是 {NEWS}）"]
 
 
 def test_the_viewer_answers_only_under_this_machines_own_names_and_builds_its_index_in_the_background(tmp_path):
@@ -669,48 +507,3 @@ def test_the_viewer_answers_only_under_this_machines_own_names_and_builds_its_in
         server.server_close()
 
 
-def test_a_site_is_reconciled_while_another_is_still_being_crawled(tmp_path, monkeypatch):
-    import time as real_time
-
-    slow_site = "v.nknu.edu.tw"
-    two = plan(site(SITE, imp="全校重要", name="测试单位", home=HOME),
-               site(slow_site, imp="本系重要", name="慢的单位", home=f"https://{slow_site}/"))
-    fast = School(pages())
-    slow_pages = {f"https://{slow_site}/": page("首頁", "".join(f"<p><a href='/n{i}.html'>第{i}則</a></p>" for i in range(6))
-                                                + f"<p>{BODY}</p>")}
-    slow_pages |= {f"https://{slow_site}/n{i}.html": page(f"第{i}則", f"<p>{BODY}</p>") for i in range(6)}
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        if request.url.host == slow_site:
-            real_time.sleep(0.15)  # this server is slow in real time: the other site finishes first
-            body = slow_pages.get(str(request.url))
-            return httpx.Response(200 if body else 404, headers=School.HTML,
-                                  content=(body or "<html><body>not found</body></html>").encode())
-        return fast(request)
-
-    seen = []
-
-    def record(fr, root, site_, **kw):
-        seen.append((site_, reconcile.site_finished(fr, slow_site)))
-        return real_site_done(fr, root, site_, **kw)
-
-    real_site_done = reconcile.site_done
-    monkeypatch.setattr(reconcile, "site_done", record)
-    monkeypatch.setattr(mod, "SITE_LOOK_S", 0.0)
-    clock = Clock()
-
-    def client(warc):
-        return mod.archive_client(warc, transport=httpx.MockTransport(answer), clock=clock, sleep=clock.sleep)
-
-    root = tmp_path / "archive"
-    c = mod.Crawler(root, plan=two, clock=clock, sleep=clock.sleep, resolver=_resolver, client_factory=client,
-                    netcheck=lambda: True, disk_free=lambda p: 10**12, campus_url=None,
-                    reconcile_sources=Sources(cc_dir=None, old=None))
-    seeds.seed_round1(c, old=None, facts_db=None, cc_dir=None, probe=None, jstest=None)
-    try:
-        c.run(poll_s=0.01)
-    finally:
-        c.frontier.close()
-    assert c.end_reason == "finished"
-    assert seen[0] == (SITE, False)  # the fast site, while the slow one still had pages to fetch
-    assert sorted(s for s, _ in seen) == sorted([SITE, slow_site])

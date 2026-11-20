@@ -2,9 +2,9 @@
 gives the same answer fed in pieces or at once, and the monitor's; the request log is read incrementally and adds up
 the same; the dashboard never writes (the file's sha256 stays, a write fails), never makes the crawler wait for a
 lock, and refreshes a big archive in under 300 ms; a site with no resource rows is 没检查 on its page, never green;
-times are Taipei's; a site's page never lists an incomplete page as 抓到了 or 规则不抓; 纪录齐了、还没对账 and 爬完 are
-told apart; the routes answer on this machine only. The cards' numbers: test_dashboard_1104. All on synthetic
-archives, no network."""
+times are Taipei's; a site's page never lists an incomplete page as 抓到了 or 规则不抓; a site that is done and has
+its resource rows is 爬完, green; the routes answer on this machine only. The cards' numbers: test_dashboard_1104.
+All on synthetic archives, no network."""
 
 from __future__ import annotations
 
@@ -136,7 +136,6 @@ def statuses(**by_site):
 
 def dash(root: Path, **kw) -> progress.Dashboard:
     kw.setdefault("site_status", statuses(**{ACA: "error", AFFAIR: "done", DEPT: "done"}))
-    kw.setdefault("checks", lambda conn, now, cheap: [{"no": 1, "title": "首页", "result": "pass", "detail": ""}])
     return progress.Dashboard(root, clock=lambda: NOW, background=False, cache_s=0, **kw)
 
 
@@ -419,13 +418,15 @@ def test_without_site_status_wired_the_sites_say_so_and_are_not_green(arch):
     assert "错 …" in visible(home_html(snap))
 
 
-def test_records_complete_not_reconciled_is_yellow_and_done_is_green(arch):
+def test_a_done_site_with_its_resource_rows_is_green(arch):
     f, ids, root = arch
+    assert site_states(root)[DEPT]["state"] == "unchecked"  # done, but no resource row yet
     res(f, ids["dept_home"], "img:1", "img", ids["aff_img"])  # now it has a resource row
-    s = site_states(root, site_status=statuses(**{ACA: "error", AFFAIR: "unreconciled", DEPT: "done"}))
-    assert s[AFFAIR]["state"] == "unreconciled" and s[DEPT]["state"] == "done"
-    assert "<span class='c-yellow'>⚠ 纪录齐了，还没对账</span>" in progress_site_html(s[AFFAIR])
-    assert "<span class='c-green'>✓ 爬完</span>" in progress_site_html(s[DEPT])
+    s = site_states(root, site_status=statuses(**{ACA: "error", AFFAIR: "done", DEPT: "done"}))
+    assert s[AFFAIR]["state"] == "done" and s[DEPT]["state"] == "done"
+    for site in (AFFAIR, DEPT):  # no state between 还在抓 and 爬完 any more (no reconciliation since 11-19)
+        assert "<span class='c-green'>✓ 爬完</span>" in progress_site_html(s[site])
+    assert "对账" not in visible(progress_site_html(s[AFFAIR]))
 
 
 def test_times_are_taipeis():
@@ -434,7 +435,6 @@ def test_times_are_taipeis():
     assert progress.fmt_clock(ts(2026, 10, 26, 18, 40), now) == "明天 02:40"
     assert progress.fmt_clock(ts(2026, 10, 25, 15, 5), now) == "昨天 23:05"
     assert progress.fmt_clock(ts(2026, 10, 29, 1, 0), now) == "10-29 09:00"
-    assert progress.fmt_time(ts(2026, 10, 26, 8, 42, )) == "16:42:00"
 
 
 def test_a_waiting_run_says_from_when_it_may_run_again_in_taipei_time(arch):
@@ -611,8 +611,7 @@ def test_the_routes_answer_and_the_dashboard_comes_first(served):
 def test_the_dashboard_keeps_its_numbers_for_a_while(arch):
     _f, _ids, root = arch
     clock = [NOW]
-    d = progress.Dashboard(root, clock=lambda: clock[0], background=False, site_status=statuses(),
-                           checks=lambda conn, now, cheap: [])
+    d = progress.Dashboard(root, clock=lambda: clock[0], background=False, site_status=statuses())
     a = d.main()
     clock[0] += progress.CACHE_S / 2
     assert d.main() is a
@@ -620,19 +619,8 @@ def test_the_dashboard_keeps_its_numbers_for_a_while(arch):
     assert d.main() is not a
 
 
-def test_the_acceptance_checks_are_worked_out_when_their_page_is_opened(arch):
-    _f, _ids, root = arch
-    d = dash(root)
-    d.refresh_slow()
-    got = d.checks_page()
-    assert got["checks"] == [{"no": 1, "title": "首页", "result": "pass", "detail": ""}]
-    assert got["round2"]["total"] == 1 and got["missing_found"] == []
-    assert "checks" not in d.slow  # never in the background any more (design 2026-11-04 §2.8)
-
-
 def test_a_missing_or_old_archive_is_said_not_raised(tmp_path):
-    d = progress.Dashboard(tmp_path, clock=lambda: NOW, background=False, site_status=statuses(),
-                           checks=lambda conn, now, cheap: [])
+    d = progress.Dashboard(tmp_path, clock=lambda: NOW, background=False, site_status=statuses())
     assert "找不到待抓清单" in d.main()["problem"]
     old = sqlite3.connect(tmp_path / "frontier.db")
     old.execute("CREATE TABLE url(id INTEGER PRIMARY KEY, url TEXT)")

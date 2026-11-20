@@ -136,7 +136,7 @@ def test_an_export_answer_that_is_no_file_is_never_ok(tmp_path, answer, reason):
     f = crawler.frontier
     for r in by_target(f, BTN0):
         assert (r["state"], r["reason"], r["result"]) == ("done", reason, "not_file"), dict(r)
-    assert outcome.user_bucket("not_file") == "failed" and outcome.RESULT_COLOR["not_file"] == "red"
+    assert outcome.user_bucket("not_file") == "failed"
     level = f.q("SELECT level FROM page_completeness WHERE id=(SELECT id FROM url WHERE url=?)", (CLV2,))
     assert not level or level[0][0] not in ("complete", "complete_school")
 
@@ -455,15 +455,3 @@ def test_an_export_get_that_fails_starts_the_chain_again_exactly_once(tmp_path, 
     assert f.row(CLV2)["state"] == "done"  # no third walk
     # each press went out once per walk: the button of the first walk and the two of the second
     assert len(posts(net)) == 3
-
-
-def test_verify_says_why_a_download_is_no_file_and_how_to_press_it_again(tmp_path):
-    from nknu.archive import monitor
-
-    crawler, net, _clock = clv2(tmp_path, snap(EXPORT, body=b"", headers=PDF_NAMED))
-    work(crawler, net, SSO_Q)
-    six = next(c for c in monitor.checks(crawler.frontier) if c.no == "6")
-    lines = [x for x in six.lines if BTN0 in x]
-    assert six.status == monitor.FAIL and lines
-    assert "not_file:empty_body" in lines[0] and "nknu archive retry download" in lines[0]
-    assert "应该是档案却回来不是档案 2" in six.detail

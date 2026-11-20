@@ -443,7 +443,9 @@ def test_the_crawlers_own_measure_finds_the_area_and_calls_no_english_notice_emp
 
 def test_the_page_version_changes_by_these_two_areas_alone():
     pagetext = pytest.importorskip("nknu.totext.pagetext")
+    # the JS sites' profile (11-18, test_js_vendor_area_1118) and the course query's (11-18, test_schedules_1118) came
+    # later: left out of the version of 11-15
     before = tuple(dataclasses.replace(p, content_css=None) if p is profiles.ELEC or p is profiles.DATAOPEN else p
-                   for p in profiles.PROFILES)
+                   for p in profiles.PROFILES if p is not profiles.JS_VENDOR and p is not profiles.STU)
     assert pagetext.page_version(before) == OLD_PAGE_VERSION
     assert pagetext.page_version(profiles.PROFILES) == pagetext.PAGE_VERSION != OLD_PAGE_VERSION

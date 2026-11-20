@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from nknu.archive import outcome, round1, scope
-from nknu.archive.monitor import _landed_nowhere, scope_audit
+from nknu.archive.monitor import _nowhere, landing, scope_audit
 from tests.archive.plans import plan, site
 from tests.archive.test_archive import snap
 from tests.archive.test_crawler_round1 import (
@@ -115,7 +115,8 @@ def test_a_short_link_to_an_error_page_lands_on_a_broken_link(tmp_path):
     settle(crawler, net, [QC, "ip:reurl"])
     short = rows(crawler)["https://reurl.cc/AbCd"]
     assert err not in rows(crawler)
-    assert _landed_nowhere(crawler.frontier, short["id"]) == "bad_link"
+    # judged by itself, the short link's redirect lands on no row: its link verdict says the school's broken link
+    assert _nowhere(crawler.frontier, *landing(crawler.frontier, short["id"])) == "bad_link"
 
 
 # ---------------------------------------------------------------- request.scope: a part outside the list's paths
@@ -216,25 +217,6 @@ def test_a_frame_of_its_sites_host_outside_the_lists_paths_is_still_the_pages_re
 
 
 # ---------------------------------------------------------------- an error page's address: never 规则不抓 (清单②)
-
-
-def test_a_menu_item_whose_address_is_an_error_page_is_the_schools_broken_link_never_a_rule(tmp_path):
-    """Review 10-26: R1 read every out: verdict as 规则不抓, out:error_page too, so a menu item that is the school's
-    broken link passed unseen. It is bad_link: listed for a person (⚠ 要看), never a rule, never a missed address."""
-    from nknu.archive import reconcile
-    from nknu.archive.frontier import Frontier
-
-    err = "https://c.nknu.edu.tw/aca/filenotfound.htm?aspxerrorpath=/aca/x.aspx"
-    fr = Frontier(tmp_path / "frontier.db")
-    try:
-        fr.link(1, err, "選單", outcome.ERROR_OUT)
-        assert reconcile._menu_status(fr, err) == "bad_link"
-        check, found = reconcile._r1(fr, {err: HOME})
-        assert check.status == reconcile.WARN and check.counts["bad_link"] == 1 and check.counts["rule"] == 0
-        assert [(i["target"], i["status"]) for i in check.items] == [(err, "bad_link")]
-        assert found == []  # the crawler missed nothing: the school's link is broken
-    finally:
-        fr.close()
 
 
 def test_a_resource_with_no_row_whose_address_is_an_error_page_is_a_broken_link_not_a_rule():

@@ -98,8 +98,12 @@ def url_ok(row, jp, auto: bool = False) -> bool:
 
 
 def url_rule(row) -> bool:
-    """Left out by a scope rule (§4.5): skipped for a rule's reason, and nothing else."""
+    """Left out by a scope rule (§4.5): skipped for a rule's reason, and nothing else; or the one page or file off
+    campus a school page links, kept for round two until the owner's 11-17 「全部不抓」 (later, round2:offsite or
+    round2:offsite_file), and no other later row."""
     reason = row["reason"] or ""
+    if row["state"] == "later":
+        return reason in ("round2:offsite", "round2:offsite_file")
     return (row["state"] == "skipped" and reason not in ("too_large", "moved_scheme") and not reason.startswith("cap:")
             and reason not in ("site_cap", "file_cap", "variant_cap", "depth")
             and (reason.startswith(("out:", "decor:", "album:")) or reason == "media_type"))

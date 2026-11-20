@@ -172,10 +172,13 @@ def make_archive(root: Path) -> Arch:
     a.ids["broken"] = broken
     _res(f, d1, BASE + "uploadfile/broken.pdf", "file", res_id=broken, text="附件二")
     # an off-campus file: round two's
-    later = _add(f, url="https://www.edu.tw/files/plan.pdf", host="www.edu.tw", site="www.edu.tw", kind="file",
-                 kind0="file", tier=4, state="later", reason="round2:offsite_file", status=None, fetched_at=None)
+    # a file of another campus site, left for round two (11-17: the one file off campus a school page links,
+    # round2:offsite_file, is the owner's 「全部不抓」 now and reads 规则不抓: test_offsite_declined_1117)
+    later = _add(f, url="https://unit.nknu.edu.tw/files/plan.pdf", host="unit.nknu.edu.tw", site="unit.nknu.edu.tw",
+                 kind="file", kind0="file", tier=2, state="later", reason="round2:other_site", status=None,
+                 fetched_at=None)
     a.ids["later"] = later
-    _res(f, d1, "https://www.edu.tw/files/plan.pdf", "file", need="round2", res_id=later, text="教育部計畫")
+    _res(f, d1, "https://unit.nknu.edu.tw/files/plan.pdf", "file", need="round2", res_id=later, text="教育部計畫")
     # a Drive file: its metadata (files.get) and its content (alt=media), read through the API
     meta = file("drive_meta", f"https://www.googleapis.com/drive/v3/files/{DRIVE_ID}?fields=id", DRIVE_META,
                 "application/json", kind="drive", sniff="json", host="www.googleapis.com", site="www.googleapis.com")
@@ -321,13 +324,13 @@ def test_what_was_not_got_is_listed_with_its_reason_in_the_manifest_and_in_missi
     assert broken["本地档案"] == "" and broken["结果"] == outcome.RESULT_LABEL["failed"]
     assert broken["分类"] == "连接失败" and broken["链接文字"] == "附件二" and broken["标题"] == "broken.pdf"
     assert broken["链到它的网页"] == BASE + "newsview.aspx?nid=1"
-    later = rows["https://www.edu.tw/files/plan.pdf"]
+    later = rows["https://unit.nknu.edu.tw/files/plan.pdf"]
     assert later["本地档案"] == "" and later["结果"] == outcome.RESULT_LABEL["later"] and later["分类"] == "下一轮"
     banner = rows[BASE + "images/banner.jpg"]
     assert banner["类型"] == "图片" and banner["本地档案"] == "" and banner["分类"] == "规则不抓"
     assert banner["结果"] == outcome.RESULT_LABEL["rule"] and "版面" in banner["原因"]
-    assert broken["原因"] == "连不上这台服务器" and later["原因"] == "校外的档案"
-    assert set(missing) == {BASE + "uploadfile/broken.pdf", "https://www.edu.tw/files/plan.pdf",
+    assert broken["原因"] == "连不上这台服务器" and later["原因"] == "其他网站"
+    assert set(missing) == {BASE + "uploadfile/broken.pdf", "https://unit.nknu.edu.tw/files/plan.pdf",
                             BASE + "images/banner.jpg"}
     assert all(r["本地档案"] == "" for r in missing.values())
     # 连接失败 first, 规则不抓 last

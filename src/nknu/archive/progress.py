@@ -25,7 +25,6 @@ What this module takes from others (imported where it is used, never copied):
 - monitor.facts(conn, pages) -> monitor.Facts and monitor.site_status(conn, now, pages=…, fx=…) -> {site: SiteStatus}:
   each round-1 site's state (the site page: _norm_status) and its problem list (issues), to which problems() adds the
   four rules of design §2.4 the monitor lacks; monitor.STALL_S, monitor.BROWSER_PURPOSES and monitor.tone;
-- monitor.checks(conn, now, cheap=True, …) for the acceptance page (checks_view), worked out when it is opened;
 - crawler.lock_holder (the pid in run.lock: a run's only when that run wrote the last run_start, _run_state), deny_dir,
   CONN_GIVE_UP and MAX_ATTEMPTS; google_api's block streak (block_state, block_long).
 """
@@ -50,7 +49,7 @@ from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 from nknu.archive import google_api, outcome
-from nknu.archive.frontier import ALL_QUEUES, Frontier, OutdatedFrontier, _missing, net_key, network_of
+from nknu.archive.frontier import ALL_QUEUES, OutdatedFrontier, _missing, net_key, network_of
 
 TZ = ZoneInfo("Asia/Taipei")
 REFRESH_S = 10  # design §2.4: progress, busy time and states every 10 seconds (the page asks this often)
@@ -82,17 +81,16 @@ STATE_SHOW = {
     "error": ("✗", "出错", "red"),
     "look": ("⚠", "要看", "yellow"),
     "crawling": ("", "还在抓", "none"),
-    "unreconciled": ("⚠", "纪录齐了，还没对账", "yellow"),
     "done": ("✓", "爬完", "green"),
     "unchecked": ("⚠", "没检查", "yellow"),
 }
 # crawling says only that rows wait: while no run of the site goes, the site page words it so (site_run; review 11-04)
 UNFINISHED_SHOW = ("", "没抓完", "none")
-_STATE_WORDS = {"出错": "error", "要看": "look", "还在抓": "crawling", "纪录齐了，还没对账": "unreconciled",
-                "爬完": "done", "没检查": "unchecked", "red": "error", "green": "done"}
+_STATE_WORDS = {"出错": "error", "要看": "look", "还在抓": "crawling", "爬完": "done", "没检查": "unchecked",
+                "red": "error", "green": "done"}
 # the order one site's pages are listed in (§14.2: 连接失败 → 要人看 → … → 完整), by page_completeness.label
 PAGE_ORDER = ("failed", "thin", "review", "list", "list_unchecked", "miss_file", "miss_img", "miss_other", "unchecked",
-              "js", "click", "round2_img", "round2", "retry", "todo", "complete_school", "complete")
+              "js", "click", "round2_img", "round2", "retry", "todo", "rule_offsite", "complete_school", "complete")
 LABEL_ZH = dict(outcome.LABEL_ORDER)
 # the order of the other addresses (§14.2: the ten categories, 抓到了 last)
 BUCKET_ORDER = ("failed", "review", "pending_check", "next_round", "queued", "login", "gone", outcome.SCHOOL_SIDE,
@@ -106,24 +104,21 @@ BUCKET_COLOR = {"failed": "red", "review": "red", "pending_check": "yellow", "ne
 LABEL_COLOR = {"todo": "none", "retry": "yellow", "failed": "red", "thin": "red", "review": "red", "js": "yellow",
                "list": "red", "list_unchecked": "yellow", "miss_file": "yellow", "miss_img": "yellow",
                "miss_other": "yellow", "click": "yellow", "round2_img": "yellow", "round2": "yellow",
-               "unchecked": "yellow",
+               "unchecked": "yellow", "rule_offsite": "none",  # a page sent off campus, not fetched (outcome.OFFSITE_LANDED)
                "complete_school": "green", "complete": "green"}
 # round-two rows by why (url.reason of a later row): what the batch is, in words
 ROUND2_ZH = {
     "round2:other_site": "其他网站",
     "round2:js_site": "整站要 JavaScript 的网站",
     "round2:offsite_unit": "校外的本校单位网站（附表一）",
-    "round2:offsite": "校外一层",
-    "round2:offsite_file": "校外的档案",
+    "round2:offsite": "校外一层（用户 11-17 决定不抓）",
+    "round2:offsite_file": "校外的档案（用户 11-17 决定不抓）",
     "round2:jscheck_redirect": "浏览器停在别的网址",
     "round2:google_published": "发布到网络的 Google 文件",
     "round2:click": "点了才载入的内容",
-    # design §23 B3: no url row of its own (page_res.why), counted by picture (_round2)
+    # design §23 B3: no url row of its own (page_res.why)
     "round2:google_sites_image": "协作平台正文图片",
 }
-# what round two holds that has no url row: a page's resource by its page_res.why, counted once per page and picture
-# (count DISTINCT res_key: a picture's key names its page, design §23 B2)
-ROUND2_RES = ("round2:google_sites_image",)
 RUN_END_ZH = {
     "finished": "抓完了",
     "waiting": "先停下等重试",
@@ -199,6 +194,8 @@ PLAIN = {
     "too_large": "档案太大，没抓：归「要人看」，人决定要不要抓",
     "decode": "编码有问题：原样存档，归「要人看」",
     "media_type": "影音档：照规则不抓",
+    "skip_path": "这个网站的名单写明不抓的网址（例：部落格的标签列表、老师的著作全文）：照规则不抓",
+    "cap_image": "这个网站超过图片上限的图片，名单写明不抓：照规则不抓",
     "host_cooldown": "同一个主机名连续出错：这个主机名冷却 15 分钟",
     "server_rest": "服务器出错或说太忙：整台休息 15 分钟",
     "server_down": ("服务器连续 8 次连不上（约 2 小时）：从没回过话的，它的网址不再等，记成连接失败（用户 11-08 定的），"
@@ -353,27 +350,6 @@ def fmt_clock(ts: float | None, now: float | None = None) -> str:
     return f"{day} {at:%H:%M}"
 
 
-def fmt_time(ts: float) -> str:
-    """The clock time only, to the second (上次更新 16:42:10)."""
-    return f"{datetime.fromtimestamp(ts, TZ):%H:%M:%S}"
-
-
-def fmt_dur(seconds: float | None) -> str:
-    """A length of time in words: 3 秒, 12 分钟, 7 小时 30 分, 2 天 4 小时."""
-    if seconds is None:
-        return "—"
-    s = max(0, round(seconds))
-    if s < 60:
-        return f"{s} 秒"
-    if s < 3600:
-        return f"{s // 60} 分钟"
-    if s < 86400:
-        h, m = divmod(s // 60, 60)
-        return f"{h} 小时" + (f" {m} 分" if m else "")
-    d, h = divmod(s // 3600, 24)
-    return f"{d} 天" + (f" {h} 小时" if h else "")
-
-
 def fmt_hms(seconds: float | None) -> str:
     """A length of time as hours:minutes:seconds (the owner 11-04: 「用时几分几秒用 2:47:18 这种时间来表示就够了」):
     0:00:05, 2:47:18, past a day 26:05:09; — for None."""
@@ -431,14 +407,6 @@ def connect(db: Path) -> sqlite3.Connection:
         conn.close()
         raise
     return conn
-
-
-def as_frontier(conn: sqlite3.Connection) -> Frontier:
-    """A Frontier over this read-only connection, for the monitor's readers (stalled_queues, paused_until): no table,
-    view or index is made (Frontier.__init__ is not run)."""
-    f = Frontier.__new__(Frontier)
-    f.path, f.lock, f.conn = None, threading.RLock(), conn
-    return f
 
 
 # ---------------------------------------------------------------- the request log, read incrementally (§2.3, §2.6)
@@ -1100,7 +1068,7 @@ def card_state(card: Card, nums: dict[str, dict], work: dict[str, dict], env: di
 
 # ---------------------------------------------------------------- periodic updates (the top line's last mark)
 
-# the nightly script (research/crawler_lab_2026-11-04/nightly_update.sh) and update.py's keys and status file: pinned
+# the nightly script (deploy/lab-crawler/lab/nightly_update.sh) and update.py's keys and status file: pinned
 # equal by tests/archive/test_update_nightfix_1116.py (progress imports nothing of update.py, which pulls the export in)
 UPDATE_SITES_KEY = "update:sites"
 UPDATE_NIGHT_KEY = "update:night_started"
@@ -1152,16 +1120,31 @@ def update_state(conn: sqlite3.Connection, root: Path, now: float) -> dict | Non
     export = status.get("export")
     if not isinstance(export, dict):  # the export batch's review, F8: green only once the night's export is written
         return {"color": "none", "words": "定期更新在跑", "tip": f"{when} 开始，变动清单算好了，还在导出"}
-    failed = export.get("failed") or []
-    if failed:
-        return {"color": "red", "words": f"定期更新导出失败 {len(failed)} 站",
-                "tip": "这几站这一晚没导出，下一晚再导（存档的 reports/export-owed.json）：" + "、".join(failed[:12])}
+    mark = export_mark(export)
+    if mark is not None:
+        return mark
     counts = status.get("counts") or {}
     said = "、".join(f"{UPDATE_SAY.get(k, k)} {n:,}" for k, n in counts.items() if n)
     changed = status.get("sites_changed") or []
     return {"color": "green", "words": f"定期更新 {when}",
             "tip": f"上一晚 {when} 开始：{said or '什么都没看'}；有变动的网站 {len(changed)} 个，"
                    f"导了 {len(export.get('exported') or [])} 个"}
+
+
+def export_mark(export: dict) -> dict | None:
+    """The night's export when a site was not exported (export batch T7): held first (11-17 爬虫judge: a copy of the
+    10-24 archive the site's current export filled a row from went; its reason shown), then failed; None when all went
+    out."""
+    held = export.get("held") or {}
+    if held:
+        return {"color": "red", "words": f"定期更新导出拦下 {len(held)} 站",
+                "tip": "这几站这一晚的导出没换上（现用的还是上一份），下一晚再导；核对过要用就加 ALLOW_COPY_DROP=1 重导："
+                       + "；".join(f"{k}（{v}）" for k, v in list(held.items())[:12])}
+    failed = export.get("failed") or []
+    if failed:
+        return {"color": "red", "words": f"定期更新导出失败 {len(failed)} 站",
+                "tip": "这几站这一晚没导出，下一晚再导（存档的 reports/export-owed.json）：" + "、".join(failed[:12])}
+    return None
 
 
 # ---------------------------------------------------------------- the run (§1.1 top line, §2.5 rule 2)
@@ -1215,7 +1198,7 @@ def _run_words(run: dict, now: float) -> dict:
     got = _run_said(run, now)
     if run.get("other") is not None:
         last = "上次 run：" if run["state"] != "never" else ""
-        got["tip"] = (f"run.lock 被 pid {run['other']} 拿着，不是爬虫的 run：浏览器检查、对账、seed、retry 也拿这把锁，"
+        got["tip"] = (f"run.lock 被 pid {run['other']} 拿着，不是爬虫的 run：浏览器检查、seed、retry 也拿这把锁，"
                       f"也可能是爬虫正要开跑、开跑纪录还没写；它放开以前爬虫开不了。{last}{got['tip']}")
     return got
 
@@ -1429,7 +1412,7 @@ def tier_of(p: dict) -> int:
 
 def _norm_status(raw: Any) -> tuple[str, list[str], dict]:
     """monitor.site_status's answer for one site, in the shapes it may take: a state code (error, look, crawling,
-    unreconciled, done) or its words (出错 …), or a mapping with state (or status, code, level) and why (or reasons).
+    done) or its words (出错 …), or a mapping with state (or status, code, level) and why (or reasons).
     Anything else is unchecked: never a colour this function made up."""
     extra: dict = {}
     if isinstance(raw, str):
@@ -1439,8 +1422,7 @@ def _norm_status(raw: Any) -> tuple[str, list[str], dict]:
         state = next((d[k] for k in ("state", "status", "code", "level") if d.get(k)), "")
         why = d.get("why") or d.get("reasons") or []
         why = [why] if isinstance(why, str) else list(why)
-        extra = {k: d.get(k) for k in ("cover_cc", "cover_old", "cc_only", "cover_line", "warnings")
-                 if d.get(k) is not None}
+        extra = {k: d.get(k) for k in ("warnings",) if d.get(k) is not None}
     else:
         state = getattr(raw, "state", "") or ""
         why = list(getattr(raw, "why", []) or [])
@@ -1468,7 +1450,7 @@ def _site_state(site: str, slow: dict | None, statuses: dict, have_res: set, lev
     fetched = sum(n for lv, n in levels.items() if lv != "waiting")
     if fetched and site not in have_res:
         note = "这个网站的网页都还没有资源纪录（资源层没资料）"
-        if state in ("done", "unreconciled"):  # what says the records are complete: never without them
+        if state == "done":  # what says the records are complete: never without them
             return {"state": "unchecked", "why": list(dict.fromkeys([note, *why])), **extra}
         why = list(dict.fromkeys([*why, note]))
     return {"state": state, "why": why, **extra}
@@ -1959,119 +1941,6 @@ def write_problem_log(root: Path, now: float | None = None) -> list[Path]:
     return write_logs(root, snap, slow)
 
 
-# ---------------------------------------------------------------- the acceptance page (/progress/checks)
-
-def checks_view(conn: sqlite3.Connection, now: float, slow: dict | None, *, checks=None,
-                root: Path | None = None) -> dict:
-    """The acceptance checks, worked out when the page is opened (design §4: kept as they were until P49 settles what
-    爬完 is): the reconciliations and what they found the crawl has no row for, the round-two list, and the cheap
-    checks (monitor.checks, given the background snapshot's pages, states and facts when there is one)."""
-    out: dict[str, Any] = {"at": now, "slow_at": (slow or {}).get("at")}
-    conn.execute("BEGIN")
-    try:
-        out["reconcile"], out["missing_found"] = _reconciled(conn)
-        out["round2"] = _round2(conn)
-    finally:
-        conn.execute("COMMIT")
-    if checks is None:
-        out["checks"], out["checks_error"] = None, "monitor.checks 还没有"
-        return out
-    good = slow is not None and not slow.get("pages_error")
-    conn.execute("BEGIN")
-    try:
-        cs = _call(checks, conn, now, cheap=True, pages=slow["pages"] if good else None,
-                   statuses=(slow or {}).get("statuses") or None, fx=(slow or {}).get("fx") if good else None,
-                   root=root)
-        out["checks"] = [_norm_check(c) for c in cs]
-    except Exception as exc:  # noqa: BLE001 - shown as 没检查
-        out["checks"], out["checks_error"] = None, f"{type(exc).__name__}: {exc}"
-    finally:
-        conn.execute("COMMIT")
-    return out
-
-
-def _norm_check(c: Any) -> dict:
-    """One of monitor.checks' items (monitor.Check: no, title, status, detail, lines), or a mapping of the same."""
-    get = (lambda k: c.get(k)) if isinstance(c, dict) else (lambda k: getattr(c, k, None))
-    result = get("result") or get("status") or "skip"
-    lines = [str(x) for x in (get("lines") or [])]
-    detail = "；".join(x for x in [get("detail") or "", *lines[:5]] if x) + ("……" if len(lines) > 5 else "")
-    return {"no": get("no"), "title": get("title") or "", "result": str(result), "detail": detail}
-
-
-# the checks whose items are addresses the crawl has no row for (§18.2b: R1 a menu item, R3a Common Crawl's, R4a the
-# old archive's), as reconcile.py writes them in reconcile_site.checks: {"status", counts…, "items": [{"target" or
-# "url", "status" (R1: missing or waiting)}], "more": the items past the ones kept}
-FOUND_CHECKS = ("R1", "R3a", "R4a")
-
-
-def _status_of(v) -> str | None:
-    """A check's result in reconcile_site.checks: "status" (reconcile.py) or "result"."""
-    if isinstance(v, dict):
-        v = v.get("status") or v.get("result")
-    return v.lower() if isinstance(v, str) else None
-
-
-def _found(v: dict) -> tuple[int, list[str]]:
-    """The addresses one of FOUND_CHECKS found the crawl has no row for, and how many there are in all (the items
-    kept are the first reconcile.ITEMS_KEPT; its count "missing" says the rest)."""
-    if isinstance(v.get("missing"), list):  # a plain list of addresses
-        urls = [str(u) for u in v["missing"]]
-        return len(urls), urls
-    urls = [str(i.get("target") or i.get("url")) for i in v.get("items") or []
-            if isinstance(i, dict) and (i.get("target") or i.get("url")) and i.get("status", "missing") == "missing"]
-    n = v.get("missing") if isinstance(v.get("missing"), int) else len(urls) + int(v.get("more") or 0)
-    return max(n, len(urls)), urls
-
-
-def _reconciled(conn: sqlite3.Connection) -> tuple[dict, list[dict]]:
-    """Each site's last reconciliation (reconcile_site) and the addresses it found the crawl has no result for (R1,
-    R3a, R4a: FOUND_CHECKS), which 漏抓检查 lists under 要人看 (§10.2.1, §18.2b)."""
-    from nknu.archive import monitor
-
-    rec, missing = {}, []
-    for r in conn.execute("SELECT site, batch, at, checks, cover_cc, cover_old, gates_ok FROM reconcile_site"):
-        try:
-            checks = json.loads(r["checks"] or "{}")
-        except ValueError:
-            checks = {}
-        if not isinstance(checks, dict):
-            checks = {}
-        # an older reconciliation's R5 (taken out 10-26) is read past, as monitor.reconciled does
-        failed = sorted(k for k, v in checks.items() if _status_of(v) == "fail" and k not in monitor.DROPPED_GATES)
-        rec[r["site"]] = {"batch": r["batch"], "at": _ts(r["at"]), "gates_ok": r["gates_ok"],
-                          "cover_cc": r["cover_cc"], "cover_old": r["cover_old"], "failed": failed}
-        for item, v in checks.items():
-            if item in FOUND_CHECKS and isinstance(v, dict):
-                n, urls = _found(v)
-                if n:
-                    missing.append({"site": r["site"], "item": item, "n": n, "urls": urls[:10]})
-    return rec, missing
-
-
-def _round2(conn: sqlite3.Connection) -> dict:
-    """What round two holds (§14.2): rows by why, by the seed list they came from, and the top off-campus domains. A
-    resource that has no url row of its own (ROUND2_RES: Google Sites' runtime pictures, design §23 B3) is counted by
-    its page_res rows, once per picture of a page; its rows, when it has any, are not counted again."""
-    marks = ",".join("?" * len(ROUND2_RES))
-    rows = [dict(r) for r in conn.execute(f"""SELECT reason, count(*) n, count(DISTINCT owner_site) sites FROM url
-                                              WHERE state = 'later' AND coalesce(reason, '') NOT IN ({marks})
-                                              GROUP BY reason""", ROUND2_RES)]
-    rows += [dict(r) for r in conn.execute(f"""SELECT pr.why AS reason, count(DISTINCT pr.res_key) n,
-                                                      count(DISTINCT p.owner_site) sites
-                                               FROM page_res pr JOIN url p ON p.id = pr.page_id
-                                               WHERE pr.need = 'round2' AND pr.why IN ({marks}) GROUP BY pr.why""",
-                                           ROUND2_RES) if r["n"]]
-    rows.sort(key=lambda r: -r["n"])
-    by_why = [{"why": r["reason"] or "", "zh": ROUND2_ZH.get(r["reason"] or "", r["reason"] or "（没写原因）"),
-               "n": r["n"], "sites": r["sites"]} for r in rows]
-    by_source = [dict(r) for r in conn.execute("""SELECT s.source, count(*) n FROM url u
-                                                   JOIN seed_src s ON s.url = u.url
-                                                   WHERE u.state = 'later' GROUP BY s.source ORDER BY n DESC""")]
-    domains = [dict(r) for r in conn.execute("SELECT domain, n FROM offsite ORDER BY n DESC LIMIT 20")]
-    return {"by_why": by_why, "by_source": by_source, "domains": domains, "total": sum(x["n"] for x in by_why)}
-
-
 # ---------------------------------------------------------------- one site (§14.2: 点进去看明细)
 
 def _no_row_result(need: str, why: str | None, res_id: int | None = None, action_id: int | None = None) -> str:
@@ -2149,12 +2018,6 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
                                FROM action_result a LEFT JOIN url u ON u.id = a.list_id
                                WHERE coalesce(u.owner_site, a.site) = ? AND a.state <> 'superseded'""",
                             (site,)).fetchall()
-        rec = conn.execute("SELECT batch, at, checks, cover_cc, gates_ok FROM reconcile_site WHERE site=?",
-                           (site,)).fetchone()
-        from nknu.archive import monitor  # the monitor's reading of it (fresh or stale, §10.5), not one of our own
-
-        fr = monitor._frontier(conn)
-        rec_now = monitor.reconciled(fr, monitor.Rounds(fr)).get(site) if rec is not None else None
     finally:
         conn.execute("COMMIT")
     pages = []
@@ -2213,16 +2076,6 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
             "rows": rows, "bucket_counts": [(b, BUCKET_ZH[b], bucket_counts[b]) for b in BUCKET_ORDER
                                             if bucket_counts[b]],
             "bucket": bucket, "label": label, "slow_at": (slow or {}).get("at"),
-            "reconcile": None if rec is None else {
-                "batch": rec["batch"], "at": _ts(rec["at"]), "cover_cc": rec["cover_cc"],
-                # the monitor's reading (an older R5 read past, menu links a person marked since: §10.2.1, §18.2b)
-                "gates_ok": rec_now.passed if rec_now is not None else rec["gates_ok"],
-                "menu": rec_now.menu_words() if rec_now is not None else "",
-                # §10.5: stale once a run, a rejudge or a person's verdict covered the site after it (review 10-26)
-                "fresh": rec_now.fresh if rec_now is not None else None,
-                "stale": rec_now.stale_words() if rec_now is not None else "",
-                "cover_lines": rec_now.cover_lines() if rec_now is not None else [],
-                "blind": rec_now.blind_words() if rec_now is not None else ""},
             "at": now}
 
 
@@ -2231,24 +2084,23 @@ def site_detail(conn: sqlite3.Connection, site: str, now: float, slow: dict | No
 class Dashboard:
     """The numbers the viewer draws: snapshot() kept CACHE_S seconds, slow_snapshot() every SLOW_EVERY_S seconds in
     a daemon thread (started by the first main()), the request log read incrementally. Read-only on frontier.db.
-    site_status, checks and facts default to the monitor's. freeze_reports (the viewer's): after each background
+    site_status and facts default to the monitor's. freeze_reports (the viewer's): after each background
     snapshot, the per-run copy of the problem log is written once the last run has ended (write_logs); tests leave it
     off."""
 
-    def __init__(self, root: Path, *, clock=time.time, site_status=None, checks=None, facts=None,
+    def __init__(self, root: Path, *, clock=time.time, site_status=None, facts=None,
                  cache_s: float = CACHE_S, slow_every_s: float = SLOW_EVERY_S, background: bool = True,
                  freeze_reports: bool = False):
         self.root, self.db = root, root / "frontier.db"
         self.clock, self.cache_s, self.slow_every_s, self.background = clock, cache_s, slow_every_s, background
         self.freeze_reports = freeze_reports
-        if site_status is None or checks is None or facts is None:
+        if site_status is None or facts is None:
             from nknu.archive import monitor
 
             # the monitor's own, for what is not given: its facts read once and handed to site_status (fx=)
             site_status = site_status or monitor.site_status
-            checks = checks or monitor.checks
             facts = facts or monitor.facts
-        self.site_status, self.checks, self.facts = site_status, checks, facts
+        self.site_status, self.facts = site_status, facts
         self.tracker = Tracker()
         self._lock = threading.Lock()
         self._main: dict | None = None
@@ -2319,17 +2171,6 @@ class Dashboard:
             return f"# {view['problem']}\n"
         return log_text(view, self.db)
 
-    def checks_page(self) -> dict:
-        """The acceptance checks (checks_view), worked out now."""
-        try:
-            conn = connect(self.db)
-        except (FileNotFoundError, OutdatedFrontier, sqlite3.Error) as exc:
-            return {"problem": _problem(exc, self.db)}
-        try:
-            return checks_view(conn, self.clock(), self.slow, checks=self.checks, root=self.root)
-        finally:
-            conn.close()
-
     def site(self, key: str, *, bucket: str | None = None, label: str | None = None) -> dict | None:
         """One site's page (site_detail), its state told by whether a run of it goes (site_run, from the numbers the
         cards show)."""
@@ -2394,19 +2235,3 @@ def _problem(exc: Exception, db: Path) -> str:
     return f"读不了待抓清单（{type(exc).__name__}: {exc}）：过一会儿会自动再试"
 
 
-# the commands the acceptance page shows to copy (§18.3 step 4: the order after a run stopped; no button: the dashboard
-# writes nothing), as the lab machine runs them (review 11-04: the Mac's .venv/bin/nknu is not there): one-off
-# containers of the crawler service, its own code and archive (research/crawler_lab_2026-11-04/compose.yaml; over SSH
-# the DOCKER_CONFIG prefix first). The browser check and R6 need Chrome, which the image gets once the crawl is done
-# (design 2026-11-04 §3)
-LAB_ARCHIVE = ('docker compose -f C:\\nknu-crawl\\compose.yaml run --rm crawler '
-               'python -c "from nknu.admin.cli import app; app()" archive')
-COMMANDS = {
-    "after": ("# 在实验室电脑上（经 SSH 时前面加 DOCKER_CONFIG 那段）\n"
-              "# 1. 浏览器判定网页类型（只判定，不抓；要先做加了 Chrome 的映像）\n"
-              f"{LAB_ARCHIVE} jscheck --dir /crawl/archive\n"
-              "# 2. 对账，含浏览器抽查 R6（同样要 Chrome）\n"
-              f"{LAB_ARCHIVE} reconcile --dir /crawl/archive --batch <批>\n"
-              "# 3. 验收（不连网）\n"
-              f"{LAB_ARCHIVE} verify --dir /crawl/archive"),
-}

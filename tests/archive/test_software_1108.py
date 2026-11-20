@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from nknu.archive import export, google_api, links, monitor, outcome, postback, profiles, reconcile, scope
+from nknu.archive import export, google_api, links, outcome, postback, profiles, reconcile, scope
 from nknu.archive.crawler import Crawler
 from nknu.archive.frontier import Frontier
 from nknu.archive.postback import IMAGE_ARG, UNPRESSED, Chains, read_page
@@ -339,7 +339,7 @@ def test_each_software_and_its_install_notes_are_got_and_no_installer(tmp_path, 
 def test_a_rejudge_then_retry_unpressed_puts_back_the_list_and_the_software_page(tmp_path):
     """Round one read both pages with no platform file: the icons were never seen, the folders were unknown. Today's
     file read offline (rejudge) writes them unpressed, the folder's text kept (its rule names a text); `retry
-    unpressed` puts both pages back, and verify check 8 finds nothing stale."""
+    unpressed` puts both pages back, and each entry written is a button today's platform file says to press."""
     w = World(tmp_path)
     lst, _snap = w.page(LIST, SITE, LIST_HTML)
     page7, _snap = w.page(PAGE7, SITE, PAGE_HTML)
@@ -357,8 +357,8 @@ def test_a_rejudge_then_retry_unpressed_puts_back_the_list_and_the_software_page
         (lst["id"], f"postback:ctl*$phMain$dataList1$ctrl1$uImage|{IMAGE_ARG}"): ("must", UNPRESSED, None),
         (page7["id"], "postback:ctl*$phMain$ascxDownload_ListMode$btFolder_43"): ("must", UNPRESSED, "安裝說明")}
     assert not f.q("SELECT 1 FROM action")  # a rejudge presses nothing
-    for (_pid, key), (_need, why, text) in got.items():
-        assert monitor.expected_unhandled(SITE, key, text, why) == ("must", UNPRESSED), key
+    for (_pid, key), (_need, _why, text) in got.items():  # with its text: the folder's rule names 「安裝說明」
+        assert profiles.decision(SITE, key, text) == "press", key
     assert Chains(f, tmp_path).retry_unpressed([SITE]) == (2, 3)
     for pid in (lst["id"], page7["id"]):
         back = f.row_by_id(pid)

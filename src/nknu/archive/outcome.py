@@ -3,7 +3,7 @@ status, flags, the sniffed format, the page's type, the list walk, the resources
 it into one result code per URL (view url_result), per button press (action_result) and one completeness level and
 label per page (page_completeness). These views are the only place the rules live: frontier.py drops and builds them
 each time it opens the database, so a rule changed here holds for every row at the next open and nothing stored needs
-rewriting; the dashboard, the reports and `nknu archive verify` read the views, never a second copy.
+rewriting; the dashboard, the export and the reports read the views, never a second copy.
 
 A combination the rules do not know (a new state, flag, kind, page-type verdict or need, a skip for a reason no scope
 rule gives, a file nobody sniffed) comes to `unknown`, which is red and fails self_check(); nothing falls through to
@@ -101,13 +101,17 @@ def error_signature(url: str) -> ErrorSignature | None:
 # in_image: a page whose words alone would be thin, its body a picture (reconcile, design §23 E3: 内容在图片里, for the
 # organising stage's text recognition): said, never a gap, so not one of PAGE_FLAGS
 FLAGS = ("login", "soft404", "decode", "gone_redirect", "gone_id", "error_page", "thin", "empty_detail", "js_hint",
-         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link", "in_image", "no_rows")
+         "form_closed", "js_redirect", "click_empty", "gone_page", "bad_link", "in_image", "no_rows", "no_area")
+# no_area: a page whose answer lacked the content area its profile requires (profiles.area_missing: a teacher's CV
+# page with no card, the school's now and then; 11-17): tried again (crawler._no_area_again), then thin, never gone
 # no_rows: a notice list that says it has no notice (profiles.NEWS_NO_ROWS, 「搜尋結果：共0筆」): got, never thin (export
-# batch T5 ③; the owner 11-16 「销账照表做」). gone_page is also set for c.nknu's 「404: File not found」 (CNKNU_FNF)
+# batch T5 ③; the owner 11-16 「销账照表做」), and, 11-18, the outline of a course the school lists no teacher for
+# (profiles.OUTLINE_NO_TEACHER: the page holds nothing of the course). gone_page is also set for c.nknu's
+# 「404: File not found」 (CNKNU_FNF)
 SAYS_NOTHING = ("no_rows", "gone_page")  # the thin step never marks a page with either
 IN_IMAGE_WORDS = "内容在图片里（整理阶段做文字识别）"
 # what a page's text says: on a file or an image, a crawler bug
-PAGE_FLAGS = ("thin", "empty_detail", "js_hint", "js_redirect")
+PAGE_FLAGS = ("thin", "empty_detail", "js_hint", "js_redirect", "no_area")
 # what a non-page row may be once fetched: embed is a Google form or a Google Sites embed box, HTML by nature (§4.4)
 FETCHED_KINDS = ("file", "image", "drive", "calendar", "embed")
 # kind0 values that must not come back as a web page (§10.2): a form and an embed box are web pages by nature, so not
@@ -310,6 +314,18 @@ def js_page_join(jp: str, u: str) -> str:
     return f"LEFT JOIN js_page {jp} ON {jp}.url_id = {u}.id AND {jp}.at >= {u}.fetched_at"
 
 
+# the one page off campus a school page links, and a file there (round1.verdict step 8): never fetched since 11-17
+# (the 11-16 direction paper had them fetched, one page each, last in round two; most are news reprints, shops and
+# pages behind a sign-in). The rows keep their place and reason (later), read as the rule: no round two owes them
+OFFSITE_DECLINED = ("round2:offsite", "round2:offsite_file")
+# a round-1 page that sends the browser to one of them (32 on the lab, 11-17: mostly notices the school moved to another
+# university's site): the rule's too, with its own words and level, never 要人看 (要人看 is for what someone will act
+# on; these are decided, and would only be noise there); OWN_REVIEW stays for a page sent where a rule may have left it
+# out by mistake. Only page_completeness gives it (PAGE_RESULTS); the page stays in the
+# table (review note high: a redirected page never drops out of it)
+OFFSITE_LANDED = "rule_offsite"
+
+
 def url_result_case(u: str = "u", pt: str = "pt", jp: str = "jp") -> str:
     """SQL: the result of url row `u`, whose page type is row `pt` (joined on pt.key = u.page_type) and whose jscheck
     record is row `jp` (js_page_join). The one statement of the §10.2 rules: the view url_result applies it, and so
@@ -354,6 +370,7 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
        CASE WHEN {u}.reason IN {_sql_list(_LAB_REASONS)} THEN 'lab'
             WHEN {u}.attempts > 0 THEN 'retry' ELSE 'todo' END
   WHEN {u}.state = 'held' THEN 'held'
+  WHEN {u}.state = 'later' AND {u}.reason IN {_sql_list(OFFSITE_DECLINED)} THEN 'rule'
   WHEN {u}.state = 'later' THEN 'later'
   WHEN {u}.state = 'skipped' THEN
        CASE WHEN {u}.reason = 'too_large' THEN 'too_large'
@@ -403,7 +420,7 @@ def _url_result_base(u: str, pt: str, jp: str) -> str:
             WHEN {jp}.url_id IS NOT NULL AND {jp}.verdict NOT IN {_sql_list(JS_PAGE_VERDICTS)} THEN 'unknown'
             WHEN {pt}.verdict = 'js' OR {jp}.verdict = 'js' THEN 'js'
             WHEN ({has('thin')} AND NOT EXISTS (SELECT 1 FROM page_res {u}_alb WHERE {u}_alb.page_id = {u}.id
-                 AND {u}_alb.why = 'album')) OR {has('empty_detail')} THEN 'thin'
+                 AND {u}_alb.why = 'album')) OR {has('empty_detail')} OR {has('no_area')} THEN 'thin'
             WHEN {pt}.verdict = 'unresolved' OR {jp}.verdict = 'unresolved' THEN 'unresolved'
             WHEN {pt}.verdict = 'click' OR {jp}.verdict = 'click' THEN 'click'
             WHEN {has('js_hint')} AND {jp}.url_id IS NULL THEN 'unchecked'
@@ -485,6 +502,7 @@ ACTION_RESULTS = ("todo", "redirect", "failed", "mismatch", "refused", "server_e
 # came of it (a crawler bug, never complete), or unhandled: a writing (or a Google address) nobody has decided about
 # yet (§7.6, §7.8)
 RESOURCE_RESULTS = tuple(dict.fromkeys((*URL_RESULTS, *ACTION_RESULTS, "not_discovered", "unhandled")))
+PAGE_RESULTS = (OFFSITE_LANDED,)  # a round-1 page's own result no row alone has (page_completeness.own)
 
 # ---------------------------------------------------------------- §10.4: each page's completeness
 
@@ -533,6 +551,7 @@ LEVEL_LABEL = {
     "incomplete": "不完整",
     "partial": "部分完整",
     "complete": "完整",
+    "rule": "按规则不抓",  # a page sent off campus where the owner decided not to fetch (OFFSITE_LANDED)
 }
 # the one label a page shows, the first that holds (design §10.4); `reasons` keeps all of them in this order
 LABEL_ORDER = (
@@ -552,6 +571,7 @@ LABEL_ORDER = (
     ("round2_img", "缺图片（下一轮补）"),
     ("round2", "有下一轮补的资源"),
     ("unchecked", "待判定"),
+    ("rule_offsite", "按规则不抓：整页跳到校外页（用户 11-17 决定不抓）"),
     ("complete_school", "完整（学校那边缺）"),
     ("complete", "完整"),
 )
@@ -572,6 +592,7 @@ _LABEL_WHEN = {
     "round2_img": "own <> 'later' AND n_round2_img > 0 AND n_round2 = n_round2_img",
     "round2": "own = 'later' OR n_round2 > 0",  # later: a page that now redirects to a second-round address
     "unchecked": "own = 'unchecked' OR n_unchecked > 0",
+    "rule_offsite": f"own = '{OFFSITE_LANDED}'",
     "complete_school": f"own IN {_sql_list(SCHOOL)} OR n_school > 0",
 }
 # the level, the first that holds (design §10.4). lab waits (the lab machine fetches it again) though its label and
@@ -582,6 +603,7 @@ _LABEL_WHEN = {
 _NOTHING_THERE = tuple(c for c in SCHOOL if c != SCHOOL_SIDE)
 _LEVEL_WHEN = (
     ("waiting", "own IN ('todo', 'retry', 'lab') OR list_walking"),
+    ("rule", f"own = '{OFFSITE_LANDED}'"),
     ("complete_school", f"own IN {_sql_list(_NOTHING_THERE)}"),
     ("unchecked", "own = 'unchecked'"),
     ("list_unchecked", "list_unchecked"),
@@ -892,9 +914,11 @@ pg AS (
   WHERE u.kind = 'page' AND u.tier IN (0, 1)),
 pj AS (
   SELECT pg.id, pg.owner_site AS site, pg.tier,
-         CASE WHEN pg.result = 'redirect' THEN mv.result ELSE pg.result END AS own,
+         CASE WHEN pg.result = 'redirect' AND mv.landed AND mv.result = 'rule' AND dl.state = 'later'
+                   AND dl.reason IN {_sql_list(OFFSITE_DECLINED)} THEN '{OFFSITE_LANDED}'
+              WHEN pg.result = 'redirect' THEN mv.result ELSE pg.result END AS own,
          CASE WHEN mv.landed AND NOT mv.to_google THEN mv.to_id ELSE pg.id END AS content_id
-  FROM pg LEFT JOIN moved mv ON mv.id = pg.id
+  FROM pg LEFT JOIN moved mv ON mv.id = pg.id LEFT JOIN url dl ON dl.id = mv.to_id
   WHERE pg.result NOT IN {not_judged}
     AND NOT coalesce(mv.landed AND mv.to_kind = 'page' AND mv.to_tier IN (0, 1) AND mv.result NOT IN {not_judged}, 0)),
 p AS MATERIALIZED (
@@ -941,17 +965,6 @@ def create_views(conn: sqlite3.Connection, *, temp: bool = False) -> None:
     conn.executescript(script)
 
 
-def self_check(conn: sqlite3.Connection) -> dict[str, int]:
-    """What the rules cannot place, each zero or verify check 2 is red: the rows of a combination the rules do not
-    know, per view, and the round-1 rows (tier 0, 1) that count for no site. url.owner_site is the one site a row
-    counts for (design §2); url.site never stands in for it, so page_completeness lists such a page under no site."""
-    out = {name: conn.execute(f"SELECT count(*) FROM {name} WHERE result = 'unknown'").fetchone()[0]
-           for name in ("url_result", "action_result")}
-    out["no_owner_site"] = conn.execute("SELECT count(*) FROM url WHERE owner_site IS NULL AND tier IN (0, 1)"
-                                        ).fetchone()[0]
-    return out
-
-
 # ---------------------------------------------------------------- what the dashboard says (§10.2, §10.2.1)
 
 RESULT_LABEL = {
@@ -963,6 +976,7 @@ RESULT_LABEL = {
     "login": "要登录，进不去",
     "redirect": "跳到别的网址（目标另算）",
     "rule": "按规则不抓",
+    OFFSITE_LANDED: "按规则不抓（整页跳到校外页）",
     "later": "下一轮再抓",
     "todo": "还没抓",
     "retry": "出错了，等重试",
@@ -988,19 +1002,6 @@ RESULT_LABEL = {
     "short_dead": "短网址已失效",
     "parked": "这个目录连续被拒两轮，剩下的网址没发请求；用 nknu archive retry denied_dir 放回",
     SCHOOL_SIDE: "学校那边的问题（人看过）",
-}
-# green: fetched; yellow: to look at; red: wrong; none: nothing to do (design §14.5: shown with a sign and words too).
-# The colours follow the user's categories (§10.2.1, §10.5): 连接失败 (but lab) and 要人看 red; 待判定, lab, waiting for a
-# retry and round two's js and click yellow
-RESULT_COLOR = {
-    "ok": "green", "gone": "green",
-    "login": "none", "redirect": "none", "rule": "none", "later": "none", "todo": "none",
-    "retry": "yellow", "lab": "yellow", "js": "yellow", "click": "yellow", "unchecked": "yellow",
-    "failed": "red", "server_error": "red", "not_file": "red", "refused": "red", "http_4xx": "red",
-    "held": "red", "unknown": "red", "mismatch": "red", "not_discovered": "red", "thin": "red", "decode": "red",
-    "too_large": "red", "unresolved": "red", "looks_gone": "red", "api_error": "red", "api_quota": "red",
-    "unhandled": "red", "parked": "red",
-    "bad_link": "red", "short_dead": "red", SCHOOL_SIDE: "green",
 }
 # the categories the user sees instead of the codes (10-25: 「爬不到的放进连接失败」), with what happens next, in the
 # order the dashboard lists them (design §10.2.1)
@@ -1036,7 +1037,7 @@ _BUCKET_OF = {
     "gone": "gone",
     "unchecked": "next_round",  # a sign of JavaScript, no browser check this round (the owner 11-16)
     "later": "next_round", "js": "next_round", "click": "next_round",
-    "rule": "rule", "redirect": "rule",
+    "rule": "rule", "redirect": "rule", OFFSITE_LANDED: "rule",
 }
 
 

@@ -183,3 +183,39 @@ def test_a_list_that_now_says_it_holds_nothing_is_taken_as_it_is(tmp_path):
     _arch, _got, out, rows, _readme = _with(tmp_path, build)
     r = rows[url]
     assert r["来源"] == "" and "共0筆" in _content(out, r).decode("utf-8-sig")
+
+
+def test_a_page_read_with_another_encoding_keeps_its_file_while_it_waits_to_be_fetched_again(tmp_path):
+    """11-19 (the content stage's guard, the night of 11-18: gender.nknu.edu.tw/new/indexnew-4.htm): a page strict
+    decoding refused (结果 编码有问题) is exported with its file, read with the encoding it names. Put back for a
+    night whose server did not answer, it waits (pending) with that same answer: its file stays, as any waiting
+    row's does."""
+    from tests.archive.test_export_step3_1108 import SJIS
+
+    def build(arch):
+        sjis = arch.page("sjis", BASE + "sjis.htm", SJIS.encode("cp932"), ctype="text/html", flags="decode")
+        arch.f.activate(sjis)  # the night's put-back took it; its server never answered
+        arch.f.x("UPDATE url SET state='pending', reason='update_standing' WHERE id=?", (sjis,))
+
+    _arch, _got, out, rows, _readme = _with(tmp_path, build)
+    r = _row(rows, BASE + "sjis.htm")
+    assert r["本地档案"], r
+    assert r["来源"] == PREV and "上一版补上" in r["备注"]
+    assert "研究所招生考試公告" in _content(out, r).decode("utf-8-sig")
+
+
+def test_a_page_read_with_another_encoding_this_time_is_exported_with_this_time_s_answer(tmp_path):
+    """Such a page fetched again, and read with another encoding again, is this time's answer: never replaced by the
+    one it held before (the first way of keeping a waiting page's file, 11-19, did that to six pages of
+    gender.nknu.edu.tw on a copy of the ledger, before it was installed)."""
+    from tests.archive.test_export_step3_1108 import SJIS
+
+    def build(arch):
+        arch.page("sjis", BASE + "sjis.htm", SJIS.encode("cp932"), ctype="text/html", flags="decode")
+        _again(arch, "sjis", body=SJIS.replace("114/10/01", "114/11/15").encode("cp932"), ctype="text/html", flags="decode")
+
+    _arch, _got, out, rows, _readme = _with(tmp_path, build)
+    r = _row(rows, BASE + "sjis.htm")
+    assert r["本地档案"] and r["来源"] != PREV and "上一版补上" not in r["备注"]
+    assert "114/11/15" in _content(out, r).decode("utf-8-sig")
+    assert r["抓取时间"].startswith("2026-11-17T01:00:00")  # this time's (LATER, in Taipei)

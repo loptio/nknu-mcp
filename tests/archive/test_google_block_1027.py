@@ -5,8 +5,8 @@ D1 downloadQuotaExceeded (one file's downloads used up) puts that one row off 24
    and never the block streak; the third time it is api_quota (要人看). Only the rate and quota answers, a 429 and
    the "automated queries" page block the queue, an hour at least.
 D2 the block streak and when it began live in frontier.db (meta), so the rest keeps doubling across runs; more than 3
-   days or the 6th block in a row is an error event google_block_long, the Google server red on the dashboard, and a
-   line of verify's item 17.
+   days or the 6th block in a row is an error event google_block_long and the Google server red on the dashboard
+   (the line of verify's item 17 went with the judgment-layer cut of 11-19; its words are google_api.block_words).
 D3 the dashboard's words: a block is 「Google 暂时挡下载…」, never 「隔 30 分钟再试，共 3 次」; api: reasons (a pause's
    why with its host in front too) have their own words; a row Google blocked is no problem (错), never 「被拒绝」.
 All offline: fake networks and clocks, made-up file ids, no key."""
@@ -115,7 +115,7 @@ def test_a_file_used_up_three_times_is_api_quota_for_a_person(tmp_path, monkeypa
     assert len([u for u in net.seen if u == google_api.media_url(FA)]) == 3
     assert f.q("SELECT result FROM url_result WHERE id=?", (a["id"],))[0][0] == "api_quota"
     assert outcome.RESULT_LABEL["api_quota"] == "Google：这个档案的下载次数被用完"
-    assert outcome.user_bucket("api_quota") == "review" and outcome.RESULT_COLOR["api_quota"] == "red"
+    assert outcome.user_bucket("api_quota") == "review"
     assert "api_quota" in outcome.REVIEW and "api_quota" in outcome.GROUPS["bad"]
     assert not outcome.markable("api_quota", "api:downloadQuotaExceeded")  # never 学校那边的问题
 
@@ -186,7 +186,7 @@ def _site_with_google_rows(f: Frontier, *rows: tuple[str, dict]) -> None:
         f.x(f"INSERT INTO url({', '.join(row)}) VALUES ({','.join('?' * len(row))})", tuple(row.values()))
 
 
-def test_the_dashboard_turns_the_google_card_red_on_a_long_block_and_verify_lists_it(tmp_path):
+def test_the_dashboard_turns_the_google_card_red_on_a_long_block_and_its_words_say_so(tmp_path):
     f = Frontier(tmp_path / "frontier.db")
     now = 2_000_000.0
     _site_with_google_rows(f, (google_api.media_url(FA), {"state": "pending", "reason": "api:automated_queries"}))
@@ -208,10 +208,8 @@ def test_the_dashboard_turns_the_google_card_red_on_a_long_block_and_verify_list
     _blocked(f, 6, now - DAY)
     s = status()
     assert s["color"] == "red" and "要人看" in s["tip"] and "6 次" in s["tip"]
-    c = monitor.Check("17", "逐站的问题清单")
-    ctx = monitor._Ctx(f, None, None, True, None, {}, monitor.Rounds(f), False, False, None)
-    monitor._c17(ctx, c)
-    assert c.status == monitor.FAIL and any("Google 连续挡下载 6 次" in line for line in c.lines), c.lines
+    state = google_api.block_state(f)  # what verify's item 17 read: the streak in frontier.db, long, in plain words
+    assert google_api.block_long(*state, now) and "Google 连续挡下载 6 次" in google_api.block_words(*state, now)
     f.close()
 
 
@@ -272,13 +270,13 @@ def test_the_events_of_a_block_say_it_plainly(tmp_path, monkeypatch):
     assert KEY not in ev["message"]
 
 
-def test_verify_lists_a_used_up_file_for_a_person(tmp_path):
+def test_a_used_up_file_reads_api_quota_for_a_person(tmp_path):
     f = Frontier(tmp_path / "frontier.db")
     url = google_api.media_url(FA)
     f.x("INSERT INTO url(url, path, host, site, owner_site, tier, kind, kind0, depth, found_via, state, reason, "
         "attempts) VALUES (?,?,?,?,?,2,'file','file',1,'drive','failed','api:downloadQuotaExceeded',3)",
         (url, url.split("?")[0], google_api.API_HOST, "w.nknu.edu.tw/a", "w.nknu.edu.tw/a"))
-    ten = next(c for c in monitor.checks(f, cheap=True) if c.no == "10")
-    assert ten.status == monitor.FAIL
-    assert any(outcome.RESULT_LABEL["api_quota"] in x and url in x for x in ten.lines), ten.lines
+    got = f.q("SELECT owner_site, url, result FROM url_result WHERE result = 'api_quota'")  # verify item 10's look
+    assert [tuple(r) for r in got] == [("w.nknu.edu.tw/a", url, "api_quota")]
+    assert outcome.user_bucket("api_quota") == "review" and "api_quota" in outcome.RESULT_LABEL
     f.close()

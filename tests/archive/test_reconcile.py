@@ -1,11 +1,11 @@
-"""Reconciliation, rejudge and a person's mark (round-1 design §18.2a, §18.2b, §10.1 thin, §10.2.1, verify checks 13
-and 14; §16 test_reconcile). Offline: synthetic sites crawled on the tests' fake network into a real WARC, a
-made-up Common Crawl index and a made-up old archive; a fake spot checker stands for jscheck's
-browser. Titles, text and file names are made up; no person's name."""
+"""Thin pages, what a page's own scripts say (R7), rejudge, a person's list of addresses and a person's mark (round-1
+design §18.2a, §10.1 thin, §10.2.1; §16 test_reconcile). The reconciliation batch this file was named for (R1–R6,
+V13, V14, its report) went with the judgment-layer cut of 11-19, and its tests with it. Offline: synthetic sites
+crawled on the tests' fake network into a real WARC, and a made-up old archive. Titles, text and file names are made
+up; no person's name."""
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import sqlite3
@@ -19,8 +19,6 @@ from nknu.archive import crawler as crawl_mod
 from nknu.archive import outcome, profiles, reconcile
 from nknu.archive.crawler import AlreadyRunning, Crawler, hold_run_lock
 from nknu.archive.frontier import Frontier
-from nknu.archive.reconcile import FAIL, PASS, SKIP, WARN, Sources, SpotView
-from nknu.crawl import schoollock
 from nknu.crawl.adapter import Target
 from nknu.crawl.fetch import Snapshot
 from nknu.crawl.warc import WarcSink
@@ -113,12 +111,13 @@ def _ok_types(fr):
     fr.x("UPDATE page_type SET verdict='ok', source='manual'")
 
 
-def _cdx(path: Path, urls, status="200"):
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "CC-TEST.cdx").write_text("".join(
-        f'tw,edu,nknu,w)/ 20260101000000 {json.dumps({"url": u, "status": status})}\n' for u in urls),
-        encoding="utf-8")
-    return path
+def _r7(fr, root: Path, url: str) -> reconcile.R7Page:
+    """R7's reading of one stored page (what a rejudge writes of it comes from this; nothing is written here)."""
+    arc = reconcile.Archive(root)
+    row = fr.row(url)
+    html = arc.text(row["warc"], row["warc_offset"])
+    page = reconcile._page_read(row, html, url)
+    return reconcile.r7_page(fr, row, html, url, page, reconcile.ScriptCache(fr, arc))
 
 
 def _old(path: Path, rows):
@@ -131,16 +130,6 @@ def _old(path: Path, rows):
     conn.commit()
     conn.close()
     return path
-
-
-def _same_spot(root):
-    arc = reconcile.Archive(root)
-    fr = Frontier(root / "frontier.db", readonly=True)
-
-    def spot(url):
-        r = fr.row(url)
-        return SpotView(url, url, arc.text(r["warc"], r["warc_offset"]), f"shots/{r['id']}.png")
-    return spot
 
 
 # ---------------------------------------------------------------- thin (design §10.1)
@@ -253,16 +242,7 @@ def test_thin_reads_the_platform_content_area(arch):
     assert _thin(arch, site).thin == [hollow]  # the words outside the content area are no body
 
 
-# ---------------------------------------------------------------- R1, R7, V13, V14 on a crawled site
-
-
-def test_the_crawlers_own_pages_read_again_match_what_it_wrote(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    got = reconcile.verify_extract(fr, tmp_path, [SITE], PLAN)[SITE]
-    assert got.status == PASS and got.counts["pages"] == 5, got.items
-    v14 = reconcile.verify_archive(fr, tmp_path, [SITE])[SITE]
-    assert v14.status == PASS and v14.counts["records"] >= 7 and v14.counts["files"] == 1
+# ---------------------------------------------------------------- rejudge and R7 on a crawled site
 
 
 JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00made up for a test\xff\xd9"
@@ -280,7 +260,7 @@ RICH_HTML = _page("豐富", (
     "<a href='/page.html?page=2'>2</a><a href='/page.html?page=2'>下一頁</a>"))
 
 
-def test_v13_is_quiet_on_a_page_with_every_kind_of_part(tmp_path):
+def test_rejudge_reads_a_page_with_every_kind_of_part_back_to_the_same_page_res(tmp_path):
     routes = {"/up/photo.jpg": lambda u: snap(u, body=JPEG, headers={"content-type": "image/jpeg"}),
               "/images/logo.png": lambda u: snap(u, body=JPEG, headers={"content-type": "image/png"}),
               "/files/": lambda u: snap(u, body=PDF, headers={"content-type": "application/pdf"}),
@@ -298,324 +278,51 @@ def test_v13_is_quiet_on_a_page_with_every_kind_of_part(tmp_path):
     keys = _keys(fr, HOME)
     assert {"postback:btnMore", "get_form:/search q", f"{W}/up/photo.jpg", f"{W}/images/logo.png",
             "drive:1DrIvEfIlEaBcDeFgHiJ", "https://reurl.cc/AbCdEf", f"{W}/files/c.pdf"} <= set(keys), sorted(keys)
-    got = reconcile.verify_extract(fr, tmp_path, [SITE], PLAN)[SITE]
-    assert got.status == PASS and got.counts["pages"] >= 2, got.items  # home and the frame page
-    assert reconcile.verify_archive(fr, tmp_path, [SITE])[SITE].status == PASS
     # rejudge reads it back to the same page_res (R7 has nothing to add: no school script)
     fr.close()
     net.sink.close()
-    reconcile.rejudge(tmp_path, [SITE], plan=PLAN)
+    got = reconcile.rejudge(tmp_path, [SITE], plan=PLAN)
+    assert got.pages >= 2 and not got.unread and got.r7_rows == 0  # home and the frame page
     fr = Frontier(tmp_path / "frontier.db")
     again = _keys(fr, HOME)
     assert {k: (r["need"], r["why"], r["res_id"]) for k, r in again.items()} == \
         {k: (r["need"], r["why"], r["res_id"]) for k, r in keys.items()}
-    assert reconcile.verify_extract(fr, tmp_path, [SITE], PLAN)[SITE].status == PASS
     fr.close()
 
 
-def test_v13_names_what_the_crawler_did_not_write(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    home = _id(fr, HOME)
-    fr.x("DELETE FROM link WHERE src=? AND dst=?", (home, f"{W}/about.html"))
-    fr.x("DELETE FROM page_res WHERE page_id=? AND res_key=?", (home, f"{W}/files/a.pdf"))
-    got = reconcile.verify_extract(fr, tmp_path, [SITE], PLAN)[SITE]
-    assert got.status == FAIL
-    missing = {(i["missing"], i["target"]) for i in got.items}
-    assert ("link", f"{W}/about.html") in missing and ("page_res", f"{W}/files/a.pdf") in missing
-
-
-def test_v14_finds_a_changed_hash_a_lost_position_and_a_broken_file(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    fr.x("UPDATE url SET sha256='0' WHERE url=?", (f"{W}/about.html",))
-    fr.x("UPDATE url SET warc_offset=NULL WHERE url=?", (f"{W}/contact.html",))
-    got = reconcile.verify_archive(fr, tmp_path, [SITE])[SITE]
-    assert got.status == FAIL
-    assert {(i["url"], i["problem"]) for i in got.items} == {(f"{W}/about.html", "sha256"),
-                                                              (f"{W}/contact.html", "no_position")}
-    path = tmp_path / "warc" / "q.warc.gz"
-    data = bytearray(path.read_bytes())
-    at = fr.row(f"{W}/news.html")["warc_offset"] + 40
-    data[at] ^= 0xFF
-    path.write_bytes(bytes(data))
-    broken = reconcile.verify_archive(fr, tmp_path, [SITE])[SITE]
-    problems = {i["problem"] for i in broken.items}
-    assert "unreadable" in problems and any(p.startswith(("BadGzipFile", "error", "EOFError", "OSError"))
-                                            for p in problems)
-
-
-def test_v14_cache_reads_only_what_came_after(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    assert reconcile.verify_archive(fr, tmp_path, [SITE], cache=True)[SITE].status == PASS
-    end = int(fr.meta("v14:warc/q.warc.gz"))
-    assert end == fr.q("SELECT max(warc_offset + warc_len) FROM url WHERE warc='warc/q.warc.gz'")[0][0]
-
-
-def test_r1_menu_items_each_have_a_result(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    r1 = res.checks["R1"]
-    assert r1.status == PASS and r1.counts["rule"] == 1 and r1.counts["missing"] == 0  # the sign-in: a rule
-    # a menu item that has no row and that the crawler never noted: missing, found for a person
-    fr.x("DELETE FROM url WHERE url=?", (f"{W}/contact.html",))
-    fr.x("DELETE FROM link WHERE dst=?", (f"{W}/contact.html",))
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    assert res.checks["R1"].status == FAIL
-    assert [(f.check, f.url) for f in res.found] == [("R1", f"{W}/contact.html")]
-
-
-def test_r7_reads_the_schools_js_and_writes_what_it_says(site_db, tmp_path):
-    c, _net = site_db
+def test_r7_reads_the_schools_js_and_writes_what_it_says(tmp_path):
+    c, net = crawl(tmp_path)
     fr = c.frontier
     before = _keys(fr, HOME)
     assert before["js_link:toggleMenu"]["why"] == "unhandled:unknown" and before["js_link:"]["need"] == "must"
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
+    assert not [k for k, r in before.items() if (r["zone"] or "").startswith(reconcile.R7_ZONE)]  # no run writes R7
+    # what the school's script says of the page's two writings (both answered): toggleMenu is read and loads
+    # nothing; the bare javascript: link is bound to something that loads (a click the page alone does not show)
+    read = _r7(fr, tmp_path, HOME)
+    assert read.read == [f"{W}/js/site.js"] and not read.missing
+    assert read.gone == {"js_link:toggleMenu", "js_link:"} and read.still == set()
+    assert "toggleMenu" not in read.loads and read.bound_loads
+    fr.close()
+    net.sink.close()
+    got = reconcile.rejudge(tmp_path, [SITE], plan=PLAN)
+    assert got.r7_rows == 1
+    fr = Frontier(tmp_path / "frontier.db")
     after = _keys(fr, HOME)
     bound = [k for k, r in after.items() if (r["zone"] or "").startswith(reconcile.R7_ZONE)]
     assert bound == ["click:.cat[0]"]
     assert (after["click:.cat[0]"]["need"], after["click:.cat[0]"]["why"]) == ("round2", "round2:click")
-    suggest = {s.key: s.decision for s in res.suggestions}
-    assert suggest == {"js_link:toggleMenu": "ignore", "js_link:": "round2"}
-    assert res.checks["R7"].status == WARN and res.checks["R7"].counts["undecided"] == 2
     _ok_types(fr)
     level = fr.q("SELECT level, reasons FROM page_completeness WHERE id=?", (_id(fr, HOME),))[0]
     assert level[0] == "partial" and "click" in level[1]  # what only the school's script loads is no longer unseen
-    # a second reconcile writes the same rows again (never twice), and rejudge keeps them
-    reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN, sources=Sources(cc_dir=None))
+    fr.close()
+    # a second rejudge writes the same rows again (never twice)
+    reconcile.rejudge(tmp_path, [SITE], plan=PLAN)
+    fr = Frontier(tmp_path / "frontier.db")
     assert [k for k, r in _keys(fr, HOME).items() if (r["zone"] or "").startswith("r7:")] == ["click:.cat[0]"]
-
-
-def test_r7_lists_a_data_link_target_and_a_drive_embed_with_no_row(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    fr.x("DELETE FROM link WHERE dst=?", (f"{W}/news/2.html",))
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    r7 = res.checks["R7"]
-    assert r7.status == FAIL
-    assert {"page": HOME, "problem": "attr_target", "target": f"{W}/news/2.html"} in r7.items
-
-
-def test_r7_drive_embed_with_no_drive_row(arch):
-    fid = "1AbCdEfGhIjKlMnOpQr"  # made up
-    html = (f"<html><body><div data-embed-open-url='https://drive.google.com/file/d/{fid}/view'>"
-            f"<iframe data-src='https://drive.google.com/file/d/{fid}/preview'></iframe></div><p>{BODY}</p>"
-            "</body></html>")
-    uid = arch.page("/embed.html", html)
-    res = reconcile.reconcile_sites(arch.f, arch.root, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    assert {"page": f"{W}/embed.html", "problem": "drive_embed", "target": f"drive:{fid}"} in res.checks["R7"].items
-    arch.f.add_page_res(uid, [{"res_key": f"drive:{fid}", "how": "drive_api", "role": "drive", "need": "must"}])
-    res = reconcile.reconcile_sites(arch.f, arch.root, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    assert not [i for i in res.checks["R7"].items if i.get("problem") == "drive_embed"]
-
-
-# ---------------------------------------------------------------- R2
-
-
-def test_r2_a_list_with_fewer_rows_than_it_states(arch):
-    a = arch.page("/list.html", _tpl(f"<p>{BODY}</p>"))
-    arch.f.x("INSERT INTO listwalk(list_id, site, profile, pages, rows, rows_unique, claimed, ended_by, ok) "
-             "VALUES (?,?,'generic',1,8,8,10,'last_page',1)", (a, SITE))
-    r2 = reconcile._r2(arch.f, arch.root, SITE)
-    assert r2.status == FAIL and r2.items[0]["problem"] == "fewer" and r2.items[0]["got"] == 8
-    arch.f.x("UPDATE listwalk SET rows_unique=10, rows=10")
-    assert reconcile._r2(arch.f, arch.root, SITE).status == PASS
-
-
-# ---------------------------------------------------------------- R3, R4: discovery coverage
-
-
-def test_common_crawl_import_and_coverage(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    known = [HOME, f"{W}/about.html", f"{W}/news.html", f"{W}/contact.html", f"{W}/only-cc.html",
-             "https://sso.nknu.edu.tw/login.aspx"]
-    cc = _cdx(tmp_path / "cc", known)
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=cc)).sites[0]
-    r3a, r3b = res.checks["R3a"], res.checks["R3b"]
-    assert r3a.status == FAIL and r3a.items == [{"url": f"{W}/only-cc.html"}]
-    assert ("R3a", f"{W}/only-cc.html") in [(f.check, f.url) for f in res.found]
-    # this round's ok pages and files (the script aside): home, about, news, contact, a.pdf, news/2; linked: all
-    # but home. Common Crawl's ok ones: home, about, news, contact; linked 3 of 4
-    assert (r3b.counts["known_ok"], r3b.counts["linked"], r3b.counts["site_ok"], r3b.counts["site_linked_ok"]) == \
-        (4, 3, 6, 5)
-    assert r3b.status == WARN and res.cover_cc == pytest.approx(0.75)
-    assert r3b.counts["estimate"] == 7 and r3b.counts["missed_at_least"] == 1  # 5 × 4 / 3, a lower bound
-    assert r3b.items == [{"url": HOME}]  # only Common Crawl names it: no page of this round links home
-    got = fr.q("SELECT cover_cc FROM reconcile_site WHERE site=?", (SITE,))[0][0]
-    assert got == pytest.approx(0.75)
-
-
-def test_coverage_cannot_be_estimated_when_none_is_ok(site_db, tmp_path):
-    c, _net = site_db
-    cc = _cdx(tmp_path / "cc", [f"{W}/only-cc.html"])
-    res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=cc)).sites[0]
-    assert res.checks["R3b"].status == SKIP and res.cover_cc is None
-    assert c.frontier.q("SELECT cover_cc FROM reconcile_site")[0][0] is None
-
-
-def test_old_archive_import_and_coverage_read_only(site_db, tmp_path):
-    c, _net = site_db
-    old = _old(tmp_path / "old", [(f"{W}/about.html", SITE, "done", 200), (f"{W}/contact.html", SITE, "done", 200),
-                                  (f"{W}/gone-now.html", SITE, "done", 200), (f"{W}/x.html", SITE, "failed", None)])
-    before = hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest()
-    res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None, old=old)).sites[0]
-    assert res.checks["R4a"].status == FAIL and res.checks["R4a"].items == [{"url": f"{W}/gone-now.html"}]
-    assert res.checks["R4b"].status == PASS and res.cover_old == 1.0
-    assert hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest() == before
-    assert not (old / "frontier.db-wal").exists() and not (old / "frontier.db-shm").exists()
-
-
-def test_sources_not_there_are_not_checked_never_passed(site_db, tmp_path):
-    c, _net = site_db
-    res = reconcile.reconcile_sites(c.frontier, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=tmp_path / "none")).sites[0]
-    assert {k: res.checks[k].status for k in ("R3a", "R3b", "R4a", "R4b", "R6")} == dict.fromkeys(
-        ("R3a", "R3b", "R4a", "R4b", "R6"), SKIP)
-    assert not res.gates_ok
-
-
-# ---------------------------------------------------------------- R6 and the gates
-
-
-def _clean_site(root: Path):
-    routes = {k: v for k, v in ROUTES.items() if k in ("/about.html", "/news.html", "/contact.html")}
-    routes[f"{SITE}/"] = lambda u: snap(u, html=_page("首頁", f"<p>{BODY}</p>"))  # last: every address holds it
-    return crawl(root, routes)
-
-
-def test_every_gate_passes_and_a_run_after_it_makes_it_stale(tmp_path):
-    c, net = _clean_site(tmp_path)
-    fr = c.frontier
-    cc = _cdx(tmp_path / "cc", [f"{W}/about.html", f"{W}/news.html"])
-    old = _old(tmp_path / "old", [(f"{W}/about.html", SITE, "done", 200)])
-    src = Sources(cc_dir=cc, old=old)
-    _ok_types(fr)
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="pilot", plan=PLAN, sources=src,
-                                    spot=_same_spot(tmp_path)).sites[0]
-    assert {k: v.status for k, v in res.checks.items() if v.status != PASS} == {}
-    assert res.gates_ok and reconcile.fresh(fr, SITE)
-    row = fr.q("SELECT * FROM reconcile_site WHERE site=?", (SITE,))[0]
-    assert (row["batch"], row["gates_ok"]) == ("pilot", 1) and set(json.loads(row["checks"])) == set(
-        reconcile.CHECKS)
-    fr.event("info", "run_end", json.dumps({"reason": "finished", "sites": [SITE]}))
-    assert not reconcile.fresh(fr, SITE)  # a run covered the site after it: reconcile again
-    fr.event("info", "run_end", json.dumps({"reason": "finished", "sites": ["other.nknu.edu.tw"]}))
-    reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="pilot", plan=PLAN, sources=src, spot=_same_spot(tmp_path))
-    assert reconcile.fresh(fr, SITE)
-    fr.event("info", "rejudge", json.dumps({"sites": None}))
-    assert not reconcile.fresh(fr, SITE)
-    net.sink.close()
     fr.close()
 
 
-def test_site_done_in_the_crawlers_process_skips_r6_so_never_a_pass(tmp_path):
-    c, net = _clean_site(tmp_path)
-    fr = c.frontier
-    assert reconcile.site_finished(fr, SITE)
-    res = reconcile.site_done(fr, tmp_path, SITE, plan=PLAN, sources=Sources(cc_dir=None))
-    assert res.checks["R6"].status == SKIP and not res.gates_ok
-    assert fr.q("SELECT gates_ok FROM reconcile_site WHERE site=?", (SITE,))[0][0] == 0
-    assert json.loads(fr.q("SELECT message FROM event WHERE code='reconcile'")[0][0])["r6"] is False
-    fr.x("UPDATE url SET state='pending', attempts=0, reason=NULL WHERE url=?", (f"{W}/about.html",))
-    assert not reconcile.site_finished(fr, SITE)
-    fr.x("UPDATE url SET attempts=1 WHERE url=?", (f"{W}/about.html",))  # waiting for a retry only: done for now
-    assert reconcile.site_finished(fr, SITE)
-    net.sink.close()
-    fr.close()
-
-
-def test_r6_text_the_browser_shows_more_of_and_a_menu_item_only_the_browser_sees(tmp_path):
-    c, net = _clean_site(tmp_path)
-    fr = c.frontier
-    same = _same_spot(tmp_path)
-    more = "<p>" + "瀏覽器才看得到的文字。" * 40 + "</p>"
-
-    def spot(url):
-        view = same(url)
-        if url.endswith("/about.html"):
-            return replace(view, html=view.html.replace("</main>", more + "</main>").replace(
-                "</nav>", '<a href="/hidden-menu.html">隱藏選單</a></nav>'))
-        return view
-
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="b", plan=PLAN,
-                                    sources=Sources(cc_dir=None), spot=spot,
-                                    out_dir=tmp_path / "spot").sites[0]
-    r6 = res.checks["R6"]
-    assert r6.status == FAIL and r6.counts["pages"] == 4
-    item = next(i for i in r6.items if i["url"].endswith("/about.html"))
-    assert "text" in item and item["missing"] == [{"what": "menu", "target": f"{W}/hidden-menu.html"}]
-    assert item["screenshot"].startswith("shots/")
-    assert (tmp_path / "spot" / SITE / f"{_id(fr, f'{W}/about.html')}.txt").is_file()
-    errors = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="b", plan=PLAN,
-                                       sources=Sources(cc_dir=None),
-                                       spot=lambda u: SpotView(u, error="timeout")).sites[0]
-    assert errors.checks["R6"].status == FAIL
-    net.sink.close()
-    fr.close()
-
-
-def test_a_read_only_reconcile_writes_nothing(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    before = fr.q("SELECT count(*) FROM page_res")[0][0]
-    got = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None), write=False).sites[0]
-    assert fr.q("SELECT count(*) FROM page_res")[0][0] == before
-    assert not fr.q("SELECT 1 FROM reconcile_site") and not fr.q("SELECT 1 FROM event WHERE code='reconcile'")
-    assert got.checks["R7"].status == FAIL  # what R7 would write and did not
-
-
-# ---------------------------------------------------------------- the command
-
-
-def test_reconcile_command_refuses_while_a_run_holds_the_lock_and_writes_its_report(tmp_path):
-    c, net = _clean_site(tmp_path)
-    c.frontier.close()
-    net.sink.close()
-    lock = hold_run_lock(tmp_path)
-    with pytest.raises(AlreadyRunning):
-        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None))
-    lock.close()
-    with pytest.raises(Exception, match="machine-wide lock"):
-        reconcile.reconcile(tmp_path, batch="b", plan=PLAN, sources=Sources(cc_dir=None),
-                            spot=_same_spot(tmp_path))
-    got, path = reconcile.reconcile(tmp_path, batch="b 1", plan=PLAN, sources=Sources(cc_dir=None))
-    assert path.parent == tmp_path / "reports" and path.name.startswith("reconcile-b_1-")
-    text = path.read_text(encoding="utf-8")
-    assert "浏览器抽查" in text and SITE in text and got.sites[0].site == SITE
-    assert got.sites[0].checks["R6"].status == SKIP  # --no-r6
-
-
-def test_reconcile_command_makes_the_spot_checker_inside_its_locks(tmp_path):
-    c, net = _clean_site(tmp_path)
-    c.frontier.close()
-    net.sink.close()
-    opened = []
-
-    @contextlib.contextmanager
-    def factory(fr):
-        assert crawl_mod.lock_holder(tmp_path) is not None  # run.lock is held by now
-        same = _same_spot(tmp_path)
-        opened.append(fr)
-        yield lambda url: same(url)
-        opened.append("closed")
-
-    with schoollock.hold():
-        got, _path = reconcile.reconcile(tmp_path, batch="b", plan=PLAN, spot_factory=factory,
-                                         sources=Sources(cc_dir=None))
-    assert opened[-1] == "closed" and got.sites[0].checks["R6"].status == PASS and got.r6
+# ---------------------------------------------------------------- the commands' guards
 
 
 def test_the_old_archive_is_never_written(tmp_path):
@@ -623,8 +330,7 @@ def test_the_old_archive_is_never_written(tmp_path):
     before = hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest()
     for call in (lambda: reconcile.rejudge(old, [SITE], plan=PLAN),
                  lambda: reconcile.enqueue(old, [HOME], plan=PLAN),
-                 lambda: reconcile.review_mark(old, 1, note="x"),
-                 lambda: reconcile.reconcile(old, batch="b", plan=PLAN)):
+                 lambda: reconcile.review_mark(old, 1, note="x")):
         with pytest.raises(reconcile.NotRound1):
             call()
     assert hashlib.sha256((old / "frontier.db").read_bytes()).hexdigest() == before
@@ -765,9 +471,6 @@ def test_review_mark_takes_only_a_markable_result_with_a_note_and_never_during_a
 # ---------------------------------------------------------------- small pieces
 
 
-
-
-
 def test_library_scripts_are_not_read():
     for path in ("/js/jquery-3.6.0.min.js", "/assets/bootstrap.bundle.min.js", "/lib/swiper.min.js"):
         assert reconcile.LIBRARY_JS.search(path), path
@@ -797,14 +500,13 @@ def test_rejudge_sets_the_thin_marks_again(arch):
     arch.sink._fh = open(arch.sink.path, "ab", buffering=0)  # noqa: SIM115
 
 
-def test_r7_waits_for_a_school_script_not_got_and_a_library_only_page_ignores(tmp_path):
+def test_r7_names_a_school_script_not_got_and_reads_no_library(tmp_path):
     routes = {"/js/site.js": lambda u: snap(u, 404), **{k: v for k, v in ROUTES.items() if k != "/js/site.js"}}
     c, net = crawl(tmp_path, routes)
     fr = c.frontier
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    assert {s.key: s.decision for s in res.suggestions}["js_link:toggleMenu"] == "unknown"
-    assert res.checks["R7"].status == WARN
+    got = _r7(fr, tmp_path, HOME)  # the school's script is not got (yet): named, nothing read, nothing answered
+    assert got.missing == [f"{W}/js/site.js"] and got.read == [] and got.entries == []
+    assert got.gone == set() and got.still == {"js_link:toggleMenu", "js_link:"}
     net.sink.close()
     fr.close()
     lib = tmp_path / "lib"
@@ -812,21 +514,8 @@ def test_r7_waits_for_a_school_script_not_got_and_a_library_only_page_ignores(tm
     routes = {"/js/jquery.min.js": lambda u: snap(u, body=b"/*! jQuery */", headers={"content-type": "text/javascript"}),
               f"{SITE}/": lambda u: snap(u, html=html)}
     c, net = crawl(lib, routes)
-    res = reconcile.reconcile_sites(c.frontier, lib, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None)).sites[0]
-    got = {s.key: (s.decision, s.why) for s in res.suggestions}
-    assert got["js_link:toggleMenu"][0] == "ignore" and "没有载入任何外面的 .js" in got["js_link:toggleMenu"][1]
+    got = _r7(c.frontier, lib, HOME)  # a library is not the page's own code: not read, and no script is left unread
+    assert got.libraries == [f"{W}/js/jquery.min.js"] and got.read == [] and got.missing == []
+    assert not got.other_js and got.entries == [] and got.still == {"js_link:toggleMenu", "js_link:"}
     net.sink.close()
     c.frontier.close()
-
-
-def test_the_report_names_no_link_text(site_db, tmp_path):
-    c, _net = site_db
-    fr = c.frontier
-    fr.x("DELETE FROM url WHERE url=?", (f"{W}/contact.html",))
-    fr.x("DELETE FROM link WHERE dst=?", (f"{W}/contact.html",))
-    got = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="t", plan=PLAN,
-                                    sources=Sources(cc_dir=None))
-    text = got.text()
-    assert f"{W}/contact.html" in text and "聯絡我們" not in text  # addresses and reasons, never a page's words
-    assert "R7 给平台档案的决定建议" in text and "js_link:toggleMenu" in text

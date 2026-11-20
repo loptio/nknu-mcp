@@ -11,8 +11,8 @@ seconds and grey out after 2 minutes; every route answers on this machine's name
 listens where it is told. What the review of 11-04 found, fixed: run.lock held by another program is never a running
 crawl; a wait whose restart never came says 没重开; the site page says 没抓完 while no run of it goes; a card takes
 its worst server, red first; 在抓 needs a request in the last 2 minutes; an entry's ref is masked; a row pages of two
-sites use is one line; the acceptance page's commands are the lab's; bracketed notes go to the hover text. All on
-synthetic archives, no network; titles are made up and O-masked."""
+sites use is one line; bracketed notes go to the hover text. All on synthetic archives, no network; titles are made
+up and O-masked."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from nknu.admin.cli import app
 from nknu.archive import crawler, google_api, monitor, progress, viewer
 from nknu.archive.frontier import Frontier
 from nknu.archive.monitor import Issue
-from nknu.archive.viewer import Viewer, checks_html, home_html, log_html, make_handler, progress_site_html, server_html
+from nknu.archive.viewer import Viewer, home_html, log_html, make_handler, progress_site_html, server_html
 from tests.archive.test_progress import NOW, add_url, event, plan, ts, visible
 
 ACA, AFF, BM, ARTS = "c.nknu.edu.tw/aca", "c.nknu.edu.tw/affair", "c.nknu.edu.tw/bm", "c.nknu.edu.tw/arts"
@@ -925,7 +925,7 @@ def test_every_dashboard_route_answers_under_this_machines_names_only(served):
     for path in ("/progress", "/progress?part=main", f"/progress/server/{key}", f"/progress/server?card={key}",
                  f"/progress/server/{key}?part=main", "/progress/server/nowhere", "/progress/log",
                  f"/progress/log?site={quote(AFF, safe='')}", f"/progress/log?server={key}&code=looks_gone",
-                 "/progress/log.txt", "/progress/checks", f"/progress/site?k={quote(ACA, safe='')}"):
+                 "/progress/log.txt", f"/progress/site?k={quote(ACA, safe='')}"):
         status, head, _body = fetch(port, path)
         assert status == 200 and head["Cache-Control"] == "no-store", path
         assert fetch(port, path, host="evil.example")[0] == 403, path
@@ -933,7 +933,6 @@ def test_every_dashboard_route_answers_under_this_machines_names_only(served):
     _s, _h, part = fetch(port, f"/progress/server/{key}?part=main")
     assert part.startswith("<main id='pmain'>") and "教务处" in part and "<nav>" not in part
     assert fetch(port, f"/progress/server?card={key}")[2] == fetch(port, f"/progress/server/{key}")[2]
-    assert "漏抓检查" in visible(fetch(port, "/progress/checks")[2])
 
 
 def test_the_log_file_downloads_with_its_name_and_the_pages_lines(served):
@@ -952,8 +951,7 @@ def test_the_home_and_server_pages_ask_every_ten_seconds_and_grey_out_after_two_
         page = fetch(port, path)[2]
         assert "setInterval(tick, 10000)" in page and "> 120000" in page and "searchParams.set('part', 'main')" in page
         assert "<p id='pstale' class='stale-note' hidden>看不到最新资料</p>" in page
-    for path in ("/progress/log", "/progress/checks"):
-        assert "setInterval" not in fetch(port, path)[2]  # the log and the checks do not poll
+    assert "setInterval" not in fetch(port, "/progress/log")[2]  # the log does not poll
 
 
 def test_serve_and_archive_browse_listen_where_they_are_told(tmp_path, monkeypatch):
@@ -1008,8 +1006,8 @@ def todo(f: Frontier, site: str = ACA, host: str = "c.nknu.edu.tw") -> int:
 
 
 def test_run_lock_held_by_another_program_is_never_a_running_crawl(lab):
-    """jscheck, reconcile, seed and retry hold run.lock as a run does (crawler.hold_run_lock): the top line keeps why
-    the last run ended and says another program runs; no card says 在抓, 没动静 or 卡住."""
+    """jscheck, enqueue, rejudge, seed and retry hold run.lock as a run does (crawler.hold_run_lock): the top line
+    keeps why the last run ended and says another program runs; no card says 在抓, 没动静 or 卡住."""
     f, _ids, root = lab
     todo(f)
     todo(f, UNIT, "sso.nknu.edu.tw")
@@ -1157,15 +1155,6 @@ def test_a_row_the_pages_of_two_sites_use_is_one_line_of_the_site_it_belongs_to(
     where = Counter((r["ref"], r["site"]) for r in lines if r["ref"] in {f"u{x}" for x in shared.values()})
     assert where == Counter({(f"u{shared[AFF]}", AFF): 1, (f"u{shared[BM]}", ACA): 1})  # its owner's, else the first
     assert snap["errors"]["n"] == len(lines) == sum(r["errors"]["n"] for c in snap["cards"] for r in c["rows"])
-
-
-def test_the_acceptance_page_gives_the_labs_commands():
-    after = progress.COMMANDS["after"]
-    assert ".venv" not in after and after.count(progress.LAB_ARCHIVE) == 3
-    for step in ("jscheck --dir /crawl/archive", "reconcile --dir /crawl/archive --batch", "verify --dir /crawl/archive"):
-        assert f"{progress.LAB_ARCHIVE} {step}" in after
-    page = checks_html({"at": NOW, "checks": [], "missing_found": [], "round2": None})
-    assert "docker compose -f C:\\nknu-crawl\\compose.yaml run --rm crawler" in visible(page)
 
 
 def test_a_sites_bracketed_note_and_the_logs_read_time_go_to_the_hover_text(troubled):

@@ -1,11 +1,10 @@
-"""The two reviews of phase 4 (10-26), each note that held first written here as a test that failed: a round-1 row no
-page uses (a Common Crawl attachment the school refuses) and a jump menu fired on load the browser never opened are
-counted, verify item 7 waits for this round's jscheck, `jscheck --set` makes a reconciliation stale, the coverage is
-written as the estimate it is (R5 and verify's G item, which a note of these reviews was about too, were taken out
-10-26: test_decisions_1026), a gate that compared nothing says so, the top bar is green only when every site is 爬完,
-a stale reconciliation says it is, R6 never passes a page the browser did not load whole, the crawler reconciles a finished
-site on a thread of its own with its own connection and stops it with the run, and Chrome gets no secret and keeps
-Playwright's own switches.
+"""The two reviews of phase 4 (10-26), each note that held first written here as a test that failed; the ones still
+here are about what is left after the judgment-layer cut of 11-19: a round-1 row no page uses (a Common Crawl
+attachment the school refuses) and a jump menu fired on load the browser never opened are counted, `jscheck --set`
+writes an event that names the sites of the type, a finished run is never green on the top line by itself (whether
+a site is 爬完 is its own page's), a look says what kept a page from loading whole, and Chrome gets no secret and
+keeps Playwright's own switches. (The notes about verify's items, the reconciliation's coverage, its gates, its
+staleness and R6, and the crawler's own reconciliation on a thread went with what they were about.)
 
 No address leaves this machine: the school is httpx.MockTransport's (tests/conftest.py's guard), the browser tests
 open this machine's Chrome on a server on 127.0.0.1 only. Every text is made up; no person's name."""
@@ -28,30 +27,22 @@ import httpx
 import pytest
 
 from nknu.archive import crawler as mod
-from nknu.archive import jscheck, monitor, pagetypes, profiles, progress, reconcile, seeds, viewer
+from nknu.archive import jscheck, monitor, pagetypes, profiles, progress, viewer
 from nknu.archive.frontier import Frontier
-from nknu.archive.jscheck import Ask
-from nknu.archive.reconcile import Sources
-from tests.archive.plans import plan, site
-from tests.archive.test_jscheck import FakeBrowser, FakePage
+from tests.archive.plans import OpenPlan
 from tests.archive.test_round1_after_crawl import (
     BODY,
     CONTACT,
-    EMPTY,
     HOME,
     NEWS,
     PLAN,
     SITE,
     TESTED,
-    Clock,
     School,
     World,
     _all_steps,
-    _by_no,
-    _resolver,
     make_world,
     page,
-    pages,
 )
 
 OLD_PDF = f"https://{SITE}/files/old.pdf"
@@ -81,16 +72,13 @@ def cc_also(tmp_path: Path, *urls: str) -> None:
 
 
 class Refusing(School):
-    """The made-up school, refusing (403) some addresses, and failing to connect to some hosts."""
+    """The made-up school, refusing (403) some addresses."""
 
-    def __init__(self, html: dict[str, str], refused=(), unreachable=()):
+    def __init__(self, html: dict[str, str], refused=()):
         super().__init__(html)
-        self.refused, self.unreachable = set(refused), set(unreachable)
+        self.refused = set(refused)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        if request.url.host in self.unreachable:
-            self.asked.append((request.method, str(request.url)))
-            raise httpx.ConnectError("made-up: the host does not connect", request=request)
         if str(request.url) in self.refused:
             self.asked.append((request.method, str(request.url)))
             return httpx.Response(403, headers=self.HTML, content=b"<html><body>forbidden</body></html>")
@@ -112,11 +100,11 @@ def test_a_common_crawl_attachment_no_page_uses_that_the_school_refuses_keeps_th
         assert not f.q("SELECT 1 FROM page_res WHERE res_id=?", (uid,))  # no page uses it
     finally:
         f.close()
-    got = w.not_done(monitor.ERROR, reconciled=True)
-    assert any("连接失败" in x for x in got.sites[SITE].why), got.sites[SITE].why
-    c17 = _by_no(got.checks)["17"]
-    assert c17.status == monitor.FAIL and any(OLD_PDF in x and "Common Crawl" in x for x in c17.lines), c17.lines
-    assert any(i.url == OLD_PDF for i in got.sites[SITE].issues)
+    got = w.not_done(monitor.ERROR)
+    assert any("连接失败" in x for x in got.why), got.why
+    red = [i.line() for i in got.issues if i.red]  # the site's problem list, in words
+    assert any(OLD_PDF in x and "Common Crawl" in x for x in red), red
+    assert any(i.url == OLD_PDF for i in got.issues)
 
 
 def test_a_redirect_a_page_uses_is_not_counted_again_where_it_lands(tmp_path):
@@ -147,7 +135,7 @@ def test_a_redirect_a_page_uses_is_not_counted_again_where_it_lands(tmp_path):
     assert [r.url for r in got.orphans.get(SITE, [])] == [f"https://{SITE}/c.pdf"]
 
 
-# ---------------------------------------------------------------- 2. jscheck never ran, a jump menu fired on load (S12)
+# ---------------------------------------------------------------- 2. a jump menu fired on load (S12)
 
 
 MENU_PAGE = page("消息", f"<p>最新消息列表。{BODY}</p><p>類別：<select class='category option'><option value='4'>106學年度</option>"
@@ -162,18 +150,9 @@ def _ignore_menus(site_: str, key: str):
     return "ignore" if key.startswith("select:") else profiles.decision(site_, key)
 
 
-def _all_types_tested(tmp_path: Path) -> None:
-    """The 10-25 test knew every type of the made-up site, contact.html's too: nothing is todo."""
-    d = tmp_path / "jstest"
-    lines = [{"type": pagetypes.type_key(u), "url": u, "direct_status": 200, "direct_chars": 120,
-              "rendered_chars": 120, "method": "direct"} for u in (*TESTED, CONTACT)]
-    (d / pagetypes.RESULTS).write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
-    (d / pagetypes.TYPES).write_text(json.dumps({x["type"]: [x["url"]] for x in lines}), encoding="utf-8")
-
-
 def _menu_world(tmp_path: Path) -> World:
     w = make_world(tmp_path)
-    _all_types_tested(tmp_path)
+    w.known = (*TESTED, CONTACT)  # a browser test judged every type before the round, contact.html's too: none todo
     w.school.html[NEWS] = MENU_PAGE
     w.shown[NEWS] = MENU_PAGE
     crawler = w.crawler
@@ -185,18 +164,6 @@ def _menu_world(tmp_path: Path) -> World:
 
     w.crawler = with_decisions
     return w
-
-
-def test_without_this_rounds_jscheck_item_7_waits_whatever_is_left_to_judge(tmp_path):
-    w = make_world(tmp_path)
-    _all_types_tested(tmp_path)
-    _all_steps(w, jscheck_too=False)
-    got = w.verify()
-    c7 = _by_no(got.checks)["7"]
-    assert c7.status == monitor.WARN and any("jscheck_end" in x for x in c7.lines), (c7.status, c7.lines)
-    assert got.text.splitlines()[4].startswith("- 结论：还没完成")
-    assert w.jscheck().reason == "finished"
-    assert _by_no(w.verify().checks)["7"].status == monitor.PASS
 
 
 def test_a_jump_menu_the_page_fires_on_load_is_to_be_judged_until_the_browser_opened_it(tmp_path):
@@ -212,40 +179,17 @@ def test_a_jump_menu_the_page_fires_on_load_is_to_be_judged_until_the_browser_op
     finally:
         f.close()
     assert result_of(w, NEWS) == "unchecked"  # every type is ok, but the browser has not opened this page
-    w.reconcile()
-    w.not_done(monitor.LOOK, reconciled=True)
+    w.not_done(monitor.LOOK)
     assert w.jscheck().reason == "finished"  # it opens the page: the menu sends the browser nowhere here
     assert result_of(w, NEWS) == "ok"
     dash, ver, got = w.state()
-    assert (dash, ver) == ("done", monitor.DONE), got.sites[SITE].why
-    assert _by_no(got.checks)["7"].status == monitor.PASS
+    assert (dash, ver) == ("done", monitor.DONE), got.why
 
 
-# ---------------------------------------------------------------- 3. jscheck --set and a stale reconciliation (S11)
+# ---------------------------------------------------------------- 3. jscheck --set (S11)
 
 
-def test_a_persons_verdict_after_the_reconciliation_makes_it_stale(tmp_path):
-    w = make_world(tmp_path, empty=True)
-    w.seed_and_run()
-    key = pagetypes.type_key(EMPTY)
-    f = Frontier(w.root / "frontier.db")
-    try:
-        f.x("UPDATE page_type SET verdict='js', source='import' WHERE key=?", (key,))  # as 10-25's import may say
-    finally:
-        f.close()
-    assert w.jscheck().reason == "finished"
-    w.reconcile()
-    w.not_done(monitor.LOOK, reconciled=True)  # a page that needs JavaScript is round two's
-    sites = jscheck.set_verdict(w.root, key, "ok", "人看过")
-    assert sites == [SITE]
-    got = w.not_done(monitor.UNRECONCILED)  # never judged empty while its type was js: reconcile again
-    assert any("jscheck --set" in x for x in got.sites[SITE].why), got.sites[SITE].why
-    w.reconcile()
-    assert result_of(w, EMPTY) == "thin"
-    w.not_done(monitor.ERROR, reconciled=True)
-
-
-def test_the_set_command_says_which_sites_to_reconcile_again(tmp_path, monkeypatch):
+def test_the_set_command_writes_an_event_that_names_the_sites_of_the_type(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     from nknu.admin.cli import app
@@ -257,7 +201,7 @@ def test_the_set_command_says_which_sites_to_reconcile_again(tmp_path, monkeypat
     key = pagetypes.type_key(CONTACT)
     got = CliRunner().invoke(app, ["archive", "jscheck", "--dir", str(w.root), "--set", key, "ok"])
     assert got.exit_code == 0, got.output
-    assert "要重新对账" in got.output and SITE in got.output
+    assert f"已改判：{key} → ok" in got.output
     f = ro(w)
     try:
         ev = f.q("SELECT message FROM event WHERE code='verdict_set'")
@@ -266,83 +210,7 @@ def test_the_set_command_says_which_sites_to_reconcile_again(tmp_path, monkeypat
         f.close()
 
 
-# ---------------------------------------------------------------- 5. the coverage, as the estimate it is (S0)
-
-
-def test_the_coverage_says_what_it_rests_on_and_never_that_nothing_is_missed(tmp_path):
-    w = make_world(tmp_path)
-    _all_steps(w)
-    f = ro(w)
-    try:
-        r3b = json.loads(f.q("SELECT checks FROM reconcile_site WHERE site=?", (SITE,))[0][0])["R3b"]
-    finally:
-        f.close()
-    assert r3b["known_ok"] == r3b["linked"] == 2
-    assert "至少还漏约 0" not in r3b["note"] and "估不出还漏多少" in r3b["note"], r3b
-    assert r3b["missed_at_least"] is None
-    dash, html = w.dashboard()
-    assert dash["state"] == "done"
-    assert "覆盖率估计 100%" in html and "偏高" in html and "至少还漏约 0" not in html
-    got = w.verify()
-    c18 = _by_no(got.checks)["18"]
-    line = next(x for x in c18.lines if SITE in x and "Common Crawl" in x)
-    assert "2 个里，2 个" in line and "偏高" in line and "估不出还漏多少" in line, c18.lines
-
-
-def test_a_lower_bound_is_written_as_one():
-    sr = reconcile._SiteRows(ok={1, 2, 3, 4, 5, 6}, linked={1, 2, 3, 4})
-    fr = Frontier.__new__(Frontier)
-    rows = {f"https://{SITE}/{i}": i for i in (1, 2, 5)}
-    sr.land = {i: (i, "ok", True) for i in range(1, 7)}
-    orig = reconcile._row_of
-    try:
-        reconcile._row_of = lambda _fr, u: {"id": rows[u]} if u in rows else None
-        check, cover = reconcile._coverage(fr, sr, list(rows), "Common Crawl ")
-    finally:
-        reconcile._row_of = orig
-    # M = 3 remembered, m = 2 linked, n = 4 linked this round: N̂ = 6, this round has 6 ok: none beyond what was got
-    assert round(cover, 2) == 0.67 and check.counts["estimate"] == 6
-    assert check.counts["missed_at_least"] is None and "估不出还漏多少" in check.note
-    rows[f"https://{SITE}/9"] = 6
-    sr.ok, sr.land[9] = {1, 2, 3, 4, 6}, (9, "ok", True)
-    try:
-        reconcile._row_of = lambda _fr, u: {"id": rows[u]} if u in rows else None
-        check, _c = reconcile._coverage(fr, sr, [f"https://{SITE}/{i}" for i in (1, 5, 9)], "Common Crawl ")
-    finally:
-        reconcile._row_of = orig
-    # M = 3, m = 1, n = 4: N̂ = 12, this round has 5 ok: at least about 7 missed
-    assert check.counts["missed_at_least"] == 7 and "至少还漏约 7 个（下限）" in check.note
-
-
-# ---------------------------------------------------------------- 6. a gate that compared nothing
-
-
-def test_a_gate_that_compared_nothing_says_so():
-    r1, _found = reconcile._r1(None, {})
-    assert r1.status == reconcile.PASS and r1.counts["compared"] is False and "没比到" in r1.note
-    r3, _found = reconcile._imported(None, None, [], "R3a", "Common Crawl ")
-    assert r3.counts["compared"] is False and "没得比" in r3.note
-
-
-def test_the_acceptance_and_the_dashboard_say_which_gates_compared_nothing(tmp_path):
-    w = make_world(tmp_path)
-    w.seed_and_run()
-    (tmp_path / "cc" / "CC-TEST.cdx").write_text(  # by the reconciliation, Common Crawl knows only another site
-        f"tw,edu,nknu,v)/ 20260101000000 {json.dumps({'url': 'https://v.nknu.edu.tw/', 'status': '200'})}\n",
-        encoding="utf-8")
-    assert w.jscheck().reason == "finished"
-    w.reconcile()
-    dash, ver, got = w.state()
-    assert (dash, ver) == ("done", monitor.DONE)  # whether it may: the main session's to decide (listed)
-    st = got.sites[SITE]
-    assert any("没比到" in x and "R3a" in x for x in st.warnings), st.warnings
-    _d, html = w.dashboard()
-    assert "没比到" in html
-    report = reconcile.report_text(w.reconcile())
-    assert "R3a" in report and "没比到" in report
-
-
-# ---------------------------------------------------------------- 7. the top bar and a stale reconciliation (S1)
+# ---------------------------------------------------------------- 7. the top bar (S1)
 
 
 def _top_line(w) -> tuple[dict, str]:
@@ -377,46 +245,10 @@ def test_a_finished_run_is_never_green_on_the_top_line_and_done_is_the_site_page
     assert dash["state"] == "done" and "✓ 爬完" in page
 
 
-def test_the_site_page_says_a_reconciliation_is_stale(tmp_path):
-    w = make_world(tmp_path)
-    _all_steps(w)
-    reconcile.rejudge(w.root, [SITE], plan=PLAN)
-    d = progress.Dashboard(w.root, background=False, cache_s=0)
-    try:
-        d.refresh_slow()
-        html = viewer.progress_site_html(d.site(SITE))
-    finally:
-        d.close()
-    assert "已过期" in html
+# ---------------------------------------------------------------- 8. a page the browser did not load whole
 
 
-# ---------------------------------------------------------------- 8. R6 and a page the browser did not load whole
-
-
-def test_r6_never_passes_a_page_whose_data_did_not_come(tmp_path):
-    data = "https://data.nknu.edu.tw/api/home.json"
-    w = make_world(tmp_path)
-    w.school = Refusing(w.school.html, unreachable=("data.nknu.edu.tw",))
-    shown = dict(w.shown)
-
-    def browser() -> FakeBrowser:
-        return FakeBrowser({u: FakePage(h, [Ask(data, kind="xhr")] if u == HOME else []) for u, h in shown.items()})
-
-    w.browser = browser
-    _all_steps(w)
-    f = ro(w)
-    try:
-        r6 = json.loads(f.q("SELECT checks FROM reconcile_site WHERE site=?", (SITE,))[0][0])["R6"]
-        assert f.q("SELECT count(*) FROM request WHERE purpose='spotcheck' AND url=?", (data,))[0][0] >= 1
-    finally:
-        f.close()
-    assert r6["status"] != "pass", r6
-    assert any(i.get("problem") == "incomplete" and i["url"] == HOME for i in r6["items"]), r6
-    got = w.not_done(monitor.UNRECONCILED)
-    assert any("R6" in x for x in got.sites[SITE].why)
-
-
-def test_the_spot_checker_says_what_kept_a_page_from_loading_whole():
+def test_a_look_says_what_kept_a_page_from_loading_whole():
     log = [jscheck.Exchange(HOME, "document", "GET", True, status=200),
            jscheck.Exchange("https://x.nknu.edu.tw/a.js", "script", "GET", False, error="connect"),
            jscheck.Exchange("https://x.nknu.edu.tw/p.png", "image", "GET", False, blocked="type")]
@@ -424,123 +256,6 @@ def test_the_spot_checker_says_what_kept_a_page_from_loading_whole():
     assert "a.js" in jscheck.incomplete(obs)
     assert jscheck.incomplete(jscheck.Observation(HOME, HOME, "", log=log[:1], not_idle=True)) == "not_idle"
     assert jscheck.incomplete(jscheck.Observation(HOME, HOME, "", log=log[::2])) is None  # an image is not needed
-
-
-# ---------------------------------------------------------------- 9. the crawler's own reconciliation, on its thread
-
-
-def _two_sites(tmp_path: Path):
-    """Two sites: SITE finishes at once, the other one is slow in real time, so SITE is reconciled while it is still
-    being crawled."""
-    slow_site = "v.nknu.edu.tw"
-    two = plan(site(SITE, imp="全校重要", name="测试单位", home=HOME),
-               site(slow_site, imp="本系重要", name="慢的单位", home=f"https://{slow_site}/"))
-    fast = School(pages())
-    slow_pages = {f"https://{slow_site}/": page("首頁", "".join(f"<p><a href='/n{i}.html'>第{i}則</a></p>"
-                                                                for i in range(30)) + f"<p>{BODY}</p>")}
-    slow_pages |= {f"https://{slow_site}/n{i}.html": page(f"第{i}則", f"<p>{BODY}</p>") for i in range(30)}
-    asked = []
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        if request.url.host == slow_site:
-            asked.append((time.monotonic(), str(request.url)))
-            time.sleep(0.05)
-            body = slow_pages.get(str(request.url))
-            return httpx.Response(200 if body else 404, headers=School.HTML,
-                                  content=(body or "<html><body>not found</body></html>").encode())
-        return fast(request)
-
-    clock = Clock()
-
-    def client(warc):
-        return mod.archive_client(warc, transport=httpx.MockTransport(answer), clock=clock, sleep=clock.sleep)
-
-    root = tmp_path / "archive"
-    c = mod.Crawler(root, plan=two, clock=clock, sleep=clock.sleep, resolver=_resolver, client_factory=client,
-                    netcheck=lambda: True, disk_free=lambda p: 10**12, campus_url=None,
-                    reconcile_sources=Sources(cc_dir=None, old=None))
-    seeds.seed_round1(c, old=None, facts_db=None, cc_dir=None, probe=None, jstest=None)
-    return c, asked
-
-
-def test_the_crawler_reconciles_on_a_thread_of_its_own_and_a_stop_ends_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(mod, "SITE_LOOK_S", 0.0)
-    began, seen = threading.Event(), {}
-
-    def slow_reconcile(fr, root, site_, *, stop=None, **kw):
-        seen.update(fr=fr, thread=threading.current_thread(), stop=stop)
-        began.set()
-        while stop is not None and not stop():  # a long reconciliation that minds the run's stop
-            time.sleep(0.01)
-        raise reconcile.Stopped("the run is stopping")
-
-    monkeypatch.setattr(reconcile, "site_done", slow_reconcile)
-    c, asked = _two_sites(tmp_path)
-    t = threading.Thread(target=c.run, kwargs={"poll_s": 0.01}, daemon=True)
-    t.start()
-    try:
-        assert began.wait(30), "the finished site was never reconciled"
-        n0 = len(asked)
-        time.sleep(0.6)
-        assert len(asked) > n0  # the other site is crawled on meanwhile
-        assert seen["fr"] is not c.frontier and seen["fr"].lock is not c.frontier.lock  # its own connection
-        assert seen["thread"] is not threading.main_thread() and seen["thread"].name.startswith("reconcile")
-        t0 = time.monotonic()
-        c.halt("stop")
-        t.join(20)
-        assert not t.is_alive() and time.monotonic() - t0 < 10
-    finally:
-        c.halt("stop")
-        t.join(20)
-        c.frontier.close()
-    assert c.end_reason == "stop"
-    f = Frontier(tmp_path / "archive" / "frontier.db", readonly=True)
-    try:
-        codes = [r[0] for r in f.q("SELECT code FROM event WHERE code IN ('reconcile_failed', 'reconcile_stopped', "
-                                   "'run_end') ORDER BY rowid")]
-    finally:
-        f.close()
-    assert codes[-1] == "run_end" and "reconcile_failed" not in codes
-
-
-def test_a_reconciliation_stops_between_pages_when_asked(tmp_path):
-    w = make_world(tmp_path)
-    w.seed_and_run()
-    f = Frontier(w.root / "frontier.db")
-    try:
-        calls = []
-
-        def stop() -> bool:
-            calls.append(1)
-            return len(calls) > 1  # the first page is read, then the run stops
-
-        with pytest.raises(reconcile.Stopped):
-            reconcile.site_done(f, w.root, SITE, plan=PLAN, batch="t", sources=w.sources, stop=stop)
-        assert [r[0] for r in f.q("SELECT batch FROM reconcile_site")] != ["t"]  # nothing half-done written as done
-        assert not f.q("SELECT 1 FROM event WHERE code='reconcile' AND message LIKE '%\"t\"%'")
-    finally:
-        f.close()
-
-
-def test_what_a_site_lost_is_asked_of_its_own_pages_only(tmp_path):
-    w = make_world(tmp_path)
-    w.seed_and_run()
-    f = Frontier(w.root / "frontier.db")
-    asked = []
-    q = f.q
-
-    def spy(sql, args=()):
-        asked.append((sql, args))
-        return q(sql, args)
-
-    try:
-        b = reconcile._Batch(f, w.root, PLAN, w.sources, "t", None, False, None)
-        f.q = spy
-        b.lost(SITE)
-    finally:
-        f.close()
-    (sql, args), = [(s, a) for s, a in asked if "page_resource" in s]
-    assert "owner_site" in sql and args == (SITE,)
 
 
 # ---------------------------------------------------------------- 10. Chrome: no secret, Playwright's own switches
@@ -580,17 +295,16 @@ def test_chrome_gets_no_secret_from_this_process(monkeypatch):
     assert launched["args"] == list(jscheck.CHROME_ARGS)
 
 
-def test_the_commands_that_open_chrome_hold_no_secret_from_their_start(monkeypatch, tmp_path):
+def test_the_command_that_opens_chrome_holds_no_secret_from_its_start(monkeypatch, tmp_path):
     import os
 
     from typer.testing import CliRunner
 
     from nknu.admin.cli import app
 
-    for args in (["jscheck"], ["reconcile", "--batch", "x", "--no-r6"]):
-        monkeypatch.setenv("GOOGLE_API_KEY", "FAKE-not-a-secret-0000")
-        CliRunner().invoke(app, ["archive", *args, "--dir", str(tmp_path / "none")])
-        assert "GOOGLE_API_KEY" not in os.environ, args
+    monkeypatch.setenv("GOOGLE_API_KEY", "FAKE-not-a-secret-0000")
+    CliRunner().invoke(app, ["archive", "jscheck", "--dir", str(tmp_path / "none")])
+    assert "GOOGLE_API_KEY" not in os.environ
 
 
 def _playwright_disabled_features() -> list[str] | None:
@@ -670,8 +384,10 @@ class _Local(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.mark.browser
-def test_this_machine_s_chrome_sends_no_stun_or_turn_by_itself(tmp_path):
+def test_this_machine_s_chrome_sends_no_stun_or_turn_by_itself(tmp_path, monkeypatch):
     pytest.importorskip("playwright.async_api", reason="没装 Playwright（uv sync --extra browser）")
+    from tests.archive.test_jscheck import PAGES_HOST, _pages_host_on_loopback, add_page, make_root, opened
+
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind(("127.0.0.1", 0))
     udp.settimeout(0.2)
@@ -687,17 +403,19 @@ def test_this_machine_s_chrome_sends_no_stun_or_turn_by_itself(tmp_path):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Local)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/webrtc.html"
+    _pages_host_on_loopback(monkeypatch)  # the page's own host: a name that resolves to the loopback server
+    url = f"http://{PAGES_HOST}:{server.server_address[1]}/webrtc.html"
     got = []
     try:
-        from tests.archive.test_jscheck import make_root, opened, resolve
-
         root = make_root(tmp_path)
-        with opened(root) as f, jscheck.SpotChecker(root, f, gap=(1.0, 1.0), resolver=resolve, shots=False,
-                                                     browser=jscheck.PlaywrightBrowser(settle_ms=2500)) as spot:
-            view = spot(url)
-        if view.error and "打不开" in view.error:
-            pytest.skip(f"这台机器打不开 Chrome：{view.error}")
+        with opened(root) as f:
+            add_page(f, url)  # a page whose type is to be judged: jscheck opens it in Chrome
+        check = jscheck.JsCheck(root, gap=(1.0, 1.0), plan=OpenPlan(), resolver=mod.resolve, netcheck=lambda: True,
+                                browser=jscheck.PlaywrightBrowser(settle_ms=2500))
+        report = check.run()
+        with opened(root) as f:
+            opened_by_chrome = f.q("SELECT count(*) FROM js_page")[0][0]
+        assert report.reason == "finished" and opened_by_chrome == 1  # Chrome showed the page, its script ran
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline:
             try:

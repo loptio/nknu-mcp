@@ -542,9 +542,7 @@ def _round1_root(dir: str | None, *, online: bool = False):
         raise typer.Exit(1)
     if online and rehearsal_of(db) is not None:  # online: the command may send requests (or look names up)
         typer.echo(f"{root} 是离线彩排的资料夹（设计第 18.1 节；主机地址是旧存档的或假的）：会连网的命令不在它上面跑。"
-                   "要看彩排结果用 verify、status、browse、reconcile --no-r6。验收要用现在的程式全新彩排再 --check"
-                   "（设计 §23 E1）：nknu archive rehearse --old <旧存档的副本> --dir <新的空资料夹>，再 nknu archive "
-                   "rehearse --check <预期清单> --dir <同一个资料夹>；或一步做完：加 --check <预期清单> --fresh。")
+                   "要看它的结果用 status、browse。")
         raise typer.Exit(1)
     return root
 
@@ -578,19 +576,16 @@ def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起�
                                                          "archive-2026-10-24"),
                  dir: str = typer.Option(None, "--dir", help="新存档目录，默认是仓库里的 archive/"),
                  cc: str = typer.Option(None, "--cc", help="Common Crawl 网址索引的目录（*.cdx）；默认 research 里那份"),
-                 probe: str = typer.Option(None, "--probe", help="网站普查 data.json（52 个校务系统起点）；默认 research 里那份"),
-                 jstest: str = typer.Option(None, "--jstest", help="10-25 网页类型测试结果的目录（5 个档）；默认 research 里那份，"
-                                                                 "实验室机器上没有 research/ 时要指定")
+                 probe: str = typer.Option(None, "--probe", help="网站普查 data.json（52 个校务系统起点）；默认 research 里那份")
                  ) -> None:
     """建第一轮的待抓清单（设计第 5 节）：名单的网站、附加起点、登录重查，旧存档的每一行和它链接表的目标（照新规则重判），
-    Common Crawl、SiteMap、v1 已知公告、SSO 公告列表，第二轮的起点（分批记下），以及 10-25 网页类型测试结果（只进
-    page_type 表，不当起点）。可重复执行，已有的不会重复加。旧存档只读、绝不改。写 reports/seed-<时间>.md；有网站的起点比
-    旧存档少，退出码 2 并列出少了哪些。"""
+    Common Crawl、SiteMap、v1 已知公告、SSO 公告列表，第二轮的起点（分批记下）。可重复执行，已有的不会重复加。旧存档只读、
+    绝不改。写 reports/seed-<时间>.md；有网站的起点比旧存档少，退出码 2 并列出少了哪些。"""
     from datetime import datetime
     from pathlib import Path
 
     from nknu.archive import crawler as archive
-    from nknu.archive import pagetypes, round1, seeds
+    from nknu.archive import round1, seeds
 
     if round_ != 1:
         typer.echo("现在只有第一轮的起点（--round 1）")
@@ -604,18 +599,11 @@ def archive_seed(round_: int = typer.Option(1, "--round", help="哪一轮的起�
     if old_db.parent.resolve() == root.resolve():
         typer.echo("--old 和 --dir 是同一个目录：新的一轮要另开目录，旧存档只读")
         raise typer.Exit(1)
-    jstest_dir = Path(jstest).expanduser().resolve() if jstest else pagetypes.JSTEST_DIR
-    missing = [n for n in (pagetypes.RESULTS, pagetypes.RETEST, pagetypes.TYPES, pagetypes.REVIEW,
-                           pagetypes.CLICK_SCAN) if not (jstest_dir / n).is_file()]
-    if missing:  # design §5 ⑩: never seeded without it (every type would be new and unchecked, unseen)
-        typer.echo(f"找不到 10-25 网页类型测试结果：{jstest_dir} 缺 {'、'.join(missing)}（用 --jstest 指定目录）")
-        raise typer.Exit(1)
     lock = _hold_for_writing(root)  # held while seeding: no run may start meanwhile (design §6.9: one writer)
     try:
         crawler = archive.Crawler(root, plan=round1.load(), resolver=archive.resolve)
         report = seeds.seed_round1(crawler, old=old_path, facts_db=_settings().facts_path,
-                                   cc_dir=Path(cc) if cc else seeds.CC_DIR, probe=Path(probe) if probe else seeds.PROBE,
-                                   jstest=jstest_dir)
+                                   cc_dir=Path(cc) if cc else seeds.CC_DIR, probe=Path(probe) if probe else seeds.PROBE)
         reports = root / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         out = reports / f"seed-{datetime.now().astimezone():%Y%m%d-%H%M%S}.md"
@@ -735,7 +723,7 @@ def _only_check(root, ids: frozenset[int]) -> None:
     if not left:
         typer.echo("--only 列出的网址没有一个在待抓。没有开始抓。")
         raise typer.Exit(0)
-    typer.echo(f"--only：这次只抓列出的 {left} 个待抓网址；这些网站的其他网址都不抓、不改，也不对账。抓的时候带出的新网址"
+    typer.echo(f"--only：这次只抓列出的 {left} 个待抓网址；这些网站的其他网址都不抓、不改。抓的时候带出的新网址"
                "（云端硬盘档案的内容、转址的目标、网页上的链接）照常记进待抓清单，这次不抓。")
 
 
@@ -751,12 +739,11 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
                                                                        "固定休息的 15 分钟长）"),
                 only: str = typer.Option(None, "--only", help="只抓这个文件列出的网址：一行一个 url 编号（u50251 或 "
                                                             "50251，空行和 # 开头的行不算）；这些网站的其他网址都不抓、"
-                                                            "不改，也不对账")) -> None:
+                                                            "不改")) -> None:
     """开始或接着抓。每台服务器同时只连 1 条，回应结束后再等（默认 2–5 秒）；中断后重跑会接着抓。同一个目录只能有一个在跑，
     同一台机器只能有一个程序对学校发请求（全机锁）。只剩等重试的网址、而且最早也要 --end-wait 秒以后才到期时，自己结束，
-    留给下一次。一个网站抓完（只剩等重试的），就先对它做不连网的对账（浏览器抽查 R6 等 run 停下后用 archive reconcile 做），
-    看板上它会变成「纪录齐了，还没对账」。加 --only <文件>（用户 11-02）：只抓文件列出、还在待抓的网址，同一个网站、同一台
-    服务器的其他网址都不抓、不改，也不对账；列出的抓完（或只剩等重试的）就结束。编号不在待抓清单里：退出码 2，没有开始抓；
+    留给下一次。加 --only <文件>（用户 11-02）：只抓文件列出、还在待抓的网址，同一个网站、同一台
+    服务器的其他网址都不抓、不改；列出的抓完（或只剩等重试的）就结束。编号不在待抓清单里：退出码 2，没有开始抓；
     已经抓过或失败的列出来、跳过。和 --sites 一起用时两个条件都要符合。列出的网址所在的服务器只回 http 或只回 https 时，
     抓的是另一种写法的同一个地址（设计 §6.6）。抓的时候带出的新网址（云端硬盘档案的内容、转址的目标、网页上的链接）只记进待抓清单，
     这次不抓，跑完会列出它们的编号。"""
@@ -766,7 +753,6 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
     from collections import Counter
 
     from nknu.archive import crawler as archive
-    from nknu.archive import reconcile
     from nknu.crawl import schoollock
 
     root = _round1_root(dir, online=True)
@@ -808,10 +794,7 @@ def archive_run(dir: str = typer.Option(None, "--dir"),
         stop_file = root / "STOP"
         stop_file.unlink(missing_ok=True)  # only the run that holds the lock clears a STOP
         (root / "run.pid").unlink(missing_ok=True)  # left by older versions; run.lock says who runs now
-        # each site that finishes is reconciled offline by this process (design §18.2a step 3; R6 waits for
-        # `archive reconcile` once the run stopped); none with --only (its sites are not complete)
-        crawler = archive.Crawler(root, limit=limit, gap=span, sites=site_keys, end_wait_s=end_wait, only=ids,
-                                  reconcile_sources=None if ids is not None else reconcile.Sources())
+        crawler = archive.Crawler(root, limit=limit, gap=span, sites=site_keys, end_wait_s=end_wait, only=ids)
 
         def watch() -> None:
             while not crawler.stop.wait(archive.STOP_POLL_S):
@@ -940,7 +923,7 @@ def archive_retry(reason: str = typer.Argument(..., help="原因代码的开头�
     旧的 POST 不原样重送）。改了平台档案、rejudge 过以后用（11-08 缺口 ②③④）。平台档案有选单规则的网页（开课课表：学年度
     选当学年度、逐个系所按「顯示資料」，11-08 缺口 ⑩、用户 11-09「现在补 115」），这一学年度的选单还没送完的也放回：还没
     送过（没有已按好、待按、正在按或按过没按成的），或者有系所选项只按过一次、没按成（按过两次都没按成的留给人看，不再放回），
-    一页算一种（menu:<规则名>）；下一次 archive run 重新 GET、照当学年度按还没按好的系所。verify 第 4 项列出同样的网页。
+    一页算一种（menu:<规则名>）；下一次 archive run 重新 GET、照当学年度按还没按好的系所。
     --sites 只放回这些网站的网页。
     和 retry 的其他原因一样，没有「只列出、不改」的模式：放回只是把网页改回待抓，下一次 archive run 才发请求；
     印出放回了几页、几种按钮。"""
@@ -1105,7 +1088,7 @@ def archive_browse(dir: str = typer.Option(None, "--dir"),
         server.server_close()
 
 
-# ---------------------------------------------------------------- round 1 after the crawl: verify, jscheck, reconcile
+# ---------------------------------------------------------------- round 1 after the crawl: jscheck, rejudge, review
 
 
 def _old_of(root, old: str | None):
@@ -1128,32 +1111,8 @@ def _site_list(sites: str | None) -> list[str] | None:
     return [x.strip() for x in sites.split(",") if x.strip()] if sites else None
 
 
-@archive_app.command("verify")
-def archive_verify(dir: str = typer.Option(None, "--dir")) -> None:
-    """第一轮验收（设计第 13 节）：只读、不连网，逐项核对（每项 ✓ 通过 / ⚠ 要看 / ✗ 出错 / 没检查）和每个网站的状态，写
-    reports/verify-<时间>.md。退出码 0 全过、1 有要看的或没检查的、2 有出错的。已知缺口（第 16 项）会一直列着，所以最好
-    也只到「第一轮完成，有已知缺口 N 项」。爬虫在跑时也能看，但第 14 项（存档读得回来）要等它停下。25 题那一项（--golden）
-    10-26 拿掉了：25 题是整个项目做好以后量回答好坏用的，不是第一轮爬虫完整度的检查（设计第 13 节）。"""
-    from nknu.archive import monitor, round1
-    from nknu.archive.frontier import OutdatedFrontier
-
-    root = _archive_root(dir)
-    _archive_db(root)
-    plan = round1.load()
-    try:
-        got = monitor.verify(root, plan=plan, resource_check=monitor.extract_check(plan))
-    except OutdatedFrontier as exc:
-        typer.echo(f"{exc}。验收只读、不改资料库：这多半是 10-24 旧爬虫的存档，或旧版程序写的待抓清单，先用 --dir 指定第一轮的"
-                   "存档目录。")
-        raise typer.Exit(1) from None
-    typer.echo(got.text)
-    if got.path is not None:
-        typer.echo(f"报告：{got.path}")
-    raise typer.Exit(got.code)
-
-
 def _drop_secrets(names) -> None:
-    """A command that opens Chrome and never needs a credential (jscheck, reconcile's R6) holds none from its start:
+    """A command that opens Chrome and never needs a credential (jscheck) holds none from its start:
     the shell may have sourced google.env for `archive run` (CLAUDE.md: only the fetch service holds the key), and
     Playwright's driver takes this process's environment (Chrome itself is started without them: jscheck.chrome_env)
     【Claude 的执行办法】, review 10-26."""
@@ -1186,13 +1145,11 @@ def archive_jscheck(dir: str = typer.Option(None, "--dir"),
     if set_ != (None, None):
         key, verdict = set_
         try:
-            stale = jscheck.set_verdict(root, key, verdict, note)
+            jscheck.set_verdict(root, key, verdict, note)
         except jscheck.JsCheckRefused as exc:
             typer.echo(str(exc))
             raise typer.Exit(1) from None
         typer.echo(f"已改判：{key} → {verdict}（人工）；各页的结果会跟着变")
-        if stale:
-            typer.echo(f"这些网站的对账因此过期，要重新对账（nknu archive reconcile --batch … --sites …）：{'、'.join(stale)}")
         return
     if note:
         typer.echo("--note 只和 --set 一起用")
@@ -1214,99 +1171,42 @@ def archive_jscheck(dir: str = typer.Option(None, "--dir"),
     raise typer.Exit(0 if report.reason == "finished" else 1)
 
 
-@archive_app.command("reconcile")
-def archive_reconcile(batch: str = typer.Option(None, "--batch", help="这一批的名字（写进报告和 reconcile_site）"),
-                      dir: str = typer.Option(None, "--dir"),
-                      sites: str = typer.Option(None, "--sites", help="只对这些网站（网站键，逗号分隔）；默认第一轮全部"),
-                      no_r6: bool = typer.Option(False, "--no-r6", help="不做浏览器抽查（R6）：不连网、不拿全机锁；"
-                                                                    "这样网站不会变成「爬完」"),
-                      old: str = typer.Option(None, "--old", help="10-24 旧存档（只读，R4）；默认是 seed 记下的那一份"),
-                      gap: str = typer.Option("2-5", "--gap", help="R6 每个回应之后等几秒（下限-上限）"),
-                      enqueue: str = typer.Option(None, "--enqueue", help="人看过、要抓的网址清单（一行一个，"
-                                                                        "例如对账写的 -found.txt），写进待抓清单")
-                      ) -> None:
-    """对账（设计第 18.2b 节）：拿 Common Crawl、旧存档、浏览器抽查和爬虫自己的纪录比，逐站写 reconcile_site 和
-    reports/reconcile-<批>-<时间>.md。R6 用 jscheck 的浏览器和队列打开每站首页加几页（要拿全机锁、run 停着）；其余几项
-    不连网。run 在跑时拒绝。退出码 0 每站关卡全过、1 有没过或没检查的关卡、2 有关卡出错。
-    --enqueue <清单>：把人确认要抓的网址写进待抓清单（found_via=reconcile），下一次 run 照老方法抓。"""
+@archive_app.command("enqueue")
+def archive_enqueue(listed: str = typer.Argument(..., help="人看过、要抓的网址清单（一行一个）"),
+                    dir: str = typer.Option(None, "--dir")) -> None:
+    """把人确认要抓的网址写进待抓清单（found_via=reconcile），下一次 run 照老方法抓。已经有了的、第二轮的、规则不抓的列出来，
+    不写。run 在跑时拒绝。"""
     from pathlib import Path
 
     from nknu.archive import crawler as archive
-    from nknu.archive import jscheck, reconcile
-    from nknu.crawl import schoollock
+    from nknu.archive import reconcile
 
-    _drop_secrets(jscheck.SECRET_ENV)
-    root = _round1_root(dir, online=not (no_r6 or enqueue))
+    root = _round1_root(dir)
     _archive_db(root)
+    path = Path(listed).expanduser()
+    if not path.is_file():
+        typer.echo(f"找不到清单：{path}")
+        raise typer.Exit(1)
     try:
-        if enqueue:
-            listed = Path(enqueue).expanduser()
-            if not listed.is_file():
-                typer.echo(f"找不到清单：{listed}")
-                raise typer.Exit(1)
-            got = reconcile.enqueue(root, reconcile.read_list(listed))
-            queued = sum(v == "queued" for _u, v in got)
-            typer.echo(f"清单 {len(got)} 个网址：写进待抓清单 {queued} 个；其余（已经有了、第二轮、规则不抓）：")
-            for u, v in got:
-                if v != "queued":
-                    typer.echo(f"  {v}  {u}")
-            return
-        if not batch:
-            typer.echo("要给这一批一个名字：--batch <批>（或用 --enqueue <清单> 把网址写进待抓清单）")
-            raise typer.Exit(1)
-        sources = reconcile.Sources(old=_old_of(root, old))
-        if no_r6:
-            got, out = reconcile.reconcile(root, batch=batch, sites=_site_list(sites), sources=sources)
-        else:
-            span = _gap_option(gap)
-            try:
-                school = schoollock.hold()  # R6 opens school pages (design §6.9)
-            except schoollock.SchoolLockBusy as exc:
-                typer.echo(f"另一个程序正在对学校发请求（pid {exc.pid}，全机锁 {exc.path}）：等它停下再对账，或加 --no-r6 "
-                           "只做不连网的几项")
-                raise typer.Exit(1) from None
-            except schoollock.SchoolLockUnshared as exc:
-                typer.echo(_unshared(exc))
-                raise typer.Exit(1) from None
-            try:
-                got, out = reconcile.reconcile(  # campus_url: 11-03, P33
-                    root, batch=batch, sites=_site_list(sites), sources=sources,
-                    spot_factory=lambda fr: jscheck.SpotChecker(root, fr, gap=span, campus_url=archive.CAMPUS_URL))
-            finally:
-                school.close()
+        got = reconcile.enqueue(root, reconcile.read_list(path))
     except archive.AlreadyRunning as exc:
-        typer.echo(f"archive run（或 jscheck）正在用这个目录（pid {exc.pid}）：先 nknu archive stop，等它停下再对账")
+        typer.echo(f"archive run（或 jscheck）正在用这个目录（pid {exc.pid}）：先 nknu archive stop，等它停下再写")
         raise typer.Exit(1) from None
     except reconcile.NotRound1 as exc:
-        typer.echo(f"{exc}：对账只对第一轮的存档做，旧存档只读")
+        typer.echo(f"{exc}：只对第一轮的存档做，旧存档只读")
         raise typer.Exit(1) from None
-    except jscheck.BrowserMissing as exc:
-        typer.echo(f"打不开浏览器（R6 要用）：{exc}。装好选用依赖组 browser 和本机 Chrome，或加 --no-r6 只做不连网的几项")
-        raise typer.Exit(1) from None
-    except schoollock.SchoolLockNotHeld as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(1) from None
-    worst = 0
-    for res in got.sites:
-        failing = [c for c, k in res.checks.items() if c in reconcile.GATES and k.status == reconcile.FAIL]
-        open_ = [c for c, k in res.checks.items() if c in reconcile.GATES and k.status != reconcile.PASS]
-        worst = max(worst, 2 if failing else 1 if open_ else 0)
-        typer.echo(f"{res.site}：" + ("关卡全过" if res.gates_ok else
-                                      "没过 " + "、".join(f"{c}（{reconcile.STATUS_LABEL[res.checks[c].status]}）"
-                                                         for c in open_)))
-    if got.found:
-        typer.echo(f"对账发现爬虫没找到的网址 {len(got.found)} 个（要人看）：见报告和 -found.txt；要抓的用 "
-                   "nknu archive reconcile --enqueue <清单>")
-    typer.echo(f"报告：{out}")
-    raise typer.Exit(worst)
+    queued = sum(v == "queued" for _u, v in got)
+    typer.echo(f"清单 {len(got)} 个网址：写进待抓清单 {queued} 个；其余（已经有了、第二轮、规则不抓）：")
+    for u, v in got:
+        if v != "queued":
+            typer.echo(f"  {v}  {u}")
 
 
 @archive_app.command("rejudge")
 def archive_rejudge(sites: str = typer.Option(..., "--sites", help="要重算的网站（网站键，逗号分隔）"),
                     dir: str = typer.Option(None, "--dir")) -> None:
     """不连网重算（设计第 18.2a 节第 4 步）：从存档按位置读回这几个网站已存的网页，用现在的规则和平台档案重算资源、类型、
-    记号和「页面几乎是空的」；新找到的网址写进待抓清单（found_via=rejudge），已经抓过的不重抓。run 在跑时拒绝。之后这几个
-    网站的对账要重做。"""
+    记号和「页面几乎是空的」；新找到的网址写进待抓清单（found_via=rejudge），已经抓过的不重抓。run 在跑时拒绝。"""
     from nknu.archive import crawler as archive
     from nknu.archive import reconcile
 
@@ -1328,24 +1228,20 @@ def archive_rejudge(sites: str = typer.Option(..., "--sites", help="要重算的
                f"（下一次 archive run 抓）；R7 写回 {got.r7_rows} 行；「页面几乎是空的」新加 {got.thin_set}、拿掉 "
                f"{got.thin_cleared}")
     if got.unread:
-        typer.echo(f"有 {len(got.unread)} 页按位置读不回来（见 archive verify 第 14 项）")
-    typer.echo("这几个网站之前的对账已经过期：nknu archive reconcile --batch <批> --sites …")
+        typer.echo(f"有 {len(got.unread)} 页按位置读不回来（存档里那一段读不出来，这几页没有重算）")
 
 
 @archive_app.command("review")
 def archive_review(url_id: int = typer.Argument(None, help="要标记的网址编号（不给就列出可以标记的网址）"),
                    mark: str = typer.Option(None, "--mark", help="标记：school_side（学校那边的问题，人看过）"),
-                   menu: str = typer.Option(None, "--menu", help="要标记的选单项目网址（对账 R1 列的「学校的链接坏了」）"),
                    note: str = typer.Option(None, "--note", help="为什么这样标（必填）"),
-                   site: str = typer.Option(None, "--site", help="只列（或只标）这个网站的"),
+                   site: str = typer.Option(None, "--site", help="只列这个网站的"),
                    dir: str = typer.Option(None, "--dir")) -> None:
     """人看过、确认是学校那边的问题的网址（例如云端档案不公开、学校的链接坏了），标成「学校那边的问题（人看过）」（设计第
-    10.2.1 节）：nknu archive review --mark school_side <编号> --note …。那个网址再抓一次，标记就作废。网站选单上学校的坏
-    链接（对账 R1 的 ⚠，没有网址编号）用 --menu <网址> 标：nknu archive review --mark school_side --menu <网址> --note …；
-    链到它的那一页再抓一次，标记就作废；标过的不再挡 R1，照样列出。不给 --mark 时只列出可以标记的网址和选单上学校的坏链接
-    （只读）。run 在跑时拒绝标记。"""
+    10.2.1 节）：nknu archive review --mark school_side <编号> --note …。那个网址再抓一次，标记就作废。不给 --mark 时只列出
+    可以标记的网址（只读）。run 在跑时拒绝标记。"""
     from nknu.archive import crawler as archive
-    from nknu.archive import monitor, outcome, reconcile
+    from nknu.archive import outcome, reconcile
     from nknu.archive.frontier import Frontier
 
     root = _round1_root(dir)
@@ -1355,30 +1251,18 @@ def archive_review(url_id: int = typer.Argument(None, help="要标记的网址�
         f = Frontier(db, readonly=True)
         try:
             rows = reconcile.markable_rows(f, site)
-            menus = reconcile.menu_bad_links(f, root, site=site)
-            marked = {s: monitor.menu_marks(f, s) for s in {m.site for m in menus}}
         finally:
             f.close()
         typer.echo(f"可以标记的网址 {len(rows)} 个（nknu archive review --mark school_side <编号> --note …）：")
         for r in rows:
             label = outcome.RESULT_LABEL.get(r["result"], r["result"])
             typer.echo(f"  {r['id']}  {label}（{r['reason'] or '—'}，{r['status'] or '—'}）  {r['url']}")
-        typer.echo(f"选单上学校的坏链接 {len(menus)} 个（对账 R1；nknu archive review --mark school_side --menu <网址> "
-                   "--note …）：")
-        for m in menus:
-            got = marked.get(m.site, {}).get(m.target)
-            label = f"{school}：{got.get('note')}" if got else reconcile.R1_STATUS_ZH["bad_link"]
-            typer.echo(f"  {m.site}  {label}  {m.target}（在 {m.page} 的选单上）")
         return
-    if (url_id is None) == (menu is None):
-        typer.echo("要给网址编号，或用 --menu 给选单项目的网址（两个只能给一个）：nknu archive review --mark school_side "
-                   "<编号> --note …")
+    if url_id is None:
+        typer.echo("要给网址编号：nknu archive review --mark school_side <编号> --note …")
         raise typer.Exit(1)
     try:
-        if menu is not None:
-            got = reconcile.review_menu_mark(root, menu, note=note or "", site=site, mark=mark)
-        else:
-            result = reconcile.review_mark(root, url_id, note=note or "", mark=mark)
+        result = reconcile.review_mark(root, url_id, note=note or "", mark=mark)
     except archive.AlreadyRunning as exc:
         typer.echo(f"archive run 正在用这个目录（pid {exc.pid}）：先 nknu archive stop，改完再 run")
         raise typer.Exit(1) from None
@@ -1388,95 +1272,8 @@ def archive_review(url_id: int = typer.Argument(None, help="要标记的网址�
     except ValueError as exc:
         typer.echo(f"没有标记：{exc}")
         raise typer.Exit(1) from None
-    if menu is not None:
-        for m in got:
-            typer.echo(f"已标记 {m.site} 选单上的 {m.target}（学校的链接坏了，在 {m.page}）为{school}；")
-        typer.echo("对账 R1 不再因为它没过（看板和验收马上算）；链到它的那一页再抓一次，标记就作废")
-        return
     typer.echo(f"已标记 {url_id}（原来是「{outcome.RESULT_LABEL.get(result, result)}」）为{school}；"
                "这个网址再抓一次，标记就作废")
-
-
-@archive_app.command("rehearse", hidden=True)
-def archive_rehearse(old: str = typer.Option(None, "--old", help="10-24 旧存档的目录（只读：数据库按 immutable 打开，WARC 只读）"),
-                     dir: str = typer.Option(..., "--dir", help="彩排的新资料夹（不能是旧存档，也不能在它里面）"),
-                     sites: str = typer.Option(None, "--sites", help="只跑这些网站（网站键，逗号分隔）；默认第一轮全部"),
-                     check: str = typer.Option(None, "--check", help="预期清单（rehearsal_expect.json）：不跑彩排，"
-                                                                    "只拿 --dir 的彩排结果逐条核对（彩排库要是现在的程式"
-                                                                    "建的，不然整份 FAIL）"),
-                     fresh: bool = typer.Option(False, "--fresh", help="和 --old、--check 一起用：在新的 --dir（不能已经"
-                                                                      "存在）全新彩排，跑完马上核对"),
-                     facts: str = typer.Option(None, "--facts", help="v1 的 facts.db（只读，v1 已知公告当起点）；默认不读")
-                     ) -> None:
-    """离线彩排（设计第 18.1 节，隐藏命令）：用真的爬虫程序（seed --round 1 + run）跑第一轮，网络换成「从旧存档回答」：同一个
-    网址（规范写法相同）的 GET 照旧存档的回应原样回，旧存档没有的（没按过的按钮 POST、没抓过的附件、Google API）回
-    not_archived（失败、不重试、不算服务器或网络的）。不连网（断网绊线）、DNS 用旧库 host 表、时钟是假的（等待只把时钟往前拨），
-    不拿全机锁、不用金钥。跑完自动 reconcile（不含 R6）和 verify，报告写进 <dir>/reports/。
-    --check <清单> --dir <彩排资料夹>：逐条核对，印出 PASS/FAIL 和理由；全过退出码 0，有 FAIL 退出码 2。彩排库不是现在的
-    程式建的（设计 §23 E1：版本不一样、没记下或读不到），整份 FAIL、一条都不核对（退出码 2）：验收一律用现在的程式全新彩排
-    再 --check。--old <旧存档> --dir <新资料夹> --check <清单> --fresh：一步做完（资料夹已经存在就拒绝）。"""
-    import logging
-    from pathlib import Path
-
-    from nknu.archive import rehearsal
-
-    root = Path(dir).expanduser().resolve()
-    expect = Path(check).expanduser().resolve() if check else None
-    if expect is not None and not expect.is_file():
-        typer.echo(f"找不到预期清单：{expect}")
-        raise typer.Exit(1)
-    if fresh:
-        if not old or expect is None:
-            typer.echo("--fresh 要和 --old <旧存档的副本>、--check <预期清单> 一起用")
-            raise typer.Exit(1)
-        if root.exists():
-            typer.echo(f"{root} 已经存在：--fresh 只在新的资料夹全新彩排（已经有的资料夹会接着跑、不重新 seed）")
-            raise typer.Exit(1)
-    if expect is not None and not fresh:
-        _rehearsal_check(rehearsal, expect, root)
-    if not old:
-        typer.echo("要给旧存档的目录：--old <旧存档>（或用 --check 只核对）")
-        raise typer.Exit(1)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per replayed request is noise here
-    try:
-        done = rehearsal.rehearse(Path(old).expanduser(), root, sites=_site_list(sites),
-                                  facts_db=Path(facts).expanduser() if facts else None, say=typer.echo)
-    except rehearsal.RehearsalRefused as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(1) from None
-    except FileNotFoundError as exc:
-        typer.echo(f"找不到：{exc}")
-        raise typer.Exit(1) from None
-    typer.echo(f"彩排完：run 结束原因 {done.run_end.get('reason')}；验收 {done.verify_conclusion}（退出码 "
-               f"{done.verify_code}）；摘要 {done.summary}")
-    if fresh and expect is not None:
-        _rehearsal_check(rehearsal, expect, root)
-
-
-def _rehearsal_check(rehearsal, expect, root) -> None:
-    """rehearse --check: the code gate (design §23 E1), then each expectation; exits 0 (all pass), 2 (a FAIL, or a
-    folder other code made: then no item is read, so that nothing looks passed) or 1 (nothing to check)."""
-    if not (root / "frontier.db").is_file():
-        typer.echo(f"找不到彩排的待抓清单：{root / 'frontier.db'}")
-        raise typer.Exit(1)
-    gate = rehearsal.code_gate(root)
-    typer.echo(f"彩排库的程式版本：{gate.made_by or '（没有记下）'}；现在的程式：{gate.now}")
-    if not gate.ok:
-        typer.echo(f"FAIL  rehearsal_code：{gate.why}")
-        typer.echo("整份 FAIL（一条都没核对）：env -u GOOGLE_API_KEY uv run nknu archive rehearse --old <旧存档的副本> "
-                   "--dir <新的空资料夹> --check <预期清单> --fresh")
-        raise typer.Exit(2)
-    try:
-        got = rehearsal.check(expect, root)
-    except (ValueError, KeyError) as exc:
-        typer.echo(f"预期清单读不懂：{exc}")
-        raise typer.Exit(1) from None
-    for r in got:
-        typer.echo(f"{'PASS' if r.ok else 'FAIL'}  {r.id}：{r.why}")
-    failed = [r for r in got if not r.ok]
-    typer.echo(f"共 {len(got)} 条：PASS {len(got) - len(failed)}、FAIL {len(failed)}")
-    raise typer.Exit(2 if failed else 0)
 
 
 # The inspection tools' two commands, nknu search and nknu trace (plan 2026-11-15 T4; the owner, 11-15: 「可以，开工」).

@@ -19,8 +19,9 @@ crawler session's design (profiles.Menu, profiles.DATAOPEN; how each piece is do
 - the export says the page came of the menu.
 The review of 11-09 (its findings fixed here; how, 【Claude 的执行办法】): a redirect answers no menu press; what a
 mismatched answer showed stays with the press; `retry unpressed` judges each option (one tried twice is a person's, one
-tried once is pressed again beside others done) and verify check 4 names the same pages; a rejudge keeps a menu its
-page cannot send unpressed; a press line says the department in words; two options NFKC reads as one are two rows.
+tried once is pressed again beside others done) and postback.menus_not_sent names the same pages (verify check 4,
+which listed them, went with the judgment-layer cut of 11-19); a rejudge keeps a menu its page cannot send unpressed; a
+press line says the department in words; two options NFKC reads as one are two rows.
 All offline: fake networks and clocks, made-up pages, made-up departments and courses (測試學系 …), no person's name."""
 
 from __future__ import annotations
@@ -190,7 +191,8 @@ def test_the_menus_need_nothing_the_submit_is_pressed_and_the_course_popup_stays
         assert profiles.decision(SITE, k) == "ignore"
         assert links.unhandled_need(profiles.decision(SITE, k)) == ("no", "unhandled:ignore")
     assert profiles.decision(SITE, BARE, "顯示資料") == "press"
-    assert monitor.expected_unhandled(SITE, BARE, "顯示資料", UNPRESSED) == ("must", UNPRESSED)
+    (entry,) = postback.unpressed_entries([BARE], [(BARE, "顯示資料")])  # pressed by nobody: 要人看, with its text
+    assert (entry["need"], entry["why"], entry["text"]) == ("must", UNPRESSED, "顯示資料")
     assert profiles.decision(SITE, "js_bind:click .cssItemStyle") == "unknown"  # a course's history: 要人看
     assert profiles.decision(SITE, "js_link:isFinite") == "ignore"
     assert profiles.decision(SITE, "postback:ctl*$uTopMainMenu$btnSwitch") == "unknown"  # lost and found: as before
@@ -554,9 +556,10 @@ def test_retry_unpressed_goes_by_each_option_of_this_year(w):
     assert w.chains.retry_unpressed([SITE]) == (0, 0)  # pending: the run presses it
 
 
-def test_verify_check_4_names_the_menus_not_sent_and_a_press_line_says_the_department(w):
-    """verify names the pages `retry unpressed` puts back (review of 11-09: nothing else said so), and a menu press's
-    problem line says what it chose in words, never its urlencoded argument."""
+def test_the_menus_not_sent_are_named_and_a_press_line_says_the_department(w):
+    """postback.menus_not_sent names the pages `retry unpressed` puts back (review of 11-09; verify check 4 listed
+    them until the cut of 11-19), and a menu press's problem line says what it chose in words, never its urlencoded
+    argument."""
     never, _shot = w.page(unit(1), SITE, course_page())  # stored before the platform file had the menu
     one, _got = w.stored(unit(2), SITE, course_page())
     first, *rest = w.actions(one["id"])
@@ -566,12 +569,10 @@ def test_verify_check_4_names_the_menus_not_sent_and_a_press_line_says_the_depar
         w.f.x("UPDATE action SET state='done', status=200, sniff='html' WHERE id=?", (a["id"],))
     done, _got = w.stored(unit(3), SITE, course_page())
     w.f.x("UPDATE action SET state='done', status=200, sniff='html' WHERE list_id=?", (done["id"],))
-    four = {c.no: c for c in monitor.checks(w.f, now=NOW)}["4"]
-    assert four.status == monitor.FAIL and len(four.lines) == 1, four.lines
-    line = four.lines[0]
-    assert line.startswith(f"{SITE}：平台规则 course_table 的选单这一学年度（115）还没送完的网页 2 个")
-    assert f"例如 {never['url']}" in line  # the first of them
-    assert f"nknu archive retry unpressed --sites {SITE}" in line and four.detail.endswith("的网页 2 个")
+    assert postback.this_year(NOW) == 115
+    not_sent = [(r["owner_site"], r["url"], m.name) for r, m in postback.menus_not_sent(w.f, 115)]
+    # the table stored before the rule and the one with a department tried once; the one whose presses are done is not
+    assert not_sent == [(SITE, never["url"], "course_table"), (SITE, one["url"], "course_table")]
     presses = [i.line() for i in monitor.site_status(w.f, now=NOW)[SITE].issues if i.what == "press"]
     assert len(presses) == 1 and f"（选单「{TEXTS[0]}」）" in presses[0], presses
     assert "%" not in presses[0] and "asked 115/測試學系, shows 113/測試學系" in presses[0]
@@ -605,8 +606,8 @@ def test_a_rejudge_keeps_a_menu_its_page_cannot_send_unpressed(tmp_path):
 def test_a_rejudge_presses_no_menu_and_retry_unpressed_then_puts_the_table_back(tmp_path):
     """The way to the current year on an archive whose course tables round one stored: a rejudge reads them with
     today's platform file (the menus need nothing, nothing pressed, nothing written unpressed: a menu its page can send
-    is `retry unpressed`'s, and verify check 8 finds nothing stale), then `retry unpressed` puts each back for its GET
-    to send the menu."""
+    is `retry unpressed`'s, and what is written is what the platform file says now), then `retry unpressed` puts each
+    back for its GET to send the menu."""
     w = World(tmp_path)
     row, _shot = w.page(PAGE, SITE, course_page())
     w.f.add_page_res(row["id"], [{"res_key": f"select:{k}", "how": "unhandled", "role": "click", "need": "must",
@@ -619,8 +620,9 @@ def test_a_rejudge_presses_no_menu_and_retry_unpressed_then_puts_the_table_back(
     assert {r["res_key"]: (r["need"], r["why"]) for r in entries if r["res_key"].startswith("select:")} == {
         f"select:{YEAR}": ("no", "unhandled:ignore"), f"select:{DEPT}": ("no", "unhandled:ignore")}
     assert not [r["res_key"] for r in entries if r["why"] == UNPRESSED]
-    for r in entries:  # verify check 8's comparison: what is written is what today's platform file says
-        assert monitor.expected_unhandled(SITE, r["res_key"], r["text"], r["why"]) == (r["need"], r["why"])
+    for r in entries:  # what is written is what today's platform file says (nothing here is a button to press)
+        decided = profiles.decision(SITE, r["res_key"], r["text"])
+        assert decided != "press" and links.unhandled_need(decided) == (r["need"], r["why"])
     assert not f.q("SELECT 1 FROM action")  # a rejudge presses nothing
     assert Chains(f, tmp_path).retry_unpressed([SITE]) == (1, 1)
     back = f.row_by_id(row["id"])

@@ -346,11 +346,6 @@ class Viewer:
         text = f"# {view['problem']}\n" if "problem" in view else progress.log_text(view, d.db)
         return text.encode(), f"problems-{datetime.fromtimestamp(view['at'], progress.TZ):%Y%m%d-%H%M}.log"
 
-    def progress_checks(self, q: dict) -> str:
-        """/progress/checks: the acceptance checks, worked out when the page is opened (kept until P49 settles what
-        爬完 is)."""
-        return self.layout("验收", PROGRESS_CSS + checks_html(self.dashboard().checks_page()))
-
     def progress_site(self, q: dict) -> str:
         """/progress/site?k=<site>[&b=<category>][&l=<page label>]: one site's pages and other addresses (§14.2)."""
         key = q.get("k", [""])[0]
@@ -373,7 +368,7 @@ class Viewer:
                 ".url{color:#666;font-size:12px;word-break:break-all}.dim{color:#888}.bad{color:#b00020}"
                 ".meta th{width:9em}iframe.view{width:100%;height:75vh;border:1px solid #ccc}pre{white-space:pre-wrap}"
                 "nav a{margin-right:12px}</style></head><body><nav><a href='/progress'>进度</a>"
-                "<a href='/progress/log'>错误记录</a><a href='/progress/checks'>验收</a><a href='/'>总览</a>"
+                "<a href='/progress/log'>错误记录</a><a href='/'>总览</a>"
                 "<a href='/issues'>问题清单</a><a href='/search'>搜索</a></nav>"
                 f"<h1>{html.escape(title)}</h1>{body}</body></html>")
 
@@ -460,7 +455,7 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 SERVER_PAGE = "/progress/server/"
 # the dashboard's pages, by route (all GET, Host-checked, never kept by the browser); /progress/log.txt is a file
 DASHBOARD_PAGES = {"/progress": "progress", "/progress/server": "progress_server", "/progress/log": "progress_log",
-                   "/progress/checks": "progress_checks", "/progress/site": "progress_site"}
+                   "/progress/site": "progress_site"}
 _SIGN = {"green": "✓", "yellow": "⚠", "red": "✗", "none": ""}
 LOG_LINES = 1000  # the log page lists the newest this many lines (the rehearsal's 26,492: a 10 MB page); the file, all
 PROGRESS_CSS = """<style>
@@ -787,56 +782,6 @@ def log_html(view: dict) -> str:
     return "<main id='plog'>" + "".join(out) + "</main>"
 
 
-def checks_html(d: dict) -> str:
-    """The acceptance page (/progress/checks; design §4: kept as it was until P49 settles what 爬完 is), worked out
-    when opened: the cheap checks and what the reconciliations found the crawl has no row for, the round-two list, and
-    the steps after a run stopped."""
-    gone = _problem_main(d, "pchecks")
-    if gone:
-        return gone
-    steps = (f"<section><h2>停下以后（每个网站这几步都过了才算爬完）</h2>"
-             f"<pre class='cmd'>{_e(progress.COMMANDS['after'])}</pre></section>")
-    return "<main id='pchecks'>" + _checks_html(d) + _round2_html(d) + steps + "</main>"
-
-
-def _checks_html(snap: dict) -> str:
-    """The acceptance page's checks (monitor.checks, cheap) and what the reconciliations found the crawl has no row
-    for (§18.2b), open."""
-    checks = snap.get("checks")
-    if checks is None:
-        body = f"<p class='c-yellow'>⚠ 没检查：{_e(snap.get('checks_error') or '还在算')}</p>"
-        n_bad = None
-    else:
-        n_bad = sum(c["result"] in ("warn", "fail", "skip") for c in checks)
-        color = {"pass": "green", "warn": "yellow", "fail": "red", "skip": "yellow"}
-        words = {"pass": "通过", "warn": "要看", "fail": "出错", "skip": "没检查"}
-        body = "<table>" + "".join(
-            f"<tr><td>{_e(c['no'])}</td><td>{_e(c['title'])}</td>"
-            f"<td>{_mark(color.get(c['result'], 'yellow'), words.get(c['result'], c['result']))}</td>"
-            f"<td>{_e(c['detail'])}</td></tr>" for c in checks) + "</table>"
-    found = snap.get("missing_found") or []
-    if found:
-        body += ("<p><b>要人看：对账发现爬虫没找到的网址</b></p><ul>"
-                 + "".join(f"<li>{_e(m['site'])}（{_e(m['item'])} 找到 {m['n']} 个）："
-                           + "、".join(_e(u) for u in m["urls"]) + "</li>" for m in found) + "</ul>")
-    title = "漏抓检查" + ("（没检查）" if n_bad is None else f"（{n_bad} 项要看）" if n_bad else "（都通过）")
-    return f"<section><details id='d-checks' open><summary>{_e(title)}</summary>{body}</details></section>"
-
-
-def _round2_html(snap: dict) -> str:
-    """The acceptance page's round-two list (§14.2): what this round only notes, by batch, source and domain."""
-    r2 = snap.get("round2")
-    if not r2:
-        return "<section><details id='d-round2'><summary>第二轮清单（还在算）</summary></details></section>"
-    by_src = "、".join(f"{_e(x['source'])} {_n(x['n'])}" for x in r2["by_source"]) or "—"
-    doms = "、".join(f"{_e(x['domain'])} {_n(x['n'])}" for x in r2["domains"]) or "—"
-    rows = "".join(f"<tr><td title='{_e(x['why'])}'>{_e(x['zh'])}</td><td class='num'>{_n(x['sites'])}</td>"
-                   f"<td class='num'>{_n(x['n'])}</td></tr>" for x in r2["by_why"])
-    return (f"<section><details id='d-round2' open><summary>第二轮清单（共 {_n(r2['total'])} 个网址，这一轮只记下来）</summary>"
-            f"<table><tr><th>哪一批</th><th>网站</th><th>网址</th></tr>{rows}</table><p>按起点来源：{by_src}</p>"
-            f"<p>校外网域（前 20）：{doms}</p></details></section>")
-
-
 def progress_site_html(d: dict) -> str:
     """One site's page (design §14.2): its pages by completeness, then its other addresses and presses by the ten
     categories, each failure with its reason (the codes as hover text)."""
@@ -846,23 +791,11 @@ def progress_site_html(d: dict) -> str:
     why += "".join(f"<li class='c-yellow'>⚠ {_e(w)}</li>" for w in d.get("warnings") or [])
     home = (f"<a href='{_e(d['home'])}' rel='noreferrer' target='_blank'>{_e(d['home'])}</a> "
             "<span class='dim'>（点这个会连到学校网站）</span>") if d.get("home") else ""
-    rec = d.get("reconcile")
-    if rec is None:
-        rec_line = "还没对账"
-    else:
-        covers = rec.get("cover_lines") or ([f"覆盖率估计 {rec['cover_cc']:.0%}（偏高）"] if rec["cover_cc"] is not None
-                                            else [])
-        rec_line = (f"最近一次对账 {progress.fmt_clock(rec['at'], now)}（{rec['batch']}）"
-                    + (f"（已过期：之后又有{rec.get('stale') or '新的抓取'}，要重对）" if rec.get("fresh") is False else "")
-                    + "：" + ("关卡全过" if rec["gates_ok"] else "有关卡没过")
-                    + (f"（没比到的：{rec['blind']}，不等于没问题）" if rec.get("blind") else "")
-                    + (f"；{rec['menu']}" if rec.get("menu") else "")
-                    + "".join(f"；{x}" for x in covers))
     slow = (f"完整度更新于 {progress.fmt_clock(d['slow_at'], now)}" if d.get("slow_at")
             else "完整度还在算（第一次要几秒），网页这一块稍后再看")
     out = [f"<p><a href='/progress'>← 回进度看板</a></p><p>{_e(progress.TIER_NAME.get(d['tier'], ''))} · {home}</p>",
            f"<p class='big'>{_mark(color, words, sign)}</p>" + (f"<ul>{why}</ul>" if why else ""),
-           f"<p class='dim'>{_e(rec_line)} · {_e(slow)}</p>"]
+           f"<p class='dim'>{_e(slow)}</p>"]
     # pages, by their completeness
     flt = "".join(f"<a href='/progress/site?k={key}&l={c}'>{_e(zh)} {n:,}</a>" for c, zh, n in d["page_counts"])
     out.append(f"<h2>网页（照完整度排：连接失败在前，完整的在最后）</h2><p class='filters'>筛选：<a href='/progress/site?k={key}'>"

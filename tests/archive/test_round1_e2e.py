@@ -1,13 +1,13 @@
 """The round-1 crawl end to end (design §17 step 6–8 wired into the crawler; §7.4–§7.6, §8.2–§8.3, §10.4, §11): one
-`seed_round1` with the 10-25 page-type results, then one `Crawler.run()` with its worker threads, on a fake network
-(httpx.MockTransport: no request leaves this machine) and a fake clock. The pages are minimal shapes of the school's
-platforms (titles made up, no person's name):
+`seed_round1`, the page types a browser test judged before the round written as rows (known_types), then one
+`Crawler.run()` with its worker threads, on a fake network (httpx.MockTransport: no request leaves this machine) and
+a fake clock. The pages are minimal shapes of the school's platforms (titles made up, no person's name):
 
 - a c.nknu list walked by ASP.NET postback over 3 pages (MasterGrid / Page$N), its details by GET with their
   attachments, one detail empty (the id probe says so too: gone_id);
 - SSO 公告中心: its 7 categories and the list of all of them (共 N 筆 added up), a category of 2 pages, details by
   GET, one attachment the school's page says is broken (bad_link);
-- an SSO cLv2 unit page whose details and download are buttons (row presses), of a type the 10-25 test never saw;
+- an SSO cLv2 unit page whose details and download are buttons (row presses), of a type no browser test judged;
 - 国际处's tabs (one GET per tab, the shown one too; a tab's content holds an attachment);
 - 电子系's download buttons (one POST per (k, number); one answers no address: mismatch);
 - a Google Site with a Drive folder (a shortcut, a sub-folder, a native document), an embedded calendar of two pages
@@ -32,7 +32,7 @@ import httpx
 import pytest
 
 from nknu.archive import crawler as mod
-from nknu.archive import google_api, outcome, pagetypes, scope, seeds
+from nknu.archive import google_api, pagetypes, scope, seeds
 from nknu.archive.frontier import utc_now
 from nknu.archive.monitor import politeness, scope_audit
 from tests.archive.plans import plan, site
@@ -410,7 +410,7 @@ class FastClock:
             self.slept += max(0.0, s)
 
 
-# ---------------------------------------------------------------- the 10-25 page-type results (design §8.2)
+# ---------------------------------------------------------------- the page types a browser test judged (design §8.2)
 
 def _key(url: str) -> str:
     c = scope.canonical(url)
@@ -422,23 +422,16 @@ TESTED = [ACA_LIST, "https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid=663&GI=1", SS
           OIA, EE, COUNSEL]  # cLv2's type is not among them: new this round, todo (why new) until jscheck
 
 
-def jstest_dir(root: Path) -> Path:
-    """The five files of the 10-25 test, made up for the test's own page types: each tested ok (200, the same text
-    directly and in the browser); oia's and ee's types noted by the click scan (click_profiled)."""
-    d = root / "jstest"
-    d.mkdir()
-    lines = [{"type": _key(u), "url": scope.canonical(u), "direct_status": 200, "direct_chars": 500,
-              "rendered_chars": 500, "method": "direct"} for u in TESTED]
-    (d / pagetypes.RESULTS).write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
-                                       encoding="utf-8")
-    (d / pagetypes.RETEST).write_text("", encoding="utf-8")
-    (d / pagetypes.TYPES).write_text(json.dumps({x["type"]: [x["url"]] for x in lines}, ensure_ascii=False),
-                                     encoding="utf-8")
-    (d / pagetypes.REVIEW).write_text(json.dumps({"kinds": []}), encoding="utf-8")
-    (d / pagetypes.CLICK_SCAN).write_text(json.dumps({"kinds": [{"type": _key(OIA), "hidden_pages": 1},
-                                                                {"type": _key(EE), "hidden_pages": 1}]}),
-                                          encoding="utf-8")
-    return d
+def known_types(f) -> None:
+    """The types of TESTED as a browser test before the round left them (the 10-25 test's import did, until the cut
+    of 11-19; nothing imports one now): each judged ok (the same text directly and in the browser), source import,
+    no page of this round counted yet. Written before the run fetches anything."""
+    for u in TESTED:
+        c = scope.canonical(u)
+        parts = pagetypes.type_parts(c, scope.site_key(c))
+        f.x("INSERT INTO page_type(key, site, host, path_tpl, params, verdict, method, direct_chars, rendered_chars, "
+            "sample_url, source) VALUES (?,?,?,?,?,'ok','direct',500,500,?,'import')",
+            (parts.key, parts.site, parts.host, parts.path_tpl, json.dumps(list(parts.params)), c))
 
 
 # ---------------------------------------------------------------- one seed, one run
@@ -462,8 +455,8 @@ def crawl(tmp_path: Path, monkeypatch, *, key: bool = True, school: School | Non
     monkeypatch.setattr(mod, "IDLE_POLL_S", 0.02)
     school = school or School()
     crawler = crawler_on(tmp_path / "archive", school, FastClock(), **kw)
-    report = seeds.seed_round1(crawler, old=None, facts_db=None, cc_dir=None, probe=None,
-                               jstest=jstest_dir(tmp_path))
+    report = seeds.seed_round1(crawler, old=None, facts_db=None, cc_dir=None, probe=None)
+    known_types(crawler.frontier)
     crawler.run(poll_s=0.01)
     return crawler, school, report
 
@@ -486,20 +479,23 @@ def levels(f) -> dict[str, tuple[str, str]]:
         "SELECT u.url, pc.level, pc.label FROM page_completeness pc JOIN url u ON u.id = pc.id")}
 
 
-def test_seed_imports_the_page_types_and_the_run_finishes(world):
-    crawler, school, report = world
+def test_the_run_finishes_and_a_type_no_browser_test_judged_is_new(world):
+    crawler, school, _report = world
     f = crawler.frontier
     assert school.problems == []
-    assert any("导入 10-25 网页类型测试" in line for line in report.page_types)
-    assert "网页类型：10-25 测试结果" in report.text()
-    imported = {r["key"]: r for r in f.q("SELECT * FROM page_type WHERE source='import'")}
-    assert set(imported) == {_key(u) for u in TESTED}
-    assert "click_profiled" in (imported[_key(EE)]["note"] or "")
+    # a type the crawl meets that nobody judged is new (todo, why new, source crawl); the ones it was given stay theirs
+    clv2 = f.q("SELECT verdict, why, source, n_pages FROM page_type WHERE key=?", (_key(CLV2),))[0]
+    assert tuple(clv2) == ("todo", "new", "crawl", 1)
+    given = {r["key"]: r for r in f.q("SELECT * FROM page_type WHERE source='import'")}
+    assert set(given) == {_key(u) for u in TESTED} and all(r["n_pages"] >= 1 for r in given.values())
     end = json.loads(f.q("SELECT message FROM event WHERE code='run_end' ORDER BY rowid DESC LIMIT 1")[0][0])
     assert (end["reason"], end["pending"], end["presses"]) == ("finished", 0, 0)
     start = json.loads(f.q("SELECT message FROM event WHERE code='run_start' ORDER BY rowid DESC LIMIT 1")[0][0])
     assert start["end_wait_s"] == mod.END_WAIT_S  # C0: the module's default; `archive run` passes its own
-    assert outcome.self_check(f.conn) == {"url_result": 0, "action_result": 0, "no_owner_site": 0}
+    # nothing the rules cannot place: no result unknown in either view, no round-1 row that counts for no site
+    assert f.q("SELECT count(*) FROM url_result WHERE result = 'unknown'")[0][0] == 0
+    assert f.q("SELECT count(*) FROM action_result WHERE result = 'unknown'")[0][0] == 0
+    assert f.q("SELECT count(*) FROM url WHERE owner_site IS NULL AND tier IN (0, 1)")[0][0] == 0
     assert f.q("SELECT count(*) FROM url WHERE state IN ('pending','active','failed')")[0][0] == 0
 
 
@@ -509,7 +505,7 @@ def test_every_page_comes_to_the_completeness_its_evidence_gives(world):
     want = {ACA_LIST: "complete", SSO_HOME: "complete", "https://sso.nknu.edu.tw/News/SubjectList.aspx": "complete",
             OIA: "unchecked",  # 「載入中」 in its script: js_hint, its type back to todo (why hint) until jscheck
             EE: "partial",  # one button answered no file address: mismatch (要人看)
-            CLV2: "complete",  # a type the 10-25 test never saw: new, todo; got, no browser check (the owner 11-16)
+            CLV2: "complete",  # a type no browser test judged: new, todo; got, no browser check (the owner 11-16)
             COUNSEL: "complete"}
     want.update({f"https://c.nknu.edu.tw/aca/NewsDetail.aspx?Nid={n}&GI=1": "complete" for n in (661, 662, 663)})
     # empty, and the probe says the number does not exist: gone (the owner 11-16 write-off, export batch T5)

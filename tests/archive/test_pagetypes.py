@@ -1,16 +1,14 @@
-"""Page types (round-1 design §8.1–§8.3, pagetypes.py): the key against every sample of the 10-25 test, the import of
-its results rule by rule (each condition of §8.2, the https retest, the review table, login only a note, the click
-scan's kinds noted and nothing else read from it, the scripted redirect noted and never a seed, several old types on
-one key taking the strictest), the import's numbers against design §8.2, the signs measure() reads, and what the crawl
-does with them: only a type the import or the crawl gave its verdict is sent back to todo, jscheck's and a person's
-stay and are reported. Offline: the 10-25 files are read when research/ is on this machine (it is not in git); every
-rule also has a small made-up case with plain addresses and no names."""
+"""Page types (round-1 design §8.1, §8.3, pagetypes.py): the key against every sample of the 10-25 test, the signs
+measure() reads, and what the crawl does with them: a type the crawl meets is new (todo, why new) unless its row is
+there already; only a type the import or the crawl gave its verdict is sent back to todo, jscheck's and a person's
+stay. (The import of the 10-25 results, design §8.2, went with the judgment-layer cut of 11-19: a test that needs a
+type from it writes the page_type row itself.) Offline: the 10-25 samples are read when research/ is on this machine
+(it is not in git); every rule also has a small made-up case with plain addresses and no names."""
 
 from __future__ import annotations
 
 import itertools
 import json
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -19,13 +17,14 @@ from nknu.archive import links, pagetypes
 from nknu.archive.frontier import Frontier
 from nknu.archive.pagetypes import Measure, measure, observe, type_key
 
-REAL = pagetypes.JSTEST_DIR
+# the 10-25 browser test's types and their sample addresses (page_types.json): what type_key() is checked against
+REAL_TYPES = (Path(__file__).resolve().parents[2] / "research" / "project_audit_2026-10-25" / "js_test_2026-10-25"
+              / "page_types.json")
 _n = itertools.count()
 
 
 def _need_real():
-    if not all((REAL / name).exists() for name in (pagetypes.RESULTS, pagetypes.RETEST, pagetypes.TYPES,
-                                                    pagetypes.REVIEW, pagetypes.CLICK_SCAN)):
+    if not REAL_TYPES.exists():
         pytest.skip("research/ is not in git: the 10-25 test results are only on the maintainer's machine")
 
 
@@ -66,283 +65,18 @@ def fr(tmp_path):
 ])
 def test_type_key(url, key):
     assert type_key(url) == key
-    assert pagetypes.parse_key(key).key == key
 
 
 def test_type_key_takes_the_row_s_site_when_given():
     assert type_key("https://ee.nknu.edu.tw/a.html", site="x") == "x|ee.nknu.edu.tw|a.html|()"
 
 
-@pytest.mark.parametrize("bad", ["no bars", "a|b|c|not a tuple", "a|b|c|(1, 2)"])
-def test_parse_key_refuses_what_is_not_a_key(bad):
-    with pytest.raises(ValueError):
-        pagetypes.parse_key(bad)
-
-
 def test_type_key_gives_every_sample_of_the_10_25_test_its_own_key_back():
     _need_real()
-    types = json.loads((REAL / pagetypes.TYPES).read_text(encoding="utf-8"))
+    types = json.loads(REAL_TYPES.read_text(encoding="utf-8"))
     samples = [(key, url) for key, urls in types.items() for url in urls]
     assert len(types) == 1093 and len(samples) == 1906
     assert [(key, url) for key, url in samples if type_key(url) != key] == []
-
-
-# ---------------------------------------------------------------- §8.2 the import, rule by rule (made-up results)
-
-def rec(url: str, **kw) -> dict:
-    out = {"type": type_key(url), "url": url, "server": "ip:192.0.2.1", "final_url": url, "seconds": 1.0,
-           "direct_status": 200, "direct_chars": 500, "rendered_chars": 500, "frame_chars": 0, "new_chars": 0,
-           "requests": 1, "data_requests": [], "sample_new": [], "login": False, "js": False, "iframe": False,
-           "method": "direct"}
-    out.update(kw)
-    return out
-
-
-def write_src(d: Path, results, retest=(), review=(), scan=(), types=None) -> Path:
-    d.mkdir(parents=True, exist_ok=True)
-    (d / pagetypes.RESULTS).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results),
-                                       encoding="utf-8")
-    (d / pagetypes.RETEST).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in retest),
-                                      encoding="utf-8")
-    if types is None:
-        types = {r["type"]: [r["url"]] for r in results}
-    (d / pagetypes.TYPES).write_text(json.dumps(types), encoding="utf-8")
-    (d / pagetypes.REVIEW).write_text(json.dumps({"kinds": list(review)}), encoding="utf-8")
-    (d / pagetypes.CLICK_SCAN).write_text(json.dumps({"kinds": list(scan)}), encoding="utf-8")
-    return d
-
-
-def table(fr: Frontier) -> dict[str, dict]:
-    return {r["key"]: dict(r) for r in fr.q("SELECT * FROM page_type")}
-
-
-def U(i: int | str) -> str:
-    """A made-up page of its own type: no digits in the name (a page file's digits are {n} in its key)."""
-    name = "".join(chr(ord("a") + int(c)) for c in str(i)) if isinstance(i, int) else i
-    return f"https://dept.nknu.edu.tw/p{name}.php"
-
-
-XHR_NEW = {"url": "https://dept.nknu.edu.tw/_get.php", "type": "xhr", "method": "POST", "status": 200,
-           "has_new_text": True}
-
-
-def test_the_rules_in_order(fr, tmp_path):
-    cases = {  # url: (record fields, verdict, why)
-        U(1): ({"direct_status": 404}, "todo", "inconclusive:status_404"),
-        U(2): ({"direct_status": None}, "todo", "inconclusive:status_none"),
-        U(3): ({"direct_status": 403, "iframe": True}, "todo", "inconclusive:status_403"),  # status comes first
-        U(4): ({"iframe": True, "frame_chars": 250, "rendered_chars": 0}, "frame", None),  # frame before rendered0
-        U(5): ({"rendered_chars": 0}, "todo", "inconclusive:rendered0"),
-        U(6): ({"direct_chars": 0}, "todo", "inconclusive:direct0"),
-        U(7): ({"slow": "TimeoutError"}, "todo", "inconclusive:slow"),
-        U(8): ({"not_idle": True}, "todo", "inconclusive:slow"),
-        U(9): ({"js": True, "method": "browser"}, "todo", "inconclusive:not_reviewed"),  # never the method column
-        U(10): ({"data_requests": [XHR_NEW]}, "todo", "data_text"),  # new text in a data request: at least todo
-        U(11): ({"data_requests": [{**XHR_NEW, "type": "fetch", "method": "GET"}]}, "todo", "data_text"),
-        # a document is no data request (where a redirect lands, a frame): no data_text
-        U(12): ({"data_requests": [{**XHR_NEW, "type": "document", "method": "GET"}]}, "ok", None),
-        U(13): ({}, "ok", None),
-        U(14): ({"data_requests": [{**XHR_NEW, "has_new_text": False}]}, "ok", None),
-    }
-    src = write_src(tmp_path / "src", [rec(u, **f) for u, (f, _, _) in cases.items()])
-    report = pagetypes.import_jstest(fr, src)
-    got = table(fr)
-    for u, (_, verdict, why) in cases.items():
-        row = got[type_key(u)]
-        assert (row["verdict"], row["why"], row["source"]) == (verdict, why, "import"), u
-        assert row["n_pages"] == 0 and row["sample_id"] is None and row["sample_url"] == u
-        assert row["tested_at"] == pagetypes.TESTED_AT
-    assert report.by_old == Counter(v for _, v, _ in cases.values()) == report.by_key
-    assert sorted(k for k, v in report.data_text) == sorted([type_key(U(10)), type_key(U(11))])
-    # the data requests are kept as evidence, each once
-    assert json.loads(got[type_key(U(10))]["data_urls"]) == {
-        "requests": [{"url": XHR_NEW["url"], "method": "POST", "new_text": True}]}
-    assert got[type_key(U(13))]["data_urls"] is None
-    assert fr.q("SELECT count(*) FROM url")[0][0] == 0  # the test's addresses are no seeds
-
-
-def test_a_data_text_type_a_person_checked_is_ok_with_a_note(fr, tmp_path):
-    url = "https://english.nknu.edu.tw/en/index.html"
-    assert type_key(url) in pagetypes.DATA_TEXT_CHECKED
-    report = pagetypes.import_jstest(fr, write_src(tmp_path / "s", [rec(url, data_requests=[XHR_NEW])]))
-    row = table(fr)[type_key(url)]
-    assert (row["verdict"], row["note"]) == ("ok", "data_text_checked")
-    assert report.data_text and report.data_text[0][0] == type_key(url)
-
-
-def test_the_https_retest_replaces_the_first_run(fr, tmp_path):
-    src = write_src(tmp_path / "s", [rec(U(1), direct_status=404), rec(U(2))],
-                    retest=[rec(U(1), direct_status=200)])
-    report = pagetypes.import_jstest(fr, src)
-    assert table(fr)[type_key(U(1))]["verdict"] == "ok"
-    assert report.retested == [type_key(U(1))]
-    assert sum(report.by_old.values()) == 2
-
-
-def test_the_reviewed_types_take_the_review_not_the_method(fr, tmp_path):
-    a, b, c = U("a"), U("b"), "https://clcts.nknu.edu.tw/uploads/VoiceBook-4/index.html"
-    d = "https://dept.nknu.edu.tw/uploads/x.pn"
-    results = [rec(a, js=True, method="data_url", direct_chars=0, rendered_chars=900),
-               rec(b, js=True, method="data_url", data_requests=[{**XHR_NEW, "method": "GET"}]),
-               rec(c, js=True, method="browser", direct_chars=0),
-               rec(d, direct_status=None)]
-    review = [{"type": type_key(a), "verdict": "ok", "note": "js_redirect", "why": "直接抓 0 字"},
-              {"type": type_key(b), "verdict": "js", "method": "data_url", "why": "正文来自资料请求"},
-              {"type": type_key(c), "verdict": "js", "method": "browser", "why": "翻页电子书"},
-              {"type": type_key(d), "verdict": "todo", "why": "inconclusive:broken_sample：样本网址被截断"}]
-    report = pagetypes.import_jstest(fr, write_src(tmp_path / "s", results, review=review))
-    got = table(fr)
-    assert (got[type_key(a)]["verdict"], got[type_key(a)]["why"], got[type_key(a)]["note"]) == ("ok", None,
-                                                                                               "js_redirect")
-    assert got[type_key(b)]["verdict"] == "js" and json.loads(got[type_key(b)]["data_urls"])["requests"][0]["new_text"]
-    assert (got[type_key(c)]["verdict"], got[type_key(c)]["note"]) == ("js", "flip_pdf")  # design §8.2's table
-    assert (got[type_key(d)]["verdict"], got[type_key(d)]["why"]) == ("todo", "inconclusive:broken_sample")
-    assert sorted(report.reviewed) == sorted(type_key(u) for u in (a, b, c, d))
-    assert report.data_text == []  # a reviewed type is the review's: no rule runs on it
-
-
-def test_a_review_verdict_this_version_does_not_know_is_an_error(fr, tmp_path):
-    src = write_src(tmp_path / "s", [rec(U(1))], review=[{"type": type_key(U(1)), "verdict": "maybe"}])
-    with pytest.raises(ValueError):
-        pagetypes.import_jstest(fr, src)
-    assert fr.q("SELECT count(*) FROM page_type")[0][0] == 0
-
-
-def test_a_password_box_is_a_note_never_a_verdict(fr, tmp_path):
-    pagetypes.import_jstest(fr, write_src(tmp_path / "s", [rec(U(1), login=True),
-                                                           rec(U(2), login=True, rendered_chars=0)]))
-    got = table(fr)
-    assert (got[type_key(U(1))]["verdict"], got[type_key(U(1))]["note"]) == ("ok", "login_field")
-    assert (got[type_key(U(2))]["verdict"], got[type_key(U(2))]["note"]) == ("todo", "login_field")
-
-
-def test_the_click_scan_only_notes_ok_types_and_nothing_else_is_read_from_it(fr, tmp_path):
-    ok, js, none = U("tabs"), U("tabs-js"), U("plain")
-    results = [rec(ok), rec(js, js=True, method="data_url"), rec(none)]
-    review = [{"type": type_key(js), "verdict": "js"}]
-    # the scan masks digits and names: its tab numbers and addresses are never taken (design §8.2)
-    scan = [{"type": type_key(ok), "hidden_pages": 1, "network_targets": ["load_content.php?sub_id=98765"],
-             "hit_urls": ["https://dept.nknu.edu.tw/p98765.php"], "bindings": [{"args": ["98765"]}]},
-            {"type": type_key(js), "hidden_pages": 2, "network_targets": ["load_content.php?sub_id=98765"]},
-            {"type": type_key(none), "hidden_pages": 0}]
-    report = pagetypes.import_jstest(fr, write_src(tmp_path / "s", results, review=review, scan=scan))
-    got = table(fr)
-    assert (got[type_key(ok)]["verdict"], got[type_key(ok)]["note"]) == ("ok", "click_profiled")
-    assert (got[type_key(js)]["verdict"], got[type_key(js)]["note"]) == ("js", None)
-    assert got[type_key(none)]["note"] is None
-    assert sorted(report.click_hidden) == sorted([(type_key(ok), "ok"), (type_key(js), "js")])
-    for row in got.values():
-        assert "98765" not in json.dumps(row, ensure_ascii=False)
-    assert fr.q("SELECT count(*) FROM url")[0][0] == 0
-
-
-def test_a_scripted_redirect_is_a_note_and_where_the_browser_stopped_is_never_a_seed(fr, tmp_path):
-    moved = rec(U("notes"), final_url=U("notes") + "?getId=4",
-                data_requests=[{"url": U("notes") + "?getId=4", "type": "document", "method": "GET", "status": 200,
-                                "has_new_text": True}])
-    by_3xx = rec(U("old"), final_url=U("new"),
-                 data_requests=[{"url": U("old"), "type": "document", "status": 301, "has_new_text": False}])
-    hash_only = rec(U("book"), final_url=U("book") + "#p=1")
-    broken = rec(U("gone"), final_url="chrome-error://chromewebdata/")
-    report = pagetypes.import_jstest(fr, write_src(tmp_path / "s", [moved, by_3xx, hash_only, broken]))
-    got = table(fr)
-    assert (got[type_key(U("notes"))]["verdict"], got[type_key(U("notes"))]["note"]) == ("ok", "js_redirect")
-    assert got[type_key(U("old"))]["note"] is None and got[type_key(U("book"))]["note"] is None
-    assert got[type_key(U("gone"))]["note"] is None
-    assert report.js_redirect == [(type_key(U("notes")), U("notes") + "?getId=4")]
-    assert fr.q("SELECT count(*) FROM url")[0][0] == 0
-
-
-def test_old_types_on_one_new_key_take_the_strictest_and_the_report_says_so(fr, tmp_path):
-    a, b, c = (f"https://dept.nknu.edu.tw/p{i}.php" for i in (1, 2, 3))
-    new = type_key(a)  # p1.php and p2.php are both p{n}.php now
-    assert type_key(b) == new
-    results = [{**rec(a), "type": "dept.nknu.edu.tw|dept.nknu.edu.tw|p1.php|()"},
-               {**rec(b, rendered_chars=0, login=True), "type": "dept.nknu.edu.tw|dept.nknu.edu.tw|p2.php|()"},
-               {**rec(c, iframe=True, frame_chars=300), "type": "dept.nknu.edu.tw|dept.nknu.edu.tw|p3.php|()"}]
-    report = pagetypes.import_jstest(fr, write_src(tmp_path / "s", results))
-    got = table(fr)
-    assert list(got) == [new]
-    assert (got[new]["verdict"], got[new]["why"], got[new]["note"]) == ("todo", "inconclusive:rendered0",
-                                                                         "login_field")
-    assert report.by_old == Counter({"ok": 1, "todo": 1, "frame": 1}) and report.by_key == Counter({"todo": 1})
-    assert len(report.key_changed) == 3
-    assert report.merged == [(new, ("dept.nknu.edu.tw|dept.nknu.edu.tw|p2.php|()",
-                                    "dept.nknu.edu.tw|dept.nknu.edu.tw|p3.php|()",
-                                    "dept.nknu.edu.tw|dept.nknu.edu.tw|p1.php|()"), "todo")]
-    assert any("合并" in line for line in report.lines())
-
-
-def test_a_type_no_result_covers_is_todo(fr, tmp_path):
-    src = write_src(tmp_path / "s", [rec(U(1))], types={type_key(U(1)): [U(1)], type_key(U("x")): [U("x")]})
-    report = pagetypes.import_jstest(fr, src)
-    row = table(fr)[type_key(U("x"))]
-    assert (row["verdict"], row["why"], row["sample_url"]) == ("todo", "inconclusive:untested", U("x"))
-    assert report.untested == [type_key(U("x"))]
-
-
-def test_a_missing_file_is_an_error(fr, tmp_path):
-    src = write_src(tmp_path / "s", [rec(U(1))])
-    (src / pagetypes.CLICK_SCAN).unlink()
-    with pytest.raises(FileNotFoundError):
-        pagetypes.import_jstest(fr, src)
-
-
-def test_the_import_is_once_before_the_round_records_a_page(fr, tmp_path):
-    src = write_src(tmp_path / "s", [rec(U(1)), rec(U(2), rendered_chars=0)])
-    pagetypes.import_jstest(fr, src)
-    pagetypes.import_jstest(fr, write_src(tmp_path / "t", [rec(U(1))]))  # its own untouched rows: replaced
-    assert {k: r["verdict"] for k, r in table(fr).items()} == {type_key(U(1)): "ok"}
-    observe(fr, url_id=add_page(fr, U(1)), url=U(1), m=plain())
-    with pytest.raises(pagetypes.ImportRefused):
-        pagetypes.import_jstest(fr, src)
-    assert table(fr)[type_key(U(1))]["n_pages"] == 1  # nothing undone
-
-
-def test_the_import_refuses_a_table_holding_jscheck_s_or_a_person_s_verdict(fr, tmp_path):
-    fr.x("INSERT INTO page_type(key, site, verdict, source) VALUES ('k', 's', 'ok', 'manual')")
-    with pytest.raises(pagetypes.ImportRefused):
-        pagetypes.import_jstest(fr, write_src(tmp_path / "s", [rec(U(1))]))
-    assert [r["key"] for r in fr.q("SELECT key FROM page_type")] == ["k"]
-
-
-# ---------------------------------------------------------------- §8.2 the import of the real 10-25 results
-
-def test_the_10_25_results_come_in_as_design_8_2_counts_them(fr):
-    _need_real()
-    report = pagetypes.import_jstest(fr, REAL)
-    expect = Counter({"ok": 992, "js": 4, "frame": 10, "todo": 87})
-    assert report.by_old == expect and sum(report.by_old.values()) == 1093
-    assert report.by_key == expect and report.merged == [] and report.key_changed == []  # no merge: same numbers
-    got = table(fr)
-    assert Counter(r["verdict"] for r in got.values()) == expect
-    assert len(report.retested) == 13 and len(report.reviewed) == 10 and report.untested == []
-    why = report.why
-    assert sum(n for w, n in why.items() if w.startswith("inconclusive:status_")) == 29
-    assert (why["inconclusive:status_404"], why["inconclusive:status_none"]) == (25, 2)
-    assert (why["inconclusive:status_400"], why["inconclusive:status_403"]) == (1, 1)
-    assert (why["inconclusive:rendered0"], why["inconclusive:direct0"], why["inconclusive:slow"]) == (42, 2, 13)
-    assert why["inconclusive:broken_sample"] == 1 and "data_text" not in why
-    # the scan's 14 kinds: the 12 ok ones noted click_profiled, the 2 js ones as they were
-    noted = sorted(k for k, r in got.items() if "click_profiled" in (r["note"] or "").split(","))
-    assert len(noted) == 12 and all(got[k]["verdict"] == "ok" for k in noted)
-    assert Counter(v for _, v in report.click_hidden) == Counter({"ok": 12, "js": 2})
-    assert report.notes["login_field"] == 71
-    js = {k: r for k, r in got.items() if r["verdict"] == "js"}
-    assert {parse(k).host for k in js} == {"lis.nknu.edu.tw", "oia.nknu.edu.tw", "clcts.nknu.edu.tw"}
-    lis = json.loads(js["lis.nknu.edu.tw|lis.nknu.edu.tw||()"]["data_urls"])["requests"]
-    assert len({r["url"] for r in lis if "/gviz/" in r["url"]}) == 3  # the three spreadsheets the home page reads
-    notes = "ee.nknu.edu.tw|ee.nknu.edu.tw|notes.html|()"  # ok, noted; where the browser stopped is no seed
-    assert (got[notes]["verdict"], got[notes]["note"]) == ("ok", "js_redirect")
-    assert [k for k, _ in report.js_redirect] == [notes] and report.notes["js_redirect"] == 4
-    english = "english.nknu.edu.tw|english.nknu.edu.tw|en/index.html|()"
-    assert (got[english]["verdict"], got[english]["note"]) == ("ok", "data_text_checked")
-    assert got["id.nknu.edu.tw|id.nknu.edu.tw|uploads/*|()"]["why"] == "inconclusive:broken_sample"
-    assert fr.q("SELECT count(*) FROM url")[0][0] == 0
-
-
-def parse(key: str) -> pagetypes.TypeKey:
-    return pagetypes.parse_key(key)
 
 
 # ---------------------------------------------------------------- §8.3 the signs a page reads
@@ -525,7 +259,7 @@ def test_a_strong_sign_sends_an_imported_or_crawled_ok_or_frame_type_back(fr, so
     assert (result(fr, plain_page), result(fr, hinted)) == ("ok", "unchecked")
 
 
-@pytest.mark.parametrize("source", pagetypes.JUDGED_SOURCES)
+@pytest.mark.parametrize("source", ["jscheck", "manual"])
 def test_a_type_jscheck_or_a_person_judged_keeps_its_verdict_and_the_sign_is_reported(fr, source):
     typed(fr, KEY, "ok", source)
     plain_page, hinted = add_page(fr, P(1)), add_page(fr, P(2))
@@ -536,8 +270,6 @@ def test_a_type_jscheck_or_a_person_judged_keeps_its_verdict_and_the_sign_is_rep
     assert (ptype(fr, KEY)["verdict"], ptype(fr, KEY)["why"]) == ("ok", None)
     assert result(fr, plain_page) == "ok"
     assert result(fr, hinted) == "unchecked"  # the page itself waits until jscheck opens it (§8.3, §10.2)
-    report = pagetypes.judged_with_hints(fr)
-    assert [(r["key"], r["source"], r["signs"]) for r in report] == [(KEY, source, ("hint",))]
 
 
 @pytest.mark.parametrize(("verdict", "why"), [("todo", "inconclusive:slow"), ("todo", "new"), ("js", None),
@@ -614,7 +346,6 @@ def test_a_click_on_a_type_a_person_judged_is_reported(fr):
     seen = observe(fr, url_id=uid, url=P(1), m=plain())
     assert (seen.retyped, seen.kept) == (None, ("click",))
     assert ptype(fr, KEY)["verdict"] == "ok"
-    assert [r["signs"] for r in pagetypes.judged_with_hints(fr)] == [("click",)]
 
 
 def test_the_strongest_sign_names_the_reason(fr):
@@ -623,8 +354,10 @@ def test_the_strongest_sign_names_the_reason(fr):
     assert observe(fr, url_id=uid, url=P(1), m=strong(), click=True).retyped == "hint"
 
 
-def test_the_imported_10_25_type_is_counted_and_sampled_by_the_crawl(fr, tmp_path):
-    pagetypes.import_jstest(fr, write_src(tmp_path / "s", [rec(P(1))]))
+def test_the_imported_10_25_type_is_counted_and_sampled_by_the_crawl(fr):
+    # the row as the 10-25 import left it (no import any more): ok, its sample an address, no page counted yet
+    fr.x("INSERT INTO page_type(key, site, verdict, sample_url, source, tested_at) VALUES (?,?,'ok',?,'import',?)",
+         (KEY, KEY.split("|")[0], P(1), "2026-10-25"))
     uid = add_page(fr, P(7))
     seen = observe(fr, url_id=uid, url=P(7), m=plain())
     row = ptype(fr, KEY)
@@ -638,17 +371,6 @@ def test_an_unknown_row_changes_nothing(fr):
     with pytest.raises(KeyError):
         observe(fr, url_id=999, url=P(1), m=plain())
     assert fr.q("SELECT count(*) FROM page_type")[0][0] == 0
-
-
-def test_judged_with_hints_lists_only_judged_types_with_signs(fr):
-    typed(fr, "a|h|x|()", "ok", "import")
-    typed(fr, "b|h|x|()", "ok", "jscheck")
-    typed(fr, "c|h|x|()", "frame", "manual")
-    typed(fr, "d|h|x|()", "js", "jscheck")
-    fr.x("UPDATE page_type SET n_strong=1, n_pages=1")
-    fr.x("UPDATE page_type SET n_strong=0, n_pages=6, n_weak=2 WHERE key='b|h|x|()'")
-    assert [(r["key"], r["signs"]) for r in pagetypes.judged_with_hints(fr)] == [
-        ("b|h|x|()", ("weak",)), ("c|h|x|()", ("hint",))]
 
 
 def test_the_broken_sample_type_is_withdrawn_without_a_page_this_round(fr):

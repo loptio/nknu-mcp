@@ -238,6 +238,10 @@ class NoData:
     says: str
     words: str
     why: str
+    # 11-17 (爬虫judge: 「以前好、现在说没有」 needs two answers at least 24 hours apart, the rule of 学校已删除): the export
+    # marks a row that held a good answer before only when the answers saying this began GONE_AGAIN_S or more before the
+    # latest; till then it writes the last good one and says nothing (export.Writer._no_data_confirmed_rows)
+    confirm: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,6 +261,12 @@ class PageTitle:
     paths: str
     title: str
     why: str
+    # cells whose words go after the title (11-19: an outline's class, academic year and term; many courses share a
+    # name, and the page writes its term in two cells no reader of terms takes): tail, their CSS selectors; tail_words,
+    # how they are written ({0}, {1}, …). A rule with a tail gives a title only when every cell of the tail holds
+    # words: the next rule of the page is read then (the same title cell with a shorter tail, or none)
+    tail: tuple[str, ...] = ()
+    tail_words: str = ""
 
 
 @dataclass(frozen=True)
@@ -297,7 +307,15 @@ class Menu:
     it). name: the rule's name (the presses' row set and their rows' category); paths: a regular expression searched in
     the lowercase path; form: the id of the form, one of its profile's forms; submit: the name of its submit button;
     year: the name of the select set to the current academic year (academic_year); each: the name of the select whose
-    every enabled option is sent once; why: in words, for people."""
+    every enabled option is sent once; why: in words, for people.
+
+    11-18 (course schedules design §七: the outline of a course several teachers give shows nothing until a teacher is
+    chosen), two things a rule may say besides: year "" for a form with no year menu (a press's argument, row key and
+    text name the choice alone; nothing of it goes stale with the academic year: postback.menus_not_sent leaves such
+    rules out); prompt, a regular expression matched in full against an option's value, for an each select whose
+    first option is no choice (「請選擇」): that option is never sent, and the menu is sent only from a page that shows
+    it chosen. A page that shows a real choice is that choice's answer already (the school shows a course's only
+    teacher's outline at once, and a press's answer shows the teacher asked): no press, nothing written of the menu."""
 
     name: str
     paths: str
@@ -306,6 +324,7 @@ class Menu:
     year: str
     each: str
     why: str
+    prompt: str = ""
 
 
 def academic_year(day: date) -> int:
@@ -315,8 +334,9 @@ def academic_year(day: date) -> int:
 
 
 def menu_argument(m: Menu, year: int, value: str) -> str:
-    """A menu press's argument (MENU_ARG): its year select set to `year`, its each select to `value`, urlencoded."""
-    return MENU_ARG + "?" + urlencode([(m.year, str(year)), (m.each, value)])
+    """A menu press's argument (MENU_ARG): its year select set to `year` (a rule with a year menu), its each select
+    to `value`, urlencoded."""
+    return MENU_ARG + "?" + urlencode([*([(m.year, str(year))] if m.year else ()), (m.each, value)])
 
 
 def menu_choice(argument: str | None) -> tuple[tuple[str, str], ...] | None:
@@ -353,6 +373,9 @@ class Profile:
     data_apis: tuple[DataApi, ...] = ()  # read by the crawler once per site (design §23 C1)
     menus: tuple[Menu, ...] = ()  # forms sent once per option of a menu (gap ⑩ of 11-08)
     no_data: tuple[NoData, ...] = ()  # the school's answers of no data, read by the export alone (owner 11-09)
+    # searched in the lowercase path: pages whose answer always holds the content area (content_css); one with none is
+    # the school's answer gone wrong this time, never the page (area_missing; the CV pages, 11-17)
+    area_required: str = ""
 
     def covers(self, site: str) -> bool:
         return _re(self.sites).fullmatch(site or "") is not None
@@ -828,9 +851,20 @@ COURSE_NO_DATA = NoData(r"/dataopen2search/opencoursetablepure\.aspx$", r"showNo
                         "学校回答没有资料（系所未提供相關資料）",
                         "开课课表：学校在网页上跳出「系所未提供相關資料」，这个系所、这个学年度学校没有提供课表，学校补上"
                         "资料以后讯息就不见了，也就不再标")
+# A teacher's CV page the school answers 「查無資料」 with no card (11-17, the daytime run of round two: 13 pages, all old
+# links of unit staff pages; 1732 and 4906 had their cards on 11-07; answered so twice half an hour apart, the school
+# no slower then): the school has no CV of that teacher now (爬虫judge under the owner's delegation: 「「查無資料」的改法同
+# 意，照三做」). Both, the words and no card: a tab with no rows says 查無資料 inside the card, the teacher there
+# 【Claude 的执行办法】. confirm: a page good before is marked a day later only (NoData.confirm)
+VITA_NO_DATA = NoData(r"/dataopen2search/vita\.aspx$", r"^(?![\s\S]*ctl00_phMain_divVita)[\s\S]*?查無資料",
+                      "学校回答没有资料（查無資料）",
+                      "教师履历页：学校回「查無資料」、没有履历卡片，学校那边已经没有这位老师的履历（多半已离校或不再公开）；"
+                      "以前抓到过履历的，要相隔 24 小时两次都这样才标",
+                      confirm=True)
 DATAOPEN = Profile(
     name="dataopen2search", platform="资料开放查询（ASP.NET：遗失物招领、开课课表）",
-    sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,), no_data=(COURSE_NO_DATA,),
+    sites=r"sso\.nknu\.edu\.tw/dataopen2search", forms=("uForm",), menus=(COURSE_TABLE,),
+    no_data=(COURSE_NO_DATA, VITA_NO_DATA),
     # a teacher's vita page (vita.aspx; the owner 11-15 「这 5 件全部照你的设计做。」, the content session's item 3: the 47
     # of round one it took for error pages): the teacher's card #ctl00_phMain_divVita (name, mail, the panels of the tab
     # shown) and, beside it, the report control, whose two messages (about 1,100 characters, under an h2 each) are hidden
@@ -841,25 +875,120 @@ DATAOPEN = Profile(
     # there no longer the page's to fetch; to judge again with the next crawl's swap. The page's other tabs come by a
     # press (about 21 a page, unpressed) and 563 more such pages are round two's
     content_css="#ctl00_phMain_divVita",
+    area_required=r"/dataopen2search/vita\.aspx$",
+    # a CV page's 16 tabs (round two, batch two, design 2026-11-17-round2-batch2 §三.3): the menu's items, each pressed
+    # as a detail whose answer shows that tab selected (an answer with no card, the school's now and then, shows none:
+    # a title mismatch, never an empty tab; §八) 【Claude 的执行办法】
+    rows=(Rows(name="vita_tabs", grid="#ctl00_phMain_Menu1", row="li", walk="none", title="a",
+               detail_title="#ctl00_phMain_Menu1 a.selected", detail_body="#ctl00_phMain_divVita",
+               paths=r"/dataopen2search/vita\.aspx$"),),
     # the submit button a menu rule presses (postback.read_page; no __doPostBack, so no page lists it as a postback):
     # decision() says press for its key, so that a menu its page could not send (postback:ctl*$phMain$uOK|@menu,
     # written unpressed, 要人看) reads as unpressed in verify check 8 and `retry unpressed`, never as a stale writing
     # 【Claude 的执行办法】
     buttons=(Button(r"ctl\d+\$phMain\$uOK", "press", "开课课表的「顯示資料」：平台规则 course_table 选好学年度和系所后按"
-                    "（缺口 ⑩；用户 11-09「现在补 115」）", role="detail", argument=re.escape(MENU_ARG) + r"(?:\?.*)?"),),
+                    "（缺口 ⑩；用户 11-09「现在补 115」）", role="detail", argument=re.escape(MENU_ARG) + r"(?:\?.*)?"),
+             # round two, batch two (design 2026-11-17-round2-batch2 §三.3; 爬虫judge under the owner's 11-17
+             # delegation: 「16 个分页签都按」): a CV page's tabs, each a row of vita_tabs
+             Button(r"ctl\d+\$phMain\$Menu1", "press", "教师履历的分页签（学经历、期刊论文、授课课程等 16 个）：每个分页签"
+                    "一次回传，内容只在按了以后才出现（第二轮第二批）", role="detail"),
+             Button(r"ctl\d+\$phMain\$ReportViewer1\$.*", "ignore", "教师履历页报表控件的工具列（汇出、重新整理）："
+                    "内容已在分页签里，汇出要靠网页脚本组网址")),
     writings=(Writing(r"select:ctl00\$phMain\$u(?:Year|Department)", "ignore",
                       "开课课表的学年度、系所选单：平台规则 course_table 逐个系所按「顯示資料」（pb:detail 那几行），选单本身"
                       "不用再按"),),
 )
 
+# 研发处, 工教系 and 数学系 (round two's first batch, the JS sites crawled 11-17; the handoff's item 7): one vendor's
+# template whose content a script loads, read on the rendered pages the archive kept (11-18, read only; 313, 371 and 453
+# looks). A notice of 工教系 is div.billboardInfo, beside div.billboardList, the list of all the other notices (about
+# 10,000 characters on every notice page); a news item of 数学系 is div.newsInfo, beside the news list; a teacher's page
+# of 工教系 is section.teacherstaffInfo, beside every other teacher; every other page (研发处's notices and lists, the
+# activities, resources, downloads, plans and about pages) is div.mainwrap, with its title and date (研发处's notice
+# text is article[name=data_content] in it, its attachments beside that). A page with none of them (the home pages,
+# 数学系's staff lists) is read whole, as before. A list page of notices, news or teachers holds the same box unfilled
+# (an empty title, an empty article, the names in comments), its list outside: a box counts only when its title (a
+# teacher's name) has something in it, so a list page reads whole too. No Detail rule: the export never calls a page
+# of them a deleted notice by the area. The two static ones (w3, see) keep no profile. Changes the content stage's page
+# reading (PAGE_VERSION): its lane B reads every page again once (about 4 minutes)
+JS_VENDOR = Profile(
+    name="js_vendor", platform="研发处、工教系、数学系（同一家厂商的版型，内容由程序载入）",
+    sites=r"(?:ord|ite|gauss)\.nknu\.edu\.tw",
+    content_css=("div.billboardInfo:has(h1.maintitle:not(:empty)), div.newsInfo:has(h1.maintitle:not(:empty)), "
+                 "section.teacherstaffInfo:has(.name:not(:empty)), div.mainwrap"))
+
+# The course query (sso.nknu.edu.tw/stu, design docs/superpowers/specs/2026-11-18-course-schedules-design.md §五; read on
+# the seven query pages the archive holds and on the probe's answers of 11-18): seven ways into one list of courses,
+# each a form sent by postback. The crawler presses none of it: a class's table is fetched at the class's own address
+# (scheduledepartment.aspx?cDES=…), which schedules.walk finds by sending the form class by class and schedules.seed
+# hands over as pages. So the form's controls on every such page are no gap of it; a teacher's and a room's table (the
+# same courses again) are left out by the site's skip paths (round1.Site.skips), not here. No content area: the page
+# read whole says its term, department and class, the courses, the week's grid and what the room and period codes mean.
+# Changes the content stage's page version (a digest of PROFILES): its lane B reads every page again once
+# A course's outline (18weekssyllabusforenro.aspx?syllabusno=…, where syllabusforenro.aspx redirects; read 11-18 on the
+# first 1,676 the archive holds, read only): a teacher menu ctl00$phMain$ddlTea whose first option is the prompt
+# (「請選擇Select」, value select), then one option a teacher (value: year|term|course|…|teacher, padded with spaces). A
+# course with one teacher (1,590 pages) shows that teacher chosen and the outline; a course with several (86 pages, 2 to
+# 14 teachers, all of 115) shows the prompt chosen, the notice 「本課程多名老師合開，請先選擇教師」, a submit button
+# 「確定 OK」 (ctl00$phMain$btnOk) and nothing of the outline: about 3,500 characters of the site's menus. Each teacher's
+# outline is the form's answer with that teacher chosen (design §七; no year menu, the prompt never sent)
+OUTLINE_TEACHERS = Menu("outline_teachers", r"/stu/18weekssyllabusforenro\.aspx$", form="uForm",
+                        submit="ctl00$phMain$btnOk", year="", each="ctl00$phMain$ddlTea", prompt=r"select",
+                        why="多位老师合开的课：大纲页先只显示「請先選擇教師」和老师选单，逐位老师选了按「確定」才是那位老师的大纲"
+                            "（11-18 第一批 1,676 份大纲里 86 份；只有一位老师的课学校直接显示，不用按）")
+# 11-18 evening (course schedules design §九): the outline of a course the school lists no teacher for. Its page holds
+# the teacher menu with the prompt alone, the button, and nothing of the course (13,063 characters of the site's
+# menus): 268 of the term's 2,309 outlines, whose rows in the classes' tables leave the teacher's cell empty (theses,
+# physical education sections not yet given a teacher). The school's answer of no data, not a gap of the crawl:
+# nothing can be chosen (postback._menu_presses asks for nothing). confirm: an outline that held a teacher's outline
+# before is marked only when the empty menu has been there a day (as 学校已删除)
+OUTLINE_NO_TEACHER = NoData(
+    r"/stu/18weekssyllabusforenro\.aspx$",
+    r'''<select[^>]*\bname="ctl00\$phMain\$ddlTea"[^>]*>\s*<option[^>]*\bvalue="select"[^>]*>[^<]*</option>\s*</select>''',
+    "学校回答没有资料（授課教師選單是空的）",
+    "课程大纲页的授课教师选单里只有「請選擇」，一位老师都没有，页面上没有任何课程内容：学校这门课还没有老师、没有大纲"
+    "（班级课表上这门课的教师那一格也是空的）", confirm=True)
+STU = Profile(
+    name="stu_courses", platform="课程查询系统（开课查询）",
+    sites=r"sso\.nknu\.edu\.tw/stu", forms=("uForm",), menus=(OUTLINE_TEACHERS,), no_data=(OUTLINE_NO_TEACHER,),
+    buttons=(
+        # decision() says press for its key, so that a menu its page could not send (postback:ctl*$phMain$btnOk|@menu,
+        # written unpressed, 要人看) reads as unpressed, as the course tables' 「顯示資料」 does
+        Button(r"ctl\d+\$phMain\$btnOk", "press", "课程大纲页的「確定 OK」：平台规则 outline_teachers 逐位老师选好后按"
+               "（多位老师合开的课）", role="detail", argument=re.escape(MENU_ARG) + r"(?:\?.*)?"),
+        Button(r"ctl\d+\$phMain\$u(?:DN|DeformType|Area)\$\d+", "ignore",
+               "开课查询表单的单选钮（日间／进修、学制、校区大楼）：只是换查询条件；每个班的课表照班级自己的网址抓"
+               "（schedules.walk 把表单逐班送一遍记下网址），不靠爬虫按这些钮"),
+        Button(r"ctl\d+\$phMain\$uSearch", "ignore",
+               "开课查询表单的「查詢」：每个班的课表照班级自己的网址抓（schedules.walk 逐班查询、记下网址），爬虫不按")),
+    writings=(
+        Writing(r"js_postback:ctl00\$phMain\$u(?:DN|DeformType|Area)\$\d+", "ignore",
+                "开课查询表单的单选钮（日间／进修、学制、校区大楼）：只是换查询条件，班级的课表照班级自己的网址抓"),
+        Writing(r"select:ctl00\$phMain\$u\w+(?:\$u\w+)?", "ignore",
+                "开课查询表单的选单（学年期、系所、班级、教师、教室、节次）：只是换查询条件，班级的课表照班级自己的网址抓；"
+                "学年期照页面默认的那一期"),
+        Writing(r"js_link:jQuery\.getSpaceStat", "no_content",
+                "课表里教室旁的「空間使用率統計」小图示：弹出那间教室的使用率统计，不是课程资讯"),
+        Writing(r"select:ctl00\$phMain\$ddlTea", "ignore",
+                "课程大纲页的老师选单：只有一位老师时学校已经选好；多位老师合开的由平台规则 outline_teachers 逐位按「確定」，"
+                "选单本身不用再按"),
+        Writing(r"js_link:printFriendly", "no_content",
+                "课程大纲页的「友善列印」：把同一页换成列印版面，没有别的内容"),
+        Writing(r"click:showSelectList\(.*\)", "never",
+                "课表每门课的「選課名單」：弹出选这门课的学生名单，一门课一个请求（全校一学期约三千个）；"
+                "学生要问的是哪门课什么时间、哪间教室、谁教，名单不收（设计稿第二节）"),
+    ),
+)
+
 PROFILES = (SSO_NEWS, SSO_WEBIDX, SSO_CLV2, SSO_OSA, SSO_REGULATIONS, SSO_SOFTWARE, CNKNU, OIA, EE, LIS, ELEC, ENGLISH,
-            CLCTS, WORDPRESS, GEO, ID, DATAOPEN)
+            CLCTS, WORDPRESS, GEO, ID, JS_VENDOR, STU, DATAOPEN)
 
 # The pages whose own title sits in one cell while their <title>, h1 and h2 name the site (PageTitle; the owner 11-14).
 # Measured 11-14 on round one's archive, read only: the cell is on every page of its kind, one match a page, 187
 # characters at most (11,449 activity pages of the shared module, 3 of them with no words in it; 655 threads of 总务处's
 # forum; 1,976 pages of 成教所's 所友名錄). Until then every page of a kind had one title in the export: 「國立高雄師範大學
 # 單一登入 網路資訊平台」, 「國立高雄師範大學 總務處」 and 「所友名錄」. The cell's own words are the title, with no prefix
+_OUTLINE_CELL = '#ctl00_phMain_plCourseBasicData tr:has(td:first-child:lexbor-contains("{}")) td:last-child'
 PAGE_TITLES: tuple[PageTitle, ...] = (
     PageTitle(CNKNU.sites, r"/forumsview\.aspx$", "#lbl_PoTitle",
               "c.nknu 模板的讨论串：标题是提问的主题那一格（总务处讨论区 655 页，每页都有字）"),
@@ -882,6 +1011,38 @@ PAGE_TITLES: tuple[PageTitle, ...] = (
               "资料开放查询的教师履历页：标题是姓名那一格（第一轮 47 页，每页都有字）；旧读法取到的是报表控件藏着的错误讯息的小标题"),
     PageTitle(r"geo\.nknu\.edu\.tw", r"^/index\.php$", ".teaminfo .name",
               "地理系的成员页：标题是姓名那一格（48 页，每页一个）"),
+    # 11-18 (course schedules design §五): a class's table has the site's name for its <title>; its class is the one
+    # the form shows chosen, read only where a table is shown (the query page itself, nothing searched, keeps its own)
+    # (the first export with the class pages, 11-18 15:29: 27 of the 273 were titled 「--」, the one choice of the class
+    # menu, without a value, where a department has no classes: general education, PE, the teacher programmes; those
+    # take the table's own heading, 「<department>　課表」)
+    PageTitle(STU.sites, r"^/stu/scheduledepartment\.aspx$",
+              'form:has(#ctl00_phMain_uScheduleList_uTitle:not(:empty)) #ctl00_phMain_uClass option[selected]:not([value=""])',
+              "开课查询的班级课表页：标题是表单上选中的那个班（例：軟體工程與管理學系一年級）；没查出课表的查询页不套"),
+    PageTitle(STU.sites, r"^/stu/scheduledepartment\.aspx$", "#ctl00_phMain_uScheduleList_uTitle:not(:empty)",
+              "开课查询里没有班级的课表页（通识、体育、各学程：班级选单只有「--」）：标题是课表自己的小标题（系所名＋「課表」）"),
+    # a course outline (18weekssyllabusforenro.aspx, where syllabusforenro.aspx?syllabusno=… redirects): every page's
+    # headings say 「教學大綱 Syllabus」 (1,676 pages with one title in that export); the course's name, Chinese then
+    # English, is the third cell of the 科目名稱 row of 「課程資料」. A page that shows no outline (several teachers, none
+    # chosen yet) has no such row and keeps the reading by headings
+    PageTitle(STU.sites, r"^/stu/18weekssyllabusforenro\.aspx$", _OUTLINE_CELL.format("科目名稱"),
+              "开课查询的课程大纲页：标题是「課程資料」里「科目名稱」那一格（中英文课名），后面带「任課班級」和学年学期"
+              "（例：專題研討（一） Seminar（I）（工設碩一，115學年度第1學期））",
+              tail=tuple(_OUTLINE_CELL.format(cell) for cell in ("任課班級", "開課學年", "開課學期")),
+              tail_words="（{0}，{1}學年度第{2}學期）"),
+    PageTitle(STU.sites, r"^/stu/18weekssyllabusforenro\.aspx$", _OUTLINE_CELL.format("科目名稱"),
+              "课程大纲页没有写任課班級的（体育、通识）：课名后面只带学年学期",
+              tail=tuple(_OUTLINE_CELL.format(cell) for cell in ("開課學年", "開課學期")),
+              tail_words="（{0}學年度第{1}學期）"),
+    PageTitle(STU.sites, r"^/stu/18weekssyllabusforenro\.aspx$", _OUTLINE_CELL.format("科目名稱"),
+              "课程大纲页连学年学期那两格都没有的：只写课名"),
+    # 11-19: the course query's form pages themselves (nothing searched: the address with no query, and a class's
+    # page the rules above read no class from) have no h1 or h2 and the platform's name as <title>: the form's caption
+    # (「開課資料查詢－依系所」), else the page's h3 (「開 課 資 訊 查 詢」)
+    PageTitle(STU.sites, r"^/stu/schedule\w+\.aspx$", "caption",
+              "开课查询的查询表单页：标题是表单的标题（例：開課資料查詢－依系所）"),
+    PageTitle(STU.sites, r"^/stu/schedule\w+\.aspx$", "h3",
+              "开课查询的查询表单页没有表单标题的：标题是页面的小标题（開 課 資 訊 查 詢）"),
     PageTitle(r"geo\.nknu\.edu\.tw", r"^/index\.php$", ".page-header",
               "地理系其余的页：标题是页名那一格（列表页 180 页里 175 页有字）；成员页先读上一条的姓名"),
 )
@@ -1152,7 +1313,8 @@ def check_profiles() -> list[str]:
                 out.append(f"{p.name}: {w.key} ignores a click")
         for pattern in (p.sites, *(b.target for b in p.buttons), *(w.key for w in p.writings),
                         *(d.paths for d in p.details), *(d.date_path for d in p.details if d.date_path),
-                        *(m.paths for m in p.menus), *(x for n in p.no_data for x in (n.paths, n.says))):
+                        *(m.paths for m in p.menus), *(m.prompt for m in p.menus if m.prompt),
+                        *(x for n in p.no_data for x in (n.paths, n.says))):
             try:
                 re.compile(pattern)
             except re.error as exc:
@@ -1423,6 +1585,22 @@ def detail_of(url: str) -> Detail | None:
         return None
     full = parts.path.lower() + ("?" + parts.query.lower() if parts.query else "")
     return next((d for d in p.details if re.search(d.paths, full)), None)
+
+
+def area_missing(url: str, html: str) -> bool | None:
+    """Whether a page whose profile says its answer always holds the content area (Profile.area_required) came back
+    without it: True, False, or None for a page no profile requires it of (11-17: a teacher's CV page answered with
+    no card at all, the school's now and then, never the same page twice; design 2026-11-17-round2-batch2 §八)."""
+    p = profile_for(url)
+    if p is None or not p.area_required or not p.content_css:
+        return None
+    try:
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        return None
+    if not re.search(p.area_required, path):
+        return None
+    return LexborHTMLParser(html or "").css_first(p.content_css) is None
 
 
 def empty_detail(url: str, html: str) -> bool | None:

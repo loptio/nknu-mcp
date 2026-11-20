@@ -259,6 +259,12 @@ CREATE TABLE IF NOT EXISTS page_watch(url_id INTEGER PRIMARY KEY, fp TEXT, check
 _KEEP = (f"INSERT OR IGNORE INTO url_version(url_id, kept_at, {', '.join(KEPT_COLS)}) "
          f"SELECT id, ?, {', '.join(KEPT_COLS)} FROM url WHERE id = ? AND warc IS NOT NULL AND warc_offset IS NOT NULL")
 _POINTER = ("warc", "warc_offset")
+# what reconcile's look judges of a page's words (reconcile._decide_thin: thin, 页面几乎是空的; in_image, 内容在图片里),
+# which no fetch writes: a page fetched again keeps them from its last kept answer while its words did not grow
+# (kept_judged; 11-17, the owner relayed by 爬虫judge: 「重抓时这一次的字数没变多就留着标记」)
+JUDGED_FLAGS = ("thin", "in_image")
+# an answer that says the school holds nothing (never thin) or is a sign-in or a soft 404 (what it is wins): never kept
+_NOT_JUDGED = frozenset({*outcome.SAYS_NOTHING, "login", "soft404"})
 ALL_QUEUES = "*"  # the pause row that holds every queue (our network is down)
 NETWORKS = ("school", "other")  # the school's addresses (140.127.*) and everything else, told apart when one is down
 _NET = "net:"  # the pause row of one network: net:school, net:other
@@ -568,6 +574,69 @@ class Frontier:
                 self.conn.execute(f"{_KEEP} AND ({changed})", (time.time(), uid, *(cols[k] for k in moving)))
             self.conn.execute(f"UPDATE url SET {sets} WHERE id=?", (*cols.values(), uid))
 
+    def kept_judged(self, uid: int, text_chars: int | None, flags: Iterable[str]) -> list[str]:
+        """What reconcile judged of this page's words (JUDGED_FLAGS) that its answer now keeps: those its newest kept
+        answer that carried any had (a 200 web page in url_version), when its words never grew since, neither in a later
+        kept answer nor now (text_chars). None when the answer itself says the school holds nothing or is a sign-in or
+        a soft 404 (outcome.SAYS_NOTHING: never thin, and what such a page is wins). 11-17: a night's fetch writes a
+        page's flags anew and reconcile never runs at night, so 88 near-empty pages had come to 抓到了 and lost the
+        10-24 copy the export fills a thin page with (the content session, 11-17); the owner, relayed by 爬虫judge:
+        「重抓时这一次的字数没变多就留着标记，有旧副本的照旧用副本补」."""
+        if text_chars is None or set(flags) & _NOT_JUDGED:
+            return []
+        base, _later = self._judged_base(uid)
+        if base is None or text_chars > base["text_chars"]:
+            return []
+        had = set((base["flags"] or "").split(","))
+        return [f for f in JUDGED_FLAGS if f in had]
+
+    def _judged_base(self, uid: int) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
+        """The newest kept answer (a 200 web page in url_version) carrying any of JUDGED_FLAGS, and the kept answers
+        after it; (None, []) when there is none, it has no word count, or the words grew in one kept after it."""
+        kept = self.q("SELECT id, flags, text_chars FROM url_version WHERE url_id=? AND status=200 AND kind='page' "
+                      "AND sniff='html' ORDER BY id", (uid,))
+        judged = [i for i, k in enumerate(kept) if set((k["flags"] or "").split(",")) & set(JUDGED_FLAGS)]
+        if not judged:
+            return None, []
+        base, later = kept[judged[-1]], kept[judged[-1] + 1:]
+        if base["text_chars"] is None or any((k["text_chars"] or 0) > base["text_chars"] for k in later):
+            return None, []
+        return base, later
+
+    def thin_back(self, write: bool) -> dict[str, int]:
+        """The pages a night's fetch left without what reconcile judged of their words (kept_judged: the program
+        before 11-17 dropped it), per site (owner_site): marked again when write, only counted otherwise. The page's
+        answer now, and the kept answers after the judged one (a page two nights fetched: the answer the second
+        replaced lost its mark too, and the export's fallback to a last good answer would take that thin page for a
+        good one before the 10-24 copy). Once: a page marked is not counted again. `python -m nknu.archive.update
+        thin-back` (the owner relayed by 爬虫judge, 11-17: 「已经被冲掉的那 88 页也要能标回来」)."""
+        like = " OR ".join("(',' || coalesce(v.flags, '') || ',') LIKE ?" for _ in JUDGED_FLAGS)
+        rows = self.q(f"SELECT u.id, u.owner_site, u.flags, u.text_chars FROM url u WHERE u.state='done' "
+                      f"AND u.status=200 AND u.kind='page' AND u.sniff='html' AND EXISTS (SELECT 1 FROM url_version v "
+                      f"WHERE v.url_id = u.id AND ({like})) ORDER BY u.id", tuple(f"%,{f},%" for f in JUDGED_FLAGS))
+        out: dict[str, int] = {}
+        for r in rows:
+            base, later = self._judged_base(r["id"])
+            if base is None:
+                continue
+            had = [f for f in JUDGED_FLAGS if f in (base["flags"] or "").split(",")]
+            changes: list[tuple[str, tuple]] = []
+            for k in later:  # kept answers no larger than the judged one (_judged_base): judged so too
+                flags = [f for f in (k["flags"] or "").split(",") if f]
+                if not set(flags) & _NOT_JUDGED and [f for f in had if f not in flags]:
+                    changes.append(("UPDATE url_version SET flags=? WHERE id=?",
+                                    (",".join([*flags, *(f for f in had if f not in flags)]), k["id"])))
+            now = [f for f in (r["flags"] or "").split(",") if f]
+            add = [f for f in self.kept_judged(r["id"], r["text_chars"], now) if f not in now]
+            if add:
+                changes.append(("UPDATE url SET flags=? WHERE id=?", (",".join([*now, *add]), r["id"])))
+            if not changes:
+                continue
+            out[r["owner_site"]] = out.get(r["owner_site"], 0) + 1
+            for sql, args in changes if write else ():
+                self.x(sql, args)
+        return out
+
     def old_only(self, uid: int) -> bool:
         """Only an old source names this row (found_via OLD_VIAS: the old archive's, Common Crawl's) and no page of this
         round links to it: one of the addresses monitor's R3b and R4b list (§18.2b)."""
@@ -672,11 +741,13 @@ class Frontier:
                      f"WHERE u.state='pending'{by_id}", id_args)[0][0]
         return n, nxt
 
-    def waiting(self, sites: frozenset[str] | None = None,
-                ids: Iterable[int] | None = None) -> tuple[int, float | None]:
+    def waiting(self, sites: frozenset[str] | None = None, ids: Iterable[int] | None = None, *,
+                retries_from: float | None = None) -> tuple[int, float | None]:
         """For the run's end (review 10-26 B1): how many URLs (of these sites; of these rows, for a run given --only)
         are pending or active, and when the soonest pending one is due, its host's cool-down, Crawl-delay and DNS
-        back-off and its queue's pauses (its own, its network's, every queue's) counted in."""
+        back-off and its queue's pauses (its own, its network's, every queue's) counted in. retries_from: a moment
+        (the run's now) from which a row waiting to be tried again (attempts > 0, due later than that) no longer counts
+        for when the soonest is due, only in how many are left (the nightly run leaves them to the next night, 11-18)."""
         only, args = "", []
         if sites is not None:
             only = f" AND u.owner_site IN ({','.join('?' * len(sites))})"
@@ -684,6 +755,9 @@ class Frontier:
         by_id, id_args = ids_clause("u.id", ids)
         n = self.q(f"SELECT count(*) FROM url u WHERE u.state IN ('pending','active'){only}{by_id}",
                    [*args, *id_args])[0][0]
+        if retries_from is not None:
+            only += " AND (u.attempts = 0 OR u.next_at <= ?)"
+            args = [*args, retries_from]
         due = self.q(f"""SELECT min(max(u.next_at, coalesce(h.cooldown_until, 0), coalesce(h.not_before, 0),
                            coalesce((SELECT max(p.until) FROM pause p WHERE p.queue IN
                              (h.queue, '{ALL_QUEUES}', '{_NET}' || CASE WHEN h.queue LIKE 'ip:140.127.%'

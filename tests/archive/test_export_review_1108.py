@@ -1,7 +1,7 @@
 """The 11-08 review of the export's step-3 additions (test_export_step3_1108, test_export_dates_1108; each fix is
 Claude's): what an export is made of (manifest.json's 导出依据) and --skip-same, by which the export service skips a
 site only when exporting it again would change nothing (a person's mark, a hand edit, --old-copies added later, a
-newer program all change it with no fetch); the service itself (research/crawler_lab_2026-11-04/export_sites.sh, run
+newer program all change it with no fetch); the service itself (deploy/lab-crawler/lab/export_sites.sh, run
 with bash on the fixture archive); a file of the previous export hard-linked only when its bytes hash right; an out
 folder inside a folder the export only reads; names percent-encoded twice; the old copies of rows the id probe calls
 gone or that wait for the lab, and the copies a row no longer needs; where a filled redirect's file is the answer of;
@@ -29,7 +29,7 @@ from tests.archive.test_export_1027 import BASE, SITE, _add, _export, _res, by_u
 from tests.archive.test_export_dates_1108 import TECS
 from tests.archive.test_export_step3_1108 import AS_OF, OLD_NOTICE, OLD_PDF, _copies, _manifest
 
-SERVICE = Path(__file__).resolve().parents[2] / "research" / "crawler_lab_2026-11-04" / "export_sites.sh"
+SERVICE = Path(__file__).resolve().parents[2] / "deploy" / "lab-crawler" / "lab" / "export_sites.sh"
 BROKEN = BASE + "uploadfile/broken.pdf"  # the fixture's attachment that never connected
 
 
@@ -140,9 +140,12 @@ def _service(tmp_path: Path, arch, **env) -> tuple[int, str]:
         (bin_dir / "python").write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
         (bin_dir / "python").chmod(0o755)
         (tmp_path / "list.txt").write_text(f"{SITE}  # 教务处\n", encoding="utf-8")
+    # OLD_COPIES '' (no copies) unless a test sets it: unset, the service takes the lab's copies folder (11-17);
+    # OLD_COPIES=None leaves it unset
     run_env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
                "EXPORT_BASE": str(tmp_path / "sites"), "ARCHIVE_DIR": str(arch.root),
-               "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"), **env}
+               "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"), "OLD_COPIES": "", **env}
+    run_env = {k: v for k, v in run_env.items() if v is not None}
     got = subprocess.run(["bash", str(SERVICE), str(tmp_path / "list.txt")], env=run_env, capture_output=True,
                          text=True, errors="replace", timeout=300, check=False)
     return got.returncode, got.stdout + got.stderr
@@ -349,7 +352,7 @@ def test_an_index_row_this_round_no_longer_needs_is_counted_and_its_row_left_alo
 
 def test_an_index_row_whose_result_is_none_the_export_fills_and_has_no_file_says_so(tmp_path):
     arch = make_archive(tmp_path / "archive")
-    later = "https://www.edu.tw/files/plan.pdf"  # round two's this round (state later): none the export fills
+    later = "https://unit.nknu.edu.tw/files/plan.pdf"  # round two's this round (state later): none the export fills
     old = _copies(tmp_path / "old", {arch.ids["later"]: (OLD_PDF, {"url": later, "ctype": "application/pdf"})})
     export.export_site(arch.root, SITE, tmp_path / "out", old_copies=old)
     row = by_url(rows_of(tmp_path / "out" / "manifest.csv"))[later]

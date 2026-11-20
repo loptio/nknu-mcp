@@ -117,8 +117,10 @@ def test_each_round_1_site_has_a_home_inside_its_own_round_1_part():
             assert s.home and s.imp in round1.TIER_OF_IMP
             assert v(s.home).verdict == "r1", s.site  # the seed is fetched, not left for round 2
     ksped, lost = PLAN.sites["ksped.nknu.edu.tw"], PLAN.sites["sso.nknu.edu.tw/dataopen2search"]
-    assert ksped.paths == ("/resource/",) and ksped.imp == "全校重要"
-    assert lost.paths == ("/dataopen2search/lostandfound.aspx", "/dataopen2search/opencoursetablepure.aspx")
+    # round two, batch two (design 2026-11-17-round2-batch2 §三.1): ksped is round one whole; the CV pages join
+    assert ksped.paths == () and ksped.imp == "全校重要"
+    assert lost.paths == ("/dataopen2search/lostandfound.aspx", "/dataopen2search/opencoursetablepure.aspx",
+                          "/dataopen2search/vita.aspx")
 
 
 def test_the_committed_list_is_what_the_script_makes_from_the_site_map():
@@ -169,14 +171,15 @@ def test_a_page_of_a_round_1_site_is_r1_and_counts_towards_its_own_site():
 
 
 def test_paths_split_one_key_between_the_rounds():
+    # ksped is round one whole since round two's batch two (design 2026-11-17-round2-batch2 §三.1)
     assert v("https://ksped.nknu.edu.tw/resource/news.aspx?id=3").verdict == "r1"
-    assert v("https://ksped.nknu.edu.tw/resource").verdict == "r1"  # the folder without its slash
-    other = v("https://ksped.nknu.edu.tw/news.aspx?id=3")
-    assert (other.verdict, other.reason, other.state, other.tier) == ("round2", "round2:other_site", "later", 2)
+    assert v("https://ksped.nknu.edu.tw/news.aspx?id=3").verdict == "r1"
     assert v("https://sso.nknu.edu.tw/DataOpen2Search/LostAndFound.aspx").verdict == "r1"
     assert v("https://sso.nknu.edu.tw/dataopen2search/opencoursetablepure.aspx?unit=209072").verdict == "r1"
-    assert v("https://sso.nknu.edu.tw/DataOpen2Search/vita.aspx?UNID=3131").reason == "round2:other_site"
-    assert v("https://sso.nknu.edu.tw/dataopen2search/demo.aspx").reason == "round2:other_site"
+    assert v("https://sso.nknu.edu.tw/DataOpen2Search/vita.aspx?UNID=3131").verdict == "r1"  # the CV pages join
+    other = v("https://sso.nknu.edu.tw/dataopen2search/demo.aspx")
+    assert (other.verdict, other.reason, other.state, other.tier) == ("round2", "round2:other_site", "later", 2)
+    assert v("https://sso.nknu.edu.tw/dataopen2search/opendatasearch.aspx?dataidx=1").reason == "round2:other_site"
 
 
 def test_the_attachment_service_is_a_resource_of_the_page_that_links_it():
@@ -222,16 +225,19 @@ def test_a_round_2_page_links_nothing_into_round_1_but_round_1_sites():
 
 
 def test_ordinary_links_out_of_round_1():
-    js = v("https://w3.nknu.edu.tw/zh/news", ACA)
-    assert (js.reason, js.owner_site, js.tier, js.leaf) == ("round2:js_site", "w3.nknu.edu.tw", 2, 0)
+    js = v("https://w3.nknu.edu.tw/zh/news", ACA)  # 11-17: round two's first batch crawls the JS sites now
+    assert (js.verdict, js.owner_site, js.tier, js.leaf) == ("r1", "w3.nknu.edu.tw", 0, 0)
     other = v("https://c.nknu.edu.tw/ae/default.aspx", ACA)
     assert (other.reason, other.owner_site, other.leaf) == ("round2:other_site", "c.nknu.edu.tw/ae", 0)
     off = v("https://www.moe.gov.tw/news.aspx", ACA)  # one layer out, in round 2 (record 一·1)
     assert (off.reason, off.leaf, off.state, off.owner_site) == ("round2:offsite", 1, "later", "www.moe.gov.tw")
     gsite = v("https://sites.google.com/view/other-unit", ACA)
     assert (gsite.reason, gsite.leaf) == ("round2:offsite", 1)
-    unit = v("https://sites.google.com/view/taiwanology", ACA)  # a school unit's site off campus: the whole site
-    assert (unit.reason, unit.leaf, unit.owner_site) == ("round2:offsite_unit", 0, "sites.google.com/view/taiwanology")
+    unit = v("https://sites.google.com/view/taiwanology", ACA)  # a school unit's site off campus: the whole site,
+    # crawled now by round two's batch two (design 2026-11-17-round2-batch2 §三.1)
+    assert (unit.verdict, unit.leaf, unit.owner_site, unit.tier) == ("r1", 0, "sites.google.com/view/taiwanology", 1)
+    low = v("https://www.nknu-vd.com/works", ACA)  # one the list calls 基本没用: still round two's
+    assert (low.reason, low.leaf, low.owner_site) == ("round2:offsite_unit", 0, "www.nknu-vd.com")
 
 
 def test_out_verdicts_make_no_row():
@@ -347,9 +353,13 @@ def test_every_reason_is_one_of_the_known_codes():
     ("https://2060631web-repository.github.io/other/", "round2:offsite", 1, "2060631web-repository.github.io"),
 ])
 def test_a_school_units_site_off_campus_is_round_2_by_its_paths(url, reason, leaf, owner):
+    """By its paths and params; a unit round two's batch two crawls now (design 2026-11-17-round2-batch2 §三.1: all
+    but the 基本没用 ones) is this round's inside them, tier 本系重要."""
+    batch = reason == "round2:offsite_unit" and PLAN.sites[owner].now
     for src in (ACA, LATER, None):
         got = v(url, src)
-        assert (got.verdict, got.reason, got.leaf, got.owner_site, got.tier) == ("round2", reason, leaf, owner, 2), src
+        want = ("r1", None, leaf, owner, 1) if batch else ("round2", reason, leaf, owner, 2)
+        assert (got.verdict, got.reason, got.leaf, got.owner_site, got.tier) == want, src
 
 
 def test_holds_compares_whole_path_segments_and_parameters():
@@ -450,7 +460,7 @@ def test_a_seed_that_redirects_to_another_site_brings_that_site_into_round_1():
     got = round1.verdict(plan, "https://www.lis.nknu.edu.tw/news", None)
     assert (got.verdict, got.owner_site, got.tier) == ("r1", "lis.nknu.edu.tw", 0)
     plan.adopt("https://w3.nknu.edu.tw/", "c.nknu.edu.tw/aca")  # never a JavaScript site (owner, 10-25 15:33)
-    assert round1.verdict(plan, "https://w3.nknu.edu.tw/", None).reason == "round2:js_site"
+    assert round1.verdict(plan, "https://w3.nknu.edu.tw/", None).owner_site == "w3.nknu.edu.tw"  # its own (11-17: now)
     assert round1.verdict(PLAN, "https://www.lis.nknu.edu.tw/news", None).verdict == "round2"  # one plan only
     for host in ("https://github.com/nknu", "https://www.edu.tw/x", "https://www.google.com/"):  # never a whole host
         assert not plan.adopt(host, "c.nknu.edu.tw/aca")
@@ -500,13 +510,14 @@ def test_extra_seeds_are_those_pages_only():
     assert v("https://sso.nknu.edu.tw/recruit/statistics/a.aspx", seed).reason == "round2:other_site"
 
 
-def test_the_login_list_to_check_once_is_the_15_urls_inside_round_1_sites():
+def test_the_login_list_to_check_once_is_the_16_urls_inside_round_1_sites():
     checks = PLAN.login_checks
-    assert len(checks) == 15 and len(set(checks)) == 15
+    assert len(checks) == 16 and len(set(checks)) == 16
     for url in checks:
         assert round1.verdict(PLAN, url, None).verdict == "r1", url
         assert scope.judge(url).reason == "login", url  # only the crawler's own check opens them
-    assert "https://ksped.nknu.edu.tw/admin_login.aspx" not in checks  # ksped outside /resource/ is round 2
+    # ksped is round one whole since round two's batch two (design 2026-11-17-round2-batch2 §三.1): its admin page too
+    assert "https://ksped.nknu.edu.tw/admin_login.aspx" in checks
     assert "https://ksped.nknu.edu.tw/resource/admin_login.aspx" in checks
 
 
@@ -820,13 +831,13 @@ def test_a_round_1_page_framing_its_units_own_site_off_campus_fetches_that_page_
     framed = v(WIX_PAGE, GENDER, "frame")
     assert (framed.verdict, framed.reason, framed.owner_site, framed.tier, framed.leaf, framed.kind0) == (
         "resource", None, "gender.nknu.edu.tw", 1, 1, "page")
-    linked = v(WIX_PAGE, GENDER)
-    assert (linked.reason, linked.leaf, linked.owner_site) == ("round2:offsite_unit", 0,
-                                                               "nknugender.wixsite.com/nknugender")
+    linked = v(WIX_PAGE, GENDER)  # a link to it: the unit's own site, crawled now by round two's batch two
+    assert (linked.verdict, linked.leaf, linked.owner_site, linked.tier) == ("r1", 0,
+                                                                             "nknugender.wixsite.com/nknugender", 1)
     assert v(WIX_PAGE, GENDER, "hidden").reason == "out:not_content"
     other = v("https://someone.wixsite.com/site/a", GENDER, "frame")  # no unit's site of the list
     assert (other.reason, other.leaf, other.owner_site) == ("round2:offsite", 1, "someone.wixsite.com/site")
-    assert v(WIX_PAGE, LATER, "frame").reason == "round2:offsite_unit"
+    assert v(WIX_PAGE, LATER, "frame").verdict == "r1"  # a round-2 page's frame: the batch's unit site
     canva = v("https://www.canva.com/design/DAF/view?embed", GENDER, "frame")
     assert (canva.verdict, canva.reason) == ("round2", "round2:offsite")
 

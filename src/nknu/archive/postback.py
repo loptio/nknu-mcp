@@ -280,8 +280,29 @@ def _offered(select: LexborNode) -> list[LexborNode]:
     return [o for o in select.css("option") if not webforms._disabled(o)]
 
 
+def asks_first(url: str, html: str, site: str | None) -> bool:
+    """Whether the page stands with the prompt of a menu rule chosen and a choice to send (profiles.Menu.prompt:
+    「請先選擇教師」 over a course's teachers): it holds nothing of what it is about, each choice's answer does, a
+    row of its own (11-19: the export says so, export.ASKS_FIRST). A page that shows a choice, or offers none, does
+    not."""
+    prof = profiles.profile_for_site(site)
+    try:
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        return False
+    rules = [m for m in (prof.menus if prof is not None else ()) if m.prompt and re.search(m.paths, path)]
+    if not rules:
+        return False
+    tree = LexborHTMLParser(html or "")
+    for m in rules:
+        presses, _text, asks = _menu_presses(m, tree, site=site or "", scope_of=url, year=0)
+        if asks and presses:
+            return True
+    return False
+
+
 def _menu_presses(m: profiles.Menu, tree: LexborHTMLParser, *, site: str, scope_of: str,
-                  year: int) -> tuple[list[Press], str]:
+                  year: int) -> tuple[list[Press], str, bool]:
     """The presses of one menu rule on a page (gap ⑩ of 11-08; the owner 11-09 「现在补 115」): the form of id m.form,
     alone on the page, must hold the year select, the each select and the submit button (none of them disabled), and
     the year select must offer `year`; then one press of the submit button per option of the each select a browser
@@ -291,31 +312,47 @@ def _menu_presses(m: profiles.Menu, tree: LexborHTMLParser, *, site: str, scope_
     was first read on, never a detail's key: the same option is one row whichever page or answer shows it) from the
     year and the value exactly as sent (quoted: row_key's NFKC and white space never make two options one row, the
     second never pressed; review of 11-09), its rule's name the category; its text the year, the option's optgroup
-    label and its text. Returns the presses and the submit button's text (its value, "" when it is nowhere): with no
-    press, the menu is written unpressed under that text (要人看). An each select with no option to send counts as
-    missing 【Claude 的执行办法】."""
+    label and its text. Returns the presses, the submit button's text (its value, "" when it is nowhere) and whether
+    the page asks for the menu at all: with no press on a page that asks, the menu is written unpressed under that
+    text (要人看). An each select with no option to send counts as missing 【Claude 的执行办法】.
+
+    A rule with no year menu (m.year "", 11-18: the outlines of a course several teachers give) asks for no year
+    select; its presses' arguments, row keys and texts name the option alone. A rule with a prompt (m.prompt) never
+    sends an option whose value is one, and a page whose each select shows a real choice (its selected option, else
+    its first, as a browser shows it) does not ask: that choice's answer is the page itself (no press, and nothing
+    written of the menu)."""
     form = _the_form(tree, m.form)
-    years, each = _in_form(form, "select", m.year), _in_form(form, "select", m.each)
+    years = _in_form(form, "select", m.year) if m.year else None
+    each = _in_form(form, "select", m.each)
     submit = _in_form(form, "input", m.submit, "submit")
     button = submit if submit is not None else next(
         (n for n in tree.css("input") if _named(n, "input", m.submit, "submit")), None)
     text = clean(button.attributes.get("value") or "") if button is not None else ""
-    if years is None or each is None or submit is None or \
-            str(year) not in {webforms._option_value(o) for o in _offered(years)}:
-        return [], text
+    is_prompt = profiles._re(m.prompt).fullmatch if m.prompt else (lambda value: None)
+    if m.prompt and each is not None:
+        options = each.css("option")
+        shown = next((o for o in options if "selected" in o.attributes), options[0] if options else None)
+        if shown is not None and not is_prompt(webforms._option_value(shown)):
+            return [], text, False
+    if each is None or submit is None or (m.year and (
+            years is None or str(year) not in {webforms._option_value(o) for o in _offered(years)})):
+        return [], text, True
     out: list[Press] = []
     seen: set[str] = set()
     for o in _offered(each):
         value = webforms._option_value(o)
-        if value in seen:
+        if value in seen or is_prompt(value):
             continue
         seen.add(value)
         up = o.parent
         group = (up.attributes.get("label") or "") if up is not None and up.tag == "optgroup" else ""
+        named = f"{year} {quote(value, safe='')}" if m.year else quote(value, safe="")
+        words = f"{year}學年度 {group} {o.text() or ''}" if m.year else f"{group} {o.text() or ''}"
         out.append(Press("detail", m.submit, profiles.menu_argument(m, year, value),
-                         row_key(site, scope_of, f"{year} {quote(value, safe='')}", category=m.name),
-                         clean(f"{year}學年度 {group} {o.text() or ''}"), 1, m.form, m.name))
-    return out, text
+                         row_key(site, scope_of, named, category=m.name), clean(words), 1, m.form, m.name))
+    # a rule with a prompt whose menu offers the prompt alone asks for nothing: there is nobody to choose (an outline
+    # of a course the school lists no teacher for, profiles.OUTLINE_NO_TEACHER: its answer of no data, not a gap)
+    return out, text, bool(out) or not m.prompt
 
 
 def menu_form(html: str, form_id: str, submit: str) -> tuple[str | None, str]:
@@ -415,7 +452,9 @@ def menus_not_sent(f: Frontier, year: int, only: str = "",
         except ValueError:
             continue
         for m in (prof.menus if prof is not None else ()):
-            if not re.search(m.paths, path):
+            # a rule with no year menu (11-18: an outline's teachers) has nothing to send again for a new year, and
+            # its pages that show a choice never asked: none of them is a page whose menu was not sent
+            if not m.year or not re.search(m.paths, path):
                 continue
             rows: dict[str, list[str]] = defaultdict(list)  # the presses of this year by their option's row
             for a in f.q("SELECT row_key, argument, state FROM action WHERE list_id=? AND kind='detail'", (r["id"],)):
@@ -540,9 +579,9 @@ def read_page(profile: profiles.Profile, url: str, html: str, *, site: str, list
     for m in (profile.menus if year is not None else ()):
         if not re.search(m.paths, path):
             continue
-        got, label = _menu_presses(m, tree, site=site, scope_of=list_url or url, year=year)
+        got, label, asks = _menu_presses(m, tree, site=site, scope_of=list_url or url, year=year)
         menu_presses += got
-        if not got:
+        if asks and not got:
             menus_left.append((m.submit, MENU_ARG))
             said.setdefault(button_key(m.submit, MENU_ARG), label)
     texts = tuple(said.items())
@@ -958,12 +997,30 @@ def title_ok(row_title: str, html: str, css: str | None, exclude: str | None = N
 EMPTY_DETAIL = outcome.EMPTY_DETAIL  # action.reason of a detail answered with nothing but its title: thin
 
 
-def _without_pressed(pr: PageRead, action) -> PageRead:
+def _without_pressed(pr: PageRead, action, prof: profiles.Profile | None = None) -> PageRead:
     """A detail's answer read for its own buttons, less the button that brought it (gap ⑪ of 11-08, 【Claude 的执行办法】):
     an answer may show the button pressed again (the 安裝說明 folder it opened is still a button of the folder list), and
-    pressed from that answer it would bring the same answer again under a new row key, and again."""
+    pressed from that answer it would bring the same answer again under a new row key, and again. Less, too, the
+    detail presses of the row set the press was of (prof.rows; a menu's options are no row set: their keys are the
+    list's, read again on purpose): the page it was pressed on planned every row of it, and an answer that shows them
+    again (a CV page's 16 tabs, each tab's answer showing all 16) would plan them again keyed under this press, and
+    from those answers again: 11-17 on the lab, unid=3131 planned 50,521 presses in 100 minutes. Such a button is
+    handed on as unplanned (PageRead.unplanned_at, with its text): the caller's _unpressed writes the ones no press of
+    the list covers as 要人看, so a button only an answer shows is never dropped unseen (爬虫judge 11-17: 「被丢掉的新键至少
+    要留个纪录，不能悄悄消失」; none in the ledger before 11-17)."""
     same = (action["target"], action["argument"] or "")
-    return replace(pr, presses=tuple(p for p in pr.presses if (p.target, p.argument or "") != same))
+    rowset = (action["profile"] or "").partition("/")[2]
+    sibling = rowset if prof is not None and any(rs.name == rowset for rs in prof.rows) else None
+    kept, dropped = [], []
+    for p in pr.presses:
+        if (p.target, p.argument or "") == same:
+            continue
+        (dropped if sibling and p.kind == "detail" and p.rowset == sibling else kept).append(p)
+    at = tuple((p.target, p.argument or "") for p in dropped)
+    return replace(pr, presses=tuple(kept), unplanned_at=tuple(dict.fromkeys((*pr.unplanned_at, *at))),
+                   unplanned=tuple(dict.fromkeys((*pr.unplanned, *(button_key(t, a) for t, a in at)))),
+                   texts=tuple(dict.fromkeys((*pr.texts, *((button_key(p.target, p.argument or ""), p.text)
+                                                           for p in dropped)))))
 
 
 # a download press's answer that names where the file is, in a frame the page opens: SSO's startup script creates a
@@ -1704,7 +1761,7 @@ class Chains:
         year = self._asked_year(a, prof)
         pr = _without_pressed(read_page(prof, url, as_text(body, headers.get("content-type")), site=site,
                                         list_url=list_row["url"] if year is not None else None,
-                                        parent_key=a["row_key"], step=a["step"], walks=("none",), year=year), a)
+                                        parent_key=a["row_key"], step=a["step"], walks=("none",), year=year), a, prof)
         n, _end = self._plan(list_id, epoch, pr, list_row, a["warc"], a["warc_offset"], pages=0, base=url,
                              only=frozenset() if redo else None, left=left, seen=seen)
         self._unpressed(list_id, pr.unplanned_at, pr.texts)
@@ -2132,7 +2189,7 @@ class Chains:
             pr = _without_pressed(read_page(prof, a.url, html, site=site,
                                             list_url=list_row["url"] if year is not None else None,
                                             parent_key=action["row_key"], step=action["step"], walks=("none",),
-                                            year=year), action)
+                                            year=year), action, prof)
             if warc is not None and a.warc_offset is not None:
                 self._plan(action["list_id"], action["epoch"], pr, list_row, warc, a.warc_offset, pages=0, base=a.url)
                 self._unpressed(action["list_id"], pr.unplanned_at, pr.texts)

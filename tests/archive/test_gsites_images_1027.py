@@ -5,7 +5,7 @@ sends https://sites.google.com/), the crawler's identity otherwise unchanged; th
 reading of the page (about 30 s), so a picture is known by where it sits (res_key gsimg:<page>/<n>/<element id>), a
 page whose pictures start to answer 403 halfway is read again (twice at most), and a site whose first two pictures
 tried after its page was read again both answer 403 sends no more of them: they wait for round two's browser
-(round2:google_sites_image), counted in the known gaps, the dashboard's 下一轮 and on the site and the page.
+(round2:google_sites_image), counted by site in the ledger, in the dashboard's 下一轮 and on the site and the page.
 
 The page below is the counselling centre's home (archive-pilot url id 9) cut down to what these tests need: its meta
 referrer, the site logo in the nav and the header (twice, one address), body pictures inside the blocks Google Sites
@@ -20,7 +20,7 @@ import re
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from nknu.archive import links, monitor, outcome, progress, reconcile
+from nknu.archive import links, monitor, outcome, progress
 from nknu.archive.crawler import Crawler
 from nknu.crawl.warc import WarcSink
 from tests.archive.plans import OpenPlan
@@ -400,15 +400,13 @@ def test_two_refusals_after_the_page_was_read_again_leave_the_sites_pictures_for
                "'unknown')", (f"{PIC}%", f"{LH}%"))[0][0] == 0
     assert f.q("SELECT count(*) FROM deny")[0][0] == 0
     assert f.q("SELECT count(*) FROM event WHERE code LIKE 'host_denies%'")[0][0] == 0
-    # seen: the known gaps (verify item 16), the dashboard's 下一轮, the site, the page
+    # seen: counted by site in the ledger (what verify item 16's known gap read), the dashboard's 下一轮, the site,
+    # the page
     n = len([k for k in home if not k.endswith("/yuynLe")]) + len([k for k in page2 if not k.endswith("/yuynLe")])
-    gaps = {words: k for words, k, _unit in monitor.known_gaps(f)}
-    line = next(w for w in gaps if w.startswith("协作平台正文图片"))
-    assert gaps[line] == n and SITE in line
-    r2 = progress._round2(f.conn)
-    mine = [x for x in r2["by_why"] if x["why"] == links.GOOGLE_SITES_ROUND2]
-    assert mine == [{"why": links.GOOGLE_SITES_ROUND2, "zh": "协作平台正文图片", "n": n, "sites": 1}]
-    assert r2["total"] == sum(x["n"] for x in r2["by_why"])
+    by_site = f.q("""SELECT p.owner_site, count(DISTINCT pr.res_key) FROM page_res pr JOIN url p ON p.id = pr.page_id
+                     WHERE pr.need = 'round2' AND pr.why = ? GROUP BY p.owner_site""", (links.GOOGLE_SITES_ROUND2,))
+    assert [tuple(r) for r in by_site] == [(SITE, n)]
+    assert progress.ROUND2_ZH[links.GOOGLE_SITES_ROUND2] == "协作平台正文图片"
     ok_type(f, HOME, PAGE2)
     label = f.q("SELECT label, level FROM page_completeness WHERE id=(SELECT id FROM url WHERE url=?)", (PAGE2,))[0]
     assert (label["label"], label["level"]) == ("round2_img", "partial")
@@ -433,27 +431,3 @@ def test_a_site_that_got_a_picture_is_never_given_up_for_a_later_refusal(tmp_pat
     f = crawler.frontier
     assert f.meta(f"gsimg_giveup:{SITE}") is None
     assert [u for u in net.asked(PIC) if "AMxu72c" in u]  # the next page's pictures are asked for
-
-
-# ---------------------------------------------------------------- the checks read a picture by where it sits
-
-
-def test_verify_and_the_browser_spot_check_read_a_runtime_picture_by_where_it_sits(tmp_path):
-    """V13 (verify_extract) finds each picture's key in page_res as the crawler wrote it; R6's browser look, whose
-    picture addresses are all new, finds no picture missing: the same picture sits in the same place."""
-    clock = Clock()
-    net = Site(clock)
-    crawler = make(tmp_path, net)
-    seed(crawler, HOME)
-    work(crawler, net)
-    f = crawler.frontier
-    v13 = reconcile.verify_extract(f, tmp_path, [SITE], plan=crawler.plan)[SITE]
-    assert v13.status == reconcile.PASS, v13.items
-    shown = {HOME: page_html(99, links_to=f'<a href="{PAGE2}">聯絡我們</a>'), PAGE2: page_html(99, prefix="c")}
-
-    def spot(url):
-        return reconcile.SpotView(url, url, shown.get(url, ""), None)
-
-    check = reconcile._r6(f, reconcile.Archive(tmp_path), crawler.plan, SITE, "t", spot, None)
-    assert check.counts["pages"] >= 1
-    assert not [i for i in check.items if i.get("problem") == "differs"], check.items

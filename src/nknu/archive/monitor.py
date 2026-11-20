@@ -18,32 +18,27 @@ link following found by itself (by UNID, so news.nknu's spelling counts), postba
 profiles must replay), skipped-link reasons, the off-campus candidate domains, and requests made on the school's
 network (request.campus 'on', review 10-26 B4).
 
-Round 1's acceptance (design §10.5, §13; the second half of this file): facts() reads the result views once
+Each site's state (design §10.5; the second half of this file): facts() reads the result views once
 (page_completeness, page_resource); site_status() turns them into each round-1 site's state for the user (✗ 出错,
-⚠ 要看, 还在抓, ⚠ 纪录齐了，还没对账, ✓ 爬完: 爬完 only with a reconciliation newer than the site's last crawl whose
-every gate passed); checks() is §13's items 1–18 (the dashboard asks the cheap ones, 1–12 and 16); verify() writes
-reports/verify-<time>.md and says 2 (something wrong), 1 (something to look at, or not checked) or 0. All of it reads
-the frontier read-only and sends nothing.
+⚠ 要看, 还在抓, ✓ 爬完: every page whole and nothing waiting). The reconciliation gates between 还在抓 and 爬完, §13's
+checks and `archive verify` went with the judgment-layer cut of 11-19. All of it reads the frontier read-only and
+sends nothing.
 """
 
 from __future__ import annotations
 
-import gzip
 import json
 import re
 import sqlite3
 import time
-import zlib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
-from nknu.archive import links, outcome, profiles, scope
+from nknu.archive import outcome, profiles, scope
 from nknu.archive.frontier import ALL_QUEUES, Frontier, net_key
 
 MIN_GAP_S = 2.0  # the least gap of a run whose run_start does not say (the default 2–5 s)
@@ -164,12 +159,12 @@ def _placement_breach(plan, url: str, admitted: str, owners: set[str]) -> str | 
     _admit, verdict, owner, _kind0 = parts
     if verdict == "r1":
         key, s = scope.site_key(url), plan.site(scope.site_key(url))
-        if plan.is_extra(url) or (key == owner and s is not None and s.round == "1" and s.holds(url)):
+        if plan.is_extra(url) or (key == owner and s is not None and s.this_round and s.holds(url)):
             return None
         return f"超出范围：{url}（放行纪录说是第一轮网站 {owner} 的网页，名单上不是）"
     if verdict == "resource":
         s = plan.site(owner)
-        if owner in owners or (s is not None and s.round == "1"):
+        if owner in owners or (s is not None and s.this_round):
             return None
         return f"超出范围：{url}（放行纪录说是 {owner} 的网页用到的，它不是第一轮网站）"
     if verdict == "round2":
@@ -476,38 +471,19 @@ def _report(root: Path, f: Frontier) -> tuple[str, int]:
     return text, (2 if hard else 0)
 
 
-# ================================================================ round 1's acceptance (design §10.5, §13)
+# ================================================================ each site's state (design §10.5)
 #
 # How each rule below is carried out, where the design does not spell it out, is 【Claude 的执行办法】: the owner may
 # overturn any. Every reader takes a Frontier opened read-only, or the dashboard's own read-only connection
 # (progress.connect: mode=ro, query_only, the result views in its temp schema); nothing here writes the database.
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-# a check's result (design §13): ✓ 通过, ⚠ 要看, ✗ 出错, or 没检查 (yellow: what was not checked is not known fine)
-PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
-CHECK_ZH = {PASS: "✓ 通过", WARN: "⚠ 要看", FAIL: "✗ 出错", SKIP: "没检查"}
-_RANK = {PASS: 0, SKIP: 1, WARN: 2, FAIL: 3}
 # a site's state (design §10.5), the codes the dashboard reads (progress.STATE_SHOW)
-ERROR, LOOK, CRAWLING, UNRECONCILED, DONE, NOT_CHECKED = "error", "look", "crawling", "unreconciled", "done", "unchecked"
+ERROR, LOOK, CRAWLING, DONE, NOT_CHECKED = "error", "look", "crawling", "done", "unchecked"
 SITE_STATE = {ERROR: ("✗ 出错", "red"), LOOK: ("⚠ 要看", "yellow"), NOT_CHECKED: ("⚠ 没检查", "yellow"),
-              CRAWLING: ("还在抓", "none"), UNRECONCILED: ("⚠ 纪录齐了，还没对账", "yellow"), DONE: ("✓ 爬完", "green")}
-SITE_ORDER = (ERROR, LOOK, NOT_CHECKED, CRAWLING, UNRECONCILED, DONE)
-# the gates of a reconciliation (design §18.2b): every one passed, and the site may be 爬完; R3b, R4b only estimate.
-# R5 (the 25 questions' answer pages) was one until 10-26 (the owner agreed to take it out: they measure the whole
-# project's answers, not round 1's completeness): a reconciliation written before says it, and is read past
-# (reconciled()); R6 and R7 keep their numbers
-GATES = ("R1", "R2", "R3a", "R4a", "R6", "R7", "V13", "V14")
-DROPPED_GATES = ("R5",)
-# what makes a reconciliation stale (§10.5, §18.2b): a run or a rejudge that covers the site, and a person's verdict on
-# a page type with pages there (jscheck --set, event verdict_set: thin is judged only on pages whose type is no js or
-# frame, review 10-26 【Claude 的执行办法】)
-STALE_CODES = ("run_end", "rejudge", "verdict_set")
-STALE_ZH = {"run_end": "抓取", "rejudge": "rejudge", "verdict_set": "jscheck --set 改判"}
-COVER_MIN = 0.8  # §18.2b R3b, R4b: below it a warning, never a gate (calibrated on the pilot: reconcile.py reads it)
+              CRAWLING: ("还在抓", "none"), DONE: ("✓ 爬完", "green")}
+SITE_ORDER = (ERROR, LOOK, NOT_CHECKED, CRAWLING, DONE)
 SHRINK, SHRINK_MIN_BASE = 0.8, 20  # §10.5, §13 item 3: fewer than 80% of the old archive's rows, when it had 20 or more
-SAMPLE, IMAGE_SAMPLE = 10, 5  # §13 item 15
-REPORT_LINES = 200  # one item's lines in the report before 「……另有 N 条」
-WAYBACK_GAP = "只有 Wayback 记得的过期公告约 10,900 则（SSO 6,842、c.nknu 约 4,100），等你同意才用"
 BUCKET_ZH = {code: zh for code, zh, _then in outcome.BUCKETS}
 LABEL_ZH = dict(outcome.LABEL_ORDER)
 # what a site's home may come to and still be a page that came back (§10.5 「首页没抓到内容」): thin is not
@@ -567,9 +543,9 @@ def tone(result: str, page: bool = False) -> str:
 
 @dataclass(frozen=True)
 class Mark:
-    """One run_end, rejudge, verdict_set, jscheck_end or reconcile event (rowid: the order they were written) and the sites it covers (None:
-    every site; the message's "sites", as run_end writes it, design §11). A message nobody can read covers every site,
-    which only ever makes a reconciliation older, never newer."""
+    """One run_start, run_end or jscheck_end event (rowid: the order they were written) and the sites it covers
+    (None: every site; the message's "sites", as run_end writes it, design §11). A message nobody can read covers
+    every site."""
 
     rowid: int
     code: str
@@ -582,11 +558,10 @@ class Mark:
 
 
 class Rounds:
-    """What the event table says of the crawls (run_start, run_end), the rejudges, the browser checks (jscheck_end) and
-    the reconciliations (reconcile): their message is JSON with "sites" (null: all) and, for run_end and jscheck_end,
-    "reason" (design §8.4, §11, §18.2a, §18.2b)."""
+    """What the event table says of the crawls (run_start, run_end) and the browser checks (jscheck_end): their
+    message is JSON with "sites" (null: all) and "reason" (design §8.4, §11)."""
 
-    CODES = ("run_start", "run_end", "rejudge", "jscheck_end", "reconcile", "verdict_set")
+    CODES = ("run_start", "run_end", "jscheck_end")
 
     def __init__(self, f: Frontier):
         self.marks: list[Mark] = []
@@ -615,219 +590,6 @@ class Rounds:
         run = self.last(site, "run_start", "run_end")
         return any(m.code == "jscheck_end" and m.reason == "finished" and m.covers(site)
                    and (run is None or m.rowid > run.rowid) for m in self.marks)
-
-
-# ---------------------------------------------------------------- each site's reconciliation (§18.2b)
-
-def _gate_status(v) -> str | None:
-    """One item of reconcile_site.checks: a status as text, or an object with "result" (or "status")."""
-    if isinstance(v, dict):
-        v = v.get("result") or v.get("status")
-    return v.lower() if isinstance(v, str) else None
-
-
-def cover_words(source: str, counts: Mapping) -> str:
-    """R3b's or R4b's numbers in words (design §18.2b; reconcile's report, the dashboard and verify write the same):
-    what the estimate rests on, that it runs high (both lists are found by following links), and what is missed at
-    least; an estimate no larger than what this round got gives no number at all (review 10-26)."""
-    cover = counts.get("cover")
-    if cover is None:
-        return f"{source}覆盖率估不出"
-    big_m, m = counts.get("known_ok"), counts.get("linked")
-    rests = f"{source}记得、这一轮回 200 的 {big_m} 个里，{m} 个被这一轮的网页链到；" if None not in (big_m, m) else ""
-    head = f"{source}覆盖率估计 {cover:.0%}（{rests}两份名单都是顺着链接找的，这个数偏高）"
-    if None in (big_m, m):
-        return head
-    if not m:
-        return f"{head}；估不出总数（没有一个被这一轮的网页链到）"
-    if counts.get("missed_at_least") is None:
-        return f"{head}；估不出还漏多少（这样估出的总数不比这一轮已经抓到的多）"
-    return f"{head}；至少还漏约 {counts['missed_at_least']} 个（下限）"
-
-
-COVER_SOURCES = (("R3b", "Common Crawl "), ("R4b", "旧存档"))
-# a person's word on a menu item that is the school's broken link (R1 bad_link: the address of a school error page,
-# which has no url row; design §10.2.1, the owner's 10-26 decision): an event of its own, written by
-# reconcile.review_menu_mark, read by menu_marks() 【Claude 的执行办法: an event, not a table: a new table would make
-# every archive an older version wrote (the rehearsal's among them) one that only a writer may open】
-MENU_MARK_EVENT = "menu_mark"
-
-
-def menu_marks(src, site: str) -> dict[str, dict]:
-    """The marks a person put on a site's menu items that are the school's broken links (R1 bad_link), as long as
-    what was looked at is what is there: the newest menu_mark event of each address, its page not fetched again (the
-    same fetched_at: a new fetch, the same answer included, ends the mark for good, as a url row's mark), that page
-    still linking it as a school error page's address, and still no row for the address. {address: the mark (site,
-    target, page_id, page, fetched_at, mark, result, note, at)}. Nothing is written: a mark that no longer holds is
-    simply not there."""
-    f = _frontier(src)
-    newest: dict[str, dict] = {}
-    for r in f.q("SELECT at, message FROM event WHERE code=? ORDER BY rowid", (MENU_MARK_EVENT,)):
-        try:
-            msg = json.loads(r["message"] or "")
-        except (TypeError, ValueError):
-            continue
-        if isinstance(msg, dict) and msg.get("site") == site and isinstance(msg.get("target"), str):
-            newest[msg["target"]] = {**msg, "at": r["at"]}
-    out = {}
-    for target, m in newest.items():
-        if m.get("mark") != outcome.SCHOOL_SIDE or not outcome.markable(m.get("result") or "", None):
-            continue
-        page = f.q("SELECT fetched_at FROM url WHERE id=?", (m.get("page_id"),))
-        if not page or page[0][0] != m.get("fetched_at"):
-            continue
-        if not f.q("SELECT 1 FROM link WHERE src=? AND dst=? AND verdict=? LIMIT 1",
-                   (m["page_id"], target, outcome.ERROR_OUT)):
-            continue
-        if f.q("SELECT 1 FROM url WHERE url=? LIMIT 1", (target,)):
-            continue
-        out[target] = m
-    return out
-
-
-def _n(v) -> int:
-    """A count reconcile wrote (anything else, 0)."""
-    return v if isinstance(v, int) and not isinstance(v, bool) else 0
-
-
-# a gate that passed with nothing to compare (reconcile.SiteResult.uncompared), in a few words
-UNCOMPARED_ZH = {"R1": "R1 没认出选单", "R2": "R2 没有写总数的列表", "R3a": "R3a Common Crawl 不认得这个网站",
-                 "R4a": "R4a 旧存档不认得这个网站"}
-
-
-@dataclass(frozen=True)
-class Reconciled:
-    """A site's last reconciliation (reconcile_site) as §10.5 reads it: fresh when no run_end, rejudge or verdict_set
-    (STALE_CODES) covering the site was written after it: after the last reconcile event that covers the site, in the order the events were
-    written (reconcile.py writes one with each reconcile_site row: a run_end in the same second is still before or after
-    it, never a guess); a row no reconcile event covers (an older writer's) goes by its time, the same second counting
-    as after (never a false 爬完). Passed when gates_ok is 1 and every gate's own status says pass (the two disagreeing
-    is no pass) 【Claude 的执行办法】; gates_ok here is the row's, or yes where reconciled() reads past what no longer
-    holds a site back (an older R5, menu links a person marked since)."""
-
-    site: str
-    batch: str
-    at: float | None
-    gates: dict
-    gates_ok: bool
-    cover_cc: float | None
-    cover_old: float | None
-    stale_by: Mark | None
-    covers: dict = field(default_factory=dict)  # R3b, R4b: their numbers as reconcile wrote them
-    uncompared: tuple[str, ...] = ()  # the gates that passed with nothing to compare
-    menu_school: int = 0  # R1: menu items that are the school's broken links a person marked as the school's
-    menu_bad: int = 0  # R1: the school's broken menu links nobody marked yet (⚠ 要看)
-
-    @property
-    def fresh(self) -> bool:
-        return self.stale_by is None
-
-    @property
-    def failing(self) -> tuple[str, ...]:
-        return tuple(g for g in GATES if self.gates.get(g) == FAIL)
-
-    @property
-    def passed(self) -> bool:
-        return self.gates_ok and all(self.gates.get(g) == PASS for g in GATES)
-
-    def not_passed(self) -> list[str]:
-        out = []
-        for g in GATES:
-            if self.gates.get(g) == PASS:
-                continue
-            why = CHECK_ZH.get(self.gates.get(g), "没写")
-            if g == "R1" and self.menu_bad:
-                why += (f"：选单上 {self.menu_bad} 个学校的坏链接还没人看过（人看过、确认是学校那边的问题的，"
-                        "nknu archive review --mark school_side --menu <网址> --note …）")
-            out.append(f"{g}（{why}）")
-        return out
-
-    def menu_words(self) -> str:
-        """R1's menu items a person marked as the school's, in words (the dashboard, verify, design §10.2.1)."""
-        return (f"选单上 {self.menu_school} 个学校的坏链接：{outcome.RESULT_LABEL[outcome.SCHOOL_SIDE]}"
-                if self.menu_school else "")
-
-    def low_cover(self) -> list[str]:
-        return [f"{name} 覆盖率估计 {v:.0%}（低于 {COVER_MIN:.0%}）" for name, v in
-                (("Common Crawl", self.cover_cc), ("旧存档", self.cover_old)) if v is not None and v < COVER_MIN]
-
-    def when(self) -> str:
-        return f"{self.batch} 批，{_taipei(self.at)}"
-
-    def cover_lines(self) -> list[str]:
-        """The discovery coverage in words, each list it was worked out against (R3b, R4b; §18.2b): what it rests on,
-        that it runs high, and what is missed at least."""
-        out = []
-        for gate, source in COVER_SOURCES:
-            counts = self.covers.get(gate)
-            value = self.cover_cc if gate == "R3b" else self.cover_old
-            if counts is None and value is None:
-                continue
-            out.append(cover_words(source, counts if counts is not None else {"cover": value}))
-        return out
-
-    def blind_words(self) -> str:
-        return "、".join(UNCOMPARED_ZH.get(g, g) for g in self.uncompared)
-
-    def stale_words(self) -> str:
-        """What made it stale, in words: 抓取（run_end，10-26 01:00）."""
-        m = self.stale_by
-        return "" if m is None else f"{STALE_ZH.get(m.code, m.code)}（{m.code}，{_taipei(m.at)}）"
-
-
-def _r1_marked(f: Frontier, site: str, r1: Mapping) -> tuple[int, bool]:
-    """Of the school's broken menu links a reconciliation's R1 listed, how many a person has marked since (O1, design
-    §10.2.1: they count as the school's at once, and leave 「还没人看过」, without another reconciliation; review 10-26,
-    O review low), and whether that is all of them, so that they no longer hold R1 back: never when R1 counted more
-    than it kept, or has anything else to say."""
-    bad = [i.get("target") for i in r1.get("items") or [] if isinstance(i, dict) and i.get("status") == "bad_link"]
-    if not bad:
-        return 0, False
-    marks = menu_marks(f, site)
-    n = sum(1 for t in bad if t in marks)
-    whole = (n == len(bad) == _n(r1.get("bad_link")) and not _n(r1.get("missing"))
-             and not _n(r1.get("waiting")))
-    return n, whole
-
-
-def reconciled(f: Frontier, rounds: Rounds) -> dict[str, Reconciled]:
-    """Each site's last reconciliation as §10.5 reads it. Two things the row says no for no longer hold a site back
-    (10-26, the owner's decisions): an older writer's R5 (taken out), and an R1 whose only ⚠ is the school's broken
-    menu links a person has marked since (O1). A row that says no for any other reason, or for none it gives, stays
-    no 【Claude 的执行办法】."""
-    out = {}
-    for r in f.q("SELECT site, batch, at, checks, cover_cc, cover_old, gates_ok FROM reconcile_site"):
-        try:
-            data = json.loads(r["checks"] or "{}")
-        except (TypeError, ValueError):
-            data = {}
-        items = data.items() if isinstance(data, dict) else ()
-        raw = {k: s for k, v in items if (s := _gate_status(v))}
-        gates = dict(raw)
-        r1 = data.get("R1") if isinstance(data, dict) and isinstance(data.get("R1"), dict) else {}
-        since, whole = _r1_marked(f, r["site"], r1)
-        menu_school, menu_bad = _n(r1.get("school_side")) + since, max(_n(r1.get("bad_link")) - since, 0)
-        cured = whole and gates.get("R1") == WARN
-        if cured:
-            gates["R1"] = PASS
-        ok = bool(r["gates_ok"])
-        if not ok and all(gates.get(g) == PASS for g in GATES):
-            ok = bool(cured) or any(raw.get(g) not in (None, PASS) for g in DROPPED_GATES)
-        covers = {k: v for k, v in items if k in ("R3b", "R4b") and isinstance(v, dict)}
-        blind = tuple(g for g in GATES if isinstance(data, dict) and isinstance(data.get(g), dict)
-                      and gates.get(g) == PASS and data[g].get("compared") is False)
-        at = _ts(r["at"])
-        last = rounds.last(r["site"], *STALE_CODES)
-        mark = rounds.last(r["site"], "reconcile")
-        if last is None:
-            stale = None
-        elif mark is not None:
-            stale = last if last.rowid > mark.rowid else None
-        else:
-            stale = last if at is None or last.at is None or last.at >= at else None
-        out[r["site"]] = Reconciled(r["site"], r["batch"], at, gates, ok, r["cover_cc"], r["cover_old"], stale,
-                                    covers, blind, menu_school, menu_bad)
-    return out
 
 
 # ---------------------------------------------------------------- one read of the result views
@@ -1001,15 +763,6 @@ class Orphan:
         via = FOUND_VIA_ZH.get(self.found_via or "", self.found_via or "—")
         went = f"，跳到 {self.to}" if self.moved and self.to else ""
         return f"{self.kind}：{outcome.RESULT_LABEL.get(self.result, self.result)}（没有网页用到它：从{via}进来的{went}）"
-
-
-def _landed_nowhere(f: Frontier, uid: int) -> str | None:
-    """What a redirecting row comes to when its redirects land on no row (page_completeness's moved: a loop or too
-    many hops is a server error; else the last hop's link verdict: a school error page's address (bad_link),
-    out:login, out:<rule>, unhandled:<why>, or lost);
-    None when they land on a row."""
-    end, nowhere = landing(f, uid)
-    return _nowhere(f, end, nowhere)
 
 
 def _nowhere(f: Frontier, end, nowhere: str | None) -> str | None:
@@ -1276,10 +1029,9 @@ class Issue:
 @dataclass
 class SiteStatus:
     """A round-1 site's state for the user (§10.5): state (ERROR … DONE, NOT_CHECKED), why (the reasons for it, in
-    words), warnings (beside the state, never changing it: requests made on campus, a coverage estimate below its
-    threshold), its pages by level, its pages and resources by the user's ten categories (a resource once per page row
-    that uses it), and its problem list. Reads as a mapping too (state, why, cover_cc, cover_old, …), which is what
-    the dashboard's progress._norm_status takes."""
+    words), warnings (beside the state, never changing it: requests made on campus), its pages by level, its pages
+    and resources by the user's ten categories (a resource once per page row that uses it), and its problem list.
+    Reads as a mapping too (state, why, …), which is what the dashboard's progress._norm_status takes."""
 
     site: str
     name: str
@@ -1291,7 +1043,6 @@ class SiteStatus:
     levels: Counter
     buckets: Counter
     issues: list[Issue]
-    reconcile: Reconciled | None
     jscheck_done: bool
 
     @property
@@ -1303,13 +1054,10 @@ class SiteStatus:
         return SITE_STATE[self.state][1]
 
     def as_dict(self) -> dict:
-        rec = self.reconcile
         return {"site": self.site, "name": self.name, "tier": self.tier, "state": self.state, "label": self.label,
                 "color": self.color, "why": list(self.why), "warnings": list(self.warnings), "pages": self.pages,
                 "levels": dict(self.levels), "buckets": dict(self.buckets),
-                "issues": [i.line() for i in self.issues], "cover_cc": rec.cover_cc if rec else None,
-                "cover_old": rec.cover_old if rec else None, "cover_line": "；".join(rec.cover_lines()) if rec else "",
-                "jscheck_done": self.jscheck_done}
+                "issues": [i.line() for i in self.issues], "jscheck_done": self.jscheck_done}
 
     def keys(self):
         return self.as_dict().keys()
@@ -1353,7 +1101,6 @@ def site_status(src, now: float | None = None, *, pages: Iterable | None = None,
                                                GROUP BY site""")}
     campus = campus_requests(f)
     homes = home_states(f)
-    recs = reconciled(f, fx.rounds)
     gsimg = dict(f.q("""SELECT p.owner_site, count(DISTINCT pr.res_key) FROM page_res pr JOIN url p ON p.id = pr.page_id
                         WHERE pr.need = 'round2' AND pr.why = 'round2:google_sites_image' GROUP BY p.owner_site"""))
     from nknu.archive.round1 import TIER_OF_IMP
@@ -1362,8 +1109,7 @@ def site_status(src, now: float | None = None, *, pages: Iterable | None = None,
     work: dict[str, dict] = {}
     for s in keys:
         work[s] = _judge_site(s, by_site.get(s, []), fx, plans.get(s), rows.get(s, (0, 0)), presses.get(s, 0),
-                              types.get(s, 0), homes.get(s, []), recs.get(s), campus.by_site.get(s, 0),
-                              gsimg.get(s, 0))
+                              types.get(s, 0), homes.get(s, []), campus.by_site.get(s, 0), gsimg.get(s, 0))
     issues = _issues(f, fx, work)
     out = []
     for s, w in work.items():
@@ -1372,14 +1118,15 @@ def site_status(src, now: float | None = None, *, pages: Iterable | None = None,
                                                                        if by_site.get(s) else None)
         name = (plan["name"] if plan is not None else "") or ("（没有 owner_site 的网页）" if s == "" else "")
         out.append(SiteStatus(s, name, tier, w["state"], w["why"], w["warnings"], len(by_site.get(s, [])),
-                              w["levels"], w["buckets"], issues.get(s, []), recs.get(s), w["js_done"]))
+                              w["levels"], w["buckets"], issues.get(s, []), w["js_done"]))
     out.sort(key=lambda x: (9 if x.tier is None else x.tier, SITE_ORDER.index(x.state), x.site))
     return {x.site: x for x in out}
 
 
 def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int], presses: int, todo_types: int,
-                homes: list, rec: Reconciled | None, campus_on: int, gsimg_round2: int = 0) -> dict:
-    """§10.5 for one site, in its order: the first of ✗ 出错, ⚠ 要看, 还在抓, ⚠ 纪录齐了，还没对账, ✓ 爬完."""
+                homes: list, campus_on: int, gsimg_round2: int = 0) -> dict:
+    """§10.5 for one site, in its order: the first of ✗ 出错, ⚠ 要看, 还在抓, ✓ 爬完 (the reconciliation that stood
+    between the last two went with the judgment-layer cut of 11-19: every page whole and nothing waiting is 爬完)."""
     js_done = fx.rounds.jscheck_done(s)
     red, yellow, wait, warnings = [], [], [], []
     levels, buckets, tally = Counter(), Counter(), Counter()
@@ -1420,7 +1167,7 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
             flags["list_unchecked"] += 1
         if p.list_walking or p.level == "waiting":
             tones.add(WAIT)
-        if p.level not in ("complete", "complete_school", "waiting") and tones <= {GOOD}:
+        if p.level not in ("complete", "complete_school", "waiting", "rule") and tones <= {GOOD}:
             flags["unexplained"] += 1
             page_bad.append((p, "review"))
     # the round-1 rows no page uses (review 10-26): judged by their own result, each once
@@ -1472,9 +1219,6 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
     base = plan["base_urls"] if plan is not None else None
     if base and base >= SHRINK_MIN_BASE and not n_waiting and not presses and n_rows < base * SHRINK:
         red.append(f"已经没有待抓，总数 {n_rows} 个却比旧存档的 {base} 个少 {1 - n_rows / base:.0%}")
-    if rec is not None and rec.failing:
-        red.append(f"最新一次对账（{rec.when()}{'，已过期' if not rec.fresh else ''}）有没过的关卡："
-                   + "、".join(rec.failing))
     if n_lab:
         yellow.append(f"{n_lab} 个只限校内网络或查不到主机（等搬到实验室）")
     if tally["next_round"]:
@@ -1493,12 +1237,6 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
         wait.append(f"{presses} 个按钮还没按")
     if campus_on:
         warnings.append(f"有 {campus_on} 个请求是在校内网络抓的（内容可能比校外看得到的多，对外提供前要先问你）")
-    if rec is not None:
-        warnings += rec.low_cover()
-        if rec.uncompared:
-            warnings.append(f"对账有几项没比到（不等于没问题）：{rec.blind_words()}")
-        if rec.menu_school:
-            warnings.append(rec.menu_words())
     if red:
         state, why = ERROR, red
     elif s not in fx.res_sites and any(p.level != "waiting" for p in pages):
@@ -1507,14 +1245,8 @@ def _judge_site(s: str, pages: list[Page], fx: Facts, plan, rows: tuple[int, int
         state, why = LOOK, yellow
     elif wait:
         state, why = CRAWLING, wait
-    elif rec is None:
-        state, why = UNRECONCILED, ["这个网站还没对账（nknu archive reconcile，第 18.2b 节）"]
-    elif not rec.fresh:
-        state, why = UNRECONCILED, [f"对账（{rec.when()}）比之后涵盖这个网站的{rec.stale_words()}旧，要重对"]
-    elif not rec.passed:
-        state, why = UNRECONCILED, [f"对账（{rec.when()}）还有关卡没过：" + "、".join(rec.not_passed())]
     else:
-        state, why = DONE, [f"每一页都完整，对账全过（{rec.when()}）"]
+        state, why = DONE, ["每一页都完整，没有还在等的"]
     return {"state": state, "why": why, "warnings": warnings, "levels": levels, "buckets": buckets,
             "js_done": js_done, "page_bad": page_bad, "res": res_seen, "res_pages": res_pages,
             "lone": [o for o in lone if o.tone in (RED, PENDING) or o.result == "lab"]}
@@ -1595,943 +1327,3 @@ def _issues(f: Frontier, fx: Facts, work: dict[str, dict]) -> dict[str, list[Iss
         got.sort(key=lambda i: (order.get(i.bucket, 3), i.what != "page", i.url))
         out[s] = got
     return out
-
-
-# ---------------------------------------------------------------- the checks (§13)
-
-@dataclass
-class Check:
-    """One item of §13: no (1–18; 11b the scope audit, 11c requests made on campus, G the 25 questions), its status,
-    a one-line detail and the lines that say what is wrong. Read by the dashboard as progress._norm_check reads it
-    (no, title, status, detail)."""
-
-    no: str
-    title: str
-    status: str = PASS
-    detail: str = ""
-    lines: list[str] = field(default_factory=list)
-
-    def add(self, status: str, line: str | None = None) -> None:
-        if _RANK[status] > _RANK[self.status]:
-            self.status = status
-        if line is not None:
-            self.lines.append(line)
-
-    @property
-    def result(self) -> str:
-        return self.status
-
-
-@dataclass
-class _Ctx:
-    f: Frontier
-    root: Path | None
-    plan: object | None
-    cheap: bool
-    fx: Facts | None
-    statuses: dict[str, SiteStatus] | None
-    rounds: Rounds
-    alive: bool
-    wayback_open: bool
-    resource_check: Callable | None
-    pages: Iterable | None = None
-    now: float | None = None
-
-    def facts(self) -> Facts | None:
-        """The result views read once, when an item needs them: in the dashboard's cheap round only when it gave its
-        snapshot's pages (otherwise that item is 没检查)."""
-        if self.fx is None and (not self.cheap or self.pages is not None):
-            self.fx = facts(self.f, self.pages)
-        return self.fx
-
-    def sites(self) -> dict[str, SiteStatus] | None:
-        if self.statuses is None and (fx := self.facts()) is not None:
-            self.statuses = site_status(self.f, fx=fx)
-        return self.statuses
-
-    def round1_sites(self) -> list[str]:
-        return [r[0] for r in self.f.q("SELECT site FROM site_plan WHERE round = '1' ORDER BY site")]
-
-
-def _cap(lines: list[str], n: int = REPORT_LINES) -> list[str]:
-    return lines if len(lines) <= n else [*lines[:n], f"……另有 {len(lines) - n} 条"]
-
-
-def _c1(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    n = Counter()
-    for site, entries in sorted(home_states(f).items()):
-        for url, state, why in entries:
-            n[state] += 1
-            if state == "bad":
-                c.add(FAIL, f"{site}：{url}（{why}）")
-            elif state in ("wait", "lab"):
-                c.add(WARN, f"{site}：{url}（{why}）")
-    for r in f.q("SELECT s.url, u.id, u.owner_site FROM seed_src s LEFT JOIN url u ON u.url = s.url "
-                 "WHERE s.source = 'extra' ORDER BY s.url"):
-        state, why = home_state(f, r["id"]) if r["id"] is not None else ("bad", "没有纪录")
-        n[state] += 1
-        if state == "bad":
-            c.add(FAIL, f"附加起点 {r['url']}（{why}）")
-        elif state in ("wait", "lab"):
-            c.add(WARN, f"附加起点 {r['url']}（{why}）")
-    total = sum(n.values())
-    if not total:
-        c.add(SKIP, "没有起点纪录（还没 seed？）")
-    c.detail = f"起点 {total} 个：抓到内容 {n['ok']}，还在等 {n['wait']}，只限校内 {n['lab']}，有问题 {n['bad']}"
-
-
-def _c2(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    with f.lock:
-        got = outcome.self_check(f.conn)
-    c.detail = (f"程序不认得的组合：网址 {got['url_result']}、按钮 {got['action_result']}；"
-                f"不属于任何网站的第一轮网址 {got['no_owner_site']}")
-    for r in f.q("""SELECT url, state, reason, status, flags, kind, kind0, sniff FROM url_result WHERE result = 'unknown'
-                    ORDER BY id LIMIT 50"""):
-        c.add(FAIL, f"{r['url']}：state={r['state']} reason={r['reason']} status={r['status']} flags={r['flags']} "
-                    f"kind={r['kind']}/{r['kind0']} sniff={r['sniff']}")
-    for r in f.q("""SELECT a.id, a.state, a.kind, a.status, a.sniff, u.url FROM action_result a
-                    LEFT JOIN url u ON u.id = a.list_id WHERE a.result = 'unknown' ORDER BY a.id LIMIT 50"""):
-        c.add(FAIL, f"按钮 a{r['id']}（{r['url']}）：state={r['state']} kind={r['kind']} status={r['status']} "
-                    f"sniff={r['sniff']}")
-    for r in f.q("SELECT url FROM url WHERE owner_site IS NULL AND tier IN (0, 1) ORDER BY id LIMIT 50"):
-        c.add(FAIL, f"{r['url']}：没有 owner_site")
-    if any(got.values()):
-        c.add(FAIL)
-
-
-def _c3(ctx: _Ctx, c: Check) -> None:
-    rows = ctx.f.q("""SELECT p.site, p.base_urls,
-                        (SELECT count(*) FROM url u WHERE u.owner_site = p.site) AS n,
-                        (SELECT count(*) FROM url u WHERE u.owner_site = p.site AND u.state IN ('pending', 'active'))
-                          AS w
-                      FROM site_plan p WHERE p.round = '1' AND p.base_urls >= ? ORDER BY p.site""", (SHRINK_MIN_BASE,))
-    if not rows and not ctx.f.q("SELECT 1 FROM site_plan WHERE round = '1' AND base_urls IS NOT NULL LIMIT 1"):
-        c.add(SKIP, "旧存档没有带过来（site_plan.base_urls 是空的）：比不了")
-    short = 0
-    for r in rows:
-        if r["n"] < r["base_urls"] * SHRINK:
-            short += 1
-            if r["w"]:
-                c.add(WARN, f"{r['site']}：现在 {r['n']} 个，旧存档 {r['base_urls']} 个（还有 {r['w']} 个在待抓，抓完再比）")
-            else:
-                c.add(FAIL, f"{r['site']}：现在 {r['n']} 个，旧存档 {r['base_urls']} 个，少了 {1 - r['n'] / r['base_urls']:.0%}")
-    c.detail = (f"比了 {len(rows)} 个网站（旧存档至少 {SHRINK_MIN_BASE} 个网址的），少 20% 以上的 {short} 个；"
-                "「起点不少于旧的」由 seed 的起点报告管（少了就退出码 2）")
-
-
-# design §23 F2: c.nknu's category menu (select:ddl_Class) is ignored because the list without a class parameter shows
-# 「全部」, so a site that ignores it needs that list walked to its last page
-CLASS_MENU = "select:ddl_Class"
-CLASS_LIST_PATH = "/newslist.aspx"
-
-
-def class_all_missing(src, site: str | None = None) -> list[dict]:
-    """The sites (or this site) whose pages ignore c.nknu's category menu (page_res select:ddl_Class, unhandled:ignore)
-    with no newslist.aspx without a class parameter walked to its last page (listwalk.ended_by last_page): their 「全部」
-    is not shown to have been got whole (design §23 F2; reconcile R2 and verify item 4 both read this). Each: site,
-    the lists without a class parameter it has and how their walks ended."""
-    f = _frontier(src)
-    only = " AND u.owner_site = ?" if site is not None else ""
-    args = (site,) if site is not None else ()
-    sites = [r[0] for r in f.q("SELECT DISTINCT u.owner_site FROM page_res pr JOIN url u ON u.id = pr.page_id "
-                               f"WHERE pr.res_key = ? AND pr.why = 'unhandled:ignore'{only} ORDER BY 1",
-                               (CLASS_MENU, *args))]
-    out = []
-    for s in sites:
-        walks = []
-        for r in f.q("SELECT u.url, lw.ended_by, lw.ok FROM url u LEFT JOIN listwalk lw ON lw.list_id = u.id "
-                     "WHERE u.owner_site = ? AND u.kind = 'page' ORDER BY u.id", (s,)):
-            parts = urlsplit(r["url"])
-            if not parts.path.lower().endswith(CLASS_LIST_PATH):
-                continue
-            if any(k.lower() == "class" for k, _v in parse_qsl(parts.query, keep_blank_values=True)):
-                continue
-            walks.append((r["url"], r["ended_by"], r["ok"]))
-        if not any(ended == "last_page" and ok != 0 for _u, ended, ok in walks):
-            out.append({"site": s, "lists": [{"list": u, "ended_by": e} for u, e, _ok in walks]})
-    return out
-
-
-def class_all_words(item: Mapping[str, Any]) -> str:
-    """One class_all_missing item in words."""
-    lists = "；".join(f"{x['list']} 结束于 {x['ended_by'] or '（没翻过）'}" for x in item["lists"])
-    return (f"{item['site']}：分类选单 ddl_Class 记 ignore，却没有一页不带 class 参数的 newslist.aspx（「全部」）翻到最后一页"
-            + (f"（{lists}）" if lists else "（这个网站没有不带 class 的 newslist.aspx）") + "：各分类的公告可能没抓全，要人看")
-
-
-def _c4(ctx: _Ctx, c: Check) -> None:
-    from nknu.archive.postback import menus_not_sent, this_year
-
-    rows = ctx.f.q("""SELECT lw.list_id, lw.ended_by, lw.ok, lw.pages, lw.rows, lw.claimed, lw.note, u.url, u.owner_site
-                      FROM listwalk lw JOIN url u ON u.id = lw.list_id WHERE u.tier IN (0, 1)
-                      ORDER BY u.owner_site, u.url""")
-    lists = ctx.f.q("SELECT count(*) FROM url WHERE kind = 'page' AND tier IN (0, 1) AND page_role = 'list'")[0][0]
-    if not rows and lists:
-        c.add(SKIP, f"有 {lists} 个列表页，还没有任何翻页纪录")
-    n = Counter()
-    for r in rows:
-        if r["ended_by"] == "walking":
-            n["walking"] += 1
-            c.add(WARN, f"{r['owner_site']}：{r['url']} 还在翻（已翻 {r['pages'] or 0} 页）")
-        elif r["ended_by"] in outcome.LIST_ENDS_OK and r["ok"] != 0:
-            n["ok"] += 1
-        else:
-            n["bad"] += 1
-            claimed = f"，页面写共 {r['claimed']} 筆" if r["claimed"] is not None else ""
-            c.add(FAIL, f"{r['owner_site']}：{r['url']} 结束于 {r['ended_by'] or '（没写）'}（{r['pages'] or 0} 页、"
-                        f"{r['rows'] or 0} 行{claimed}；{r['note'] or ''}）")
-    for item in class_all_missing(ctx.f):  # design §23 F2
-        n["class_all"] += 1
-        c.add(FAIL, class_all_words(item))
-    # a menu (profiles.Menu: the course tables, gap ⑩ of 11-08, the owner 11-09 「现在补 115」) not sent for this
-    # academic year is a list whose options are not walked: its pages are what `retry unpressed` puts back (review of
-    # 11-09: nothing else said so, a new academic year's tables missing silently from each 1 August) 【Claude 的执行办法】
-    year = this_year(ctx.now if ctx.now is not None else time.time())
-    menus: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for r, m in menus_not_sent(ctx.f, year):
-        menus[(r["owner_site"] or "", m.name)].append(r["url"])
-    for (site, name), urls in sorted(menus.items()):
-        n["menu"] += len(urls)
-        c.add(FAIL, f"{site}：平台规则 {name} 的选单这一学年度（{year}）还没送完的网页 {len(urls)} 个（还没送过，或有选项只"
-                    f"按过一次、没按成；例如 {urls[0]}）：nknu archive retry unpressed --sites {site}，再 archive run")
-    c.detail = (f"列表 {len(rows)} 个：翻到底 {n['ok']}，还在翻 {n['walking']}，没翻完 {n['bad']}（SSO 公告中心各类加总对不上的记 "
-                f"mismatch:total）；分类选单记 ignore 却没有「全部」列表翻到底的网站 {n['class_all']} 个；这一学年度"
-                f"（{year}）的选单还没送完的网页 {n['menu']} 个")
-
-
-def _c5(ctx: _Ctx, c: Check) -> None:
-    fx = ctx.facts()
-    if fx is None:
-        c.add(SKIP, "完整度还没算好（看板背景每 2 分钟算一次）")
-        return
-    by_site: dict[str, list[Page]] = defaultdict(list)
-    for p in fx.pages:
-        if p.page_role == "list":
-            by_site[p.site or ""].append(p)
-    unchecked = 0
-    for s, ps in sorted(by_site.items()):
-        bad = [p for p in ps if p.list_unchecked]
-        unchecked += len(bad)
-        if bad and len(bad) == len(ps):
-            c.add(SKIP, f"{s}：{len(ps)} 个列表页都还没有翻页纪录（这个网站这一项没检查）")
-        elif bad:
-            urls = _rows_by_id(ctx.f, "url", "id, url", [p.id for p in bad])
-            for p in bad:
-                c.add(WARN, f"{s}：{urls[p.id]['url'] if p.id in urls else p.id} 列表没核对")
-    c.detail = f"列表页 {sum(len(v) for v in by_site.values())} 个，没有翻页纪录的 {unchecked} 个"
-
-
-def _c6(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    n = Counter()
-    seen: set[int] = set()
-    for r in f.q("""SELECT id, url, owner_site, result, flags, reason, status FROM url_result
-                    WHERE tier IN (0, 1) AND result IN ('thin', 'looks_gone', 'not_file') ORDER BY owner_site, url"""):
-        n[r["result"]] += 1
-        seen.add(r["id"])
-        c.add(FAIL, f"{r['owner_site']}：{r['url']}：{outcome.RESULT_LABEL[r['result']]}（flags {r['flags'] or '—'}）")
-    for r in f.q("""SELECT a.id, a.kind, a.target, a.result, a.reason, a.sniff, u.url, u.owner_site FROM action_result a
-                    JOIN url u ON u.id = a.list_id WHERE a.result IN ('thin', 'not_file') ORDER BY u.owner_site, a.id"""):
-        n[r["result"]] += 1
-        # a download's not_file says why (§23 A1, A2) and how to press it again once a person looked (§23 A3); with no
-        # reason written it is a web page by its first bytes (action_result: sniff html), said in words (§23.9)
-        said = r["reason"] or ("回来是网页" if r["sniff"] == "html" else "没写原因")
-        why = (f"（{said}；看过以后 nknu archive retry download 放回重按）"
-               if r["kind"] == "download" and r["result"] == "not_file" else "")
-        c.add(FAIL, f"{r['owner_site']}：{r['url']} 上的按钮 {r['kind']} {r['target']}："
-                    f"{outcome.RESULT_LABEL[r['result']]}{why}")
-    fx = ctx.facts()
-    if fx is None:
-        c.add(SKIP, "跳转后落在网页上的附件没算（完整度还没算好）")
-    else:
-        moved = {}
-        for h in fx.holders.values():
-            for r in h.issues:
-                if r.result == "not_file" and r.via is not None and r.via not in seen:
-                    moved.setdefault(r.via, r)
-        urls = _rows_by_id(f, "url", "id, url, owner_site", moved)
-        for via in sorted(moved, key=lambda i: urls[i]["url"] if i in urls else ""):
-            if via in urls:
-                n["not_file"] += 1
-                c.add(FAIL, f"{urls[via]['owner_site']}：{urls[via]['url']}：应该是档案，跳到了网页或规则不抓的地方")
-    reconciled_sites = {r[0] for r in f.q("SELECT site FROM reconcile_site")}
-    missing = [s for s in ctx.round1_sites() if s not in reconciled_sites]
-    if missing:
-        c.add(SKIP, f"「页面几乎是空的」每批对账时才判（reconcile 写 thin 记号），这 {len(missing)} 个网站还没对账，"
-                    f"这一部分没检查：{'、'.join(missing[:30])}{'……' if len(missing) > 30 else ''}")
-    # design §23 E3: a page whose words alone would be thin, its body a picture, is no empty page (in_image): counted,
-    # never a failure; item 15 shows some of them to a person
-    in_image = f.q(f"SELECT count(*) FROM url u WHERE u.kind = 'page' AND u.tier IN (0, 1) AND "
-                   f"{outcome._has('in_image')}")[0][0]
-    c.detail = (f"页面几乎是空的 {n['thin']}、看起来像不存在 {n['looks_gone']}、应该是档案却回来不是档案 {n['not_file']}；"
-                f"内容在图片里 {in_image} 页（整理阶段做文字识别，不算空页）；"
-                f"还没对账、空页没判的网站 {len(missing)} 个")
-
-
-def _c7(ctx: _Ctx, c: Check) -> None:
-    f, rounds = ctx.f, ctx.rounds
-    todo = defaultdict(list)
-    for r in f.q("""SELECT key, site, verdict, why, n_pages, note FROM page_type WHERE n_pages > 0
-                    AND verdict IN ('todo', 'unresolved') ORDER BY site, key"""):
-        if r["verdict"] == "unresolved":
-            c.add(FAIL, f"{r['site']}：类型 {r['key']} 用浏览器也判定不了（{r['why'] or r['note'] or '没写原因'}，"
-                        f"{r['n_pages']} 页）：人看过用 jscheck --set 改判")
-        else:
-            todo[r["site"]].append(r)
-    unchecked = dict(f.q("""SELECT owner_site, count(*) FROM url_result WHERE kind = 'page' AND tier IN (0, 1)
-                            AND result = 'unchecked' GROUP BY owner_site"""))
-    n_types, n_pages = 0, 0
-    for s in sorted(set(todo) | set(unchecked)):
-        types, pages = todo.get(s, []), unchecked.get(s, 0)
-        n_types += len(types)
-        n_pages += pages
-        done = rounds.jscheck_done(s or "")
-        what = f"{s}：还没判定的类型 {len(types)} 类、待判定的网页 {pages} 页"
-        if types:
-            what += "（" + "、".join(f"{t['key']}（{t['why'] or '没写原因'}）" for t in types[:5]) + \
-                    ("……" if len(types) > 5 else "") + "）"
-        c.add(FAIL if done else WARN, what + ("：这一轮的 jscheck 已经跑完，还剩着" if done else "：jscheck 还没跑完"))
-    # §13 item 7: until this round's jscheck ended (finished, after the last run_end) the item is ⚠, whatever is left
-    # to judge: nothing todo yet is no sign that nothing needs the browser (review 10-26)
-    waiting = [s for s in ctx.round1_sites() if not rounds.jscheck_done(s)]
-    if waiting:
-        c.add(WARN, f"这一轮的 jscheck 还没跑完（没有比最后一次 run_end 晚、结束原因是 finished 的 jscheck_end，第 8.4 节）："
-                    f"{len(waiting)} 个网站（{'、'.join(waiting[:10])}{'……' if len(waiting) > 10 else ''}）")
-    old = f.q("SELECT count(*) FROM page_type WHERE n_pages = 0")[0][0]
-    c.detail = (f"还没判定的类型 {n_types} 类、待判定的网页 {n_pages} 页；jscheck 还没跑完的网站 {len(waiting)} 个；"
-                f"旧类型这一轮没出现 {old} 类（不算进这一项）")
-    if old:
-        sample = [r[0] for r in f.q("SELECT key || '（' || verdict || '）' FROM page_type WHERE n_pages = 0 "
-                                    "ORDER BY key LIMIT 20")]
-        c.lines.append("旧类型这一轮没出现（只列出，不算）：" + "、".join(sample) + ("……" if old > 20 else ""))
-
-
-def expected_unhandled(site: str | None, res_key: str, text: str | None, why_now: str | None) -> tuple[str, str] | None:
-    """need and why the platform file gives a how='unhandled' page_res entry now (design §7.8, §10.4 rule 9: with the
-    button's text, page_res.text, or a rule that names a text never holds and a decided 「查詢」 reads unknown). None:
-    no such entry should be there (the file now presses the button or handles the click; a rejudge drops it). A button
-    the file says to press that nobody pressed is unhandled:unpressed (postback.UNPRESSED) while it says press. site:
-    the page's own site key (url.site: the platform it is written on, as the crawler decides, gaps ② ③ of 11-08)."""
-    from nknu.archive.postback import UNPRESSED
-
-    d = profiles.decision(site, res_key, text)
-    if d == "press":
-        return ("must", UNPRESSED) if why_now == UNPRESSED else None
-    if d == "handle":
-        return None
-    return links.unhandled_need(d)
-
-
-def _c8(ctx: _Ctx, c: Check) -> None:
-    from nknu.archive.postback import button_key
-
-    f = ctx.f
-    n = Counter()
-    # a button is decided by the platform its page is written on (the sample page's url.site, as the crawler decides:
-    # Crawler._parts), the site it counts for (postback.site, url.owner_site) named in what is written
-    for r in f.q("""SELECT p.site, p.target, p.argument, p.text, p.n, u.url, u.site AS page_site FROM postback p
-                    LEFT JOIN url u ON u.id = p.sample ORDER BY p.site, p.target"""):
-        key = button_key(r["target"], r["argument"] or "")
-        try:
-            d = profiles.decision(r["page_site"] or r["site"], key, r["text"])
-        except ValueError as exc:
-            d, why = "unknown", str(exc)
-        else:
-            why = ""
-        if d == profiles.UNKNOWN:
-            n["buttons"] += 1
-            c.add(FAIL, f"{r['site']}：按钮 {key} 平台档案没写决定（{r['n']} 次，例如 {r['url'] or '—'}）{why}")
-    for r in f.q("""SELECT u.owner_site, pr.why, pr.res_key, count(*) n, min(u.url) u FROM page_res pr
-                    JOIN url u ON u.id = pr.page_id WHERE pr.why IN ('unhandled:unknown', 'unhandled:google')
-                    AND pr.need <> 'no' GROUP BY u.owner_site, pr.why, pr.res_key ORDER BY u.owner_site, pr.res_key"""):
-        n[r["why"]] += r["n"]
-        what = "认不出的 Google 网址" if r["why"] == "unhandled:google" else "平台档案没写决定的写法"
-        c.add(FAIL, f"{r['owner_site']}：{what} {r['res_key']}（{r['n']} 页，例如 {r['u']}）")
-    cache: dict[tuple, tuple | None] = {}
-    wrong: dict[tuple, list] = {}
-    for r in f.q("""SELECT pr.res_key, pr.need, pr.why, pr.text, u.owner_site, u.site, u.url FROM page_res pr
-                    JOIN url u ON u.id = pr.page_id WHERE pr.how = 'unhandled'"""):
-        if r["res_key"].startswith("google:") or (r["why"] or "").startswith("unhandled:google"):
-            continue  # what google_api.parse_link cannot read: no platform file decides it (counted above)
-        k = (r["site"] or r["owner_site"], r["res_key"], r["text"], r["why"])  # the page's own platform decides
-        if k not in cache:
-            try:
-                cache[k] = expected_unhandled(*k)
-            except ValueError as exc:  # a click the file marks ignore: never allowed (§7.8)
-                cache[k] = ("error", str(exc))
-        want = cache[k]
-        if want != (r["need"], r["why"]):
-            wrong.setdefault((r["owner_site"], r["res_key"], r["need"], r["why"], want), []).append(r["url"])
-    for (site, key, need, why, want), urls in sorted(wrong.items(), key=lambda x: (x[0][0] or "", x[0][1])):
-        n["stale"] += len(urls)
-        now = "不该再是没处理的写法（现在按或照规则点）" if want is None else f"{want[0]} / {want[1]}"
-        c.add(FAIL, f"{site}：{key} 爬的时候记 {need} / {why}，现在的平台档案是 {now}（{len(urls)} 页，例如 {urls[0]}）："
-                    "平台档案改了、还没 rejudge")
-    c.detail = (f"没决定的按钮 {n['buttons']} 种、没决定的写法 {n['unhandled:unknown']} 处、认不出的 Google 网址 "
-                f"{n['unhandled:google']} 处、和现在的平台档案对不上 {n['stale']} 处（标 round2 的算看过，列在第 16 项）")
-
-
-def _c9(ctx: _Ctx, c: Check) -> None:
-    rows = ctx.f.q("""SELECT owner_site, reason, count(*) n, min(url) u FROM url WHERE state = 'held'
-                      GROUP BY owner_site, reason ORDER BY owner_site, reason""")
-    for r in rows:
-        c.add(FAIL, f"{r['owner_site']}：{r['reason']} × {r['n']}（例如 {r['u']}）")
-    c.detail = f"撞到上限没抓的 {sum(r['n'] for r in rows)} 个（要人看过、决定抓不抓）"
-
-
-def _c10(ctx: _Ctx, c: Check) -> None:
-    from nknu.archive import google_api
-
-    f = ctx.f
-    api = google_api.API_HOST
-    n_rows = f.q("SELECT count(*) FROM url WHERE host = ?", (api,))[0][0]
-    n_res = f.q("SELECT count(*) FROM page_res WHERE role IN ('drive', 'calendar')")[0][0]
-    if not n_rows and not n_res:
-        c.detail = "没有云端硬盘或日历，没有要核对的"
-        return
-    marks = ",".join("?" * len(google_api.KEY_PAUSE_WHY))
-    waiting = f.q(f"SELECT count(*) FROM url WHERE host = ? AND state = 'pending' AND reason IN ({marks})",
-                  (api, *google_api.KEY_PAUSE_WHY))[0][0]
-    ok = f.q("SELECT count(*) FROM request WHERE host = ? AND status = 200", (api,))[0][0]
-    if waiting:
-        c.add(FAIL, f"金钥没设或不能用：{waiting} 个云端硬盘、日历的网址在等金钥")
-    elif n_rows and not ok:
-        c.add(WARN, "还没有任何一个 Google API 请求成功过，看不出金钥能不能用")
-    for r in f.q("""SELECT u.owner_site, pr.res_key, d.url FROM page_res pr JOIN url u ON u.id = pr.page_id
-                    JOIN url_result d ON d.id = pr.res_id
-                    WHERE pr.role IN ('drive', 'calendar') AND pr.need = 'must' AND d.kind0 = 'drive' AND d.result = 'ok'
-                    ORDER BY u.owner_site LIMIT 200"""):
-        c.add(FAIL, f"{r['owner_site']}：{r['res_key']} 还指着「读格式」那一行 {r['url']}（爬虫的 bug：内容行没接上）")
-    for r in f.q("""SELECT owner_site, url, reason FROM url_result WHERE result = 'api_error'
-                    ORDER BY owner_site, url"""):
-        c.add(FAIL, f"{r['owner_site']}：Google API 读不到 {r['url']}（{r['reason'] or '没写原因'}）")
-    for r in f.q("""SELECT owner_site, url FROM url_result WHERE result = 'api_quota' ORDER BY owner_site, url"""):
-        c.add(FAIL, f"{r['owner_site']}：{outcome.RESULT_LABEL['api_quota']}（隔天试了 3 次）：{r['url']}")
-    for r in f.q("""SELECT owner_site, reason, count(*) n FROM url WHERE state = 'held'
-                    AND (reason LIKE 'cap:drive%' OR reason = 'cap:calendar') GROUP BY owner_site, reason"""):
-        c.add(FAIL, f"{r['owner_site']}：撞到云端硬盘或日历的上限（{r['reason']} × {r['n']}）")
-    for r in f.q("""SELECT u.owner_site, pr.res_key FROM page_res pr JOIN url u ON u.id = pr.page_id
-                    WHERE pr.why = 'unhandled:drive_type' AND pr.need = 'must' ORDER BY u.owner_site"""):
-        c.add(FAIL, f"{r['owner_site']}：{r['res_key']} 是导不出的 Google 类型（协作平台、My Maps……）")
-    c.detail = f"Google API 的网址 {n_rows} 个、成功的请求 {ok} 个、等金钥的 {waiting} 个"
-
-
-def _c11(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    n = f.q("SELECT count(*) FROM request")[0][0]
-    if not n:
-        c.add(SKIP, "还没有任何请求")
-    hard, soft = politeness(f), politeness_warnings(f)
-    for x in hard:
-        c.add(FAIL, x)
-    for x in soft:
-        c.add(WARN, f"服务器变慢时没多等：{x}")
-    c.detail = f"请求 {n} 个（按 request.ip 分服务器，跨队列、跨用途、跨 run）：硬性违反 {len(hard)}、警告 {len(soft)}"
-
-
-def _c11b(ctx: _Ctx, c: Check) -> None:
-    out = scope_audit(ctx.f, ctx.plan)
-    for x in out:
-        c.add(FAIL, x)
-    c.detail = f"超出范围的请求 {len(out)} 个" + ("" if ctx.plan is not None else "（没给名单：放行纪录本身没核对）")
-
-
-def _c11c(ctx: _Ctx, c: Check) -> None:
-    got = campus_requests(ctx.f)
-    if got.on:
-        c.add(WARN, got.line())
-        for s, k in got.by_site.most_common():
-            c.lines.append(f"{s}：{k} 个")
-    c.detail = (f"在校内网络抓的 {got.on} 个；判断不出在校内还是校外的 {got.unknown} 个（只计数：SSO 的判断页还没查到，"
-                "或旧版没记）")
-
-
-def _c12(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    rows = f.q("SELECT s.url, u.id FROM seed_src s LEFT JOIN url u ON u.url = s.url WHERE s.source = 'v1_known' "
-               "ORDER BY s.url")
-    if not rows:
-        c.add(SKIP, "没有 v1 已知的公告（seed 时没给 v1 的事实库？）")
-    n = Counter()
-    for r in rows:
-        if r["id"] is None:
-            n["bad"] += 1
-            c.add(FAIL, f"{r['url']}：没有纪录")
-            continue
-        end, nowhere = landing(f, r["id"])
-        res = end["result"] if end is not None else "unknown"
-        if nowhere:
-            n["bad"] += 1
-            c.add(FAIL, f"{r['url']}：{nowhere}")
-        elif res in ("ok", "gone", outcome.SCHOOL_SIDE):
-            n["ok"] += 1
-        elif res in ("todo", "retry", "lab"):
-            n["wait"] += 1
-            c.add(WARN, f"{r['url']}：{outcome.RESULT_LABEL[res]}")
-        else:
-            n["bad"] += 1
-            c.add(FAIL, f"{r['url']}：{outcome.RESULT_LABEL.get(res, res)}{_why(end)}")
-    c.detail = f"v1 已知的公告 {len(rows)} 则：抓到或学校那边已删 {n['ok']}，还在等 {n['wait']}，有问题 {n['bad']}"
-
-
-def _gate_of_sites(ctx: _Ctx, c: Check, gate: str) -> None:
-    """Items 13 and 14 as the batches' reconciliations ran them (reconcile.py runs the same functions, §18.2b)."""
-    recs = reconciled(ctx.f, ctx.rounds)
-    missing = []
-    for s in ctx.round1_sites():
-        rec = recs.get(s)
-        st = rec.gates.get(gate) if rec is not None and rec.fresh else None
-        if st == FAIL:
-            c.add(FAIL, f"{s}：对账的 {gate} 没过（{rec.when()}）")
-        elif st != PASS:
-            missing.append(s)
-    if missing:
-        c.add(SKIP, f"这 {len(missing)} 个网站还没有新的对账：{'、'.join(missing[:30])}{'……' if len(missing) > 30 else ''}")
-
-
-def _c13(ctx: _Ctx, c: Check) -> None:
-    if ctx.resource_check is not None:
-        problems = list(ctx.resource_check(ctx.f, ctx.root))
-        for x in problems:
-            c.add(FAIL, x)
-        c.detail = f"从存档重新解析每一页、对照 page_res：对不上 {len(problems)} 处"
-        return
-    _gate_of_sites(ctx, c, "V13")
-    c.detail = "从存档重新解析每一页对照 page_res（reconcile.py 的同一套函数，每批对账时跑，这里读对账结果 V13）"
-
-
-_V13_MISSING = {"link": "链接表没有这个目标", "page_res": "page_res 没有这个资源", "not_discovered": "用到了却没有取得纪录"}
-
-
-def extract_check(plan=None) -> Callable:
-    """Item 13's function for `nknu archive verify` (§13: 从 WARC 重新解析每一页，用同一个 links.extract，对照 page_res):
-    reconcile.verify_extract, the very function each batch's reconciliation runs (V13, §18.2b), over every round-1
-    site, its problems in words (a page that does not read back is item 14's, counted here). plan: the site list
-    (round1.load() when not given). Read only."""
-
-    def check(f: Frontier, root: Path) -> list[str]:
-        from nknu.archive.reconcile import verify_extract
-
-        sites = [r[0] for r in f.q("SELECT site FROM site_plan WHERE round = '1' ORDER BY site")]
-        out: list[str] = []
-        for site, ck in verify_extract(f, root, sites, plan).items():
-            if ck.counts.get("unread"):
-                out.append(f"{site}：{ck.counts['unread']} 页按位置读不回来，没能重新解析（见第 14 项）")
-            for i in ck.items:
-                what = _V13_MISSING.get(i.get("missing"), i.get("missing") or "对不上")
-                out.append(f"{site}：{i.get('page')} 的 {i.get('target')}：{what}"
-                           + (f"（{i['what']}）" if i.get("what") else ""))
-        return out
-
-    return check
-
-
-def _c14(ctx: _Ctx, c: Check) -> None:
-    if ctx.root is None:
-        c.add(SKIP, "没给存档目录")
-        return
-    if ctx.alive:
-        c.add(SKIP, "爬虫在跑，存档档案还在写：停下再验")
-        return
-    problems, n = warc_readback(ctx.root, ctx.f)
-    for x in problems:
-        c.add(FAIL, x)
-    c.detail = f"每个存档档案用 gzip 串流读完，按位置读回 {n} 笔回应比对 sha256：有问题 {len(problems)} 处"
-
-
-def _sample(f: Frontier, sql: str, args=(), k: int = SAMPLE) -> list:
-    """k rows spread evenly over what sql selects in its ORDER BY (every n-th), the same each time, without holding
-    them all (a template image may sit on every page: some 10^5 rows)."""
-    n = f.q(f"SELECT count(*) FROM ({sql})", args)[0][0]
-    if n <= k:
-        return f.q(sql, args)
-    return [f.q(f"{sql} LIMIT 1 OFFSET ?", (*args, int(i * n / k)))[0] for i in range(k)]
-
-
-def _c15(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    total = 0
-    for result, what in (("login", "被判「要登录」"), ("looks_gone", "「看起来像不存在」"), ("thin", "「页面几乎是空的」")):
-        rows = _sample(f, "SELECT url, flags FROM url_result WHERE tier IN (0, 1) AND result = ? ORDER BY id",
-                       (result,))
-        total += len(rows)
-        for r in rows:
-            c.add(WARN, f"{what}：{r['url']}（flags {r['flags'] or '—'}）")
-    # design §23 E3: the pages not called empty because their body is a picture, for a person to see that it is
-    rows = _sample(f, f"SELECT u.url, u.flags FROM url u WHERE u.kind = 'page' AND u.tier IN (0, 1) AND "
-                      f"{outcome._has('in_image')} ORDER BY u.id")
-    total += len(rows)
-    for r in rows:
-        c.add(WARN, f"「{outcome.IN_IMAGE_WORDS}」：{r['url']}（flags {r['flags'] or '—'}）")
-    for (why,) in f.q("SELECT DISTINCT why FROM page_res WHERE role = 'img' AND need = 'no' ORDER BY why"):
-        rows = _sample(f, "SELECT res_key FROM page_res WHERE role = 'img' AND need = 'no' AND why IS ? "
-                          "ORDER BY page_id, res_key", (why,), IMAGE_SAMPLE)
-        total += len(rows)
-        for r in rows:
-            c.add(WARN, f"不收的图片（{why or '没写原因'}）：{r['res_key'][:200]}")
-    c.detail = (f"抽了 {total} 个给人看（误判以前没有复核：要登录、像不存在、几乎是空的、内容在图片里各 {SAMPLE} 个，"
-                f"不收的图片每种原因 {IMAGE_SAMPLE} 张）")
-
-
-def known_gaps(src, wayback_open: bool = True) -> list[tuple[str, int | None, str]]:
-    """§13 item 16: the gaps this round leaves on purpose, always listed (never read as fine): (words, how many, the
-    unit; None for the fixed Wayback line)."""
-    f = _frontier(src)
-
-    def one(sql: str, args=()) -> int:
-        return f.q(sql, args)[0][0] or 0
-
-    out: list[tuple[str, int | None, str]] = []
-    if wayback_open:
-        out.append((WAYBACK_GAP, None, ""))
-    out.append(("只限校内网络的网址，等搬到实验室", one("SELECT count(*) FROM url_result WHERE result = 'lab'"), "个"))
-    out.append(("要 JavaScript 的网页，下一轮补", one("""SELECT count(*) FROM url_result WHERE kind = 'page'
-                                                     AND tier IN (0, 1) AND result = 'js'"""), "页"))
-    out.append(("写法看不懂的点了才载入内容的网页（分页签、下载按钮），下一轮补",
-                one("""SELECT count(*) FROM (SELECT page_id FROM page_res WHERE role = 'click' AND need = 'round2'
-                       UNION SELECT id FROM url_result WHERE kind = 'page' AND tier IN (0, 1) AND result = 'click')"""),
-                "页"))
-    out.append(("这一轮做不到的写法（平台档案标 round2 的：电子系的学年选单、R7 读了 .js 还确认不了的外部函数……），下一轮补",
-                one("SELECT count(DISTINCT res_key) FROM page_res WHERE why = 'round2:unhandled'"), "种"))
-    out.append(("jscheck 看到浏览器停在别的网址、留到下一轮的网址（round2:jscheck_redirect）",
-                one("SELECT count(*) FROM url WHERE state = 'later' AND reason = 'round2:jscheck_redirect'"), "个"))
-    out.append(("校外一层，下一轮", one("""SELECT count(*) FROM url WHERE state = 'later'
-                                          AND reason IN ('round2:offsite', 'round2:offsite_file')"""), "个"))
-    out.append(("发布到网络的 Google 文件（round2:google_published），等你决定怎么读",
-                one("SELECT count(DISTINCT res_key) FROM page_res WHERE why = 'round2:google_published'"), "个"))
-    # design §23 B3: Google Sites' runtime pictures a site gave up on (or a page read again twice could not get), by
-    # site; a picture's key names its page, so count(DISTINCT res_key) counts each picture of each page once
-    by_site = f.q("""SELECT p.owner_site, count(DISTINCT pr.res_key) n FROM page_res pr JOIN url p ON p.id = pr.page_id
-                     WHERE pr.need = 'round2' AND pr.why = 'round2:google_sites_image'
-                     GROUP BY p.owner_site ORDER BY n DESC, p.owner_site""")
-    sites = "、".join(f"{r['owner_site']} {r['n']} 张" for r in by_site)
-    out.append(("协作平台正文图片，下一轮用浏览器补（round2:google_sites_image" + (f"：{sites}）" if sites else "）"),
-                sum(r["n"] for r in by_site), "张"))
-    return out
-
-
-def _c16(ctx: _Ctx, c: Check) -> None:
-    gaps = known_gaps(ctx.f, ctx.wayback_open)
-    open_ = 0
-    for words, k, unit in gaps:
-        if k is None:
-            open_ += 1
-            c.add(WARN, f"已知缺口：{words}")
-        elif k:
-            open_ += 1
-            c.add(WARN, f"已知缺口：{words}：{k} {unit}")
-        else:
-            c.lines.append(f"{words}：0 {unit}")
-    c.detail = f"已知缺口 {open_} 项（固定列出，不会被当成没问题）"
-
-
-def _c17(ctx: _Ctx, c: Check) -> None:
-    from nknu.archive import google_api
-
-    # Google blocking downloads for long is no one site's (design §23 D2): its own line, first
-    now = ctx.now if ctx.now is not None else time.time()
-    streak, first = google_api.block_state(ctx.f)
-    if google_api.block_long(streak, first, now):
-        c.add(FAIL, f"{google_api.block_words(streak, first, now)}（云端硬盘的下载都在等；不绕过，看过再决定）")
-    sts = ctx.sites()
-    if sts is None:
-        c.add(SKIP, "完整度还没算好（看板背景每 2 分钟算一次）")
-        return
-    n = Counter()
-    for s in sts.values():
-        if not s.issues:
-            continue
-        red = [i for i in s.issues if i.red]
-        pending = [i for i in s.issues if i.bucket == "pending_check"]
-        lab = [i for i in s.issues if i.lab]
-        n["sites"] += 1
-        n["red"] += len(red)
-        n["pending"] += len(pending)
-        n["lab"] += len(lab)
-        status = FAIL if red or (pending and s.jscheck_done) else WARN
-        c.add(status, f"{s.site}（{s.name or '—'}）：连接失败或要人看 {len(red)}、待判定 {len(pending)}、只限校内 {len(lab)}"
-                      + ("（这一轮的 jscheck 已经跑完）" if pending and s.jscheck_done else ""))
-        c.lines += [f"  - {i.line()}" for i in s.issues[:REPORT_LINES]]
-        if len(s.issues) > REPORT_LINES:
-            c.lines.append(f"  - ……另有 {len(s.issues) - REPORT_LINES} 条")
-    c.detail = (f"有问题的网站 {n['sites']} 个：连接失败或要人看 {n['red']}、待判定 {n['pending']}、只限校内 {n['lab']}"
-                "（网页照页的完整度列，资源照结果列）")
-
-
-def _c18(ctx: _Ctx, c: Check) -> None:
-    f = ctx.f
-    recs = reconciled(f, ctx.rounds)
-    sites = ctx.round1_sites()
-    if not sites:
-        c.add(SKIP, "名单还没导入（site_plan 是空的）")
-    n = Counter()
-    for s in sites:
-        rec = recs.get(s)
-        if rec is None:
-            n["none"] += 1
-            c.add(FAIL, f"{s}：还没对账")
-            continue
-        if not rec.fresh:
-            n["stale"] += 1
-            c.add(FAIL, f"{s}：对账（{rec.when()}）比之后涵盖它的{rec.stale_words()}旧")
-        elif not rec.passed:
-            n["failed"] += 1
-            c.add(FAIL, f"{s}：对账（{rec.when()}）没过：{'、'.join(rec.not_passed())}")
-        else:
-            n["ok"] += 1
-        low = rec.low_cover()
-        if low:
-            n["low"] += 1
-            c.add(WARN, f"{s}：{'；'.join(low)}")
-            for u in _only_from_seeds(f, s)[:20]:
-                c.lines.append(f"  - 只靠 Common Crawl 或旧清单才进来、没有这一轮网页链到：{u}")
-        # §13 item 18: the discovery coverage site by site, as the estimate it is (review 10-26)
-        c.lines += [f"  - {s}：{line}" for line in rec.cover_lines()]
-        if rec.uncompared:
-            c.lines.append(f"  - {s}：对账有几项没比到（不等于没问题）：{rec.blind_words()}")
-        if rec.menu_school:
-            c.lines.append(f"  - {s}：{rec.menu_words()}")
-    c.detail = (f"第一轮网站 {len(sites)} 个：对账全过而且是新的 {n['ok']}，没对账 {n['none']}，过期 {n['stale']}，"
-                f"没过 {n['failed']}；覆盖率低于 {COVER_MIN:.0%} 的 {n['low']}（只提醒，不挡「爬完」）")
-
-
-def _c19(ctx: _Ctx, c: Check) -> None:
-    """Every round-1 site 爬完 (§10.5): the items above each look at one side (the pages' problems, the
-    reconciliations…), none at what is still to fetch or retry, so without this one verify could say 第一轮完成 while a
-    site is still 还在抓 (found by the end-to-end test, 10-26) 【Claude 的执行办法】. ✗ 出错 is ✗; any other state not 爬完
-    (要看, 没检查, 还在抓, 纪录齐了、还没对账) ⚠."""
-    sts = ctx.sites()
-    if sts is None:
-        c.add(SKIP, "完整度还没算好")
-        return
-    states = Counter()
-    for s in sts.values():
-        states[s.state] += 1
-        if s.state == DONE:
-            continue
-        c.add(FAIL if s.state == ERROR else WARN, f"{s.site}（{s.name or '—'}）：{s.label}：{'；'.join(s.why[:3]) or '—'}")
-    if not sts:
-        c.add(SKIP, "没有第一轮的网站")
-    c.detail = f"第一轮网站 {sum(states.values())} 个：" + "、".join(f"{SITE_STATE[k][0]} {states[k]}" for k in SITE_ORDER
-                                                               if states[k])
-
-
-def _only_from_seeds(f: Frontier, site: str) -> list[str]:
-    """A site's addresses that came in only from Common Crawl or the old archive and that no page of this round links
-    to (§18.2b R3b, R4b; record 二·5 「会估出漏的比例」)."""
-    return [r[0] for r in f.q("""SELECT u.url FROM url u WHERE u.owner_site = ? AND u.found_via IN ('commoncrawl',
-                                   'old_frontier') AND NOT EXISTS (SELECT 1 FROM link l WHERE l.dst = u.url
-                                   AND l.src <> u.id) ORDER BY u.url""", (site,))]
-
-
-# the items in §13's order, and which the dashboard asks every 2 minutes (§14.2: 1–12 and 16)
-ITEMS: tuple[tuple[str, str, Callable, bool], ...] = (
-    ("1", "每个网站的首页和附加起点都抓到内容", _c1, True),
-    ("2", "每一行都有已知的结果", _c2, True),
-    ("3", "每站总数没比旧存档少 20% 以上", _c3, True),
-    ("4", "列表都翻到底", _c4, True),
-    ("5", "有列表的平台站都有翻页纪录", _c5, True),
-    ("6", "网页不空、附件是真档案", _c6, True),
-    ("7", "网页类型都判定过", _c7, True),
-    ("8", "没有未知按钮、没处理的写法", _c8, True),
-    ("9", "撞上限的都看过", _c9, True),
-    ("10", "云端硬盘和日历", _c10, True),
-    ("11", "礼貌", _c11, True),
-    ("11b", "范围（没有碰不准碰的网址）", _c11b, True),
-    ("11c", "在校内网络抓的请求", _c11c, True),
-    ("12", "v1 已知的公告都存到了", _c12, True),
-    ("13", "资源没有漏抽", _c13, False),
-    ("14", "存档读得回来", _c14, False),
-    ("15", "抽样给人看", _c15, False),
-    ("16", "已知缺口（固定列出）", _c16, True),
-    ("17", "逐站的问题清单", _c17, False),
-    ("18", "每个网站都对过账", _c18, False),
-    ("19", "每个网站都爬完", _c19, False),
-)
-
-
-def checks(src, now: float | None = None, *, cheap: bool = False, root: Path | None = None, plan=None,
-           fx: Facts | None = None, pages: Iterable | None = None, statuses: dict[str, SiteStatus] | None = None,
-           alive: bool | None = None, wayback_open: bool = True, resource_check: Callable | None = None
-           ) -> list[Check]:
-    """§13's items (the dashboard: cheap=True, items 1–12 and 16, §14.2; an item that needs page completeness reads
-    the pages it is given, or says 没检查). root: the archive directory (item 14 reads its WARC files; and whether a
-    run holds run.lock). plan: the site list (round1.load), for the scope audit's placements. resource_check: item
-    13's function (reconcile.py's: (frontier, root) -> problems), else item 13 reads each site's reconciliation (V13).
-    wayback_open: item 16 keeps its Wayback line until the user agrees and it is filled. (The 25 questions' item G is
-    no item since 10-26, with reconcile's R5: §13.)"""
-    f = _frontier(src)
-    if alive is None:
-        alive = root is not None and _alive(root) is not None
-    ctx = _Ctx(f, root, plan, cheap, fx, statuses, fx.rounds if fx is not None else Rounds(f), alive, wayback_open,
-               resource_check, pages, now)
-    out = []
-    for no, title, fn, is_cheap in ITEMS:
-        if cheap and not is_cheap:
-            continue
-        c = Check(no, title)
-        fn(ctx, c)
-        out.append(c)
-    return out
-
-
-def exit_code(cs: Iterable[Check]) -> int:
-    """2: something is wrong; 1: something to look at, or not checked (没检查 is no pass); 0: all passed."""
-    worst = max((_RANK[c.status] for c in cs), default=0)
-    return 2 if worst == _RANK[FAIL] else 1 if worst else 0
-
-
-def conclusion(cs: list[Check]) -> str:
-    """The one line on top (§13): never all green while a known gap is open: at best 「第一轮完成，有已知缺口 N 项」."""
-    bad = [c for c in cs if c.status == FAIL]
-    look = [c for c in cs if c.status in (WARN, SKIP) and c.no != "16"]
-    gaps = next((c for c in cs if c.no == "16"), None)
-    n_gaps = sum(1 for x in (gaps.lines if gaps else ()) if x.startswith("已知缺口："))
-    if bad or look:
-        return (f"还没完成：✗ 出错 {len(bad)} 项（{'、'.join(c.no for c in bad) or '—'}），⚠ 要看或没检查 {len(look)} 项"
-                f"（{'、'.join(c.no for c in look) or '—'}）；另有已知缺口 {n_gaps} 项")
-    if n_gaps:
-        return f"第一轮完成，有已知缺口 {n_gaps} 项（第 16 项逐项列出）"
-    return "第一轮完成"
-
-
-# ---------------------------------------------------------------- item 14: the archive reads back (§13, §18.2b V14)
-
-def _read_through(path: Path) -> str | None:
-    """Read a .warc.gz to its end with Python's gzip, member after member (warcio check exits 0 on a gzip error)."""
-    try:
-        with gzip.open(path, "rb") as fh:
-            while fh.read(1 << 20):
-                pass
-    except (OSError, EOFError, zlib.error) as exc:
-        return f"{type(exc).__name__}: {exc}"
-    return None
-
-
-_V14_LINE = {"no_position": "抓过却没有存档位置：{label}", "unreadable": "按位置读不回来：{label}",
-             "sha256": "读回来的内容和纪录的 sha256 不同：{label}",
-             "other_url": "这个位置存的是别的网址：{label}（存档里是 {archived}）"}
-
-
-def _v14_line(item: dict) -> str:
-    if item.get("what") == "file":
-        rel, broke = item.get("url"), item.get("problem")
-        return f"存档档案不见了：{rel}" if broke == "no such file" else f"存档档案读不完：{rel}（{broke}）"
-    label = item.get("url") if item.get("what") != "action" else f"按钮 a{item.get('id')}（{item.get('url')}）"
-    return _V14_LINE.get(item.get("problem"), "{label}：{problem}").format(label=label, archived=item.get("archived"),
-                                                                           problem=item.get("problem"))
-
-
-def warc_readback(root: Path, src, sites: Iterable[str] | None = None) -> tuple[list[str], int]:
-    """§13 item 14 over reconcile.verify_archive, the one implementation (§18.2b's V14 is the same function for a
-    batch's sites): every archived answer (a url row's, a press's) read back where warc_offset says, its sha256 (and
-    its address) compared with the row's, a row that came back (done, with a status) and has no place in the archive
-    a problem too, and every WARC file those rows use read through gzip to its very end. sites None: every site with
-    such rows, and every other .warc.gz under warc/ (jscheck's and R6's evidence, a file no row names) read through as
-    well. Returns (problems in words, answers read back). Only when no run writes the files (verify's item 14 waits)."""
-    from nknu.archive.reconcile import verify_archive
-
-    f = _frontier(src)
-    if sites is None:
-        only = sorted({r[0] for r in f.q("SELECT DISTINCT owner_site FROM url WHERE state = 'done' AND status IS NOT "
-                                           "NULL AND owner_site IS NOT NULL")}
-                      | {r[0] for r in f.q("SELECT DISTINCT site FROM action WHERE state IN ('done', 'mismatch') AND "
-                                           "status IS NOT NULL AND site IS NOT NULL")})
-    else:
-        only = sorted(set(sites))
-    problems: list[str] = []
-    n = 0
-    named: set[str] = set()
-    for ck in verify_archive(f, root, only, whole=True).values():
-        n += ck.counts.get("records", 0)
-        problems += [_v14_line(i) for i in ck.items]
-    if only:
-        marks = ",".join("?" * len(only))
-        named = {r[0] for r in f.q(f"SELECT DISTINCT warc FROM url WHERE warc IS NOT NULL AND owner_site IN ({marks})",
-                                   only)}
-        named |= {r[0] for r in f.q(f"SELECT DISTINCT warc FROM action WHERE warc IS NOT NULL AND site IN ({marks})",
-                                    only)}
-    if sites is None and (root / "warc").exists():
-        for path in sorted((root / "warc").rglob("*.warc.gz")):
-            rel = str(path.relative_to(root))
-            if rel not in named and (err := _read_through(path)) is not None:
-                problems.append(f"存档档案读不完：{rel}（{err}）")
-    return problems, n
-
-
-# ---------------------------------------------------------------- nknu archive verify
-
-@dataclass
-class Verified:
-    text: str
-    code: int
-    checks: list[Check]
-    sites: dict[str, SiteStatus]
-    path: Path | None
-
-
-def verify(root: Path, *, plan=None, wayback_open: bool = True, resource_check: Callable | None = None,
-           write: bool = True) -> Verified:
-    """`nknu archive verify` (design §13): the frontier opened read-only (OutdatedFrontier for one an older version
-    wrote), nothing sent, every item, each site's state; writes reports/verify-<time>.md under root (write=False: the
-    text only). The exit code: 2 something wrong, 1 something to look at or not checked, 0 all passed."""
-    f = Frontier(root / "frontier.db", readonly=True)
-    try:
-        alive = _alive(root)
-        fx = facts(f)
-        sts = site_status(f, fx=fx)
-        cs = checks(f, root=root, plan=plan, fx=fx, statuses=sts, alive=alive is not None, wayback_open=wayback_open,
-                    resource_check=resource_check)
-    finally:
-        f.close()
-    code = exit_code(cs)
-    text = render(root, cs, sts, code, alive)
-    path = None
-    if write:
-        reports = root / "reports"
-        reports.mkdir(exist_ok=True)
-        path = reports / f"verify-{datetime.now(TAIPEI):%Y%m%d-%H%M%S}.md"
-        path.write_text(text, encoding="utf-8")
-    return Verified(text, code, cs, sts, path)
-
-
-def render(root: Path, cs: list[Check], sts: dict[str, SiteStatus], code: int, alive: str | None) -> str:
-    lines: list[str] = []
-    w = lines.append
-    w(f"# 第一轮验收（nknu archive verify）{datetime.now(TAIPEI):%Y-%m-%d %H:%M}（台北）")
-    w("")
-    w(f"- 存档：{root}")
-    w(f"- 爬虫：{'在跑（pid ' + alive + '）：结果随时会变' if alive else '没有在跑'}")
-    w(f"- 结论：{conclusion(cs)}")
-    w(f"- 退出码：{code}（0 全过、1 有要看的或没检查的、2 有出错的）")
-    w("")
-    w("| # | 检查 | 结果 | 摘要 |")
-    w("|---|---|---|---|")
-    for c in cs:
-        w(f"| {c.no} | {c.title} | {CHECK_ZH[c.status]} | {c.detail.replace('|', '／')} |")
-    w("")
-    states = Counter(s.state for s in sts.values())
-    w("## 每个网站的状态（第 10.5 节）")
-    w("")
-    w(f"共 {len(sts)} 个：" + "、".join(f"{SITE_STATE[k][0]} {states[k]}" for k in SITE_ORDER if states[k]))
-    w("")
-    w("| 网站 | 单位 | 重要程度 | 状态 | 原因 |")
-    w("|---|---|---|---|---|")
-    tiers = {0: "全校重要", 1: "本系重要"}
-    for s in sts.values():
-        why = "；".join(s.why[:4]) + ("……" if len(s.why) > 4 else "")
-        if s.warnings:
-            why += "（另：" + "；".join(s.warnings) + "）"
-        w(f"| {s.site or '（空）'} | {s.name or '—'} | {tiers.get(s.tier, '—')} | {s.label} | {why.replace('|', '／')} |")
-    for c in cs:
-        w("")
-        w(f"## {c.no}. {c.title} — {CHECK_ZH[c.status]}")
-        w("")
-        w(c.detail)
-        if c.lines:
-            w("")
-            for x in _cap(c.lines):
-                w(x if x.startswith("  - ") else f"- {x}")
-    return "\n".join(lines) + "\n"

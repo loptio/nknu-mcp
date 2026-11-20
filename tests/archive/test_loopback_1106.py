@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from nknu.archive import outcome, progress, rehearsal, scope
+from nknu.archive import outcome, progress, scope
 from nknu.archive.crawler import DNS_GIVE_UP
-from nknu.archive.monitor import _landed_nowhere, scope_audit
+from nknu.archive.monitor import _nowhere, landing, scope_audit
 from tests.archive.test_archive import make, seed, snap
 from tests.archive.test_crawler_round1 import HOME, QC, crawl, drive, links_of, page, result, rows, settle
 
@@ -51,7 +51,7 @@ def test_a_trailing_dot_is_this_machine_once_canonical_and_never_fetched_raw():
 
 @pytest.mark.parametrize(("url", "reason"), [
     ("http://10.0.0.1/a.pdf", "offsite"), ("http://192.168.1.1/", "offsite"), ("http://172.16.0.1/", "offsite"),
-    (f"http://{rehearsal.UNKNOWN_IP}/", "offsite"),  # the rehearsal's unknown hosts stay fetchable there
+    ("http://10.254.254.254/", "offsite"),  # the address the offline rehearsal gave the hosts it knew no address of
     ("https://140.127.40.173/x", "in_scope"), ("https://localhost.nknu.edu.tw/", "in_scope"),
     ("https://mylocalhost.com/", "offsite"), ("https://face.cafe/", "offsite"), ("http://1.2.3/", "offsite"),
 ])
@@ -77,7 +77,7 @@ def test_the_first_batch_s_localhost_attachment_is_the_school_s_broken_link_and_
     got = crawler.frontier.q("SELECT need, why FROM page_res WHERE page_id=? AND res_key=?", (pid, LOCALHOST_FILE))
     assert [tuple(r) for r in got] == [("must", outcome.LOOPBACK_OUT)]
     assert [r[0] for r in crawler.frontier.q("SELECT result FROM page_resource WHERE page_id=?", (pid,))] == ["bad_link"]
-    level, reasons = _level(crawler, pid)
+    level, _reasons = _level(crawler, pid)
     # the school's broken link: complete as far as the school allows (the owner 11-16 「销账照表做」, export batch T5)
     assert level == "complete_school"
     assert progress._no_row_result("must", outcome.LOOPBACK_OUT) == "bad_link"
@@ -138,7 +138,8 @@ def test_a_redirect_to_this_machine_makes_no_row_and_its_attachment_is_not_got(t
     pid = rows(crawler)[HOME]["id"]
     got = [r[0] for r in crawler.frontier.q("SELECT result FROM page_resource WHERE page_id=?", (pid,))]
     assert got == ["not_file"]  # an attachment led nowhere a file comes from: 连接失败, never 规则不抓
-    assert _landed_nowhere(crawler.frontier, a["id"]) == "bad_link"
+    # judged by itself, the row's redirect lands on no row and its last hop's link verdict says the school's broken link
+    assert _nowhere(crawler.frontier, *landing(crawler.frontier, a["id"])) == "bad_link"
 
 
 @pytest.mark.parametrize(("queue", "ip"), [(LOOP_Q, "127.0.0.1"), ("ip:0.0.0.0", "0.0.0.0"), ("ip:::1", "::1")])

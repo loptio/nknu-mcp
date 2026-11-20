@@ -172,7 +172,8 @@ def _section(readme: str) -> str:
 
 def test_the_rule_is_the_course_tables_and_goes_by_the_pages_own_address():
     rule = profiles.COURSE_NO_DATA
-    assert profiles.DATAOPEN.no_data == (rule,) and rule.words == WORDS and rule.why.strip()
+    # 11-17: the CV pages' 「查無資料」 joined it (tests/archive/test_vita_nodata_1117.py)
+    assert profiles.DATAOPEN.no_data == (rule, profiles.VITA_NO_DATA) and rule.words == WORDS and rule.why.strip()
     # what the content stage leaves rows out by: every rule's words begin with it
     assert export.NO_DATA == "学校回答没有资料"
     assert all(n.words.startswith(export.NO_DATA) for p in profiles.PROFILES for n in p.no_data)

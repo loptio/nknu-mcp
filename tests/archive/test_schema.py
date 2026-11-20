@@ -1,6 +1,7 @@
-"""The frontier's schema (round-1 design §12): every table and column the dashboard (§14), `archive verify` (§13) and
-the result views (§10, outcome.py) read is in TABLES, the views compile against TABLES alone, and a frontier.db written
-by the 10-24 version gains the new columns when it is opened (the monitor's read-only view still refuses it)."""
+"""The frontier's schema (round-1 design §12): every table and column the dashboard (§14) and the result views (§10,
+outcome.py) read is in TABLES, the views compile against TABLES alone, and a frontier.db written by the 10-24 version
+gains the new columns when it is opened (the monitor's read-only view still refuses it). The commands that write
+refuse the 10-24 archive, and those that send requests a folder the offline rehearsal made."""
 
 from __future__ import annotations
 
@@ -10,9 +11,17 @@ import sqlite3
 import pytest
 
 from nknu.archive import outcome
-from nknu.archive.frontier import INDEXES, TABLES, Frontier, OutdatedFrontier
+from nknu.archive.frontier import (
+    INDEXES,
+    REHEARSAL_KEY,
+    REHEARSAL_STARTED_KEY,
+    TABLES,
+    Frontier,
+    OutdatedFrontier,
+    rehearsal_of,
+)
 
-# what the dashboard, the verify checks and the views read (design §10, §12–14), per table
+# what the dashboard and the views read (design §10, §12, §14), per table
 READ = {
     "url": {"id", "url", "path", "host", "site", "unit", "tier", "kind", "depth", "found_via", "found_from", "state",
             "reason", "next_at", "attempts", "status", "final_url", "ctype", "bytes", "sha256", "warc", "title",
@@ -43,6 +52,7 @@ READ = {
     "drive_item": {"url_id", "file_id", "name", "mime", "size", "md5", "modified", "parent_id", "resource_key", "depth",
                    "album", "content_id"},
     "js_page": {"url_id", "page_type", "at", "verdict", "why", "final_url"},
+    # kept in the schema for the archives that have it; nothing reads or writes it since the cut of 11-19
     "reconcile_site": {"site", "batch", "at", "checks", "cover_cc", "cover_old", "gates_ok"},
     "id_probe": {"host", "page_type", "url", "status", "final_url", "sha256", "len", "title", "at"},
     "seed_src": {"url", "source"},
@@ -277,3 +287,25 @@ def test_the_commands_that_write_refuse_the_10_24_archive(tmp_path, monkeypatch,
         assert out.exit_code == 1 and "archive-2026-10-24" in out.output, out.output
     assert hashlib.sha256(old.read_bytes()).hexdigest() == before
     assert sorted(p.name for p in old.parent.iterdir()) == ["STOP", "frontier.db"]  # no lock, the old run not resumed
+
+
+@pytest.mark.parametrize("mark", [REHEARSAL_KEY, REHEARSAL_STARTED_KEY])
+def test_no_command_that_sends_requests_runs_on_a_rehearsal_folder(tmp_path, mark):
+    """From test_rehearsal.py, which went with the rehearsal module (the cut of 11-19): a folder the offline rehearsal
+    made keeps its mark in meta (seeded, or started and stopped in its seed), its hosts' addresses are the 10-24
+    archive's or made up, and run, seed and jscheck still refuse it. The mark is written here as the rehearsal did."""
+    from typer.testing import CliRunner
+
+    from nknu.admin.cli import app
+
+    root = tmp_path / "rehearsed"
+    Frontier(root / "frontier.db").close()
+    assert rehearsal_of(root / "frontier.db") is None  # an archive of the crawl's own: no mark
+    f = Frontier(root / "frontier.db")
+    f.meta(mark, "2026-10-26T08:00:00+00:00")
+    f.close()
+    assert rehearsal_of(root / "frontier.db") == "2026-10-26T08:00:00+00:00"
+    for args in (["run"], ["seed", "--old", "/no/old-archive"], ["jscheck"]):
+        out = CliRunner().invoke(app, ["archive", *args, "--dir", str(root)])
+        assert out.exit_code == 1 and "离线彩排的资料夹" in out.output, (args, out.output)
+    assert sorted(p.name for p in root.iterdir() if not p.name.startswith("frontier.db")) == []  # nothing was started

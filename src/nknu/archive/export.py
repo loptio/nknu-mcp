@@ -44,7 +44,7 @@ each is done is 【Claude 的执行办法】):
 - --old-copies: the rows this round got nothing good of take the 10-24 archive's good copy as their file (OldCopies,
   item ⑦ of docs/round1-gaps-2026-11-08.md), their 结果 and 分类 kept;
 - whether the site can be exported now and its data time (Ready: `nknu archive ready`, manifest.json's 可以导出 and
-  资料截至), for the export service (research/crawler_lab_2026-11-04/export_sites.sh);
+  资料截至), for the export service (deploy/lab-crawler/lab/export_sites.sh);
 - what an export is made of (manifest.json's 导出依据: export_basis), and --skip-same, which writes nothing when the
   site's current export is made of the same things (the service's 没有变动);
 - --reuse: the attachments and pictures a previous export of the site holds, hard-linked instead of read again (Reuse).
@@ -127,6 +127,9 @@ ORIGIN_OLD = "10-24 旧存档"
 # (url_version: periodic updates, design 2026-11-16 §7.1; 2026-11-15 update.md §5, §6.1). Its 结果, 分类 and 原因 stay
 # this time's; its file, 抓取时间, 最后修改时间, 大小, sha256, 格式 and 最后落地网址 are that answer's
 ORIGIN_PREV = "上一次抓到的"
+# 来源 of a page the browser opened (jsfetch, the JS sites' handoff item ⑤): its file is the look jsfetch.for_export gives
+# (a conversion record: what the browser showed), its 抓取时间 that look's; 11-17, plan 2026-11-17-jsfetch-integration
+ORIGIN_RENDERED = "浏览器显示版"
 # item ⑧ of the 11-08 gaps: a page strict decoding refused is read again with an encoding the page itself or its
 # server names (_LABELS), never with one neither names: gb18030 reads almost any Big5 bytes whole into other
 # characters, and Big5-HKSCS gives the character a Taiwanese site made for a rare character in a name (造字, in Big5's
@@ -173,9 +176,22 @@ ROLE_HOW = {"file": "网页上的附件链接", "img": "网页里的图片", "dr
 # why the rules leave a picture unfetched (links.image_need, page_res.why of an img entry with need no)
 IMAGE_WHY = {"chrome": "网站版面的图示（在选单、页首页尾这些版面区）", "decor_name": "网站版面的图示（档名是图示、按钮、线条这类）",
              "tiny": "网站版面的图示（太小：宽或高不到 80 像素）", "captcha": "验证码图片（不碰）", "album": "相簿页的照片（相簿不收）"}
+# how 缺什么 begins for a page that only asks for a choice, its content in the rows its presses brought
+# (postback.asks_first); the content stage leaves such a page out by these words
+ASKS_FIRST = "内容在按钮行"
 # what a rule leaves out (scope.judge's reasons as url.reason out:<reason>, and the other rule reasons): in words
 RULE_WHY = {"decor:repeat": "网站版面的图示（很多页都有同一张）", "album:drive": "云端硬盘相簿里的照片（相簿不收）",
             "media_type": "影音档", "login": "要登录才看得到", "not_content": "不是内容（分享按钮、程式自己的页）",
+            "skip_path": "这个网站的名单写明不抓的网址（例：部落格的标签列表、上一学年的课程大纲、老师的著作全文）",
+            "skip_path:teacher_fulltext": "老师的著作全文（论文、书的 PDF；名单写明不收，题目在老师的履历页上）",
+            "skip_path:proceedings": "研讨会论文集、学刊的整本全文（云端硬盘上的 PDF；名单写明不收，活动页本身照收）",
+            "skip_path:teaching_materials": "给中小学老师的教材下载区和里面的档案（名单写明不收，这个单位的其他网页和公告照收）",
+            "cap_image": "这个网站超过图片上限的图片（名单写明不抓：多是活动照片）",
+            "cap_file": "这个网站超过附件上限的档案（名单写明不抓）",
+            "cap_page": "这个网站超过网页上限的网页（名单写明不抓）",
+            "wix_size": "同一张图的另一个尺寸（Wix 同一张图有好几个网址，只留最大的那个附档）",
+            "round2:offsite": "学校网页链出去的校外网页（用户 11-17 决定不抓）",
+            "round2:offsite_file": "学校网页链出去的校外档案（用户 11-17 决定不抓）",
             "media": "影音档", "system": "校务系统", "search": "站内搜索的结果页", "trap": "会一直产生新网址的页（爬虫陷阱）",
             "never_host": "绝不抓的网站", "social": "社群平台", "refuses": "不让爬虫抓的网站",
             "internal_service": "学校内部的服务", "bad_url": "网址写错了", "too_long": "网址太长",
@@ -427,6 +443,8 @@ class Item:
     modified: str = ""  # 最后修改时间: changed_at() of the archived answer's Last-Modified, or of a Drive file's modified
     date_from: str = ""  # 日期来源: OWN_FIELD, LIST_ROW or PAGE_WORDS, '' with no date
     origin: str = ""  # 来源: '' for this round's archive, ORIGIN_OLD for the 10-24 one's copy (a redirect sharing it too)
+    rendered: tuple | None = None  # (warc, offset): the browser's look to write in place of the answer (ORIGIN_RENDERED)
+    render_gap: str = ""  # why no look of this page was ever complete (jsfetch.for_export's), said in 缺什么
     filled: bool = False  # it took the 10-24 archive's copy itself (--old-copies, item ⑦)
     decoded: str = ""  # a page strict decoding refused: the encoding redecode() read it with
     lost: int = 0  # of such a page, the characters that encoding could not read (each a � in its file)
@@ -436,15 +454,20 @@ class Item:
     own: str = ""  # a page's result the views judge it by: its own, or a redirect's landing page's
     linked: bool = False  # its file is a hard link to the previous export's (--reuse)
     list_kind: str = ""  # 页别: LIST_FIRST, LIST_PAGER or '' (Writer._list_kinds; blueprint item 22, part 3)
+    choice: str = ""  # a menu press's words (profiles.Menu: the option chosen), "" for any other item (11-18)
     list_category: str = ""  # 列表上的类别: list_category() of the rows that link it (Writer._list_dates; part 2)
     unit: str = ""  # 公告单位: own_unit() of the page the row's file is (Writer._page, _unit_rows; the owner 11-15)
     group: str = ""  # 组别: own_group() of the page the row's file is (Writer._page, _unit_rows; export batch T3)
+    # 网址 of a Google Sites runtime picture whose page shows it under another address than the one it was fetched by
+    # (Writer._gsimg_addresses, 11-19): the address in the page's file, by which a reader pairs the two
+    shown: str = ""
 
     def row(self, n: int, page_url, cap: int | None = None) -> dict[str, str]:
         """The manifest's row. cap: name at most that many pages and link texts (manifest.csv and missing.csv: a
         layout picture on every page of a site of 900 pages would pass the 32767 characters an Excel cell holds),
         saying how many there are; manifest.json names them all."""
-        return {"序号": str(n), "类型": self.type, "网址": self.url, "最后落地网址": self.final_url, "本地档案": self.path,
+        return {"序号": str(n), "类型": self.type, "网址": self.shown or self.url, "最后落地网址": self.final_url,
+                "本地档案": self.path,
                 "标题": self.title, "网页上写的日期": self.date, "日期原文": self.date_raw,
                 "完整度": self.completeness(), "缺什么": self.lacks,
                 "结果": self.result_words(), "原因": self.why,
@@ -588,12 +611,16 @@ class Ready:
 
     @property
     def can(self) -> bool:
-        return self.known and not self.urls and not self.presses
+        """Nothing of it waits, and something of it was fetched: a site whose rows all wait for round two (a key with
+        later rows only) has nothing to export (design 2026-11-17-round2-batch2 §三.7)."""
+        return self.known and not self.urls and not self.presses and bool(self.as_of)
 
     @property
     def state_words(self) -> str:
         if not self.known:
             return "存档里没有这个网站"
+        if not self.as_of and not self.urls and not self.presses:
+            return "还没抓到东西（网址都在下一轮）"
         sign, words, _color = progress.STATE_SHOW.get(self.state, ("⚠", "没检查", "yellow"))
         return f"{sign} {words}".strip()
 
@@ -602,7 +629,8 @@ class Ready:
         site = f"{self.site}（{self.name}）" if self.name else self.site
         if not self.known:
             return f"✗ {site}：存档里没有这个网站（网站键打错了？）"
-        verdict = "可以导出" if self.can else f"还没爬完，还有 {self.urls} 个网址、{self.presses} 个按钮在排队"
+        verdict = ("可以导出" if self.can else "还没抓到东西，网址都在下一轮" if not self.as_of and not self.urls
+                   and not self.presses else f"还没爬完，还有 {self.urls} 个网址、{self.presses} 个按钮在排队")
         return (f"{'✓' if self.can else '…'} {site}：{verdict}；状态 {self.state_words}；"
                 f"资料截至 {self.as_of or '（还没抓到东西）'}")
 
@@ -645,6 +673,42 @@ def readiness(conn: sqlite3.Connection, now: float, sites: Iterable[str] | None 
                 last[s] = max(last.get(s, float(at)), float(at))
     return {s: Ready(s, names.get(s, ""), s in names or bool(owned[s]), nums[s]["left"] - pressing[s], pressing[s],
                      _taipei(last[s]) if s in last else "") for s in want}
+
+
+def copies_dropped(before: Path | None, now: Path) -> list[tuple[str, str]]:
+    """The rows the folder before (a site's current export) filled from the 10-24 archive's copy (来源 ORIGIN_OLD, with
+    a file) that this export (now: its folder) gives neither that copy, nor a good answer of this round's own (分类
+    抓到了, with a file: the school mended the page), nor the school's deletion (SCHOOL_DELETED in 缺什么) or its sending
+    the notice elsewhere (NOTICE_MOVED: never covered with its old copy, never kept by the content stage; 爬虫judge 11-17
+    「只拦说不通的损失」): (网址, what it says now). The export service holds such an export instead of making it current (11-17, 爬虫judge under the
+    owner's delegation: 「上一份用了旧存档副本、这一份没用上就停下来说明」; the 11-16 go-live re-exported 711 rows without
+    their copies). No folder before: nothing. Rows are matched by 网址 and 按钮编号 (a copy may make a page an
+    attachment)."""
+    if before is None or not (Path(before) / "manifest.csv").is_file():
+        return []
+
+    def rows(folder: Path) -> list[dict]:
+        with (Path(folder) / "manifest.csv").open(encoding="utf-8-sig", newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    have: dict[tuple[str, str], list[dict]] = {}
+    for r in rows(now):
+        have.setdefault((r["网址"], r.get("按钮编号", "")), []).append(r)
+    out: list[tuple[str, str]] = []
+    for r in rows(before):
+        if r.get("来源") != ORIGIN_OLD or not r.get("本地档案"):
+            continue
+        got = have.get((r["网址"], r.get("按钮编号", "")), [])
+        if not got:
+            out.append((r["网址"], "这一行不在这一份导出里"))
+            continue
+        if any((n.get("来源") == ORIGIN_OLD and n.get("本地档案"))
+               or any(m in (n.get("缺什么") or "") for m in (SCHOOL_DELETED, NOTICE_MOVED))
+               or (n.get("本地档案") and n.get("分类") == "抓到了") for n in got):
+            continue
+        n = got[0]
+        out.append((r["网址"], f"{n.get('分类', '')}：{n.get('结果', '')}"))
+    return out
 
 
 def ready(root: Path, sites: Iterable[str] | None = None, *,
@@ -719,6 +783,13 @@ class Snap:
     list_row_rows: list[tuple[int, postback.Row]] = field(default_factory=list)
     # the rows the school deleted (_deleted): since when they answer gone, by row id
     deleted: dict[int, float] = field(default_factory=dict)
+    # a row with a good answer before whose answer now lacks its content area (flag no_area): since when its answers
+    # do (_no_area_since), by row id; a NoData rule with confirm marks it a day later only (_no_data_confirmed_rows)
+    no_area_since: dict[int, float] = field(default_factory=dict)
+    # the browser looks the site's pages are written with (jsfetch.for_export: url id -> (warc, offset, at)) and the
+    # pages no look of which was ever complete (url id -> why): the JS sites, 11-17 (Writer._rendered_looks)
+    looks: dict[int, tuple] = field(default_factory=dict)
+    look_gaps: dict[int, str] = field(default_factory=dict)
 
 
 def _list_row_rows(conn: sqlite3.Connection, site: str, foreign: Iterable[int]) -> list[tuple[int, postback.Row]]:
@@ -756,6 +827,57 @@ def _deleted(conn: sqlite3.Connection, ids, kept: dict[int, list[dict]]) -> dict
     return out
 
 
+def _epoch(at: str | None) -> float | None:
+    try:
+        return datetime.fromisoformat(at).timestamp() if at else None
+    except ValueError:
+        return None
+
+
+def _no_area_since(conn: sqlite3.Connection, rows: dict[int, dict], kept: dict[int, list[dict]]) -> dict[int, float]:
+    """The rows with a good answer before (kept) whose answer now lacks its content area (flag no_area, crawl_mod
+    NO_AREA): when the answers lacking it began, by row id — the earliest such answer (the row's own, or a kept one in
+    url_version flagged so) fetched after the newest good one (a good answer between starts the day again). For a NoData
+    rule with confirm (爬虫judge 11-17: two answers a day apart, as 学校已删除)."""
+    out: dict[int, float] = {}
+    for rid, r in rows.items():
+        if rid not in kept or "no_area" not in (r.get("flags") or "").split(","):
+            continue
+        good = [t for t in (_epoch(k.get("fetched_at")) for k in kept[rid]) if t is not None]
+        good_at = max(good) if good else float("-inf")
+        times = [_epoch(r.get("fetched_at"))] + [_epoch(v[0]) for v in conn.execute(
+            "SELECT fetched_at FROM url_version WHERE url_id=? AND ','||coalesce(flags, '')||',' LIKE '%,no_area,%'",
+            (rid,))]
+        times = [t for t in times if t is not None and t > good_at]
+        if times:
+            out[rid] = min(times)
+    return out
+
+
+def _looks_of(conn: sqlite3.Connection, page_ids) -> tuple[dict[int, tuple], dict[int, str]]:
+    """The browser looks of these pages the export writes (jsfetch.for_export, in the caller's transaction): url id ->
+    (warc, offset, at) of the look to write; url id -> why, for a page no look of which was ever complete. Empty in an
+    archive with no js_render (every site but the JS ones)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='js_render'").fetchone():
+        return {}, {}
+    from nknu.archive import jsfetch
+
+    class _Q:  # what for_export asks of a Frontier: q
+        @staticmethod
+        def q(sql, args=()):
+            return conn.execute(sql, args).fetchall()
+
+    have = {r[0] for r in conn.execute("SELECT DISTINCT url_id FROM js_render")} & set(page_ids)
+    looks, gaps = {}, {}
+    for uid in sorted(have):
+        look, why = jsfetch.for_export(_Q, uid)
+        if look is not None and look["warc"] is not None and look["warc_offset"] is not None:
+            looks[uid] = (look["warc"], look["warc_offset"], look["at"])
+        elif why:
+            gaps[uid] = why
+    return looks, gaps
+
+
 def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
     ids, out = sorted(set(ids)), {}
     for i in range(0, len(ids), 500):
@@ -768,6 +890,12 @@ def _rows_by_id(conn: sqlite3.Connection, ids) -> dict[int, dict]:
 # a kept answer is good when the result rules, applied to it as a finished row, give one of these (2026-11-15 update.md
 # §5 item 2: outcome.PAGE_CAME_BACK less thin): what should be a page came back a page, what should be a file a file
 GOOD_RESULTS = ("ok", "unchecked", "js", "click", "unresolved")
+# an answer a row held before that may stand in for this time's, and an answer this time that needs no standing in for:
+# the good ones, and a page strict decoding refused (decode), which the export reads with the encoding it names and
+# writes as any page (redecode, item ⑧). While such a page waits to be fetched again its file stays (11-19:
+# gender.nknu.edu.tw/new/indexnew-4.htm lost its file the night its server did not answer); fetched again, it is this
+# time's answer, never its earlier one
+KEPT_RESULTS = (*GOOD_RESULTS, "decode")
 # a row whose result this time is a rule's decision (out of scope, round two's, held by a cap) is never filled with an
 # earlier answer: nothing went wrong with this fetch (update.md §5)
 NO_FALLBACK = frozenset({"rule", "later", "held"})
@@ -803,7 +931,7 @@ def _kept_good(conn: sqlite3.Connection, ids) -> dict[int, list[dict]]:
             FROM c LEFT JOIN page_type pt ON pt.key = c.page_type {outcome.js_page_join('jp', 'c')}"""
         for r in conn.execute(sql, (*part, *part)):
             r = dict(r)
-            if r["result"] in GOOD_RESULTS and r["status"] == 200 and (r["bytes"] or 0) > 0:
+            if r["result"] in KEPT_RESULTS and r["status"] == 200 and (r["bytes"] or 0) > 0:
                 out[r["id"]].append(r)
     for rid, got in out.items():
         got.sort(key=lambda r: (r["fetched_at"] or "", r["kept_at"] is None, r["kept_at"] or 0), reverse=True)
@@ -925,12 +1053,14 @@ def read_snapshot(conn: sqlite3.Connection, site: str, now: float) -> Snap:
         kept = _kept_good(conn, rows)
         list_row_rows = _list_row_rows(conn, site, foreign_lists)
         deleted = _deleted(conn, rows, kept)
+        no_area_since = _no_area_since(conn, rows, kept) if kept else {}
+        looks, look_gaps = _looks_of(conn, page_ids)
     finally:
         conn.execute("COMMIT")
     return Snap(dict(plan) if plan is not None else None, rows, page_ids, pc, pres, raw_res, actions, walks, drive,
                 drive_of_content, landing, orphans, status, status_error, videos, other_site_items, press_to,
                 site_ready, ready_error, foreign_items, foreign_lists, foreign_presses, kept, list_row_rows,
-                deleted)
+                deleted, no_area_since, looks, look_gaps)
 
 
 def _foreign(conn: sqlite3.Connection, site: str) -> tuple[list[dict], dict[int, dict], dict[int, dict]]:
@@ -979,6 +1109,8 @@ def _codes(r: dict) -> str:
 def _why(result: str, reason: str | None, status: int | None = None) -> str:
     """原因: what the result came from, in words (the dashboard's words for failures, the rule's or the batch's)."""
     reason = reason or ""
+    if result == outcome.OFFSITE_LANDED:  # a school page sent off campus, where nothing is fetched (11-17)
+        return "整页跳到校外页（用户 11-17 决定不抓）"
     if result == "rule":
         key = reason.removeprefix("out:")
         return RULE_WHY.get(reason) or RULE_WHY.get(key) or RULE_WHY.get(key.split(":", 1)[0]) or reason
@@ -1290,6 +1422,7 @@ class Builder:
             if kind == "detail" and profiles.menu_choice(a.get("argument")) is not None:
                 # a menu's form sent with one choice (profiles.Menu: the course tables, gap ⑩ of 11-08)
                 it.how = f"网页 {lst['url']} 的选单选「{a['row_text'] or ''}」后按送出（回传）"
+                it.choice = a["row_text"] or ""
             if kind == "detail":
                 it.title = a["row_text"] or ""
             elif kind == "pager":
@@ -1470,12 +1603,39 @@ def _first_text(tree: LexborHTMLParser, css: str) -> str:
     return ""
 
 
+def _rule_title(tree: LexborHTMLParser, rule: profiles.PageTitle) -> str:
+    """The words of a title rule's cell, and after them the rule's tail (11-19: an outline's class and term); "" when
+    the title cell holds no words, or a cell of the tail holds none (the page's next rule is read)."""
+    got = _first_text(tree, rule.title)
+    if not got or not rule.tail:
+        return got
+    cells = [_first_text(tree, css) for css in rule.tail]
+    return got + rule.tail_words.format(*cells) if all(cells) else ""
+
+
 def _profile(url: str, site: str) -> profiles.Profile | None:
     """The platform of a page: by its own address first (profiles.profile_for), then by the site it is exported for.
     A page's address says which template it is: 图资处's pages are SSO WebIdx pages (lis's own profile is its old
     Joomla site's), the /site/ keys' pages answer as WebIdx pages too (gap ② of 11-08), and a redirect may land on
     another platform (c.nknu/uk's newsdetail on the SSO 公告中心)."""
     return profiles.profile_for(url) or profiles.profile_for_site(site)
+
+
+# a Wix picture's address: its media id first (static.wixstatic.com/media/<id>, a size of it after: /v1/fill/…)
+_WIX_MEDIA = re.compile(r"https?://static\.wixstatic\.com/media/([^/?#]+)")
+# a size Wix blurs on purpose (the placeholder shown while the page loads: …/v1/fill/w_1778,h_1000,…,q_35,blur_30,…)
+_WIX_BLUR = re.compile(r"/v1/[^?#]*[,/]blur_\d")
+
+
+def _site_rules(site: str):
+    """The site's own entry of the list (round1.Site: its skip paths, skip_query), or None when the list cannot be read
+    or names no such site (11-17: what it no longer follows is exported as the rule, Writer._skipped_rows)."""
+    from nknu.archive import round1
+
+    try:
+        return round1.load().site(site)
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 def _detail(url: str, site: str) -> bool:
@@ -1505,7 +1665,7 @@ def page_title(tree: LexborHTMLParser, url: str, site: str, fallback: str = "") 
                 if got:
                     return got
     for rule in profiles.page_title_rules(url):
-        got = _first_text(tree, rule.title)
+        got = _rule_title(tree, rule)
         if got:
             return got
     for css in ("h1", "h2", "title"):
@@ -1970,6 +2130,9 @@ class Writer:
     def run(self) -> None:
         for d in FOLDERS.values():
             (self.out / d).mkdir(parents=True, exist_ok=True)
+        self._skipped_rows()
+        self._wix_sizes()
+        self._rendered_looks()
         rank = {t: i for i, t in enumerate(TYPES)}
         for it in sorted(self.items.values(), key=lambda i: (rank[i.type], i.source is None, i.order)):
             if self._prev_copy(it) or self._old_copy(it):
@@ -2001,10 +2164,13 @@ class Writer:
                         it.level, it.lacks = to.level, to.lacks
                     it.notes.append("跳转：内容就是落地那一页的档（大小、sha256、格式、抓取时间、最后修改时间都是落地那一页的）")
         self._read_whole()
+        self._render_gaps()
+        self._no_data_confirmed_rows()
         self._no_data_rows()
         self._deleted_rows()
         self._moved_rows()
         self._unit_rows()
+        self._gsimg_addresses()
         for it in self.items.values():
             if not it.path and it.bucket == "got":  # never 抓到了 with nothing in the folder
                 it.bucket = "review"
@@ -2014,6 +2180,58 @@ class Writer:
                 if base:
                     it.title = f"{base}（第 {it.step} 页）"
         self._list_kinds()
+
+    def _gsimg_addresses(self) -> None:
+        """A Google Sites runtime picture changes its address with every reading of its page, and a page read again
+        keeps the row of the picture it already got (links.GSIMG: one part where the picture sits, no new request). The
+        page's file then names the picture by an address the manifest has no row for, and the row that holds its file
+        stands under an address no page shows: a reader that pairs a page's <img> with the manifest's row by address
+        (the content stage) loses the picture (11-19: 33 pages of four sites after the first revisit lap, their
+        posters' words gone from them). So such a picture's row is written under the address its page's file shows
+        now (Item.shown), the row, file and fetch time its own, the address it was fetched by in 备注. The page's file
+        is read as it was written (its last good copy when this time's answer was none), its pictures keyed as the
+        crawler keys them (links.google_sites_keys); a part the file no longer shows, a picture with no file and one
+        whose page shows the address it was fetched by are left as they are.
+
+        One picture may be the part of several pages (a banner the pages of a site share: one row), each page's file
+        showing it under an address of its own. The row stands under the address it was fetched by while a page still
+        shows that one, else under the first page's; every other address a page shows gets a row of its own that shares
+        the picture's file (Item.shared, as a redirect's row shares its landing's), naming the pages that show it."""
+        how = links.GSIMG.rstrip(":")
+        parts: dict[int, list[tuple[str, int]]] = defaultdict(list)
+        for r in self.s.raw_res:
+            if r["how"] == how and r["res_id"] is not None:
+                parts[r["page_id"]].append((r["res_key"], r["res_id"]))
+        shown: dict[int, dict[str, list[int]]] = defaultdict(dict)  # picture row -> address a page shows -> those pages
+        for page_id, got in parts.items():
+            page = self.items.get(f"u{page_id}")
+            if page is None or page.type != PAGE or not page.path:
+                continue
+            try:
+                html = (self.out / page.path).read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeDecodeError):
+                continue
+            read = links.extract(html, page.url, profiles.content_css(page.url))
+            now = {key: src for src, key in links.google_sites_keys(read, page_id).items()}
+            for key, res_id in got:
+                address = scope.canonical(now[key], read.base or page.url) if key in now else None
+                if address:
+                    shown[res_id].setdefault(address, []).append(page_id)
+        for res_id, by in shown.items():
+            it = self.items.get(f"u{res_id}")
+            if it is None or not it.path:
+                continue
+            others = [address for address in by if address != it.url]
+            if it.url not in by and others:
+                it.shown = others.pop(0)
+                it.notes.append("协作平台每读一次网页就给图换网址：这一行的网址是网页档里现在写的，档案是当初用另一个网址抓的"
+                                f"（{it.url}）")
+            note = ("协作平台每读一次网页就给图换网址，这张图有几页都在用：这一行是其中一页的网页档里现在写的网址，"
+                    f"档案和 {it.shown or it.url} 那一行是同一个档（当初用 {it.url} 抓的）")
+            for n, address in enumerate(others, 1):
+                twin = replace(it, key=f"{it.key}@{n}", shown=address, shared=True, pages=list(by[address]),
+                               texts=list(it.texts), order=(*it.order, n), notes=[note])
+                self.items[twin.key] = twin
 
     def _list_kinds(self) -> None:
         """页别 of each page row (blueprint item 22, part 3: the owner 11-09 「照这个做」 to the content session's
@@ -2085,6 +2303,151 @@ class Writer:
             it.lacks = "、".join(x for x in (it.lacks, rule.words) if x)
         if NO_DATA_NOTE not in it.notes:
             it.notes.append(NO_DATA_NOTE)
+
+    def _wix_sizes(self) -> None:
+        """A picture Wix lists under several addresses (static.wixstatic.com/media/<id>, and its sizes …/<id>/v1/…) is
+        written once, at its largest (by the archived answer's bytes); its other addresses are listed as the rule, no
+        file (11-17, the content session's ask: one picture, one OCR, one document). A size Wix blurs (_WIX_BLUR) is
+        never the one kept beside a clear one, whatever its bytes: the blurred placeholder of a poster is larger than
+        the clear size its page shows, and OCR reads nothing in it (11-18: 232 picture documents of gender.nknu.edu.tw
+        the content session's swap guard saw leave). Before any file is written."""
+        groups: dict[str, list[Item]] = defaultdict(list)
+        for it in self.items.values():
+            if it.type == IMAGE and it.source is not None and (m := _WIX_MEDIA.match(it.url)):
+                groups[m.group(1)].append(it)
+        for same in groups.values():
+            if len(same) < 2:
+                continue
+            clear = [i for i in same if not _WIX_BLUR.search(i.url)]
+            keep = max(clear or same, key=lambda i: (i.size or 0, -len(i.url)))
+            for it in same:
+                if it is keep:
+                    continue
+                it.result, it.why, it.source, it.codes = "rule", RULE_WHY["wix_size"], None, "wix_size"
+                it.bucket = monitor.bucket("rule")
+                it.notes.append(f"同一张图最大的那个在：{keep.url}")
+
+    def _rendered_looks(self) -> None:
+        """A page the browser opened (jsfetch's js_render: the JS sites, 11-17) is written with the look
+        jsfetch.for_export gives (Snap.looks: rendered, its 抓取时间 that look's, 来源 ORIGIN_RENDERED); one no look of
+        which was ever complete keeps the school's answer and says why (Snap.look_gaps; render_gap, 缺什么:
+        _render_gaps). Every other page as before. Before any file is written."""
+        if not self.s.looks and not self.s.look_gaps:
+            return
+        for it in self.items.values():
+            if it.type != PAGE or it.key[:1] != "u" or not it.key[1:].isdigit() or it.source is None:
+                continue
+            uid = int(it.key[1:])
+            if uid in self.s.looks:
+                warc, offset, at = self.s.looks[uid]
+                it.rendered = (warc, offset)
+                it.fetched_at = _taipei(at) or it.fetched_at
+            elif uid in self.s.look_gaps:
+                it.render_gap = self.s.look_gaps[uid]
+
+    def _render_gaps(self) -> None:
+        """A page no browser look of which was ever complete says why in 缺什么 (_rendered_looks), after what else it
+        lacks, as 「内文区是空的（浏览器没开完整：<why>）」: its file is the school's answer, which on these sites may be
+        a script's stand-in (the school home's 「示意資料」), so the content stage leaves it out by the words it knows
+        (内文区是空的, as EMPTY_AREA begins; the content session's ask, relayed by js爬虫 11-17); a later complete look brings it back."""
+        for it in self.items.values():
+            if it.render_gap and it.render_gap not in it.lacks:
+                it.lacks = "、".join(x for x in (it.lacks, f"内文区是空的（浏览器没开完整：{it.render_gap}）") if x)
+
+    def _skipped_rows(self) -> None:
+        """A row of the site the list now says it does not follow (round1.Site.skips: its skip paths, skip_query), got
+        before the rule came, is written as the rule (under the rule's own name when it has one), with no file (11-17, 爬虫judge: GitHub's code pages stay in the
+        archive, 「导出时标成不进库就好」; the gender blog's tag lists): before any file is written."""
+        site = _site_rules(self.site)
+        if site is None or not (site.skip or site.skip_query or site.skip_google):
+            return
+        named: dict[str, tuple[str, str]] = {}  # the rows a rule with a name leaves: item key -> (原因代码, 原因)
+        for it in self.items.values():
+            if it.key[:1] != "u":
+                continue
+            # a rule with a name of its own (round1.Site.skip_names, 11-19) says it in 原因代码, for the row got before
+            # the rule and for the one the ledger already holds as the rule (a new link, the one-time marking)
+            if site.holds(it.url) and site.skips(it.url):
+                name = site.skip_name(it.url)
+            elif not (name := self._pages_rule(site, it)):
+                continue
+            code = "out:skip_path" + (f":{name}" if name else "")
+            why = RULE_WHY.get(f"skip_path:{name}") or RULE_WHY["skip_path"]
+            if name:
+                named[it.key] = (code, why)
+            if it.result == "rule":
+                if name and it.codes == "out:skip_path":
+                    it.codes, it.why = code, why
+                continue
+            it.result, it.why, it.source, it.codes = "rule", why, None, code
+            it.bucket = monitor.bucket("rule")
+            it.notes.append("名单写明这个网站不往下翻这一页；已经抓到的留在存档里，不导出档案")
+        # a row that only leads to a page a named rule leaves (a 3xx: the centre's menu sends a folder to its download
+        # page) shared that page's file: it says the same rule, so that what left with the rule is told by one code
+        for it in self.items.values():
+            got = named.get(f"u{it.landing}") if it.landing is not None and it.key not in named else None
+            if got is not None and it.result != "rule":
+                it.result, it.why, it.source, it.codes = "rule", got[1], None, got[0]
+                it.bucket = monitor.bucket("rule")
+                it.notes.append("这一行只是跳转到名单写明不抓的那一页；不导出档案")
+
+    def _pages_rule(self, site, it: Item) -> str:
+        """The name of the list's rule that leaves this row with the pages that name it: every page known to name it
+        (the row's own trail, found_from: a file, its Drive record, the page; and the pages that use it) is one of a
+        rule with a name: for a Drive file, a page whose Google files the site leaves (round1.Site.skip_google); for
+        any row that is no page, a page a named skip path leaves (skip_names: a download page's files go with it,
+        11-19). '' for a row some other page names too, for a page, or when no page is known: a rule with no name
+        takes no file with it."""
+        drive = it.url.startswith("https://www.googleapis.com/drive/")
+        if it.type == PAGE or not (site.skip_names or (drive and site.skip_google)):
+            return ""
+        pages = set(it.pages)
+        row = self.s.rows.get(int(it.key[1:])) if it.key[1:].isdigit() else None
+        for _hop in range(3):
+            row = self.s.rows.get(row["found_from"]) if row is not None and row.get("found_from") is not None else None
+            if row is None:
+                break
+            if not row["url"].startswith("https://www.googleapis.com/"):
+                pages.add(row["id"])
+                break
+        names = set()
+        for p in pages:
+            url = self.s.rows[p]["url"] if p in self.s.rows else ""
+            name = site.skip_google_name(url) if drive and url else ""
+            if not name and url and site.holds(url) and site.skips(url):
+                name = site.skip_name(url)
+            names.add(name)
+        return names.pop() if len(names) == 1 and "" not in names else ""
+
+    def _no_data_confirmed_rows(self) -> None:
+        """A page row whose own answer this time (its url row's, whatever file it was written with: the last good one,
+        the 10-24 archive's copy) is the school's answer of no data by a NoData rule with confirm (the CV pages'
+        「查無資料」, 11-17) says so in 缺什么: at once when it never held a good answer; else only when its answers
+        lacking their area began watch.GONE_AGAIN_S or more before this one (Snap.no_area_since; 爬虫judge 11-17: 「两次回
+        答、至少隔 24 小时，才算学校真的不要了」, the rule of 学校已删除), its file the last good one meanwhile, as before."""
+        for it in self.items.values():
+            if it.type != PAGE or it.key[:1] != "u" or not it.key[1:].isdigit():
+                continue
+            prof = profiles.profile_for(it.url)
+            if prof is None or not any(n.confirm and re.search(n.paths, profiles._path(it.url)) for n in prof.no_data):
+                continue
+            rid = int(it.key[1:])
+            row = self.s.rows.get(rid)
+            if row is None or row.get("warc") is None or row.get("warc_offset") is None:
+                continue
+            try:
+                _url, _status, headers, body = postback.read_response(self.root, row["warc"], row["warc_offset"])
+                text = decode_body(body, headers.get("content-type") or "")
+            except (OSError, ValueError, DecodeError):
+                continue
+            rule = profiles.school_no_data(it.url, text)
+            if rule is None or not rule.confirm:
+                continue
+            if self.s.kept.get(rid):
+                since, now = self.s.no_area_since.get(rid), _epoch(row.get("fetched_at"))
+                if since is None or now is None or now - since < watch.GONE_AGAIN_S:
+                    continue
+            self._no_data(it, rule)
 
     def _no_data_rows(self) -> None:
         """Every row whose file is a page _page marked as the school's answer of no data says so too, once, after
@@ -2161,6 +2524,21 @@ class Writer:
             return
         if self._link(it):
             return
+        if it.rendered is not None:
+            from nknu.archive import jsfetch
+
+            try:
+                url, html = jsfetch.read_rendered(self.root, *it.rendered)
+            except (OSError, ValueError) as exc:  # the look unreadable: the school's answer, as before
+                it.notes.append(f"浏览器显示版读不回来（{type(exc).__name__}），用原文")
+                it.rendered = None
+            else:
+                body = html.encode("utf-8")
+                it.sha256, it.size, it.origin = hashlib.sha256(body).hexdigest(), len(body), ORIGIN_RENDERED
+                it.notes.append("档案是浏览器打开以后显示出来的样子（网页的内容靠程序才显示出来）")
+                data, name = self._page(it, url or it.url, body, "text/html; charset=utf-8")
+                self._put(it, name, data)
+                return
         try:
             url, _status, headers, body = postback.read_response(self.root, warc, offset)
         except (OSError, ValueError) as exc:
@@ -2252,7 +2630,7 @@ class Writer:
             to = self.s.rows.get(end) if end is not None else None
             if to is not None and to["result"] in GOOD_RESULTS and not outcome.school_home(to["url"]):
                 return False  # a page moved: it shares the page it lands on, as before
-        elif row["result"] in GOOD_RESULTS:
+        elif row["result"] in KEPT_RESULTS:  # a page read with another encoding is this time's answer too (11-19)
             # only a notice detail page is no good for being empty (update.md §5 item 3): a list the school emptied
             # (「共0筆」) is its answer now (T8 on the lab, 11-16). Any other page that now holds next to nothing where
             # it held much (a one-off maintenance page at night, when no thin step runs: the review, F3) is no good too
@@ -2265,7 +2643,7 @@ class Writer:
         if pick is None:
             return False
         words, this_time = it.result_words(), it.fetched_at or "没有回应"
-        if row["result"] in GOOD_RESULTS:
+        if row["result"] in KEPT_RESULTS:
             words = "公告的标题栏、内文栏是空的，或学校回答没有资料"
         it.source = (pick["warc"], pick["warc_offset"], pick["sha256"], pick["ctype"])
         it.final_url = pick["final_url"] if pick["final_url"] and pick["final_url"] != it.url else ""
@@ -2599,7 +2977,12 @@ class Writer:
                 it.notes.append(f"原本的编码读不通，没有一种编码整页读得通：按{how}读，有 {it.lost} 个字读不出来{seen}，"
                                 "用 � 代替（原样在存档里）")
         if it.kind == "detail":
-            it.title = it.title or page_title(tree, url, self.site)
+            # a menu's answer on a kind of page that names its own title cell (profiles.PageTitle; 11-18: the outline
+            # of a course several teachers give, each press's words a teacher's name alone): the cell's words, the
+            # choice after them in brackets. A course table has no such cell: the press's words, as before
+            own = next((got for rule in profiles.page_title_rules(url) if (got := _rule_title(tree, rule))),
+                       "") if it.choice else ""
+            it.title = f"{own}（{it.choice}）" if own else (it.title or page_title(tree, url, self.site))
         elif it.kind != "pager":
             it.title = page_title(tree, url, self.site, it.title)
             if it.key.startswith("u"):
@@ -2616,8 +2999,12 @@ class Writer:
         # page's own address, in its HTML as read, whatever row brought it (a GET, a menu's press, a pager's answer);
         # after the empty-area words, so that its words come last (the review of 11-09)
         no_data = profiles.school_no_data(url, text)
-        if no_data is not None:
+        if no_data is not None and not no_data.confirm:  # a confirm rule's: _no_data_confirmed_rows, by the row's own
             self._no_data(it, no_data)
+        if not it.kind and postback.asks_first(url, text, self.site):
+            # a page that only asks for a choice (11-19, the content stage's ask: 122 outline pages of courses
+            # several teachers give, whose file is the prompt and the menu): what it is about is in its presses' rows
+            it.lacks = "、".join(x for x in (f"{ASKS_FIRST}（这一页只有选单的提示，每个选项按出来的内容各是一行）", it.lacks) if x)
         if it.page_role == "list" or it.kind == "pager":
             self._rows_of(it, url, text)  # a list's rows each state their notice's date
         else:
@@ -2696,6 +3083,9 @@ def snapshot_digest(snap: Snap) -> str:
              "kept": {i: [(k["warc"], k["warc_offset"]) for k in v] for i, v in snap.kept.items()},
              "list_row_rows": [(lid, dataclasses.astuple(r)) for lid, r in snap.list_row_rows],
              "deleted": snap.deleted}
+    if snap.looks or snap.look_gaps:  # the JS sites only: every other site's 存档内容 is as before (11-17)
+        parts["looks"] = {i: list(v) for i, v in snap.looks.items()}
+        parts["look_gaps"] = snap.look_gaps
     h = hashlib.sha256()
     for name in sorted(parts):
         h.update(f"{name}\0{json.dumps(_canon(parts[name]), sort_keys=True, ensure_ascii=False)}\0".encode())
@@ -3101,7 +3491,7 @@ def _readme(root: Path, site: str, name: str, now: float, snap: Snap, state_word
         out += ["", f"**有档但还要处理的 {len(to_do)} 个**（本地档案有，分类在「分类」栏）：", ""]
         out += _by_bucket(to_do, then=False)
     bad = [it for it in ordered if it.type == PAGE and it.path and it.level
-           and it.level not in ("complete", "complete_school")]
+           and it.level not in ("complete", "complete_school", "rule")]
     if bad:
         # not 抓到了但不完整: a page with a file may be 要人看 too (the 教务处 export's 27 empty notices, review 10-31)
         unsettled = sum(1 for it in bad if it.bucket not in SETTLED)

@@ -2,8 +2,8 @@
 (10-27, 「可以，听你的」): round 1 reads it itself, once per site, with the request the page's own script sends
 (getTimeLine() → json() in ajaxAnalysis.js: a jQuery POST of JSON.stringify({cFunction: "getTimelineJson", pLv2:
 cLv2})), on the crawler's own queue; an empty timeline is ok (「时间轴是空的」), its events' links are taken in as the
-site's home page's, and the browser check (jscheck, reconcile's R6) no longer judges a cLv2 page js for it: a POST
-the platform file reads is no data_post, nor is another server's.
+site's home page's, and the browser check (jscheck) no longer judges a cLv2 page js for it: a POST the platform
+file reads is no data_post, nor is another server's.
 
 The page is the 10-26 pilot's (archive-pilot/, read only: sso.nknu.edu.tw/site/100061, index.aspx?clv2=100061) cut
 down to its script, the cLv2 value, its menu and the timeline box (tests/fixtures/archive_postback/
@@ -19,7 +19,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from nknu.archive import jscheck, profiles, reconcile
+from nknu.archive import jscheck, profiles
 from nknu.archive.crawler import Crawler
 from nknu.crawl.warc import WarcSink
 from tests.archive.plans import OpenPlan
@@ -297,54 +297,3 @@ def test_the_browser_check_never_makes_a_clv2_page_js_for_the_timeline_it_reads(
     # the same path on a page of another platform is no read of cLv2's
     assert not profiles.known_data_api("https://sso.nknu.edu.tw/services/web/default.aspx?webidx=595", API)
     assert profiles.known_data_api(HOME, API.lower())
-
-
-def test_r6_keeps_a_clv2_page_ok_for_its_timeline_and_never_overrides_an_imported_or_a_persons_verdict(tmp_path):
-    from nknu.archive.frontier import Frontier
-
-    f = Frontier(tmp_path / "frontier.db")
-    for i, source in enumerate(("import", "manual", "jscheck")):
-        key = f"t{i}"
-        f.x("INSERT INTO page_type(key, site, verdict, source) VALUES (?, ?, 'ok', ?)", (key, SITE, source))
-        f.add(f"{HOME}&page={i}", host="sso.nknu.edu.tw", site=SITE, unit=None, tier=1, kind="page", depth=0,
-              found_via="seed", found_from=None, owner_site=SITE)
-        f.x("UPDATE url SET page_type=? WHERE url=?", (key, f"{HOME}&page={i}"))
-    other = "https://sso.nknu.edu.tw/Unit/Info/ajaxServices/ajaxOther.aspx"
-    for i in range(3):
-        reconcile._type_data_post(f, f.row(f"{HOME}&page={i}"), (other,))
-    got = {r["key"]: (r["verdict"], r["source"]) for r in f.q("SELECT key, verdict, source FROM page_type")}
-    assert got == {"t0": ("ok", "import"), "t1": ("ok", "manual"), "t2": ("js", "spotcheck")}
-    assert reconcile._data_posts(f.row(f"{HOME}&page=2"), (API, other)) == (other,)  # the timeline is read: no post
-    f.close()
-
-
-def test_r6_never_judges_a_page_js_for_a_data_address_its_platform_file_reads(tmp_path, monkeypatch):
-    """R6 sees what the browser asked by a POST (SpotView.data_posts); one the platform file reads this round (here
-    the test site's own timeline address, taken for one as cLv2's is) is no data_post: the type stays what it was."""
-    from nknu.archive.reconcile import PASS, Sources, SpotView
-    from tests.archive.test_reconcile import PLAN, W, _clean_site, _ok_types, _same_spot
-    from tests.archive.test_reconcile import SITE as W_SITE
-
-    c, net = _clean_site(tmp_path)
-    fr = c.frontier
-    _ok_types(fr)
-    same = _same_spot(tmp_path)
-    timeline = f"{W}/Unit/Info/ajaxServices/ajaxTimeline.aspx"
-    about = fr.row(f"{W}/about.html")
-    fr.x("UPDATE page_type SET source='jscheck' WHERE key=?", (about["page_type"],))
-    monkeypatch.setattr(profiles, "known_data_api", lambda page_url, request_url: request_url == timeline)
-
-    def spot(url):
-        view = same(url)
-        return SpotView(view.url, view.final_url, view.html, view.screenshot, data_posts=(timeline,)) \
-            if url == about["url"] else view
-
-    res = reconcile.reconcile_sites(fr, tmp_path, [W_SITE], batch="clv2", plan=PLAN, sources=Sources(cc_dir=None),
-                                    spot=spot).sites[0]
-    r6 = res.checks["R6"]
-    assert r6.status == PASS and "data_post" not in r6.counts
-    pt = fr.q("SELECT verdict, source FROM page_type WHERE key=?", (about["page_type"],))[0]
-    assert (pt["verdict"], pt["source"]) == ("ok", "jscheck")
-    assert fr.q("SELECT count(*) FROM event WHERE code='verdict_set'")[0][0] == 0
-    net.sink.close()
-    fr.close()

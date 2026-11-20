@@ -36,12 +36,14 @@ from __future__ import annotations
 import base64
 import binascii
 import email.utils
+import functools
 import json
 import os
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
@@ -131,7 +133,12 @@ TOO_LARGE_REASONS = frozenset({"exportSizeLimitExceeded"})
 # pictures only is no album by that alone, nor one whose name says only 活動: the school puts scanned notices (公文)
 # and posters there, a notice's attachments, which are downloaded (record 三·7). The words besides the design's (the
 # simplified 相册、the traditional 相冊、gallery) are 【Claude 的执行办法】.
-_ALBUM_NAME = re.compile(r"(?i)相簿|相冊|相册|照片|相片|花絮|album|photo|gallery")
+_ALBUM_NAME = re.compile(r"(?i)相簿|相冊|相册|照片|相片|花絮|活動照|活动照|合照|album|photo|gallery")
+# 11-17 (design 2026-11-17-round2-batch2 §三.6; the 11-14 handover's old debt c-3): 活動照 and 合照 too (生科系's
+# 02_活動照, 00_大合照); a folder the list of album folders names (ALBUM_FOLDERS_FILE) or one under it, one under a folder
+# with an album's name, and one an album page links (ALBUM_LINKED_KEY) are albums as well (album_folder)
+ALBUM_FOLDERS_FILE = "album_folders.json"
+ALBUM_LINKED_KEY = "drive:album_linked"  # meta: the Drive folders an album page links (a JSON list of ids)
 _ID = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 _DOC_TYPES = frozenset({"document", "spreadsheets", "presentation", "drawings"})
 _FORM_TAILS = ("viewform", "closedform")
@@ -157,6 +164,58 @@ INSTALLER_WHY = "media:drive_installer"
 def album_name(name: str | None) -> bool:
     """Whether a Drive folder's name says it is an album (design §7.6): its pictures are listed, not downloaded."""
     return bool(_ALBUM_NAME.search(name or ""))
+
+
+@functools.lru_cache(maxsize=4)
+def _album_list(path: str, mtime: float) -> frozenset[str]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    folders = data.get("folders") if isinstance(data, dict) else None
+    return frozenset(e["id"] for e in folders or () if isinstance(e, dict) and isinstance(e.get("id"), str))
+
+
+def album_folder_ids() -> frozenset[str]:
+    """The folders the list of album folders names (config/album_folders.json; empty when there is none)."""
+    from nknu.settings import load_settings
+
+    path = load_settings().config_dir / ALBUM_FOLDERS_FILE
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return frozenset()
+    return _album_list(str(path), mtime)
+
+
+def _album_linked(frontier) -> set[str]:
+    raw = frontier.meta(ALBUM_LINKED_KEY)
+    try:
+        got = json.loads(raw) if raw else []
+    except ValueError:
+        return set()
+    return {x for x in got if isinstance(x, str)} if isinstance(got, list) else set()
+
+
+def album_folder(frontier, folder_id: str) -> bool:
+    """Whether a Drive folder is an album by what is above it or said of it (design 2026-11-17-round2-batch2 §三.6):
+    the list of album folders names it or a folder above it, a folder above it has an album's name, or an album page
+    links it or a folder above it. Its own name is album_name's. Up its parents as far as the ledger knows them, at most
+    MAX_DRIVE_DEPTH levels."""
+    listed = album_folder_ids() | _album_linked(frontier)
+    cur: str | None = folder_id
+    for level in range(MAX_DRIVE_DEPTH + 1):
+        if cur is None:
+            return False
+        if cur in listed:
+            return True
+        it = _item(frontier, cur)
+        if it is None:
+            return False
+        if level and album_name(it["name"]):
+            return True
+        cur = it["parent_id"]
+    return False
 
 
 # ---------------------------------------------------------------- what an address is
@@ -613,6 +672,11 @@ def block_words(streak: int, first: float | None, now: float) -> str:
     return f"Google 连续挡下载 {streak} 次、已经 {days:.1f} 天：要人看"
 
 
+def sorry_page(body: bytes | str | None, headers: Mapping[str, str]) -> bool:
+    """_sorry_page for the crawler's google queue (11-17): the same page on a web page's answer."""
+    return _sorry_page(body, headers)
+
+
 def _sorry_page(body: bytes | str | None, headers: Mapping[str, str]) -> bool:
     """Google's "We're sorry... automated queries" page: a web page (text/html) saying so, in place of the API's JSON."""
     ctype = (headers.get("content-type") or "").lower()
@@ -893,7 +957,7 @@ def _wake(frontier, url_id: int) -> None:
 
 
 def attach(frontier, use: Use, res_id: int | None, *, zone: str | None = None,
-           text: str | None = None) -> list[dict[str, Any]]:
+           text: str | None = None, album_page: bool = False) -> list[dict[str, Any]]:
     """The page_res entries the page gets for one Use, once its url row is made or found (res_id; None when it makes
     none). A Drive item's drive_item row is noted (its resource key, depth 0), and a folder already read brings all
     it holds (expand); a calendar read already, all its pages. The crawler writes them with the page's others, then
@@ -905,6 +969,10 @@ def attach(frontier, use: Use, res_id: int | None, *, zone: str | None = None,
     if use.file_id is not None:
         with frontier.lock:
             note_item(frontier, res_id, use.file_id, resource_key=use.resource_key, depth=0)
+            if album_page:  # an album page links it (links.album_page): a folder of it is an album (album_folder)
+                linked = _album_linked(frontier)
+                if use.file_id not in linked:
+                    frontier.meta(ALBUM_LINKED_KEY, json.dumps(sorted(linked | {use.file_id})))
             if use.need != "round2":
                 _wake(frontier, res_id)
                 return expand(frontier, use.file_id, key=use.key, zone=zone, text=text)
@@ -1136,7 +1204,7 @@ def _read_list(frontier, row, data, add: Add) -> Reading:
     token = data.get("nextPageToken") if isinstance(data.get("nextPageToken"), str) else None
     name = (folder["name"] or "") if folder is not None else ""
     # an album (design §7.6, 10-26): its name says so, and nothing else makes one (a folder of pictures only is not)
-    album = album_name(name)
+    album = album_name(name) or album_folder(frontier, folder_id)
     children: list[tuple[str, str | None]] = []
     next_page: int | None = None
     for f in files:

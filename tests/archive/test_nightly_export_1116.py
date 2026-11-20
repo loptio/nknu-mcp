@@ -67,7 +67,7 @@ def test_a_site_whose_export_failed_says_so(root):
 
 # ---------------------------------------------------------------- the nightly script
 
-needs_script = pytest.mark.skipif(not SCRIPT.is_file(), reason="the lab's scripts live in research/ (not in git)")
+needs_script = pytest.mark.skipif(not SCRIPT.is_file(), reason="deploy/lab-crawler/lab/ is not in this checkout")
 
 
 def _fakes(tmp_path: Path, sites: str) -> tuple[Path, Path]:
@@ -96,7 +96,7 @@ def _run(tmp_path: Path, sites: str):
     py, ex = _fakes(tmp_path, sites)
     (tmp_path / "archive" / "warc").mkdir(parents=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "b"),
-           "LOCKS": str(tmp_path / "locks"), "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "s"),
+           "LOCKS": str(tmp_path / "locks"), "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "s"), "JS_SITES_FILE": str(tmp_path / "no-js-sites.txt"),
            "EXPORT_SCRIPT": str(ex), "EXPORT_BASE": str(tmp_path / "sites")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     calls = (tmp_path / "calls.log").read_text().splitlines()
@@ -107,7 +107,7 @@ def _run(tmp_path: Path, sites: str):
 def test_the_night_exports_the_changed_sites_after_its_review_then_writes_seen(tmp_path):
     got, steps, calls = _run(tmp_path, "a.nknu.edu.tw\\n")
     assert got.returncode == 0, (tmp_path / "archive" / "update.log").read_text(encoding="utf-8")
-    assert steps == ["backup", "put-back", "sites", "run", "review", "export-list", "export", "seen"]
+    assert steps == ["backup", "put-back", "night", "sites", "run", "review", "export-list", "export", "seen"]
     assert "NIGHTLY=1" in next(c for c in calls if c.startswith("export "))
     seen = next(c for c in calls if c.startswith("seen "))
     assert str(tmp_path / "sites" / "seen.tsv") in seen
@@ -116,7 +116,7 @@ def test_the_night_exports_the_changed_sites_after_its_review_then_writes_seen(t
 @needs_script
 def test_a_night_with_nothing_to_export_still_writes_seen(tmp_path):
     got, steps, _calls = _run(tmp_path, "")
-    assert got.returncode == 0 and steps == ["backup", "put-back", "sites", "run", "review", "export-list", "seen"]
+    assert got.returncode == 0 and steps == ["backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"]
 
 
 # ---------------------------------------------------------------- the export service at night

@@ -14,7 +14,8 @@ C1   (B's sibling C) `nknu archive retry data` puts a data address's read that c
      the school's error), for a new request; the timeline's other link fields (media.link, media.thumbnail, the HTML
      of media.caption and media.credit) are read too.
 D3   a Google 5xx is Google's server's error in the dashboard's words, never 学校服务器出错.
-verify's check 6 says what a download's not_file is in words when its reason is empty (a web page), never None.
+A download answered with a web page named as one is not_file by its first bytes, its reason empty (verify's check 6,
+which said so in words, went with the judgment-layer cut of 11-19: what is kept is the ledger's row it read).
 
 All offline: fake networks, fake clocks; titles are the school's own or made up, no person's name."""
 
@@ -378,16 +379,17 @@ def test_a_failed_google_row_with_a_5xx_reason_reads_as_googles_in_the_problem_l
     f.close()
 
 
-# ---------------------------------------------------------------- verify check 6: no None in its words
+# ---------------------------------------------------------------- a download answered with a named web page
 
 
-def test_check_six_says_a_downloads_web_page_in_words_when_its_reason_is_empty(tmp_path):
+def test_a_download_answered_with_a_named_web_page_is_not_file_by_its_first_bytes_with_no_reason(tmp_path):
     crawler, net, _clock = clv2(tmp_path, snap(EXPORT, body=PDF), press=lambda t: snap(
         t.url, html="<html><body><p>請稍候</p></body></html>",
         headers={"content-disposition": "attachment; filename=wait.htm"}))
     work(crawler, net, SSO_Q)
     rows = downloads(crawler.frontier)
     assert rows and all((r["reason"], r["result"]) == (None, "not_file") for r in rows)
-    six = next(c for c in monitor.checks(crawler.frontier) if c.no == "6")
-    lines = [x for x in six.lines if BTN0 in x]
-    assert lines and "None" not in lines[0] and "回来是网页" in lines[0]
+    # no reason written: the result view says not_file by the answer's first bytes (a web page)
+    read = crawler.frontier.q("SELECT target, reason, sniff, result FROM action_result WHERE kind='download'")
+    assert BTN0 in {r["target"] for r in read}
+    assert {(r["reason"], r["sniff"], r["result"]) for r in read} == {(None, "html", "not_file")}

@@ -43,9 +43,61 @@ OUT = REPO / "config" / "archive_round1.json"
 IMPORTANT = ("全校重要", "本系重要")
 JS_SITES = ("w3.nknu.edu.tw", "ord.nknu.edu.tw", "ite.nknu.edu.tw", "gauss.nknu.edu.tw", "see.nknu.edu.tw")
 RESOURCE = "sso.nknu.edu.tw/webservices"
-PATHS = {"ksped.nknu.edu.tw": ["/resource/"],
-         "sso.nknu.edu.tw/dataopen2search": ["/dataopen2search/lostandfound.aspx",
-                                             "/dataopen2search/opencoursetablepure.aspx"]}
+# round two, batch two (design 2026-11-17-round2-batch2 §三.1): ksped is round one whole (its path /resource/ is gone),
+# the teachers' CV pages join dataopen2search's round-one part
+PATHS = {"sso.nknu.edu.tw/dataopen2search": ["/dataopen2search/lostandfound.aspx",
+                                             "/dataopen2search/opencoursetablepure.aspx",
+                                             "/dataopen2search/vita.aspx"]}
+# the batch that crawls the off-campus unit sites now, but the ones the site map calls 基本没用 (the owner 11-16: 「35 站里
+# 的 5 个旧站也排除」), with each one's own caps 【Claude: design §四, ten times the 14 rows a unit has on average】
+NOW_BATCH = "2026-11-17"
+NOW_CAPS = {"page": 300, "file": 300, "image": 600}
+# caps widened by the design's §四 way (a new cap here, the list made again, the site promoted again): 11-17 the gender
+# institute's old Wix blog filled its 300 pages with about 84 tag lists and held 52 posts (an admission notice among
+# them) found nowhere else, and holds about 980 pictures; 爬虫judge under the owner's delegation: 「同意照二做：网页 450、
+# 图片 1,200、附件不变」
+# 11-17 again (爬虫judge, choice B, after its own sitemap was counted: 567 posts, 24 pages, 17 categories; 「网页上限 900、
+# 图片 2,600」): the posts seeded from the sitemap, the tag lists not followed (SKIP_PATHS)
+WIDER_CAPS = {"nknugender.wixsite.com/nknugender": {"page": 900, "file": 300, "image": 2600}}
+SKIP_PATHS = {"nknugender.wixsite.com/nknugender": ["/nknugender/blog/hashtags"],
+              # 11-17 (爬虫judge: 「只抓社团首页和各仓库首页（README）」): every page below a repository's home, and every
+              # address with a query (the org page's tabs, the code search)
+              "github.com": ["/gdg-on-campus-nknu/*/*"],
+              # 11-18 (course schedules design §五): the course query's table of a teacher and of a room are the same
+              # courses as the classes' tables, which are fetched one a class (schedules.seed): never followed. Only
+              # with a query (the trailing ?): the two query pages themselves are in the archive since round one
+              "sso.nknu.edu.tw/stu": ["/stu/scheduleteacher.aspx?", "/stu/scheduleroom.aspx?"],
+              # 11-19: SSO's previewpdf.aspx serves two folders by one parameter, the regulations (\\Regulations\\,
+              # followed) and the papers and books the teachers' vita pages link (\\NknuTeacher\\: about 1,450
+              # full texts of research, whose titles the vita pages already give): the works are not fetched
+              "sso.nknu.edu.tw": ["/previewpdf.aspx?cpathandfilename=%5cnknuteacher%5c"],
+              # 11-19: 国中小自造及科技辅导中心's download pages (teaching material for school teachers, some two
+              # hundred files of 6–15 MB behind pagers the first revisit lap reached): not fetched; its menu
+              # (List.aspx, which sends a folder to its page), its notices and its other pages stay
+              "cirn.k12ea.gov.tw": ["/web1240/dl_page.aspx"]}
+# 11-19: a skip path with a name of its own (round1.Site.skip_names): the export writes its rows out:skip_path:<name>,
+# the one code the content stage lets documents already in its library leave by
+SKIP_NAMES = {"sso.nknu.edu.tw": {"/previewpdf.aspx?cpathandfilename=%5cnknuteacher%5c": "teacher_fulltext"},
+              "cirn.k12ea.gov.tw": {"/web1240/dl_page.aspx": "teaching_materials"}}
+# 11-19: pages whose Google files a site does not fetch, with the rule's name (round1.Site.skip_google). 工教系's
+# 學術活動 pages each carry a seminar's proceedings on Drive, a whole volume of papers (17–51 MB, eleven years and a
+# journal issue): not collected, as the teachers' works are not; the pages themselves and their own files stay
+SKIP_GOOGLE = {"ite.nknu.edu.tw": {"/?p=acadact": "proceedings"}}
+SKIP_QUERY = {"github.com"}
+# 11-18 evening (course schedules design §八): links a site does not follow by the page they stand on. A course
+# outline's page links the same department's outlines of the year before (「114-1該系所日/夜相關課綱」), whose pages
+# link the year before that: never followed, whatever the term (the outlines a class's table names are)
+SKIP_FROM = {"sso.nknu.edu.tw/stu": [["/stu/18weekssyllabusforenro.aspx", "/stu/syllabusforenro.aspx"]]}
+# round two's first batch, the five JavaScript sites (js爬虫's handoff 11-17, the owner 「现在交接」; plan
+# 2026-11-17-jsfetch-integration task 2): crawled now, with a round-one site's caps (they are school sites of their own)
+# 11-19: a site whose rows of a kind past its own cap are not fetched (round1.Site.cap_out). 产业教育中心's Google Sites
+# pages carry about 2,700 pictures past its cap of 600, activity photographs
+CAP_OUT = {"sites.google.com/iec-nknu.page/iec": ["image"]}
+# 11-19: the off-campus unit sites of the batch are read again one layer deep (their home and the pages it links),
+# weekly; 性别所's old Wix site, which moved to a new one, monthly (round1.Site.revisit, update.REVISIT_WEEKDAY)
+MONTHLY = {"nknugender.wixsite.com/nknugender"}
+JS_NOW = {"w3.nknu.edu.tw", "ord.nknu.edu.tw", "ite.nknu.edu.tw", "gauss.nknu.edu.tw", "see.nknu.edu.tw"}
+LOW_IMP = "基本没用"
 HOMES = {"sso.nknu.edu.tw/dataopen2search": "https://sso.nknu.edu.tw/dataopen2search/lostandfound.aspx"}
 EXTRA = [
     ("https://sso.nknu.edu.tw/recruit/index.aspx", "招生报名首页", "三·5"),
@@ -62,7 +114,10 @@ ABOUT = ("第一轮爬虫唯一的网站名单（第一轮设计 §4.1、§4.2�
          "research/project_audit_2026-10-25/site_map_rows.json 和 rule_lists_full.json 的 A1，加上抓取范围决定的附表一和"
          "记录四产生；要改名单，先改脚本再重新产生。round：1 第一轮，resource 当附属资源，2 第二轮（why 写原因："
          "js_site 整站靠 JavaScript、other_site 其他网站、offsite_unit 校外的本校单位网站）。paths：只算这些路径（整段比）；"
-         "params：参数值相同才算；leaf 1：只抓那一页；seeds：第二轮的起点；round2_pages：第二轮只抓那一页的校外网页。")
+         "params：参数值相同才算；leaf 1：只抓那一页；seeds：第二轮的起点；round2_pages：第二轮只抓那一页的校外网页；"
+         "now：第二轮这次就抓的批次（当成第一轮的网站抓），caps：这一站自己的上限（网页、附件、图片）。"
+         "cap_out：这一站超过自己上限就按规则不抓的种类。revisit：抓完以后每周（weekly）或每月（monthly）再看一次首页和首页"
+         "链到的页。")
 # 附表一 (record 三·2): the 8 the site map already has, by their key
 UNITS_IN_SITE_MAP = ("sites.google.com/iec-nknu.page/iec", "sites.google.com/view/taiwanology",
                      "pairnknu.wixstudio.io/pair-center", "www.nknu-vd.com", "sites.google.com/view/nknu-edu-teach1",
@@ -126,6 +181,26 @@ def build(rows_path: Path = ROWS, rules_path: Path = RULES) -> dict:
                 raise ValueError(f"{s['site']}: 附表一 lists it, the site map does not have it as another site")
             s["why"] = "offsite_unit"
     sites += [_unit(name, seeds, paths, leaf) for name, seeds, paths, leaf in UNITS]
+    for s in sites:
+        if s.get("why") == "offsite_unit" and s.get("imp") != LOW_IMP:
+            s.update(now=NOW_BATCH, caps=dict(WIDER_CAPS.get(s["site"], NOW_CAPS)),
+                     revisit="monthly" if s["site"] in MONTHLY else "weekly")
+            if s["site"] in CAP_OUT:
+                s["cap_out"] = list(CAP_OUT[s["site"]])
+            if s["site"] in SKIP_PATHS:
+                s["skip"] = list(SKIP_PATHS[s["site"]])
+            if s["site"] in SKIP_QUERY:
+                s["skip_query"] = True
+        if s.get("why") == "js_site" and s["site"] in JS_NOW:
+            s.update(now=NOW_BATCH)
+        if s.get("round") == 1 and s["site"] in SKIP_PATHS:  # a round-one site's own skip paths (11-18)
+            s["skip"] = list(SKIP_PATHS[s["site"]])
+        if s["site"] in SKIP_NAMES:
+            s["skip_names"] = dict(SKIP_NAMES[s["site"]])
+        if s["site"] in SKIP_FROM:
+            s["skip_from"] = [list(p) for p in SKIP_FROM[s["site"]]]
+        if s["site"] in SKIP_GOOGLE:
+            s["skip_google"] = dict(SKIP_GOOGLE[s["site"]])
     sites = sorted(sites, key=_order)
     if len({s["site"] for s in sites}) != len(sites):
         raise ValueError("a key is written twice: merge its entries into one")

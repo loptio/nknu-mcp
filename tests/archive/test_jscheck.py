@@ -718,9 +718,9 @@ def test_old_types_with_no_page_this_round_are_listed_with_the_old_archive_s_sta
                 (key(f"{EE}/gone.html"), f"{EE}/gone.html", "ok", None),
                 ("id.nknu.edu.tw|id.nknu.edu.tw|uploads/*|()", "https://id.nknu.edu.tw/uploads/a-021.pn", "todo",
                  "inconclusive:broken_sample")]:
-            parts = pagetypes.parse_key(k)
+            site, host, path_tpl = k.split("|")[:3]  # a key's first three parts (pagetypes.TypeKey.key)
             f.x("INSERT INTO page_type(key, site, host, path_tpl, params, verdict, why, sample_url, source) "
-                "VALUES (?,?,?,?,'[]',?,?,?,'import')", (k, parts.site, parts.host, parts.path_tpl, verdict, why, sample))
+                "VALUES (?,?,?,?,'[]',?,?,?,'import')", (k, site, host, path_tpl, verdict, why, sample))
     server = Server({})
     browser = FakeBrowser({})
     rep = make_check(root, server, browser, old=old).run()
@@ -797,18 +797,6 @@ def test_a_stop_leaves_every_type_it_had_not_judged_as_it_was(tmp_path):
         assert f.q("SELECT count(*) FROM js_page")[0][0] == 0
         end = json.loads(f.q("SELECT message FROM event WHERE code='jscheck_end'")[0][0])
         assert (end["reason"], end["detail"], end["todo_left"]) == ("stop", "sigterm", 3)
-        assert jscheck.last_end(f) is None  # only a finished one counts
-
-
-def test_only_a_finished_check_after_the_last_run_counts(tmp_path):
-    root = make_root(tmp_path)
-    with opened(root) as f:
-        f.x("INSERT INTO event(at, level, code, message) VALUES ('2026-10-26T01:00:00+00:00', 'info', 'run_end', '{}')")
-        f.x("INSERT INTO event(at, level, code, message) VALUES ('2026-10-26T02:00:00+00:00', 'info', 'jscheck_end', ?)",
-            (json.dumps({"reason": "finished", "todo_left": 0}),))
-        assert jscheck.last_end(f)["at"] == "2026-10-26T02:00:00+00:00"
-        f.x("INSERT INTO event(at, level, code, message) VALUES ('2026-10-26T03:00:00+00:00', 'info', 'run_end', '{}')")
-        assert jscheck.last_end(f) is None
 
 
 # ---------------------------------------------------------------- a person's verdict
@@ -837,32 +825,6 @@ def test_set_writes_a_person_s_verdict_sends_nothing_and_waits_for_no_run(tmp_pa
         assert t["note"] == "manual:內容在 news.html， 直接抓得到"
         assert result(f, uid) == "ok"  # its page follows the person's verdict
         assert f.q("SELECT count(*) FROM request")[0][0] == 0
-
-
-# ---------------------------------------------------------------- reconcile's R6
-def test_the_spot_checker_shows_a_page_through_the_same_queues_and_writes_no_row(tmp_path):
-    root = make_root(tmp_path)
-    url, login = f"{EE}/index.html", f"{EE}/login.aspx"
-    shown = lines("首頁", 12)
-    server = Server({url: (200, HTML, page("載入中")), f"{EE}/api/home.json": (200, JSON_T, "{}")})
-    browser = FakeBrowser({url: FakePage(page(*shown), [Ask(f"{EE}/api/home.json", kind="xhr")])})
-    clock = Clock()
-    with opened(root) as f:
-        n_url = f.q("SELECT count(*) FROM url")[0][0]
-        with jscheck.SpotChecker(root, f, browser=browser, clock=clock, sleep=clock.sleep, rng=random.Random(1),
-                                 client_factory=lambda warc: archive_client(warc, transport=httpx.MockTransport(server),
-                                                                            clock=clock, sleep=clock.sleep),
-                                 resolver=lambda h: (f"ip:{h}", None, h)) as spot:
-            got = spot(url)
-            refused = spot(login)
-        assert got.final_url == url and "首頁第0則" in got.html and got.error is None
-        assert got.screenshot.startswith("spotcheck/") and (root / got.screenshot).exists()
-        assert refused.error and "login" in refused.error  # a login is never asked, not even to look
-        reqs = f.q("SELECT purpose, url, warc FROM request ORDER BY id")
-        assert [(r["purpose"], r["url"]) for r in reqs] == [("spotcheck", url), ("spotcheck", f"{EE}/api/home.json")]
-        assert all("/spotcheck-" in r["warc"] for r in reqs)
-        assert f.q("SELECT count(*) FROM url")[0][0] == n_url and f.q("SELECT count(*) FROM js_page")[0][0] == 0
-    assert browser.started and browser.closed and server.asked() == [("GET", url), ("GET", f"{EE}/api/home.json")]
 
 
 # ---------------------------------------------------------------- the real browser
@@ -963,11 +925,6 @@ def test_this_machine_s_chrome_asks_everything_through_our_queue(tmp_path, monke
             assert f.q("SELECT count(*) FROM request")[0][0] == len(reqs)
         paths = [p for _m, p, _ua in _Local.hits]
         assert len(_Local.hits) == len(reqs)  # every request that reached the server went out through our client
-        with opened(root) as f, jscheck.SpotChecker(root, f, gap=(1.0, 1.0), resolver=resolve,
-                                                     browser=jscheck.PlaywrightBrowser(settle_ms=300)) as spot:
-            shown = spot(f"{base}/js.html")
-            assert shown.error is None and _MORE[0] in shown.html and (root / shown.screenshot).stat().st_size > 0
-            assert f.q("SELECT count(*) FROM request WHERE purpose='spotcheck'")[0][0] == 2
         assert {ua for _m, _p, ua in _Local.hits} == {USER_AGENT}
         assert not {"/style.css", "/pic.png", "/favicon.ico", "/ws"} & set(paths)
         assert paths.count("/more.json") == 0  # the browser only opens: nobody clicks

@@ -1,11 +1,11 @@
 """`nknu archive run --only PATH` (the owner 11-02: 「同意抓」 exactly the rows listed, none of the other rows of their
 sites): a run that fetches the listed url rows and nothing else. Every choice of due work keeps to them (the
 frontier's due queues, its next row, its waiting, next-due and pending counts, and the chains' due queues, next
-press and waiting), a press runs only when its own row (its list page, action.list_id) is listed, no site is
-reconciled, and the run ends once no listed row is left to fetch. A row not listed is never requested, even on the
-same host, and keeps its state, attempts and next_at: the run's own start (rows left active, chains left pressing,
-names looked up again, hosts nobody looked up) and the judgments it makes of a host or a directory (refusals in a
-row, a server that never connects, robots.txt unreachable, the undoing of an outage) touch the listed rows only.
+press and waiting), a press runs only when its own row (its list page, action.list_id) is listed, and the run ends
+once no listed row is left to fetch. A row not listed is never requested, even on the same host, and keeps its
+state, attempts and next_at: the run's own start (rows left active, chains left pressing, names looked up again,
+hosts nobody looked up) and the judgments it makes of a host or a directory (refusals in a row, a server that never
+connects, robots.txt unreachable, the undoing of an outage) touch the listed rows only.
 
 Everything runs on tests/archive/test_crawler_round1.py's fake network and fake clock; no address leaves this
 machine."""
@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import threading
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
@@ -23,9 +22,8 @@ from typer.testing import CliRunner
 
 from nknu.admin.cli import app
 from nknu.archive import crawler as mod
-from nknu.archive import google_api, links, monitor, reconcile
+from nknu.archive import google_api, links, monitor
 from nknu.archive.frontier import Frontier
-from nknu.archive.reconcile import Sources
 from nknu.crawl.warc import WarcSink
 from tests.archive import test_gsites_images_1027 as gs
 from tests.archive.plans import OpenPlan
@@ -175,7 +173,7 @@ PDF_ROUTE = {"/files/f.pdf": lambda u: snap(u, body=b"%PDF-1.4 made up", headers
 def test_run_start_and_run_end_name_the_sites_the_listed_rows_count_for(tmp_path):
     """Not every site (null): the listed rows' own sites and those of the pages that use them, the only sites whose
     records the run can change (review 11-02: monitor reads a run_end over every site as newer than every site's
-    reconciliation and browser check)."""
+    browser check)."""
     ids = four(tmp_path)
     f = frontier(tmp_path)
     listed = add(f, PDF, owner_site="vd.nknu.edu.tw")
@@ -273,35 +271,6 @@ def test_no_worker_starts_for_a_queue_whose_due_presses_are_none_of_a_listed_row
     run(crawler)
     assert set(started) == {VQ}
     assert net.seen == [V3] and crawler.end_reason == "finished"
-
-
-# ---------------------------------------------------------------- no reconciliation
-
-
-def _record_reconciliation(monkeypatch) -> list:
-    calls = []
-    monkeypatch.setattr(reconcile, "site_finished", lambda fr, site: calls.append(("finished?", site)) or True)
-    monkeypatch.setattr(reconcile, "site_done",
-                        lambda fr, root, site, **kw: calls.append(("done", site)) or SimpleNamespace(checks={}))
-    monkeypatch.setattr(mod, "SITE_LOOK_S", 0.0)  # the look for finished sites on every turn of the main loop
-    return calls
-
-
-def test_no_site_is_reconciled_neither_at_the_start_nor_when_it_finishes(tmp_path, monkeypatch):
-    calls = _record_reconciliation(monkeypatch)
-    ids = four(tmp_path)
-    crawler, _, _ = run_only(tmp_path, {ids[A1], ids[V3]}, reconcile_sources=Sources(cc_dir=None, old=None))
-    assert crawler.end_reason == "finished" and calls == []
-    assert not crawler.frontier.q("SELECT 1 FROM reconcile_site")
-
-
-def test_without_only_the_same_run_reconciles_its_sites(tmp_path, monkeypatch):
-    """The other side of the test above: the recorder sees a run that reconciles."""
-    calls = _record_reconciliation(monkeypatch)
-    four(tmp_path)
-    crawler, _, _ = crawl(tmp_path, ROUTES, reconcile_sources=Sources(cc_dir=None, old=None))
-    run(crawler)
-    assert crawler.end_reason == "finished" and ("done", "c.nknu.edu.tw/aca") in calls
 
 
 # ---------------------------------------------------------------- presses
@@ -678,7 +647,7 @@ def test_the_command_reads_u_ids_bare_ids_blank_lines_and_comments(tmp_path, mon
     monkeypatch.setattr(mod, "Crawler", _fake_crawler(made))
     out = _invoke(root, ids_file, "--gap", "1-2")
     assert out.exit_code == 0, out.output
-    assert made[0]["only"] == frozenset({5, 6}) and made[0]["reconcile_sources"] is None
+    assert made[0]["only"] == frozenset({5, 6})
     assert made[0]["gap"] == (1.0, 2.0) and made[0]["sites"] is None
     assert "--only 列出的 2 个网址现在：pending 2 个" in out.output  # what the listed rows came to
 

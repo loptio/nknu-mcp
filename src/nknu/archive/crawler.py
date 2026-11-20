@@ -91,13 +91,6 @@ row or a page came to is outcome.py's views.
   gone_id); a file the school's page says is missing is looked at once more before it is gone (§10.2).
 - A page fetched again writes its page_res anew; what its embed boxes, forms, tabs, file buttons and pressed details
   brought is read back from the archive (_replay_parts), never lost and never asked for again.
-- A site that finishes (reconcile.site_finished: nothing left this run but retries and the lab, B1) is reconciled
-  offline by this very process, the one writer (design §18.2a step 3: reconcile.site_done, every check but R6, which
-  stays skip until `archive reconcile` runs it once the run stopped), on a thread of its own with a connection of its
-  own (Frontier.sibling: the main loop goes on starting workers and minding a stop, and no worker waits for its long
-  reads; a stop ends it between pages, review 10-26), and again whenever the site got more work and finished again;
-  before run_end at a natural end. Only when given reconcile_sources (`archive run` gives it); a failure is an error
-  event, never the run's end.
 - A run given only (`archive run --only PATH`, the owner 11-02: these rows and none of the other rows of their sites)
   fetches the listed url rows that are pending when it starts, and nothing else: every choice of due work (the
   frontier's queues, next row, waiting and next-due counts, the chains' queues, next press and waiting) keeps to
@@ -112,8 +105,8 @@ row or a page came to is outcome.py's views.
   (a round-two row it links becomes this round's) for a later run; the address of a listed row moved to its other
   scheme (§6.6) is the listed row's from then on, the same resource, even when that address had a row of its own;
   a listed Google Sites page read again settles its own pictures' rows as any reading does (§23 B2: addresses it
-  replaced, pictures left for round two). Hosts, queues and directories keep their own state as in any run. No site
-  is reconciled (they are not complete); run_start and run_end say how many ids were listed, and name the sites
+  replaced, pictures left for round two). Hosts, queues and directories keep their own state as in any run.
+  run_start and run_end say how many ids were listed, and name the sites
   whose records the run can change (_only_sites) where a full run writes null, every site.
 - Nothing is parsed into facts here.
 """
@@ -197,6 +190,7 @@ MAX_DEPTH = 15
 # the reasons _cap gives (design §9): what a run's start judges again (_release_caps). Google's caps (cap:drive,
 # cap:drive_depth, cap:drive_list, cap:calendar) are google_api's own counts, which _cap knows nothing of: never here
 CAP_REASONS = ("cap:depth", "cap:file", "cap:image", "cap:site", "cap:variant")
+CAP_KIND_OF = {"cap:site": "page", "cap:file": "file", "cap:image": "image"}  # a site's own caps (round1.CAP_KINDS)
 # periodic updates, stage 1 (design 2026-11-16 §四, the owner 11-16: 「设计时要交代上限怎么放宽或分开算，别让定期更新卡死」):
 # a site whose first crawl is finished (meta UPDATE_SITES_KEY, a JSON list that update's go-live writes) is held by
 # what one run adds to it, not by all it holds; the depth limit stays. A run cap's row waits for a person (`nknu archive
@@ -236,9 +230,10 @@ CONN_GIVE_UP_ANSWERED = 96
 DOOR_WINDOW_S = 120.0  # a door (scheme, port) of a server that answers on another within this long is closed, not down
 # the flags of a kept answer that make it no good for keeping a page's resources (_good_before: export batch T1b)
 KEEP_RES_BAD = frozenset({"login", "soft404", "gone_page", "gone_id", "gone_redirect", "error_page", "empty_detail",
-                          "thin"})
+                          "thin", "no_area"})
 # the flags of this time's answer under which a page good before keeps its resources (_page: export batch T1b)
-KEEP_RES_NOW = frozenset({"empty_detail", "gone_page", "gone_redirect", "gone_id"})
+KEEP_RES_NOW = frozenset({"empty_detail", "gone_page", "gone_redirect", "gone_id", "no_area"})
+NO_AREA = "no_area"  # a page's answer without the content area its profile requires (profiles.area_missing, 11-17)
 END_WAIT_S = 600.0  # B1: a run whose soonest row is due later than this ends, leaving its rows for the next run
 # C0 (design §11): `archive run --end-wait`'s own default, longer than the fixed 15-minute rest of a server (and the
 # pause of one that does not connect), so that one such rest never ends a long run nobody watches 【Claude 的执行办法】
@@ -308,9 +303,6 @@ NET_UNDO_S = 300.0
 NETCHECK_CACHE_S = 30.0
 MIN_FREE_BYTES = 5 * 1024**3
 STOP_POLL_S = 1.0  # how often `archive run` looks for STOP, and `archive stop` for the lock to be let go
-# §18.2a step 3: how often (real seconds) the main loop looks for sites that finished, to reconcile them offline: a
-# finished site's look reads all its rows, and a minute's delay changes nothing of an early warning 【Claude 的执行办法】
-SITE_LOOK_S = 60.0
 # the main loop's beat (meta run:alive_at, run seconds): a run that holds run.lock yet wrote none for minutes hangs, where
 # one whose queues all rest still beats (dashboard design 2026-11-04 §2.5) 【Claude 的执行办法】
 ALIVE_S = 60.0
@@ -756,6 +748,34 @@ class _NetWatch:
             return out
 
 
+def _one_page_only(row) -> bool:
+    """A page round two fetches that one page of (tier 2, leaf 1: the off-campus page a school page links, one layer;
+    the owner 10-25 「只多抓一层」, 11-16 「由程序强制」): stored, never read for links or parts. A round-one leaf page
+    (性别所's Wix frame, a part of a tier-1 page) is not one (design 2026-11-17-round2-batch2 §三.4)."""
+    return row["tier"] == round1.ROUND2_TIER and bool(row["leaf"]) and (row["kind0"] or row["kind"]) == "page"
+
+
+def cap_reason(frontier, url: str, owner: str, kind: str, caps: tuple[int, int, int],
+               variant_cap: int = VARIANT_CAP) -> str | None:
+    """A site's caps on one more row of this round (design §9), the depth limit aside: caps are (pages, files,
+    images); a platform's detail pages, SSO's activity detail pages (11-06) and 成教所's 所友名錄 pages (11-09) are free
+    of them (design §7.4 detail_paths: 免上限) and still count for their site (frontier.COUNT_SITE); lists have no
+    variant cap. Crawler._cap's and the round-two batch's promote's (batch.promote) one statement of them."""
+    page_cap, file_cap, image_cap = caps
+    pk = profiles.page_kind(url)
+    if kind == "page" and (pk == "detail" or scope.is_platform_detail(url)):
+        return None
+    if kind == "file" and frontier.count_site(owner, "file") >= file_cap:
+        return "cap:file"
+    if kind == "image" and frontier.count_site(owner, "image") >= image_cap:
+        return "cap:image"
+    if kind == "page" and frontier.count_site(owner, "page") >= page_cap:
+        return "cap:site"
+    if (kind in ("page", "file") and not scope.is_platform_path(url) and pk != "list"
+            and frontier.count_path(owner, url.split("?", 1)[0]) >= variant_cap):
+        return "cap:variant"
+    return None
+
 class Crawler:
     def __init__(self, root: Path, *, plan: round1.Plan | None = None, limit: int | None = None,
                  clock: Callable[[], float] = wall, sleep: Callable[[float], None] = time.sleep,
@@ -767,19 +787,15 @@ class Crawler:
                  gap: tuple[float, float] = GAP, sites: frozenset[str] | None = None,
                  campus_url: str | None = CAMPUS_URL, local_address: Callable[[], str | None] = local_address,
                  decide: Callable[[str, str], str | None] | None = profiles.decision, end_wait_s: float = END_WAIT_S,
-                 google_step: bool = True, reconcile_sources: Any = None, only: Iterable[int] | None = None):
+                 google_step: bool = True, only: Iterable[int] | None = None):
         """plan: the site list (round1.load() when not given). gap: the run's (check_gap). sites: only these sites'
         rows (`archive run --sites`). campus_url: the campus check (None: no check, campus stays unknown). decide:
         the platform file's decision for a page's own site key (the platform it is written on) and a writing's key
         (profiles.decision; None: nothing decided, every writing unknown). end_wait_s: a run ends when what is left
         comes due later than this (C0, `archive run --end-wait`). google_step: Drive, Docs and Calendar addresses go
-        to google_api's step (False: they wait as unhandled:google, B8). reconcile_sources: a reconcile.Sources; given,
-        each round-1 site of the run is
-        reconciled offline by this process as it finishes (design §18.2a step 3: reconcile.site_done, every check but
-        R6), and again whenever it got more work and finished again (`archive run` gives it; None: no reconciling, as
-        a test's crawl and rejudge's offline crawler). only: url ids (`archive run --only`): the run fetches those of
-        them pending when it starts and touches no other row (the module's docstring); no site is reconciled then,
-        reconcile_sources or not. An empty only is no row at all, never every row."""
+        to google_api's step (False: they wait as unhandled:google, B8). only: url ids (`archive run --only`): the run
+        fetches those of them pending when it starts and touches no other row (the module's docstring). An empty only
+        is no row at all, never every row."""
         if end_wait_s <= 0:
             raise ValueError(f"end_wait_s is a time in seconds greater than 0 (got {end_wait_s:g})")
         self.root = root
@@ -830,15 +846,7 @@ class Crawler:
         self._doors: dict[str, dict[tuple[str, int], float]] = {}  # queue -> (scheme, port) -> its last answer
         self._stuck = 0  # loops in a row with rows due that no queue takes
         self._probe_tries: dict[tuple[str, str], int] = {}  # (host, detail type) -> id probes that got no answer
-        # §18.2a step 3: the sites to reconcile as they finish (those this run worked on, and those never reconciled),
-        # and those reconciled since they last got work; none for a run given --only (its sites are not complete)
-        self.reconcile_sources = reconcile_sources if self.only is None else None
-        self._site_lock = threading.Lock()
-        self._to_reconcile: set[str] = set()
-        self._reconciled_now: set[str] = set()
-        self._site_look_at = -math.inf  # time.monotonic() of the main loop's last look for finished sites
         self._alive_at = -math.inf  # self.clock() of the main loop's last beat (ALIVE_S)
-        self._reconciler: threading.Thread | None = None  # the thread that reconciles finished sites (review 10-26)
         self._gsimg_lock = threading.RLock()  # a site's Google Sites picture state (design §23 B): one writer at a time
 
     def _new_client(self, warc: WarcSink | None) -> Client:
@@ -956,7 +964,10 @@ class Crawler:
         state, reason, next_at = placement.state, placement.reason, 0.0
         if state == "pending":
             cap = self._cap(url, placement.owner_site, kind, depth)
-            if cap is not None:
+            out = self._cap_out(placement.owner_site, cap)
+            if out is not None:
+                state, reason = "skipped", out  # the list says this site's rows of the kind past its cap are left
+            elif cap is not None:
                 state, reason = "held", cap
                 if cap.startswith("cap:run_") and (placement.owner_site, kind) not in self._run_cap_warned:
                     self._run_cap_warned.add((placement.owner_site, kind))
@@ -975,7 +986,8 @@ class Crawler:
         row = self.frontier.row(url)
         if not added:
             return Enqueued("scheme_switch" if rewritten else "dup", url, row["id"] if row else None, placement)
-        verdict = {"pending": "queued", "held": reason, "later": reason, "failed": f"failed:{reason}"}[state]
+        verdict = {"pending": "queued", "held": reason, "later": reason, "failed": f"failed:{reason}",
+                   "skipped": reason}[state]  # skipped: a row past its site's cap the list leaves (_cap_out)
         return Enqueued("scheme_switch" if rewritten else verdict, url, row["id"], placement)
 
     def _due(self, url: str, host: str) -> tuple[str, str | None, float]:
@@ -1018,6 +1030,10 @@ class Crawler:
         if not isinstance(sites, list):
             sites = []
         self._update_sites = frozenset(x for x in sites if isinstance(x, str))
+        # round two's open batch (batch.OPEN_KEY): its sites under periodic update are held by a round-one site's caps
+        # while it is open, not by the nightly growth caps (design 2026-11-17-round2-batch2 §四)
+        from nknu.archive import batch  # a late import: batch imports this module
+        self._round2_open = frozenset(batch.open_sites(self.frontier))
         self._run_started = self.clock()
         self._let_go: dict[tuple[str, str], int] = {}  # rows a run cap counts that _release_caps let go this run
         self._run_cap_warned: set[tuple[str, str]] = set()
@@ -1029,28 +1045,29 @@ class Crawler:
             return "cap:depth"
         if owner is None:
             return None
-        if owner in self._update_sites:
+        if owner in self._update_sites and owner not in getattr(self, "_round2_open", ()):
             limit = {"page": RUN_CAPS.pages, "file": RUN_CAPS.files, "image": RUN_CAPS.images}.get(kind)
             if limit is not None and (self.frontier.count_added(owner, kind, self._run_started)
                                       + self._let_go.get((owner, kind), 0)) >= limit:
                 return f"cap:run_{kind}"
             return None
-        pk = profiles.page_kind(url)
-        if kind == "page" and (pk == "detail" or scope.is_platform_detail(url)):
-            # a platform's detail pages, SSO's activity detail pages (11-06) and 成教所's 所友名錄 pages (11-09) are
-            # free of the caps (design §7.4 detail_paths: 免上限), the depth limit aside; they still count for their
-            # site (frontier.COUNT_SITE)
-            return None
-        if kind == "file" and self.frontier.count_site(owner, "file") >= self.file_cap:
-            return "cap:file"
-        if kind == "image" and self.frontier.count_site(owner, "image") >= self.image_cap:
-            return "cap:image"
-        if kind == "page" and self.frontier.count_site(owner, "page") >= self.site_cap:
-            return "cap:site"
-        if (kind in ("page", "file") and not scope.is_platform_path(url) and pk != "list"  # lists: no variant cap
-                and self.frontier.count_path(owner, url.split("?", 1)[0]) >= self.variant_cap):
-            return "cap:variant"
-        return None
+        return cap_reason(self.frontier, url, owner, kind, self.site_caps(owner), self.variant_cap)
+
+    def _cap_out(self, owner: str | None, cap: str | None) -> str | None:
+        """The rule a row past a site's own cap is left by, where the list says the site's rows of that kind past
+        its cap are not fetched (round1.Site.cap_out, 11-19): out:cap_<kind>, a rule in every count (outcome.
+        RULE_PREFIXES), never held, so no run's start lets it go (_release_caps reads held rows only)."""
+        kind = CAP_KIND_OF.get(cap or "")
+        own = self.plan.site(owner) if owner and kind else None
+        return f"out:cap_{kind}" if own is not None and kind in own.cap_out else None
+
+    def site_caps(self, owner: str) -> tuple[int, int, int]:
+        """A site's caps (pages, files, images): its own in the list (round1.Site.caps: a round-two batch's site),
+        else a round-one site's (design §9; design 2026-11-17-round2-batch2 §四)."""
+        own = self.plan.site(owner)
+        if own is not None and own.caps:
+            return own.caps
+        return self.site_cap, self.file_cap, self.image_cap
 
     def _release_caps(self) -> int:
         """At a run's start: a row held by one of the crawler's caps (CAP_REASONS) that the rules of today no longer
@@ -1184,6 +1201,33 @@ class Crawler:
             log.info("looked up %d hosts nobody had looked up", len(hosts))
         return len(hosts)
 
+    def _moved_hosts(self) -> int:
+        """At a run's start (the 11-14 handover's old debt c-1; lis.nknu moved servers 11-07 and two queues sent to
+        one server; design 2026-11-17-round2-batch2 §三.6): each host on an address's queue with a row to fetch or a
+        press to send is looked up again; one whose server moved goes on the new address's queue, its waiting presses
+        too (action.queue), so that one server is asked by one queue only. One that does not resolve now keeps its
+        queue (its rows wait as before). Within a run a lookup still only times the name (_dns_step): a host moved
+        between queues while their workers run would be asked by both 【Claude 的执行办法】. Returns the hosts moved."""
+        by_id, id_args = self._ids("u.id")
+        hosts = [r[0] for r in self.frontier.q(
+            "SELECT DISTINCT u.host FROM url u JOIN host h ON h.host = u.host "
+            f"WHERE u.state = 'pending' AND h.queue LIKE 'ip:%'{by_id}", id_args)]
+        hosts += [r[0] for r in self.frontier.q(
+            "SELECT DISTINCT a.host FROM action a JOIN host h ON h.host = a.host "
+            "WHERE a.state = 'pending' AND h.queue LIKE 'ip:%'") if r[0] not in hosts]
+        moved = 0
+        for host in hosts:
+            old = self.frontier.host(host)["queue"]
+            queue, ip, cname = self._lookup(host)
+            if queue == old or not queue.startswith("ip:"):
+                continue
+            self.frontier.set_host(host, queue=queue, ip=ip, cname=cname, dns_at=self.clock(), dns_fail=0)
+            self.frontier.x("UPDATE action SET queue=? WHERE host=? AND state='pending'", (queue, host))
+            self.frontier.event("warn", "host_moved", f"{host} 换了服务器：{old} → {queue}，待抓的网址和待按的按钮"
+                                "都改排到新地址那条队", host, None)
+            moved += 1
+        return moved
+
     # ---- running
     def run(self, poll_s: float = 5.0) -> None:
         """The caller holds run.lock (hold_run_lock) and the school lock: only then may rows left active be taken back.
@@ -1218,10 +1262,10 @@ class Crawler:
             start |= {"only": self._only_listed, "only_pending": len(self.only)}
         self.frontier.event("info", "run_start", json.dumps(start))
         workers: dict[str, threading.Thread] = {}
-        self._never_reconciled()
         try:
             self._reresolve(force=True)
             self._place_hosts()
+            self._moved_hosts()
             while not self.stop.is_set():
                 try:
                     self._beat()
@@ -1249,13 +1293,7 @@ class Crawler:
                                 workers[queue] = t
                                 t.start()
                     if not any(t.is_alive() for t in workers.values()) and self._should_end():
-                        if self.end_reason in ("finished", "waiting"):  # the sites it leaves done, before its run_end
-                            self._join_reconciler()
-                            self._reconcile_finished()
                         break
-                    if time.monotonic() - self._site_look_at >= SITE_LOOK_S:
-                        self._site_look_at = time.monotonic()
-                        self._reconcile_in_background()
                 except sqlite3.DatabaseError as exc:
                     if not db_busy(exc):
                         raise
@@ -1270,7 +1308,6 @@ class Crawler:
             self.stop.set()
             for t in workers.values():
                 t.join(timeout=120)
-            self._join_reconciler()  # it stops between pages: the stop above reached it
             with suppress(sqlite3.Error):
                 self.chains.sso_totals()  # §7.5 step 7: SSO 公告中心's categories add up to its whole list
             with suppress(sqlite3.Error):
@@ -1330,7 +1367,8 @@ class Crawler:
         dispatch): the hosts are looked up once more, and if that is not it two loops in a row, the run ends (stuck),
         with an error event, instead of waiting for ever with both locks held. A run given --only counts, and puts
         right, its listed rows and their presses only: it ends once none of them is left."""
-        left, nxt = self.frontier.waiting(self.sites, ids=self.only)
+        leave = self._leaves_retries()
+        left, nxt = self.frontier.waiting(self.sites, ids=self.only, retries_from=self.clock() if leave else None)
         presses, p_nxt, active = self.chains.waiting(self.sites, ids=self.only)
         if left == 0 and presses == 0:
             self.end_reason = self.end_reason or "finished"
@@ -1353,6 +1391,11 @@ class Crawler:
             nxt = min((t for t in (nxt, p_nxt) if t is not None), default=None)
             if nxt is None:
                 return False  # only active rows and presses being restarted: the run looks again
+        if nxt is None and leave and self.frontier.waiting(self.sites, ids=self.only)[1] is not None:
+            # the nightly run, and only rows waiting to be tried again are left: the next night tries them (11-18)
+            self.end_reason = self.end_reason or "waiting"
+            log.info("only rows waiting to be tried again are left (%d): left for the next night", left)
+            return True
         if nxt is None:  # only active rows, and no worker holds them
             by_id, id_args = self._ids("id")
             n = self.frontier.x("UPDATE url SET state='failed', reason='crash:left_active' WHERE state='active'"
@@ -1380,36 +1423,14 @@ class Crawler:
         self._stuck = 0
         return False
 
-    # ---- a site finished: its offline reconciliation (design §18.2a step 3)
-    def _round1_site(self, site: str | None) -> bool:
-        s = self.plan.site(site) if site else None
-        return s is not None and s.round == "1" and (self.sites is None or site in self.sites)
-
-    def _reconciled_here(self, site: str | None) -> bool:
-        """Whether this run reconciles the site as it finishes: a round-1 site of the run, unless it is under periodic
-        update (UPDATE_SITES_KEY): the nightly change list (watch.night) stands in for it there. On the whole school a
-        night's reconcile re-read every page of every site it touched, about 1.5–3 h, and services' was thrown away at
-        the 600 s join (the check of the first real night, wf_9c6e1448-2cc; the owner 11-16: 「先修这三件」); a person's
-        `nknu archive reconcile` still reconciles any site."""
-        return (self.reconcile_sources is not None and self._round1_site(site)
-                and site not in self._update_sites)
-
-    def _worked_on(self, site: str | None) -> None:
-        """A row or a press of this site is being handled: the site is to be reconciled (again) once it finishes."""
-        if self._reconciled_here(site):
-            with self._site_lock:
-                self._to_reconcile.add(site)
-                self._reconciled_now.discard(site)
-
-    def _never_reconciled(self) -> None:
-        """At the start of a run: the run's round-1 sites that have no reconciliation at all are looked at too (one
-        that finished in a run that ended before it could be reconciled)."""
-        if self.reconcile_sources is None:
-            return
-        have = {r[0] for r in self.frontier.q("SELECT site FROM reconcile_site")}
-        sites = self.sites if self.sites is not None else {s.site for s in self.plan.sites.values() if s.round == "1"}
-        with self._site_lock:
-            self._to_reconcile |= {s for s in sites if s not in have and self._reconciled_here(s)}
+    def _leaves_retries(self) -> bool:
+        """Whether this run leaves the rows waiting to be tried again to the next run: a run over sites that are all
+        under periodic update (the nightly run's; never one given --only), so that a trickle of tries again (a CV page
+        answered with no card, a timeout: 30 minutes × attempts each) never holds a night open for hours; they wait as
+        a resting server's rows do (the night of 11-18 ran from 01:00 to 04:13 on such a trickle). A row never tried,
+        and a try again already due, are fetched as before."""
+        update = getattr(self, "_update_sites", frozenset())
+        return self.only is None and bool(self.sites) and bool(update) and set(self.sites) <= update
 
     def _beat(self) -> None:
         """meta run:alive_at, at most once per ALIVE_S: when the main loop last went round, so the dashboard tells a run
@@ -1418,84 +1439,6 @@ class Crawler:
         if now - self._alive_at >= ALIVE_S:
             self._alive_at = now
             self.frontier.meta("run:alive_at", f"{now:.3f}")
-
-    def _reconcile_in_background(self) -> None:
-        """Start the reconciliation of finished sites on a thread of its own, unless one is at work (review 10-26: on
-        the main loop it kept the loop from starting workers again, looking whether the run should end and minding a
-        stop, for as long as a large site took)."""
-        if self.reconcile_sources is None or (self._reconciler is not None and self._reconciler.is_alive()):
-            return
-        with self._site_lock:
-            if not self._to_reconcile - self._reconciled_now:
-                return
-        self._reconciler = threading.Thread(target=self._reconcile_finished, name="reconcile-sites", daemon=True)
-        self._reconciler.start()
-
-    def _join_reconciler(self) -> None:
-        t = self._reconciler
-        if t is not None and t.is_alive():
-            t.join(timeout=STOP_WAIT_S)
-            if t.is_alive():
-                log.error("the reconciliation of finished sites has not stopped in %.0f s", STOP_WAIT_S)
-
-    def _reconcile_finished(self) -> int:
-        """Reconcile, offline and in this process (the one writer, design §6.9), each site to reconcile that has
-        nothing left this run but retries and the lab (reconcile.site_finished, B1): reconcile.site_done, every check
-        but R6 (skip, so gates_ok 0: 「⚠ 纪录齐了，还没对账」, with what failed already listed); R6 and a person's look
-        wait for `nknu archive reconcile` once the run stopped. A site that gets work again is reconciled again when it
-        finishes again. A failure is an error event, never the run's end. It reads and writes through a connection of
-        its own (Frontier.sibling: a long read never holds the lock every worker takes) and stops between pages when
-        the run stops (reconcile.Stopped: nothing of that site written as done). Returns how many it reconciled."""
-        if self.reconcile_sources is None:
-            return 0
-        from nknu.archive import reconcile
-
-        with self._site_lock:
-            todo = sorted(self._to_reconcile - self._reconciled_now)
-        if not todo:
-            return 0
-        n = 0
-        fr = self.frontier.sibling()
-        try:
-            for site in todo:
-                if self.stop.is_set():
-                    break
-                try:
-                    if not reconcile.site_finished(fr, site):
-                        continue
-                except sqlite3.Error:
-                    log.exception("whether %s finished could not be read", site)
-                    continue
-                with self._site_lock:
-                    if site in self._reconciled_now or site not in self._to_reconcile:
-                        continue
-                    self._reconciled_now.add(site)
-                t0 = time.monotonic()
-                try:
-                    got = reconcile.site_done(fr, self.root, site, plan=self.plan, batch=f"run:{self.run_id}",
-                                              sources=self.reconcile_sources, stop=self.stop.is_set)
-                    n += 1
-                    failing = [c for c, k in got.checks.items() if c in reconcile.GATES and k.status == reconcile.FAIL]
-                    log.info("site %s finished: reconciled offline in %.1f s (R6 waits for the run to stop)%s", site,
-                             time.monotonic() - t0, f"; failed: {', '.join(failing)}" if failing else "")
-                except reconcile.Stopped:
-                    with self._site_lock:
-                        self._reconciled_now.discard(site)
-                    log.info("site %s: its offline reconciliation stopped with the run after %.1f s", site,
-                             time.monotonic() - t0)
-                    with suppress(sqlite3.Error):
-                        fr.event("info", "reconcile_stopped", f"{site}: stopped with the run (nknu archive reconcile, "
-                                 "or the next run, does it again)")
-                    break
-                except Exception as exc:  # a reconciliation that broke never stops the crawl
-                    log.exception("site %s: the offline reconciliation failed", site)
-                    with suppress(sqlite3.Error):
-                        fr.event("error", "reconcile_failed",
-                                 f"{site}: {type(exc).__name__}: {exc} (nknu archive reconcile tries again "
-                                 "once the run stopped)"[:500])
-        finally:
-            fr.close()
-        return n
 
     def _limit_reached(self) -> bool:
         with self._count_lock:
@@ -1605,7 +1548,6 @@ class Crawler:
         address in the other scheme (self._tl.row), whose crash is its own, and the row it came from stays moved
         (second review 10-26: it was left active, and the run never ended)."""
         self._tl.row = row["id"]
-        self._worked_on(row["owner_site"])
         try:
             self._process(queue, client, sink, row)
             self._walk_check(self._tl.row)
@@ -1696,8 +1638,6 @@ class Crawler:
         """One press of a chain or of a file button, whatever happens: a press that never went out (the run stops, the
         queue rests, the network is down) waits as pending; one that may have reached the server is never sent again
         (design §6.4: a POST is sent once). What stops the run stops it."""
-        with suppress(KeyError, IndexError):  # action rows hold their site (postback.Chains.next_action: a.*)
-            self._worked_on(a["site"])
         try:
             self._press_one(queue, client, sink, a)
         except (_Stopped, _Paused, _Offline) as exc:
@@ -2608,7 +2548,7 @@ class Crawler:
         own = self.plan.site(owner) if owner == scope.site_key(row["url"]) else None
         if row["tier"] not in round1.TIER_OF_IMP.values():
             verdict = "round2"
-        elif self.plan.is_extra(row["url"]) or (own is not None and own.round == "1" and own.holds(row["url"])):
+        elif self.plan.is_extra(row["url"]) or (own is not None and own.this_round and own.holds(row["url"])):
             verdict = "r1"
         elif own is not None and kind0 == "page" and not self._used_by_a_page(row):
             verdict = "r1"  # a page of its own site's host outside the list's paths that no page uses: a breach
@@ -2693,7 +2633,8 @@ class Crawler:
         if self._not_due(host):  # the Crawl-delay after robots.txt: the row comes back when the host is due
             self.frontier.finish(uid, state="pending", fetched_at=None)
             return
-        if kind0 in ("page", "login_check"):  # only a page host's missing page says something (design §6.8)
+        if kind0 in ("page", "login_check") and not _one_page_only(row):  # only a page host's missing page says
+            # something (design §6.8); round two's one page off campus has no other page there to judge
             probed = self._probe(queue, client, url, robots, admitted)
             if isinstance(probed, float):  # the server asked to be left alone: no attempt is used
                 self.frontier.finish(uid, state="pending", reason="retry_after", next_at=probed, fetched_at=None)
@@ -2762,6 +2703,13 @@ class Crawler:
             return
         if api and got.status >= 400 and self._api_error(queue, row, got, sink):
             return
+        if (not api and queue == google_api.FORMS_QUEUE and got.status in (403, 429, 503)
+                and google_api.sorry_page(got.body, got.headers)):
+            # Google's "automated queries" page on the google queue (Google Sites, their pictures, docs.google.com):
+            # the protection the API's queue knows, never a refusal, a directory's streak or a site's pictures given
+            # up (the 11-14 handover's old debt c-2; design 2026-11-17-round2-batch2 §三.6)
+            self._google_rest(queue, row, google_api.BLOCK_REASON, "automated queries", None)
+            return
         if not (row["referrer"] and got.status in DENY_STATUSES):  # a runtime picture's 403 is §23 B2's, no streak
             self._answered(host, url, got.status)
         self._store(queue, row, got, sink)
@@ -2777,6 +2725,29 @@ class Crawler:
     def _google_blocks(self) -> int:
         """Google's blocks in a row (google_api.block_state: kept in frontier.db, across runs; design §23 D2)."""
         return google_api.block_state(self.frontier)[0]
+
+    def _google_rest(self, queue: str, row, url_reason: str, words: str, pause_s: float | None) -> None:
+        """The service's protection (a quota, a rate, Google's "automated queries" page; pilot 10-26 F9; on the google
+        queue too since 11-17, design 2026-11-17-round2-batch2 §三.6): the queue rests, longer each time the block goes
+        on (doubling, at most MAX_PAUSE_S), and the row waits for the rest with no attempt used: nothing about the row
+        is wrong, and nothing is bypassed (CLAUDE.md). The streak is kept in frontier.db, so the next run goes on
+        doubling (§23 D2); blocked for long, a person must look (google_block_long)."""
+        now = self.clock()
+        streak, first = google_api.block_state(self.frontier)
+        streak, first = streak + 1, first if first is not None else now
+        self.frontier.meta(google_api.BLOCK_STREAK_KEY, str(streak))
+        self.frontier.meta(google_api.BLOCK_FIRST_KEY, repr(first))
+        base = pause_s if pause_s is not None else google_api.BLOCK_PAUSE_S
+        wait = min(base * 2 ** (streak - 1), google_api.MAX_PAUSE_S)
+        until = now + wait
+        self.frontier.pause(queue, until, f"{row['host']}: {url_reason}")
+        self.frontier.finish(row["id"], state="pending", reason=url_reason, next_at=until, fetched_at=None)
+        self.frontier.event("warn", "google_block", f"Google 回「{words}」（连续第 {streak} 次）：Google 暂时挡"
+                            f"下来，{queue} 这条队休息 {wait / 60:.0f} 分钟再试；这一行放回待抓、不算失败；这是 "
+                            "Google 的保护机制，不绕过", row["host"], row["url"])
+        if google_api.block_long(streak, first, now):
+            self.frontier.event("error", "google_block_long", google_api.block_words(streak, first, now) +
+                                "（不换金钥、不换 IP、不伪装；看过以后决定要不要再等）", row["host"], row["url"])
 
     def _api_error(self, queue: str, row, got: Snapshot, sink) -> bool:
         """A 4xx of Google's API, sorted by its reason (google_api.classify, design §7.6's table): kept as answered
@@ -2805,26 +2776,7 @@ class Crawler:
                 row["host"], row["url"])
             return True
         if err.action == "retry" and err.block:
-            # the service's protection (a quota, a rate, Google's "automated queries" page; pilot 10-26 F9): the
-            # queue rests, longer each time the block goes on (doubling, at most MAX_PAUSE_S), and the row waits for
-            # the rest with no attempt used: nothing about the row is wrong, and nothing is bypassed (CLAUDE.md). The
-            # streak is kept in frontier.db, so the next run goes on doubling (§23 D2); blocked for long, a person
-            # must look (google_block_long)
-            streak, first = google_api.block_state(self.frontier)
-            streak, first = streak + 1, first if first is not None else now
-            self.frontier.meta(google_api.BLOCK_STREAK_KEY, str(streak))
-            self.frontier.meta(google_api.BLOCK_FIRST_KEY, repr(first))
-            base = err.pause_s if err.pause_s is not None else google_api.BLOCK_PAUSE_S
-            wait = min(base * 2 ** (streak - 1), google_api.MAX_PAUSE_S)
-            until = now + wait
-            self.frontier.pause(queue, until, f"{row['host']}: {err.url_reason}")
-            self.frontier.finish(row["id"], state="pending", reason=err.url_reason, next_at=until, fetched_at=None)
-            self.frontier.event("warn", "google_block", f"Google 回「{err.reason}」（连续第 {streak} 次）：Google 暂时挡"
-                                f"下载，googleapis 这条队休息 {wait / 60:.0f} 分钟再试；这一行放回待抓、不算失败；这是 "
-                                "Google 的保护机制，不绕过", row["host"], row["url"])
-            if google_api.block_long(streak, first, now):
-                self.frontier.event("error", "google_block_long", google_api.block_words(streak, first, now) +
-                                    "（不换金钥、不换 IP、不伪装；看过以后决定要不要再等）", row["host"], row["url"])
+            self._google_rest(queue, row, err.url_reason, err.reason, err.pause_s)
             return True
         if err.action == "retry":
             self.frontier.pause(queue, now + (err.pause_s if err.pause_s is not None else google_api.RATE_PAUSE_S),
@@ -2868,7 +2820,8 @@ class Crawler:
                               depth=depth, found_via=found_via, found_from=found_from)
             if first is None or (first.id is None and e.id is not None):
                 first = e
-            entries += google_api.attach(self.frontier, u, e.id if u.url is not None else None, zone=zone, text=text)
+            entries += google_api.attach(self.frontier, u, e.id if u.url is not None else None, zone=zone, text=text,
+                                         album_page=bool(from_row) and links.album_page(from_row["url"]))
         return first or Enqueued(adm.placement.reason or "out", None, None, adm.placement), entries
 
     def _google_users(self, adm: round1.Admission, from_row, via, how: str, found_via: str,
@@ -3040,8 +2993,8 @@ class Crawler:
                     depth: int) -> dict:
         """A page's runtime picture as its page_res entry (how gsimg, res_key by where it sits). One the ordinary rules
         leave out is that (need no); one of a site given up is round two's, no row (§23 B3); one this page got
-        already (its row from an earlier reading came to the picture) keeps that row and its new address is never
-        asked for; else its address of this reading is queued first on its queue (PRIO_NOW) with the page's referrer
+        already (its row from an earlier reading came to the picture), or one its site's cap rule left (_cap_left),
+        keeps that row and its new address is never asked for; else its address of this reading is queued first on its queue (PRIO_NOW) with the page's referrer
         policy, and the address of an earlier reading this one replaces is stale (_gsimg_replaced). The same address
         again from a reading of the page for new ones, answered already without the picture: round two's."""
         entry = {"res_key": key, "how": GSIMG_HOW, "role": "img", "zone": img.zone, "text": img.alt}
@@ -3051,7 +3004,7 @@ class Crawler:
             return {**entry, "need": "round2", "why": links.GOOGLE_SITES_ROUND2}
         old = self.frontier.q("SELECT res_id FROM page_res WHERE page_id=? AND res_key=?", (row["id"], key))
         old_id = old[0]["res_id"] if old else None
-        if old_id is not None and self._gsimg_got(old_id):
+        if old_id is not None and (self._gsimg_got(old_id) or self._cap_left(old_id)):
             return {**entry, "need": "must", "res_id": old_id}
         adm = self.admit(img.src, page.base, row, "image")
         if adm is None:
@@ -3092,6 +3045,13 @@ class Crawler:
     def _gsimg_landing(self, res_id: int):
         chain = self._gsimg_chain(res_id)
         return chain[-1] if chain else None
+
+    def _cap_left(self, res_id: int) -> bool:
+        """Whether a picture's row is one its site's cap rule left (out:cap_<kind>, _cap_out; 11-19): its page read
+        again keeps that row, where each reading's new address would be one more row left by the same rule (a
+        revisit reads 产业教育中心's pages weekly, about 2,700 such pictures)."""
+        r = self.frontier.row_by_id(res_id)
+        return r is not None and r["state"] == "skipped" and (r["reason"] or "").startswith("out:cap_")
 
     def _gsimg_got(self, res_id: int) -> bool:
         """Whether a runtime picture's rows came to the picture: a 200 that sniffed as an image, where they land."""
@@ -3747,6 +3707,19 @@ class Crawler:
             return round1.Placement("out", f"out:{v.reason}", None, None, 0, kind0)
         return round1.Placement("resource", None, row["owner_site"], row["tier"], 1, kind0)
 
+    def _no_area_again(self, row) -> None:
+        """A page whose answer lacked the content area its profile requires (NO_AREA): tried again later as a failed
+        URL is (30 min × attempts), three answers in all; the third stays done, flagged (要人看: outcome reads it
+        thin), and the export falls back on its last good answer (11-17: a teacher's CV page with no card, the
+        school's now and then; design 2026-11-17-round2-batch2 §八). What it linked stays as it was (KEEP_RES_NOW)."""
+        attempts = row["attempts"] + 1
+        if attempts < MAX_ATTEMPTS:
+            self.frontier.x("UPDATE url SET state='pending', reason=?, attempts=?, next_at=? WHERE id=?",
+                            (NO_AREA, attempts, self.clock() + RETRY_AFTER_S * attempts
+                             + self.rng.uniform(0, RETRY_JITTER_S), row["id"]))
+        else:
+            self.frontier.x("UPDATE url SET attempts=? WHERE id=?", (attempts, row["id"]))
+
     def _good_before(self, uid: int) -> bool:
         """Whether a page held a good answer before this fetch (url_version: a kept 200 web page with none of the
         flags that make a page no good). Its resources then stay as they were when this time's answer is a sign-in,
@@ -3786,8 +3759,12 @@ class Crawler:
         said = profiles.school_no_data(row["url"], text)  # export batch T5 ③: two the views read by a flag
         if said is profiles.CNKNU_FNF:
             flags.append("gone_page")  # c.nknu's whole answer 「404: File not found」: the school's not-found page
-        elif said is profiles.NEWS_NO_ROWS:
-            flags.append("no_rows")  # a notice list that says 「搜尋結果：共0筆」: nothing to hold, never thin
+        elif said is profiles.NEWS_NO_ROWS or said is profiles.OUTLINE_NO_TEACHER:
+            # a notice list that says 「搜尋結果：共0筆」, an outline of a course the school lists no teacher for (11-18:
+            # its menu holds the prompt alone): nothing to hold, never thin
+            flags.append("no_rows")
+        if profiles.area_missing(row["url"], text):
+            flags.append(NO_AREA)  # the school's answer gone wrong this time (a CV page with no card): tried again
         if profiles.detail_of(row["url"]) is not None and profiles.empty_detail(row["url"], text):
             flags.append("empty_detail")  # design §10.1 nonempty: no body text, attachment, picture or related link
             probe = self.frontier.q("SELECT status, empty FROM id_probe WHERE host=? AND page_type=?",
@@ -3814,6 +3791,11 @@ class Crawler:
                 if e.verdict == "out:login" or urlsplit(target).hostname == "accounts.google.com":
                     flags.append("login")
         cols["flags"] = ",".join(dict.fromkeys(flags)) or None
+        if _one_page_only(row):  # round two's one page off campus (design 2026-11-17-round2-batch2 §三.4): stored only
+            cols["n_links"] = 0
+            self.frontier.set_page_res(uid, [])
+            self.frontier.finish(uid, **cols)
+            return
         if "login" in flags or "soft404" in flags:  # archived as it is; not a place to look for more pages
             cols["n_links"] = 0
             if not self._good_before(uid):  # a page good before keeps what it linked (export batch T1b)
@@ -3835,9 +3817,14 @@ class Crawler:
         m = pagetypes.measure(text, content_css=css, text_chars=page.text_chars)
         seen = pagetypes.observe(self.frontier, url_id=uid, url=row["url"], m=m, site=row["site"])
         flags += seen.flags
+        # what reconcile judged of its words (thin, in_image), kept while they did not grow: no fetch judges them, and
+        # a night's fetch used to drop them (11-17: Frontier.kept_judged; its last answer is in url_version already)
+        flags += self.frontier.kept_judged(uid, page.text_chars, flags)
         cols["flags"] = ",".join(dict.fromkeys(flags)) or None
         cols["n_links"] = n
         self.frontier.finish(uid, **cols)
+        if NO_AREA in flags:
+            self._no_area_again(row)
         # design §7.5: the platform's presses of this page as archived (actions), and how its list is walked
         stored = self.chains.page_stored(self.frontier.row_by_id(uid), text, cols.get("warc"), snap.warc_offset, page)
         if stored.page_role == "list" and cols.get("page_role") != "list":
@@ -3890,6 +3877,26 @@ class Crawler:
             if kind0 in ("embed", "click"):
                 self.frontier.x("UPDATE url SET text_chars = coalesce(text_chars, 0) + ? WHERE id=?",
                                 (page.text_chars, pid))
+
+    def take_rendered(self, row, html: str, warc: str | None, warc_offset: int | None) -> int:
+        """A page's rendered look (what the browser showed: jsfetch's conversion record at warc, warc_offset) read for
+        what it links, as the page's own answer is (_page: extract, _parts): what it shows is admitted by the rules
+        (new detail pages, attachments and pictures pending, or placed as the rules place them), the page's page_res
+        added to, never replaced (its own answer's entries stay). The JS sites' handoff, item ④ (research/jssites_
+        2026-11-17/handoff_crawler.md; plan 2026-11-17-jsfetch-integration task 3): `update js-take` calls it; the
+        data addresses a page's script asks are not asked again (the look holds what they brought). Returns the url
+        rows it added."""
+        if not hasattr(self, "_update_sites"):
+            self.start_run_caps()
+        before = self.frontier.q("SELECT count(*) FROM url")[0][0]
+        page = extract(html, row["final_url"] or row["url"], profiles.content_css(row["url"]))
+        # a look's own scripts are the page's program, asked (and archived by jsfetch) as it ran, never taken: ord loads
+        # them with a timestamp (/js/nav.js?t=…), so each look showed new ones, queued again every round (11-17, lab)
+        page.scripts = []
+        entries, _n = self._parts(row, page, row["id"], html=html, warc=warc, warc_offset=warc_offset)
+        self.frontier.add_page_res(row["id"], entries)
+        google_api.resync(self.frontier, row["id"])
+        return self.frontier.q("SELECT count(*) FROM url")[0][0] - before
 
     def _replay_parts(self, page_id: int) -> None:
         """A page fetched again writes its page_res anew; what its parts brought when they were fetched (an embed box,

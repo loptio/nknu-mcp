@@ -7,7 +7,7 @@
    press (§23.9 A2);
 ② ③ a page is read by the platform its own address is written on (a /site/ key's WebIdx 书表 pages, 图资处's WebIdx
    MoreNews pages), the site it counts for keeping every key and count (row keys, action.site, listwalk.site, the
-   postback table); verify check 8 and rejudge decide the same way;
+   postback table); rejudge decides the same way;
 ④ the 学务处 osa event attachments and the 法规汇编 「檔案下載」 buttons are pressed (two platform files), and a hidden
    frame the press filled names the file;
 and `nknu archive retry unpressed` puts back the pages whose buttons today's platform file presses and nobody pressed.
@@ -25,7 +25,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nknu.admin.cli import app
-from nknu.archive import export, links, monitor, postback, profiles, reconcile, scope
+from nknu.archive import export, links, postback, profiles, reconcile, scope
 from nknu.archive.crawler import Crawler, hold_run_lock
 from nknu.archive.frontier import Frontier
 from nknu.archive.postback import REDO_KEY, UNPRESSED, Chains, read_page
@@ -35,7 +35,6 @@ from tests.archive.plans import site as make_site
 from tests.archive.test_archive import Clock, seed, snap
 from tests.archive.test_pilot_fixes import PDF, SSO_Q, PressNet, work
 from tests.archive.test_postback import MORE, World, fx
-from tests.archive.test_verify import Arch, by_no
 
 FIX = Path(__file__).resolve().parent / "fixtures_1108"
 PDF_NAMED = {"content-type": "application/octet-stream", "content-disposition": 'attachment; filename="a.pdf"'}
@@ -377,29 +376,6 @@ def test_read_page_uses_the_profile_it_is_given():
     # WebIdx's buttons unknown
     old = read_page(profiles.SSO_CLV2, ITEMS, html, site="sso.nknu.edu.tw/site/1", list_url=ITEMS)
     assert not old.presses and "postback:ucAllTypeList$rptItems$ctl*$lnkDownloadFile|" in old.unknown
-
-
-def test_verify_check_8_decides_by_the_pages_own_platform(tmp_path):
-    a = Arch(tmp_path)
-    try:
-        uid = a.url("sso.nknu.edu.tw", "/services/web/default.aspx?webidx=37&menuid=1", owner_site=OWNER)
-        a.f.x("UPDATE url SET site=? WHERE id=?", (WEB37, uid))  # its own address's key, as the crawler writes it
-        a.f.postback(OWNER, DL1, uid, "", "", "form1", "press")
-        a.f.postback(OWNER, "ucAllTypeList$btnAll", uid, "", "全部", "form1", "ignore")
-        a.res(uid, "postback:ucAllTypeList$btnAll", how="unhandled", role="click", need="no",
-              why="unhandled:ignore", text="全部")
-        a.res(uid, "postback:ucAllTypeList$rptItems$ctl*$lnkDownloadFile", how="unhandled", role="click",
-              why=UNPRESSED)
-        c = by_no(a.read(monitor.checks))["8"]
-        assert c.status == monitor.PASS, c.lines
-        # written while the page was read by its owner's platform file (round one): stale, named by its owner
-        a.res(uid, "postback:ucNews$rptNews$ctl*$lnkShowDetail", how="unhandled", role="click",
-              why="unhandled:unknown")
-        c = by_no(a.read(monitor.checks))["8"]
-        assert c.status == monitor.FAIL
-        assert [x for x in c.lines if "还没 rejudge" in x and x.startswith(OWNER)], c.lines
-    finally:
-        a.close()
 
 
 def test_rejudge_then_retry_unpressed_puts_back_the_pages_whose_buttons_nobody_pressed(tmp_path):

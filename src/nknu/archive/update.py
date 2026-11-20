@@ -21,7 +21,15 @@ cli.py until the owner names the time (11-16: 「动 cli.py…动手前先和我
   never run (the owner's timing, 11-16). An alarmed site's rows go back every night until let go (watch.HELD_KEY).
 - sites: the update sites as one comma list (what the nightly script gives `archive run --sites`).
 - fail --step X: the status file says the night stopped at step X, kept with tonight's review when there is one (the
-  nightly script, research/crawler_lab_2026-11-04/nightly_update.sh, on a failing step).
+  nightly script, deploy/lab-crawler/lab/nightly_update.sh, on a failing step).
+- thin-back (11-17): holds run.lock; marks again what reconcile judged of a page's words (thin, in_image) where
+  a night's fetch dropped it (Frontier.thin_back); --dry-run only counts (read only); --out writes the sites to
+  export again, one per line.
+- round2 (11-17, design 2026-11-17-round2-batch2 §三.2): holds run.lock; --sites: the later rows of round two's batch
+  sites that the list places this round go pending (batch.promote); --dry-run counts in a rolled-back
+  transaction; --undo puts back what nothing fetched since; --close ends the batch.
+- no-area (11-17): holds run.lock; the pages stored as got whose answer lacks the content area their profile
+  requires are flagged no_area and put back (batch.no_area_back); --dry-run only counts; --out the sites.
 
 Only round-one sites. A list left out is counted with its reason: a walk cut off with presses waiting is resume()'s to
 finish, a look still open waits for its end.
@@ -46,6 +54,16 @@ days whatever the month's length 【Claude: the plan said weekday and day of mon
   content_links from the answer in the archive; not their menu, not what a home links): standing pages and files
   【Claude】. Lists are no source: their rows bring their details back (list_row).
 - again: the rows of a site the review holds (watch.HELD_KEY): every night until a review lets them go.
+
+11-19, the sites read again one layer deep (round1.Site.revisit: the off-campus unit sites of round two's batch,
+crawled once): on the night REVISIT_WEEKDAY names (a monthly site on the month's first), or any night the last review
+held one of its rows, a site's home (its seeds in the list, the seeds its batch or a sitemap gave it, and where a 3xx
+of one leads) and the pages its home links go back (revisit), about 500 requests a week where reading every page of
+these sites would be 2,000. A new post a home links is a new row, fetched as any new row within the site's own caps.
+The same run fetches them (`sites` adds tonight's keys, REVISIT_KEY), the same review judges them, the night exports
+those that changed (_night_sites). They are never in UPDATE_SITES_KEY: no nightly batch takes their rows, a run holds
+them by their own caps, and a run reconciles them. revisit-back: the same rows put back by hand (run.lock), every
+revisit site or --sites, whatever the day, no night started; --dry-run counts, read only.
 """
 
 from __future__ import annotations
@@ -62,8 +80,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from nknu.archive import batch, export, outcome, postback, profiles, round1, scope, watch
 from nknu.archive import crawler as crawl_mod
-from nknu.archive import export, outcome, postback, profiles, watch
 from nknu.archive.frontier import Frontier, write_first
 
 # the seed sources whose pages are a site's way in (seeds.py): its home, the owner's extra pages, a c.nknu template's
@@ -89,6 +107,12 @@ OFTEN_GAP_S = 42 * 3600  # rule 3's two days: a check two nights ago a little la
 DAILY_PERIODS = (("01-20", "03-10"), ("08-01", "09-30"))
 DAILY_SITES = frozenset({"c.nknu.edu.tw/aca", "sso.nknu.edu.tw/web/592", "sso.nknu.edu.tw/web/595",
                          "sso.nknu.edu.tw/web/596", "sso.nknu.edu.tw/web/600"})
+# 11-19: the night that starts on this weekday (date.weekday(): Saturday, a week's posts behind it) reads the revisit
+# sites again; a monthly one on the month's first such night
+REVISIT_WEEKDAY = 5
+REVISIT_KEY = "update:revisit_tonight"  # the revisit sites tonight's put-back took (a JSON list): `sites` adds them
+# the seed sources that are a revisit site's way in: its batch's (batch.promote), a sitemap a person gave it
+REVISIT_SOURCES = ("round2:%", "sitemap%")
 STATUS = "update-status.json"
 TAIPEI = ZoneInfo("Asia/Taipei")
 SAY = {"new": "新的", "changed": "改了", "same": "没变", "no_answer": "这次没回话", "not_seen": "这次没看到",
@@ -108,12 +132,15 @@ class Tonight:
     standing: list[int] = field(default_factory=list)  # standing pages: tonight's share, rules 2 and 3
     follow: list[int] = field(default_factory=list)  # rule 1: linked in the text of a notice that changed
     again: list[int] = field(default_factory=list)  # the rows of the sites the last review held
+    revisit: list[int] = field(default_factory=list)  # the revisit sites due tonight: home, the pages it links
+    revisit_sites: list[str] = field(default_factory=list)  # their keys (the run is given them too)
+    revisit_error: str = ""  # why tonight's revisit sites could not be chosen (the night goes on without them)
     skipped: Counter = field(default_factory=Counter)  # lists left out tonight, by reason
     why: Counter = field(default_factory=Counter)  # standing pages by why: week, month (deleted), daily, often
 
     def ids(self) -> list[int]:
         return [*self.looks, *self.looks_get, *self.homes, *self.walks, *self.walks_get, *self.redo, *self.redo_get,
-                *self.recent, *self.standing, *self.follow, *self.again]
+                *self.recent, *self.standing, *self.follow, *self.again, *self.revisit]
 
 
 def _has(frontier: Frontier, table: str) -> bool:
@@ -133,6 +160,110 @@ def update_keys(frontier: Frontier) -> set[str]:
     return keys
 
 
+def _plan() -> round1.Plan:
+    """The site list (config/archive_round1.json): which sites are read again weekly or monthly."""
+    return round1.load()
+
+
+def revisit_sites(plan: round1.Plan) -> dict[str, str]:
+    """The sites read again one layer deep, and how often (round1.Site.revisit)."""
+    return {s.site: s.revisit for s in plan.sites.values() if s.revisit}
+
+
+def revisit_due(plan: round1.Plan, today: date, held: set[str] | frozenset[str] = frozenset()) -> set[str]:
+    """The revisit sites a night takes: the weekly ones on REVISIT_WEEKDAY, the monthly ones on the month's first;
+    one the last review held a row of (an alarm), any night."""
+    sites = revisit_sites(plan)
+    due = ({k for k, how in sites.items() if how == "weekly" or today.day <= 7}
+           if today.weekday() == REVISIT_WEEKDAY else set())
+    return due | (set(held) & set(sites))
+
+
+def _moves(frontier: Frontier, row) -> list:
+    """A page and where it leads when it moves (a 3xx, a script or a refresh), as far as a redirect chain goes."""
+    out, at = [row], row
+    for _hop in range(outcome.MAX_HOPS):
+        moved = ((at["status"] is not None and 300 <= at["status"] < 400)
+                 or "js_redirect" in (at["flags"] or "").split(","))
+        to = frontier.row(at["final_url"]) if moved and at["final_url"] else None
+        if to is None or to["id"] in {r["id"] for r in out}:
+            break
+        out.append(to)
+        at = to
+    return out
+
+
+def _is_sitemap(url: str) -> bool:
+    return url.split("?", 1)[0].lower().endswith(".xml")
+
+
+def revisit_rows(frontier: Frontier, root: Path, plan: round1.Plan, sites) -> dict[str, list[int]]:
+    """Each site's rows a revisit takes: its home (the list's seeds, the seeds of REVISIT_SOURCES; where one moves
+    to; a seed that is a sitemap, and the sitemaps it names) and the pages those link (the link table), its own, got
+    or failed; and its rows the last review held. 性别所's old Wix site has no home in the archive: its way in is its
+    sitemap, whose three sitemaps name every post, so its month's revisit reads each post again (about 590 pages)."""
+    chains = postback.Chains(frontier, root)
+    held = (json.loads(frontier.meta(watch.HELD_KEY) or "null") or {"ids": []})["ids"]
+    like = " OR ".join("s.source LIKE ?" for _ in REVISIT_SOURCES)
+    out: dict[str, list[int]] = {}
+    for key in sorted(sites):
+        site = plan.site(key)
+        starts: dict[int, object] = {}
+        found = [chains._fetched_row(scope.canonical(u) or u) for u in (site.seeds if site is not None else ())]
+        found += frontier.q(f"SELECT u.* FROM seed_src s JOIN url u ON u.url = s.url WHERE u.owner_site = ? AND ({like}) "
+                            "ORDER BY u.id", (key, *REVISIT_SOURCES))
+        for row in found:
+            for r in (_moves(frontier, row) if row is not None else ()):
+                if r["owner_site"] == key:
+                    starts.setdefault(r["id"], r)
+        for r in [r for r in starts.values() if r["kind"] == "file" and _is_sitemap(r["url"])]:
+            for (dst,) in frontier.q("SELECT dst FROM link WHERE src = ?", (r["id"],)):
+                row = chains._fetched_row(dst) if _is_sitemap(dst) else None
+                if row is not None and row["kind"] == "file" and row["owner_site"] == key:
+                    starts.setdefault(row["id"], row)
+        ids = [i for i, r in starts.items() if r["state"] in ("done", "failed")]
+        linked: set[str] = set()
+        for i in range(0, len(starts), 500):
+            part = sorted(starts)[i:i + 500]
+            linked |= {r[0] for r in frontier.q(f"SELECT dst FROM link WHERE src IN ({_in(part)})", part)}
+        for dst in sorted(linked):
+            row = chains._fetched_row(dst)
+            if (row is not None and row["id"] not in starts and row["owner_site"] == key and row["kind"] == "page"
+                    and row["state"] in ("done", "failed")):
+                ids.append(row["id"])
+        for i in held:
+            row = frontier.row_by_id(i)
+            if row is not None and row["owner_site"] == key and row["state"] in ("done", "failed"):
+                ids.append(i)
+        if ids:
+            out[key] = sorted(set(ids))
+    return out
+
+
+def _plan_or_none() -> round1.Plan | None:
+    """The site list for a night; None, said aloud, when it cannot be read: the night goes on without the revisit
+    sites, never stops over them."""
+    try:
+        return _plan()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"网站名单读不到（{type(exc).__name__}: {exc}）：这一晚照常，不带每周再看一次的校外单位网站", file=sys.stderr)
+        return None
+
+
+def _revisit_back(frontier: Frontier, root: Path, plan: round1.Plan, sites: set[str], *, write: bool) -> int:
+    """revisit-back: the revisit rows of these sites put back (write) or counted, a line a site."""
+    rows = revisit_rows(frontier, root, plan, sites)
+    total = 0
+    for key in sorted(sites):
+        ids = rows.get(key, [])
+        n = sum(1 for i in ids if frontier.put_back(i, "update_revisit")) if write else len(ids)
+        total += n
+        print(f"{key}\t{n}")
+    print(("放回去了" if write else "会放回") + f"：{len(rows)} 个网站、{total} 页（首页和首页链到的页）"
+          + ("；之后 archive run --sites 给同样这些网站" if write else "；没改账本"))
+    return 0
+
+
 def _daily(today: date) -> bool:
     md = f"{today:%m-%d}"
     return any(a <= md <= b for a, b in DAILY_PERIODS)
@@ -140,11 +271,11 @@ def _daily(today: date) -> bool:
 
 def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
            closable: set[int] | frozenset[int] = frozenset(), today: date | None = None,
-           last_night: float | None = None, now: float | None = None) -> Tonight:
+           last_night: float | None = None, now: float | None = None, plan: round1.Plan | None = None) -> Tonight:
     """Tonight's lists and pages (the module's docstring), each url row in one batch at most. sites: only these run
     keys (the run that follows is given the same: `archive run --sites`); closable: looks put-back will close first
     (Chains.stale_looks), counted as closed; today: the night's date (Asia/Taipei); last_night: the last night's start
-    (rule 1); now: rule 3's clock."""
+    (rule 1); now: rule 3's clock; plan: the site list, for the revisit sites (none: no revisit site is taken)."""
     t = Tonight()
     today = today or datetime.now(TAIPEI).date()
     now = time.time() if now is None else now
@@ -154,6 +285,9 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
     else:  # the sites go-live named (the run fetches these: `update sites`), else round one's
         named = frontier.meta(crawl_mod.UPDATE_SITES_KEY)
         r1 = set(json.loads(named)) if named else update_keys(frontier)
+    again = revisit_sites(plan) if plan is not None else {}
+    asked = set(r1)
+    r1 -= set(again)  # a revisit site is no update site: no nightly batch takes its rows
     open_looks = ({r[0] for r in frontier.q("SELECT list_id FROM list_look WHERE ended_at IS NULL")} - set(closable)
                   if _has(frontier, "list_look") else set())
     waiting = {r[0] for r in frontier.q("SELECT DISTINCT list_id FROM action WHERE kind NOT IN ('click', 'data') AND "
@@ -241,6 +375,20 @@ def select(frontier: Frontier, root: Path, *, sites: set[str] | None = None,
             at = to
     t.homes = list(dict.fromkeys(homes))
     _pages(frontier, root, t, chains, r1, walked | grouped, today, n, last_night, now)
+    if plan is not None and again:
+        try:
+            held = {row["owner_site"] for i in (json.loads(frontier.meta(watch.HELD_KEY) or "null") or {"ids": []})["ids"]
+                    if (row := frontier.row_by_id(i)) is not None}
+            due = revisit_due(plan, today, held)
+            if sites is not None:
+                due &= asked
+            taken = set(t.ids())
+            for key, ids in revisit_rows(frontier, root, plan, due).items():
+                t.revisit_sites.append(key)
+                t.revisit += [i for i in ids if i not in taken]
+        except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            # the night never stops over these sites: it goes on without them, and says so (_report)
+            t.revisit, t.revisit_sites, t.revisit_error = [], [], f"{type(exc).__name__}: {exc}"
     return t
 
 
@@ -356,7 +504,7 @@ def _pages(frontier: Frontier, root: Path, t: Tonight, chains: postback.Chains, 
 
 
 BATCHES = ("looks", "looks_get", "walks", "walks_get", "redo", "redo_get", "homes", "recent", "standing", "follow",
-           "again", "not_opened")
+           "again", "revisit", "not_opened")
 
 
 def put_back(frontier: Frontier, root: Path, tonight: Tonight) -> Counter:
@@ -378,7 +526,8 @@ def put_back(frontier: Frontier, root: Path, tonight: Tonight) -> Counter:
     for name, ids, why in (("redo_get", tonight.redo_get, "update_redo"), ("homes", tonight.homes, "update_home"),
                            ("recent", tonight.recent, "update_recent"),
                            ("standing", tonight.standing, "update_standing"),
-                           ("follow", tonight.follow, "update_follow"), ("again", tonight.again, "update_again")):
+                           ("follow", tonight.follow, "update_follow"), ("again", tonight.again, "update_again"),
+                           ("revisit", tonight.revisit, "update_revisit")):
         for i in ids:
             got[name if frontier.put_back(i, why) else "not_opened"] += 1
     return got
@@ -399,6 +548,11 @@ def _report(frontier: Frontier, t: Tonight) -> None:
           f"学校删了每月看一次的 {t.why['month']}、开学前后每天的 {t.why['daily']}、常改的 {t.why['often']}）；"
           f"改了的公告内文链到的 {len(t.follow)} 个；整站警报压着、再看一次的 {len(t.again)} 个；"
           f"共 {len(ids)} 个网址（之后有新东西才会再多）")
+    if t.revisit_sites:
+        print(f"轮到再看一次的校外单位网站 {len(t.revisit_sites)} 个：首页和首页链到的页 {len(t.revisit)} 页"
+              "（算在上面的总数里）")
+    if t.revisit_error:
+        print(f"每周再看一次的校外单位网站这一晚没挑成（{t.revisit_error}）：这一晚照常，不带它们", file=sys.stderr)
     if queues:
         print("按服务器：" + "、".join(f"{q} {n}" for q, n in queues.most_common()))
     if t.skipped:
@@ -444,9 +598,18 @@ def _short_ends(frontier: Frontier, night: float) -> list[dict]:
         "SELECT url, message FROM event WHERE code='look_ended' AND at >= ? ORDER BY rowid", (watch._iso(night),))]
 
 
+def _revisit_keys() -> list[str]:
+    """The revisit sites of the list; none when the list cannot be read (the night's own sites stay)."""
+    try:
+        return sorted(revisit_sites(_plan()))
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def _seen(frontier: Frontier) -> dict[str, str | None]:
     """Each update site's last answer (design §7.5: 「每站最后一次看过」; the export's 资料截至 stays the last export's)."""
     keys = json.loads(frontier.meta(crawl_mod.UPDATE_SITES_KEY) or "[]")
+    keys += [k for k in _revisit_keys() if k not in keys]  # 11-19: the revisit sites, whether tonight was theirs
     got = {k: None for k in keys}
     for i in range(0, len(keys), 500):
         part = keys[i:i + 500]
@@ -489,7 +652,9 @@ def review(frontier: Frontier, root: Path, *, now: float | None = None) -> tuple
                   "counts": dict(sorted(n.counts().items())), "alarms": n.alarms, "sites_changed": n.sites_changed,
                   "held": len(n.again), "lists_short": _short_ends(frontier, since), "changes_file": name,
                   "run_end": end, "put_back": json.loads(frontier.meta(PUT_KEY) or "{}"),
-                  "sites_seen": _seen(frontier), "export": None}  # the seen step writes it after the export
+                  "sites_seen": _seen(frontier), "export": None,  # the seen step writes it after the export
+                  "revisit_tonight": (tonight := json.loads(frontier.meta(REVISIT_KEY) or "[]")),
+                  "revisit_idle": [k for k in _revisit_keys() if k not in tonight]}
         part = out / (STATUS + ".part")
         part.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
         frontier.meta(REVIEWED_KEY, raw)
@@ -524,7 +689,8 @@ def _sites(raw: str | None) -> set[str] | None:
 
 # what tonight did with each update site, in seen.tsv's third column (export batch T7; the content session's handover
 # point 2 reads the first two columns only)
-SEEN_WORDS = {"ok": "导了", "failed": "导出失败", "alarm": "警报压着", "unanswered": "连不上", "same": "没变动"}
+SEEN_WORDS = {"ok": "导了", "failed": "导出失败", "held": "导出拦下", "alarm": "警报压着", "unanswered": "连不上",
+              "same": "没变动", "idle": "没轮到"}
 
 
 OWED = "export-owed.json"  # the sites changed and not exported yet (the review's F6): reports/, beside the status
@@ -546,28 +712,74 @@ def _write_owed(root: Path, sites) -> None:
     part.replace(path)
 
 
+def _owed_by_night(sites, only: set[str] | None) -> list[str]:
+    """Owed means owed by the night: only a site the night's export can take (export_list's `only`, the sites under
+    periodic update) is owed; None (the update sites cannot be read) drops nothing. 11-18 (爬虫judge): a round-two site
+    a day's run fetched is in the night's change list, the night never exports it, so it joined the owed list and
+    never left it (33 sites on 11-18, all exported by day)."""
+    return sorted(s for s in set(sites) if only is None or s in only)
+
+
 def owe(root: Path, sites) -> None:
     """The sites a night's review found changed join those owed an export (the review's F6: a night whose export did
-    not happen, or a site whose export failed, is exported on a later night, never forgotten)."""
-    _write_owed(root, set(_owed(root)) | set(sites))
+    not happen, or a site whose export failed, is exported on a later night, never forgotten); a site not under
+    periodic update is never owed, and one owed from before is let go here (_owed_by_night)."""
+    _write_owed(root, _owed_by_night(set(_owed(root)) | set(sites), _night_sites(root)))
 
 
-def export_list(status: dict, owed: list[str] | None = None) -> list[str]:
+def export_list(status: dict, owed: list[str] | None = None, only: set[str] | None = None) -> list[str]:
     """The sites tonight's export takes (design §7.4: the nightly script tells the export which): those owed an export
     (owe: changed tonight or on a night whose export did not happen) and those the change list says changed, none
-    an alarm holds tonight (§7.5: an alarmed site is not exported tonight; it stays owed)."""
+    an alarm holds tonight (§7.5: an alarmed site is not exported tonight; it stays owed). only: the sites under
+    periodic update (crawl_mod.UPDATE_SITES_KEY), when known: a round-two batch's site a day's run fetched is in the
+    change list too, and is exported when its batch is done, not by the night (design 2026-11-17-round2-batch2 §三.5)."""
     held = set(status.get("alarms") or {})
-    return sorted(s for s in set(owed or []) | set(status.get("sites_changed") or []) if s not in held)
+    return sorted(s for s in set(owed or []) | set(status.get("sites_changed") or [])
+                  if s not in held and (only is None or s in only))
 
 
-def _results(path: Path | None) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _update_sites(root: Path) -> set[str] | None:
+    """The sites under periodic update (meta UPDATE_SITES_KEY, read only); None when it cannot be read (no filter)."""
+    try:
+        f = Frontier(root / "frontier.db", readonly=True)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        raw = f.meta(crawl_mod.UPDATE_SITES_KEY)
+    finally:
+        f.close()
+    try:
+        got = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return {x for x in got if isinstance(x, str)} if isinstance(got, list) else None
+
+
+def _night_sites(root: Path) -> set[str] | None:
+    """The sites a night may export: those under periodic update and the revisit sites (11-19: one of them that
+    changed on its night, or by a person's run, is exported by the night); None when the update sites cannot be read."""
+    got = _update_sites(root)
+    return None if got is None else got | set(_revisit_keys())
+
+
+def _result_lines(path: Path | None) -> dict[str, list[str]]:
+    """EXPORT_RESULTS's lines by site: the word (ok, unchanged, failed, not_ready, held) and, for held, its reason."""
+    out: dict[str, list[str]] = {}
     if path is not None and path.is_file():
         for line in path.read_text(encoding="utf-8").splitlines():
             if "\t" in line:
-                site, what = line.split("\t", 1)
-                out[site.strip()] = what.strip()
+                site, *rest = line.split("\t")
+                out[site.strip()] = [x.strip() for x in rest]
     return out
+
+
+def _results(path: Path | None) -> dict[str, str]:
+    return {site: rest[0] for site, rest in _result_lines(path).items()}
+
+
+def _held(path: Path | None) -> dict[str, str]:
+    """The sites whose export was held (export_sites.sh, 11-17 爬虫judge: a copy of the 10-24 archive went) and why."""
+    return {site: (rest[1] if len(rest) > 1 else "") for site, rest in _result_lines(path).items() if rest[0] == "held"}
 
 
 def _previous_seen(path: Path) -> dict[str, str]:
@@ -582,25 +794,30 @@ def seen_rows(status: dict, results: dict[str, str], previous: dict[str, str] | 
         -> list[tuple[str, str, str]]:
     """seen.tsv's rows, by site key (export batch T7; design §7.5 「每站最后一次看过」): the site, its last answer in
     Taipei time (YYYY-MM-DD HH:MM; '' when it never answered), and what tonight did: an alarm held it, its export
-    failed, it was exported, it did not answer tonight (its last answer is older than tonight's start), or it did not
-    change. A site an alarm held or whose export failed keeps the time the previous seen.tsv gave it (the review's
-    F5: the export the content stage holds of it is that night's, not tonight's)."""
+    failed, its export was held (a copy of the 10-24 archive went, 11-17), it was exported, it did not answer tonight
+    (its last answer is older than tonight's start), or it did not change; a revisit site whose night it was not
+    (status revisit_idle, 11-19) says so, with its last answer. A site an alarm held or whose export failed
+    or was held keeps the time the previous seen.tsv gave it (the review's F5: the export the content stage holds of it
+    is that night's, not tonight's)."""
     night = status.get("night_started")
     start = datetime.fromisoformat(night) if night else None
     alarms = set(status.get("alarms") or {})
+    idle = set(status.get("revisit_idle") or ())
     rows = []
     for site, at in sorted((status.get("sites_seen") or {}).items()):
         when = datetime.fromisoformat(at).astimezone(TAIPEI) if at else None
         if site in alarms:
             what = "alarm"
-        elif results.get(site) in ("ok", "failed"):
+        elif results.get(site) in ("ok", "failed", "held"):
             what = results[site]
+        elif site in idle:
+            what = "idle"
         elif when is None or (start is not None and when < start):
             what = "unanswered"
         else:
             what = "same"
         shown = when.strftime("%Y-%m-%d %H:%M") if when else ""
-        if what in ("alarm", "failed"):
+        if what in ("alarm", "failed", "held"):
             shown = (previous or {}).get(site, "")
         rows.append((site, shown, SEEN_WORDS[what]))
     return rows
@@ -613,17 +830,114 @@ def _write_seen(path: Path, rows: list[tuple[str, str, str]]) -> None:
     part.replace(path)
 
 
+def _thin_back(marked: dict[str, int], out: Path | None, dry: bool) -> int:
+    """thin-back's report (Frontier.thin_back, 11-17): the pages per site, and the sites to export again written to
+    out (one per line; empty when none), for export_sites.sh."""
+    total = sum(marked.values())
+    verb = "要标回" if dry else "标回了"
+    print(f"{verb} {total} 页（{len(marked)} 个网站）" + ("：" + "、".join(f"{s} {n}" for s, n in sorted(marked.items()))
+                                                       if marked else ""))
+    if out is not None:
+        out.write_text("".join(f"{s}\n" for s in sorted(marked)), encoding="utf-8")
+    return 0
+
+
+def _round2(f: Frontier, a, sites: set[str] | None) -> int:
+    """round2 (batch.py; design 2026-11-17-round2-batch2 §三.2): promote, --undo or --close, each site's counts."""
+    if a.close:
+        batch.close(f, sorted(sites) if sites else None)
+        left = sorted(batch.open_sites(f))
+        print("第二轮这一批关掉了" + (f"；还开着：{'、'.join(left)}" if left else "；没有开着的了"))
+        return 0
+    if not sites:
+        print("round2 要 --sites（这一批的网站键，逗号分隔）", file=sys.stderr)
+        return 1
+    verb = "会" if a.dry_run else ""
+    if a.undo:
+        back = batch.undo(f, sorted(sites), write=not a.dry_run)
+        for site, n in sorted(back.items()):
+            print(f"{site}：{verb}放回 {n} 行（升级以后没抓过的）")
+        return 0
+    try:
+        got = batch.promote(f, round1.load(), sorted(sites), write=not a.dry_run)
+    except ValueError as exc:
+        print(f"{exc}：什么都没改", file=sys.stderr)
+        return 1
+    for site, c in sorted(got.items()):
+        kinds = "、".join(f"{_KIND_WORD.get(k, k)} {n}" for k, n in sorted(c.promoted.items())) or "0"
+        held = "、".join(f"{k} {n}" for k, n in sorted(c.held.items())) or "0"
+        print(f"{site}：{verb}升成待抓 {kinds}；撞上限 {held}；仍留下一轮 {c.left}；已抓到的改成这一轮 {c.retiered}；"
+              f"旧来源的深度改从 1 算 {c.rebased}")
+    return 0
+
+
+_KIND_WORD = {"page": "网页", "file": "附件", "image": "图片"}
+
+
+def js_take(root: Path, sites: set[str], crawler=None) -> dict[str, tuple[int, int]]:
+    """js-take (the JS sites' handoff, item ④; plan 2026-11-17-jsfetch-integration task 3): each page of these sites
+    whose browser look shows something of its own (jsfetch.classify: links or text), its look the export gives
+    (jsfetch.for_export: the newest complete one that added something) read for what it links (Crawler.take_rendered:
+    pending by the rules, page_res added to). Run between jsfetch run and the next archive run, holding run.lock.
+    Returns (pages read, url rows added) by site."""
+    from nknu.archive import jsfetch
+
+    crawler = crawler or crawl_mod.Crawler(root, sites=sorted(sites))
+    f = crawler.frontier
+    if not f.q("SELECT 1 FROM sqlite_master WHERE type='table' AND name='js_render'"):
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for uid, kind in sorted(jsfetch.classify(f, sites).items()):
+        if kind == "none":
+            continue
+        look, _why = jsfetch.for_export(f, uid)
+        row = f.row_by_id(uid)
+        if look is None or row is None or look["warc"] is None or look["warc_offset"] is None:
+            continue
+        try:
+            _url, html = jsfetch.read_rendered(Path(root), look["warc"], look["warc_offset"])
+        except (OSError, ValueError):
+            continue
+        added = crawler.take_rendered(row, html, look["warc"], look["warc_offset"])
+        site = row["owner_site"] or row["site"]
+        pages, total = out.get(site, (0, 0))
+        out[site] = (pages + 1, total + added)
+    return out
+
+
+def _no_area(marked: dict[str, int], out: Path | None, dry: bool) -> int:
+    """no-area's report (batch.no_area_back, 11-17): the pages per site, and the sites to export again written to out."""
+    verb = "要标出" if dry else "标出、放回重抓了"
+    print(f"{verb} {sum(marked.values())} 页（{len(marked)} 个网站）"
+          + ("：" + "、".join(f"{s} {n}" for s, n in sorted(marked.items())) if marked else ""))
+    if out is not None:
+        out.write_text("".join(f"{s}\n" for s in sorted(marked)), encoding="utf-8")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m nknu.archive.update",
                                  description="定期更新：挑今晚要看的列表和网页、放回待抓（不连网；抓取照旧用 nknu archive run）")
     ap.add_argument("--dir", required=True, type=Path, help="存档目录（frontier.db 所在）")
-    ap.add_argument("action", choices=("plan", "put-back", "go-live", "review", "sites", "fail", "export-list", "seen"),
+    ap.add_argument("action", choices=("plan", "put-back", "go-live", "review", "sites", "fail", "export-list", "seen",
+                                       "thin-back", "round2", "no-area", "js-take", "revisit-back"),
                     help="plan 只读、只算数；put-back 放回今晚要看的；go-live 第一晚以前做一次；review 算这一晚的变动清单；"
                          "sites 印出定期更新的网站键（逗号分隔）；fail --step 记下这一晚停在哪一步；export-list 印出今晚要导出的"
-                         "网站（一行一个：有变动的，警报压着的不算）；seen --results --out 写 seen.tsv（每站最后一次看过）")
+                         "网站（一行一个：有变动的，警报压着的不算）；seen --results --out 写 seen.tsv（每站最后一次看过）；"
+                         "thin-back 把每晚重抓冲掉的「页面几乎是空的」「内容在图片里」标回来（--dry-run 只数），--out 写要重导的网站；"
+                         "round2 --sites 把第二轮这一批网站的「下一轮」行升成这一轮（--dry-run 只数，--undo 撤回，--close 关掉这一批）；"
+                         "no-area 把存成「抓到了」、其实学校这次没回内容那一块的网页标出来、放回重抓（--dry-run 只数，--out 写要重导的网站）；"
+                         "js-take --sites 把浏览器（python -m nknu.archive.jsfetch run）开过、显示出东西的网页，照它的显示版找链接、"
+                         "排进待抓（之后再 archive run）；"
+                         "revisit-back 手动把每周／每月再看一次的校外单位网站的首页和首页链到的页放回（不看星期几；"
+                         "--sites 只放这些，--dry-run 只数；不算一晚，之后 archive run --sites 同样这些）")
     ap.add_argument("--results", type=Path, default=None,
                     help="seen 用：今晚导出的结果（网站键<TAB>ok/failed/…，export_sites.sh 的 EXPORT_RESULTS）")
-    ap.add_argument("--out", type=Path, default=None, help="seen 用：写到哪里（例如 /work/archive-export/sites/seen.tsv）")
+    ap.add_argument("--out", type=Path, default=None, help="seen 用：写到哪里（例如 /work/archive-export/sites/seen.tsv）；"
+                    "thin-back 用：要重导的网站写到哪里（一行一个）")
+    ap.add_argument("--dry-run", action="store_true", help="thin-back、round2、revisit-back 用：只数，不改账本")
+    ap.add_argument("--undo", action="store_true", help="round2 用：撤回这些网站升级时改的行（之后没抓过的）")
+    ap.add_argument("--close", action="store_true", help="round2 用：这一批结束（不给 --sites 就全部结束）")
     ap.add_argument("--step", default=None, help="fail 用：停在哪一步")
     ap.add_argument("--today", type=date.fromisoformat, default=None,
                     help="plan、put-back 用：当作哪一天挑（YYYY-MM-DD，台北日期；默认今天）")
@@ -643,7 +957,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"读不到这一晚的状态档（{type(exc).__name__}）：先跑 review", file=sys.stderr)
             return 1
         if a.action == "export-list":
-            print("\n".join(export_list(status, _owed(root))))
+            print("\n".join(export_list(status, _owed(root), _night_sites(root))))
             return 0
         if a.out is None:
             print("seen 要 --out", file=sys.stderr)
@@ -651,13 +965,13 @@ def main(argv: list[str] | None = None) -> int:
         results = _results(a.results)
         _write_seen(a.out, seen_rows(status, results, _previous_seen(a.out)))
         done = {s for s, w in results.items() if w in ("ok", "unchanged")}
-        left = sorted(set(_owed(root)) - done)
+        left = _owed_by_night(set(_owed(root)) - done, _night_sites(root))
         _write_owed(root, left)
         # the night's export in the status file (the review's F8: the dashboard's mark and a person read it there)
         status["export"] = {"at": _local(time.time()), "exported": sorted(s for s, w in results.items() if w == "ok"),
                             "unchanged": sorted(s for s, w in results.items() if w == "unchanged"),
                             "failed": sorted(s for s, w in results.items() if w not in ("ok", "unchanged")),
-                            "owed": left}
+                            "held": _held(a.results), "owed": left}
         _write_status(root, status)
         print(f"写了 {a.out}：{len(status.get('sites_seen') or {})} 个网站；还欠导出 {len(left)} 个")
         return 0
@@ -681,13 +995,22 @@ def main(argv: list[str] | None = None) -> int:
         f = Frontier(root / "frontier.db", readonly=True)
         try:
             raw = f.meta(crawl_mod.UPDATE_SITES_KEY)
+            tonight = f.meta(REVISIT_KEY)
         finally:
             f.close()
         if not raw:
             print("还没做过 go-live：没有定期更新的网站", file=sys.stderr)
             return 1
-        print(",".join(json.loads(raw)))
+        keys = json.loads(raw)
+        # 11-19: and the revisit sites tonight's put-back took (the same run fetches them)
+        print(",".join(keys + [k for k in json.loads(tonight or "[]") if k not in keys]))
         return 0
+    if a.action == "thin-back" and a.dry_run:
+        f = Frontier(root / "frontier.db", readonly=True)
+        try:
+            return _thin_back(f.thin_back(write=False), a.out, dry=True)
+        finally:
+            f.close()
     if a.action == "plan":
         f = Frontier(root / "frontier.db", readonly=True)
         try:
@@ -695,10 +1018,27 @@ def main(argv: list[str] | None = None) -> int:
                         if _has(f, "list_look") else set())
             last = f.meta(NIGHT_KEY)
             _report(f, select(f, root, sites=sites, closable=closable, today=a.today,
-                              last_night=float(last) if last else None))
+                              last_night=float(last) if last else None, plan=_plan_or_none()))
         finally:
             f.close()
         return 0
+    if a.action == "revisit-back":
+        try:
+            plan = _plan()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"网站名单读不到（{type(exc).__name__}: {exc}）：什么都没做", file=sys.stderr)
+            return 1
+        known = revisit_sites(plan)
+        unknown = sorted((sites or set()) - set(known))
+        if unknown:
+            print("不是每周／每月再看一次的网站键（打错了？）：" + "、".join(unknown) + "；什么都没做", file=sys.stderr)
+            return 1
+        if a.dry_run:
+            f = Frontier(root / "frontier.db", readonly=True)
+            try:
+                return _revisit_back(f, root, plan, sites or set(known), write=False)
+            finally:
+                f.close()
     try:
         lock = crawl_mod.hold_run_lock(root)
     except crawl_mod.AlreadyRunning as exc:
@@ -707,6 +1047,24 @@ def main(argv: list[str] | None = None) -> int:
     try:
         f = Frontier(root / "frontier.db")
         try:
+            if a.action == "thin-back":
+                return _thin_back(f.thin_back(write=True), a.out, dry=False)
+            if a.action == "revisit-back":
+                return _revisit_back(f, root, plan, sites or set(known), write=True)
+            if a.action == "round2":
+                return _round2(f, a, sites)
+            if a.action == "no-area":
+                return _no_area(batch.no_area_back(f, root, write=not a.dry_run), a.out, dry=a.dry_run)
+            if a.action == "js-take":
+                if not sites:
+                    print("js-take 要 --sites（要 JavaScript 的网站键，逗号分隔）", file=sys.stderr)
+                    return 1
+                got = js_take(root, sites)
+                for site, (pages, added) in sorted(got.items()):
+                    print(f"{site}：读了 {pages} 页的显示版，新排进待抓 {added} 行")
+                if not got:
+                    print("没有要读的显示版（浏览器还没开过这些网站，或开出来的都没有自己的东西）")
+                return 0
             if a.action == "go-live":
                 keys = sorted(update_keys(f))
                 if sites is not None:
@@ -746,8 +1104,10 @@ def main(argv: list[str] | None = None) -> int:
             last = f.meta(NIGHT_KEY)
             start = repr(time.time())
             closed = postback.Chains(f, root).close_stale_looks()
-            t = select(f, root, sites=sites, today=a.today, last_night=float(last) if last else None)
+            t = select(f, root, sites=sites, today=a.today, last_night=float(last) if last else None,
+                       plan=_plan_or_none())
             got = put_back(f, root, t)
+            f.meta(REVISIT_KEY, json.dumps(t.revisit_sites))  # the run's sites tonight (`sites`); none: []
             # the review's windows follow one another: the next opens where the last review ended (what a person's
             # run fetched in the day is in it); a night never reviewed (its run or review did not end) keeps its
             # window open, so the next review takes both. Written once tonight's rows are back (rule 1's last night
@@ -763,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
             _report(f, t)
             print(f"放回去了：列表 {got['looks']} 个、按网址翻页的第 1 页 {got['looks_get']} 个、翻到底的 "
                   f"{got['walks'] + got['walks_get']} 个、从头再翻的 {got['redo']} 个、其余的页 "
-                  f"{sum(got[k] for k in ('redo_get', 'homes', 'recent', 'standing', 'follow', 'again'))} 页"
+                  f"{sum(got[k] for k in ('redo_get', 'homes', 'recent', 'standing', 'follow', 'again', 'revisit'))} 页"
                   + (f"；没放成 {got['not_opened']} 个" if got["not_opened"] else "")
                   + (f"；结束了 {closed} 个上次没回来的查看" if closed else ""))
             return 0

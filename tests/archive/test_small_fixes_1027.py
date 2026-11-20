@@ -3,8 +3,9 @@ fix:
 
 - F1 a row parked with its directory (denied_dir) sent nothing: it is `parked` (要人看), said so with how to put it
   back, never 「试了 3 次还是失败」 nor a mark of the school's;
-- F2 select:ddl_Class is ignored only because the list without a class parameter shows 「全部」: a site that ignores it
-  needs such a list walked to its last page (reconcile R2 and verify item 4 say so when it has none);
+- F2 select:ddl_Class is ignored only because the list without a class parameter shows 「全部」, and the platform
+  file says so (the check that a site ignoring it has such a list walked to its last page, reconcile R2 and verify
+  item 4, went with the judgment-layer cut of 11-19);
 - F3 the dashboard during a --sites run: only those sites, a site's row on another server counted for it (since the
   11-04 dashboard: the last run_start's sites, whether its run is alive or not);
 - F4 the browser check: play.google.com/log is never sent, reCAPTCHA stays a login (inconclusive:not_sent, for a
@@ -20,14 +21,13 @@ import json
 
 import httpx
 
-from nknu.archive import jscheck, monitor, outcome, profiles, progress, reconcile
+from nknu.archive import jscheck, outcome, profiles, progress
 from nknu.crawl.fetch import FetchError
 from tests.archive.test_archive import make as make_net
 from tests.archive.test_archive import seed, snap
 from tests.archive.test_crawler_round1 import conn_err, rows, settle
 from tests.archive.test_pilot_fixes import HOME, WQ, make, work
 from tests.archive.test_progress import NOW, add_url, event, two_servers
-from tests.archive.test_reconcile import Arch
 
 # ---------------------------------------------------------------- F1: a parked directory's rows
 
@@ -54,7 +54,7 @@ def test_a_parked_row_sent_nothing_and_is_for_a_person_with_how_to_put_it_back(t
     assert len(parked) == 5 and {r["result"] for r in parked} == {"parked"}
     sent = {u for _m, u in net.seen}
     assert not any(r["url"] in sent for r in parked)  # not one request for them
-    assert outcome.user_bucket("parked") == "review" and outcome.RESULT_COLOR["parked"] == "red"
+    assert outcome.user_bucket("parked") == "review"
     assert "parked" in outcome.REVIEW and "parked" in outcome.GROUPS["bad"] and "parked" in outcome.URL_RESULTS
     label = outcome.RESULT_LABEL["parked"]
     assert "连续被拒两轮" in label and "没发请求" in label and "nknu archive retry denied_dir" in label
@@ -80,72 +80,12 @@ def test_a_row_still_waiting_out_its_directorys_rest_is_waiting_as_before(tmp_pa
     assert waiting and {r[0] for r in waiting} <= {"todo", "retry"}
 
 
-# ---------------------------------------------------------------- F2: ddl_Class needs a 「全部」 list walked to its end
-
-REALITY = "c.nknu.edu.tw/reality"
-R = "https://c.nknu.edu.tw/reality"
+# ---------------------------------------------------------------- F2: why ddl_Class is ignored
 
 
 def test_the_reason_ddl_class_is_ignored_is_the_list_without_a_class():
     why = next(w.why for w in profiles.CNKNU.writings if w.key == r"select:ddl_Class")
     assert "只有不带 class 参数的 newslist.aspx" in why and "?class=" in why
-
-
-def _class_site(tmp_path, ended_by: str | None, *, url: str = f"{R}/newslist.aspx"):
-    a = Arch(tmp_path)
-    f = a.f
-    f.set_host("c.nknu.edu.tw", queue="ip:c")
-    cat = add_url(f, url=f"{R}/newslist.aspx?class=A", host="c.nknu.edu.tw", site=REALITY, owner_site=REALITY,
-                  page_role="list")
-    f.set_page_res(cat, [{"res_key": "select:ddl_Class", "how": "unhandled", "role": "writing", "need": "no",
-                          "why": "unhandled:ignore"}])
-    f.x("INSERT INTO listwalk(list_id, site, profile, epoch, pages, rows, rows_unique, ended_by, ok) "
-        "VALUES (?,?,?,?,?,?,?,?,?)", (cat, REALITY, "cnknu", 1, 1, 3, 3, "last_page", 1))
-    if ended_by is not None:
-        whole = add_url(f, url=url, host="c.nknu.edu.tw", site=REALITY, owner_site=REALITY, page_role="list")
-        f.x("INSERT INTO listwalk(list_id, site, profile, epoch, pages, rows, rows_unique, ended_by, ok) "
-            "VALUES (?,?,?,?,?,?,?,?,?)", (whole, REALITY, "cnknu", 1, 3, 30, 30, ended_by, 1))
-    return a
-
-
-def test_a_site_ignoring_ddl_class_with_its_whole_list_walked_to_the_end_passes(tmp_path):
-    a = _class_site(tmp_path, "last_page")
-    try:
-        assert monitor.class_all_missing(a.f) == []
-        r2 = reconcile._r2(a.f, a.root, REALITY, write=False)
-        assert not [i for i in r2.items if i["problem"] == "class_all"]
-        assert by_no(monitor.checks(a.f))["4"].status == monitor.PASS
-    finally:
-        a.close()
-
-
-def test_a_site_ignoring_ddl_class_whose_whole_list_is_not_walked_to_the_end_is_for_a_person(tmp_path):
-    for n, (ended_by, url) in enumerate([(None, None), ("post_failed", f"{R}/newslist.aspx"),
-                                         ("last_page", f"{R}/newslist.aspx?class=B")]):
-        a = _class_site(tmp_path / str(n), ended_by, url=url or f"{R}/newslist.aspx")
-        try:
-            got = monitor.class_all_missing(a.f)
-            assert [g["site"] for g in got] == [REALITY], (ended_by, url)
-            r2 = reconcile._r2(a.f, a.root, REALITY, write=False)
-            assert r2.status == reconcile.FAIL and [i["problem"] for i in r2.items if i["problem"] == "class_all"]
-            four = by_no(monitor.checks(a.f))["4"]
-            assert four.status == monitor.FAIL
-            assert any(REALITY in x and "全部" in x and "newslist.aspx" in x for x in four.lines), four.lines
-        finally:
-            a.close()
-
-
-def test_a_site_that_decides_nothing_about_ddl_class_needs_no_such_list(tmp_path):
-    a = _class_site(tmp_path, None)
-    try:
-        a.f.x("DELETE FROM page_res")
-        assert monitor.class_all_missing(a.f) == []
-    finally:
-        a.close()
-
-
-def by_no(cs):
-    return {c.no: c for c in cs}
 
 
 # ---------------------------------------------------------------- F3: one scope for the cards (dashboard 11-04)

@@ -138,7 +138,7 @@ def test_a_site_answering_one_body_everywhere_is_an_alarm(world):
 
 # ---------------------------------------------------------------- Task 4: review, the status file, the nightly script
 
-SCRIPT = Path(__file__).resolve().parents[2] / "research" / "crawler_lab_2026-11-04" / "nightly_update.sh"
+SCRIPT = Path(__file__).resolve().parents[2] / "deploy" / "lab-crawler" / "lab" / "nightly_update.sh"
 
 
 def test_review_writes_the_change_list_and_the_status(world, capsys):
@@ -174,6 +174,7 @@ def _fake_python(tmp_path: Path, fail_at: str | None) -> Path:
     py = bin_ / "python"
     py.write_text("#!/usr/bin/env bash\n"
                   'step="$1"; [ "$1" = "-m" ] && step="$5"; [ "$1" = "-c" ] && step="run"; [ "$1" = "-" ] && step="backup"\n'
+                  '[ "$2" = "nknu.archive.jsfetch" ] && step="jsfetch"\n'
                   f'echo "$step $*" >> "{tmp_path}/calls.log"\n'
                   '[ "$step" = "sites" ] && echo "a.nknu.edu.tw"\n'
                   f'[ "$step" = "{fail_at or "-none-"}" ] && exit 1\n'
@@ -182,19 +183,19 @@ def _fake_python(tmp_path: Path, fail_at: str | None) -> Path:
     return py
 
 
-@pytest.mark.skipif(not SCRIPT.is_file(), reason="the lab's scripts live in research/ (not in git); this checkout has none")
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="deploy/lab-crawler/lab/ is not in this checkout")
 @pytest.mark.parametrize("fail_at", [None, "put-back", "run"])
 def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_path, fail_at):
     py = _fake_python(tmp_path, fail_at)
     (tmp_path / "archive" / "warc").mkdir(parents=True)
     env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups"),
            "LOCKS": str(tmp_path / "locks"),
-           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock")}
+           "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock"), "JS_SITES_FILE": str(tmp_path / "no-js-sites.txt")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    want = {None: ["backup", "put-back", "sites", "run", "review", "export-list", "seen"],  # export batch T7
+    want = {None: ["backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"],  # export batch T7
             "put-back": ["backup", "put-back", "fail"],
-            "run": ["backup", "put-back", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
+            "run": ["backup", "put-back", "night", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
     assert got.returncode == (0 if fail_at is None else 1) and steps == want
 
 
@@ -261,3 +262,30 @@ def test_the_status_carries_each_sites_last_look_and_what_put_back_took(world):
     status = json.loads((world.root / "reports" / update.STATUS).read_text(encoding="utf-8"))
     assert status["put_back"] == dict.fromkeys(update.BATCHES, 0)
     assert status["sites_seen"][SITE] == world.f.row(f"https://{SITE}/a.aspx")["fetched_at"]
+
+
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="deploy/lab-crawler/lab/ is not in this checkout")
+def test_the_js_sites_get_their_round_after_the_review_and_are_exported_too(tmp_path):
+    """11-17 evening (plan 2026-11-17-jsfetch-integration task 6, prepared, installed after the 11-18 disk move): with a
+    list of JS sites (JS_SITES_FILE), the night opens them in the browser, takes the looks, fetches what they showed,
+    opens the new pages and takes them again, after the review and before the export; their keys join the export list
+    (the export's basis counts the looks: an unchanged site is skipped). A failing JS step is noted, never the night's
+    end. With no such list, nothing of it (the test above)."""
+    py = _fake_python(tmp_path, "js-take")
+    (tmp_path / "archive" / "warc").mkdir(parents=True)
+    js = tmp_path / "js_sites.txt"
+    js.write_text("# the JS sites\nw3.nknu.edu.tw\nord.nknu.edu.tw\n", encoding="utf-8")
+    fake_export = tmp_path / "export.sh"
+    fake_export.write_text(f'#!/usr/bin/env bash\ncp "$1" "{tmp_path}/exported.txt"\n', encoding="utf-8")
+    env = {**os.environ, "PY": str(py), "ROOT": str(tmp_path / "archive"), "BACKUPS": str(tmp_path / "backups"),
+           "LOCKS": str(tmp_path / "locks"), "TZ": "Asia/Taipei",
+           "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock"), "JS_SITES_FILE": str(js),
+           "EXPORT_SCRIPT": str(fake_export), "EXPORT_BASE": str(tmp_path / "sites")}
+    got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
+    steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
+    assert got.returncode == 0, got.stderr
+    assert steps == ["backup", "put-back", "night", "sites", "run", "review", "jsfetch", "js-take", "run", "jsfetch", "js-take",
+                     "export-list", "seen"]
+    assert (tmp_path / "exported.txt").read_text().split() == ["ord.nknu.edu.tw", "w3.nknu.edu.tw"]
+    log = (tmp_path / "archive" / "update.log").read_text(encoding="utf-8")
+    assert "JS 网站结束（有一步出错" in log

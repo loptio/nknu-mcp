@@ -11,7 +11,7 @@ import random
 
 import pytest
 
-from nknu.archive import outcome
+from nknu.archive import monitor, outcome
 from nknu.archive.frontier import Frontier
 
 SITE = "c.nknu.edu.tw/aca"
@@ -386,27 +386,18 @@ def test_any_combination_lands_on_a_known_code_and_never_on_ok_by_accident(f):
     assert seen == set(outcome.URL_RESULTS) - set(outcome.MARK_RESULTS)  # every code a row alone can reach
 
 
-def test_an_unknown_result_turns_the_self_check_red(f):
-    add_url(f)
-    add_url(f, state="pending", status=None)
-    assert outcome.self_check(f.conn) == {"url_result": 0, "action_result": 0, "no_owner_site": 0}
-    add_url(f, flags="weird")
-    add_url(f, state="parked")
-    lid = add_url(f, page_role="list")
-    add_action(f, lid, state="parked")
-    assert outcome.self_check(f.conn) == {"url_result": 2, "action_result": 1, "no_owner_site": 0}
-    assert outcome.RESULT_COLOR["unknown"] == "red"
-    assert outcome.user_bucket("unknown") == "review"  # 要人看, never 抓到了
-
-
-def test_a_round_one_row_that_counts_for_no_site_turns_the_self_check_red(f):
-    """url.owner_site is the one site a row counts for (design §2); url.site never stands in for it (review note low)."""
+def test_a_round_one_page_that_counts_for_no_site_is_listed_under_no_site_and_is_red(f):
+    """url.owner_site is the one site a row counts for (design §2); url.site never stands in for it (review note low).
+    The count verify's check 2 made of such rows (outcome.self_check) went with the cut of 11-19: the page is listed
+    under no site, and each site's state says so in red."""
     page = add_url(f, owner_site=None, url="https://sso.nknu.edu.tw/webservices/x.aspx", host="sso.nknu.edu.tw",
                    site="sso.nknu.edu.tw")
     add_url(f, **FILE, owner_site=None, tier=1)
     add_url(f, owner_site=None, tier=2, state="later", status=None)  # round two: counted where round two decides
-    assert outcome.self_check(f.conn)["no_owner_site"] == 2
     assert completeness(f, page)["site"] is None  # listed, under no site, never under its host's
+    status = monitor.site_status(f)
+    assert set(status) == {""} and status[""].state == monitor.ERROR
+    assert status[""].why == ["1 个网页不属于任何网站（owner_site 是空的：爬虫的 bug）"]
 
 
 # ---------------------------------------------------------------- §10.1: error pages, known by where they send you
@@ -538,10 +529,10 @@ def test_any_button_combination_lands_on_a_known_code_and_never_on_ok_by_acciden
 # ---------------------------------------------------------------- §10.2.1: what the user sees
 
 
-def test_every_result_has_a_label_a_colour_and_a_category():
-    codes = set(outcome.URL_RESULTS) | set(outcome.ACTION_RESULTS) | set(outcome.RESOURCE_RESULTS)
-    assert codes == set(outcome.RESULT_LABEL) == set(outcome.RESULT_COLOR)
-    assert set(outcome.RESULT_COLOR.values()) <= {"green", "yellow", "red", "none"}
+def test_every_result_has_a_label_and_a_category():
+    codes = (set(outcome.URL_RESULTS) | set(outcome.ACTION_RESULTS) | set(outcome.RESOURCE_RESULTS)
+             | set(outcome.PAGE_RESULTS))
+    assert codes == set(outcome.RESULT_LABEL)
     buckets = {code for code, _zh, _then in outcome.BUCKETS}
     assert {outcome.user_bucket(c) for c in codes} <= buckets
 
@@ -553,7 +544,7 @@ def test_every_result_has_a_label_a_colour_and_a_category():
     ("login", ("login",)),
     ("gone", ("gone", "bad_link", "short_dead")),  # the school's broken links: the owner 11-16 「销账照表做」
     ("next_round", ("later", "js", "click", "unchecked")),  # unchecked: a sign of JavaScript, round two's (11-16)
-    ("rule", ("rule", "redirect")),
+    ("rule", ("rule", "redirect", "rule_offsite")),
     ("review", ("held", "thin", "decode", "mismatch", "not_discovered", "unknown", "too_large", "unresolved",
                 "looks_gone", "api_error", "unhandled", "parked")),
     ("school_side", ("school_side",)),
@@ -573,15 +564,6 @@ def test_only_ok_is_got_and_what_is_not_known_is_for_a_person_to_look_at():
     assert outcome.user_bucket("something_new") == "review"
     zh = {c: zh for c, zh, _then in outcome.BUCKETS}
     assert (zh["failed"], zh["review"], zh["pending_check"]) == ("连接失败", "要人看", "待判定")
-
-
-def test_the_colours_follow_the_user_categories():
-    # 连接失败 (but lab) and 要人看 red (§10.2, §10.5): refused, http_4xx, thin, decode and too_large are no longer yellow
-    for code in outcome.RESULT_LABEL:
-        bucket = outcome.user_bucket(code)
-        if bucket in ("failed", "review") and code != "lab":
-            assert outcome.RESULT_COLOR[code] == "red", code
-    assert {outcome.RESULT_COLOR[c] for c in ("lab", "unchecked", "js", "click", "retry")} == {"yellow"}
 
 
 def test_resource_groups_split_every_result_once():
@@ -885,10 +867,18 @@ def test_a_page_that_sends_the_browser_on_is_judged_where_it_lands(f):
     end = add_url(f)
     start = add_url(f, flags="js_redirect", final_url=url_of(f, end))
     assert completeness(f, start) is None and lv(f, end) == ("complete", "complete")
-    later = add_url(f, tier=2, state="later", reason="round2:offsite", status=None)
+    later = add_url(f, tier=2, state="later", reason="round2:other_site", status=None)
     gone_on = add_url(f, flags="js_redirect", final_url=url_of(f, later))
     r = completeness(f, gone_on)
     assert (r["own"], r["level"], r["label"]) == ("later", "incomplete", "round2")
+    # 11-17: the page off campus is the owner's 「全部不抓」, and so is a school page that sends the browser there
+    # (爬虫judge 11-17: 「要人看」 is for what someone will act on): rule_offsite, nothing more to fetch, still in the
+    # table (review note high), its own words; never round two's, never for a person
+    declined = add_url(f, tier=2, state="later", reason="round2:offsite", status=None)
+    sent_off = add_url(f, flags="js_redirect", final_url=url_of(f, declined))
+    r = completeness(f, sent_off)
+    assert (r["own"], r["level"], r["label"], r["reasons"]) == ("rule_offsite", "rule", "rule_offsite", "rule_offsite")
+    assert outcome.user_bucket(r["own"]) == "rule"
     lost = add_url(f, flags="js_redirect")  # no target kept: never complete
     assert completeness(f, lost)["own"] == "not_discovered"
 
@@ -1029,7 +1019,10 @@ def test_a_page_that_redirects_to_a_judged_page_is_judged_there_once(f):
 
 
 @pytest.mark.parametrize("target, own, level, label", [
-    ({"tier": 2, "state": "later", "reason": "round2:offsite", "status": None}, "later", "incomplete", "round2"),
+    ({"tier": 2, "state": "later", "reason": "round2:other_site", "status": None}, "later", "incomplete", "round2"),
+    ({"tier": 2, "state": "later", "reason": "round2:offsite", "status": None}, "rule_offsite", "rule", "rule_offsite"),
+    ({"tier": 2, "state": "later", "reason": "round2:offsite_file", "status": None}, "rule_offsite", "rule",
+     "rule_offsite"),
     ({"state": "later", "reason": "round2:js_site", "status": None}, "later", "incomplete", "round2"),
     ({"tier": 2, "state": "pending", "status": None}, "todo", "waiting", "todo"),
     ({**FILE}, "ok", "complete", "complete"),  # a page address that now serves the PDF
@@ -1184,11 +1177,11 @@ def test_what_is_not_a_round_one_page_is_not_judged(f, cols):
 
 def test_every_level_and_label_is_reached_and_named():
     assert set(outcome.LEVEL_LABEL) == {"waiting", "complete_school", "unchecked", "list_unchecked", "incomplete",
-                                        "partial", "complete"}
+                                        "partial", "complete", "rule"}
     assert [c for c, _zh in outcome.LABEL_ORDER] == [
         "todo", "retry", "failed", "thin", "review", "js", "list", "list_unchecked", "miss_file", "miss_img",
-        "miss_other", "click", "round2_img", "round2", "unchecked", "complete_school", "complete"]
-    assert len({c for c, _zh in outcome.LABEL_ORDER}) == len(outcome.LABEL_ORDER) == 17
+        "miss_other", "click", "round2_img", "round2", "unchecked", "rule_offsite", "complete_school", "complete"]
+    assert len({c for c, _zh in outcome.LABEL_ORDER}) == len(outcome.LABEL_ORDER) == 18
     zh = dict(outcome.LABEL_ORDER)
     assert (zh["thin"], zh["js"], zh["click"], zh["round2"], zh["unchecked"]) == (
         "要人看：页面几乎是空的", "要 JavaScript（下一轮补）", "点了才载入的内容（下一轮补）", "有下一轮补的资源", "待判定")
@@ -1292,8 +1285,8 @@ def test_the_school_saying_a_file_does_not_exist_is_gone_and_its_broken_link_is_
     assert result_of(f, add_url(f, **{**FILE, "state": "pending", "attempts": 1, "reason": "gone_page",
                                       "status": None})) == "retry"
     assert outcome.RESULT_LABEL["bad_link"] == "学校的链接坏了"
-    # the school's broken link: 学校那边已经不存在 (the owner 11-16 「销账照表做」), still red for its site
-    assert outcome.user_bucket("bad_link") == "gone" and outcome.RESULT_COLOR["bad_link"] == "red"
+    # the school's broken link: 学校那边已经不存在 (the owner 11-16 「销账照表做」)
+    assert outcome.user_bucket("bad_link") == "gone"
     p = add_url(f)
     add_res(f, p, res=add_url(f, **{**FILE, "flags": "gone_page"}))
     assert lv(f, p) == ("complete_school", "complete_school")

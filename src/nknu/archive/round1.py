@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,10 @@ PLAN_NAME = "archive_round1.json"
 TIER_OF_IMP = {"全校重要": 0, "本系重要": 1}
 EXTRA_TIER = 1  # the pages the owner opened (design §4.2)
 ROUND2_TIER = 2
+# a round-two site a batch crawls now (Site.now) is as important as a department's own site unless its imp says
+# (design 2026-11-17-round2-batch2 §三.1: 「判法上当成第一轮的「本系重要」网站」)
+NOW_IMP = "本系重要"
+CAP_KINDS = ("page", "file", "image")  # a site's own caps (Site.caps), in this order
 ROUNDS = ("1", "resource", "2")
 # offsite_unit: the school's own unit on an off-campus site (record 三·2, 附表一; record 四's two centres)
 ROUND2_WHY = ("js_site", "other_site", "offsite_unit")
@@ -77,10 +82,121 @@ class Site:
     params: tuple[tuple[str, str], ...] = ()  # (name lowercased, value): every one must match (cirn.moe's sid=1219)
     leaf: int = 0  # 1: those pages only (附表一's 「该页」「这两页」); round two never follows from them
     seeds: tuple[str, ...] = ()  # where round two starts: its home, or each address of a merged key
+    # round two's batch that crawls this site now (design 2026-11-17-round2-batch2 §三.1: the batch's name, its date):
+    # the site is placed as this round's (this_round, tier 本系重要 unless its imp says) while it carries one
+    now: str = ""
+    caps: tuple[int, int, int] | None = None  # its own caps (pages, files, images), in place of a round-one site's
+    # paths of its own it does not follow (lowercase, by whole segments): an address under one is left out, out:skip_path
+    # (11-17, 爬虫judge's choice B for the gender institute's old Wix blog: its tag lists, every post they list in the
+    # site's own sitemap); only as the list names them for a site
+    skip: tuple[str, ...] = ()
+    # the name of its own a skip path carries, (path as in skip, name): the export writes that rule's rows as
+    # out:skip_path:<name> (11-19: the content stage lets the documents of one named rule leave its library, the
+    # teachers' works fetched before their rule came, and holds a swap over any other rule's)
+    skip_names: tuple[tuple[str, str], ...] = ()
+    # every address of the site with a query not followed either (11-17, GitHub: 「只抓社团首页和各仓库首页」, its tabs
+    # and filters ?tab=, ?q= aside)
+    skip_query: bool = False
+    # links it does not follow by the page they stand on: pairs of paths (lowercase, whole segments, as skip), a link
+    # on a page of the site under the first to an address under the second is left out, out:skip_path (11-18, course
+    # schedules design §八: a course outline links the same department's outlines of the year before, whose pages link
+    # the year before that; the outlines a class's table names are followed as before)
+    skip_from: tuple[tuple[str, str], ...] = ()
+    # pages of its own whose Google files (Drive, Docs) it does not fetch, (the page as a skip path writes one, a
+    # name): a Drive file a page under the path names is left out, out:skip_path, exported under the name as a named
+    # skip path's rows are (11-19: 工教系's seminar proceedings, a whole volume of papers a year on its 學術活動
+    # pages, /?p=acadact; the page, its form, its calendar and the files on the site's own host are as before)
+    skip_google: tuple[tuple[str, str], ...] = ()
+    # the kinds (CAP_KINDS) whose rows past this site's own cap are not fetched: skipped, out:cap_<kind>, a rule,
+    # where another site's are held for a person (11-19: 产业教育中心's Google Sites pages carry thousands of activity
+    # photographs past its picture cap, which nobody waits for)
+    cap_out: tuple[str, ...] = ()
+    # how often its home and the pages its home links are read again once its crawl is done: weekly or monthly, on
+    # the night update.REVISIT_WEEKDAY names (11-19: the off-campus unit sites, one layer, about 500 requests a week
+    # where reading each whole would be 2,000; 性别所's old Wix site, moved to a new one, monthly). A site with none
+    # is under the nightly update or read once
+    revisit: str = ""
+
+    def skips(self, url: str, found_on: str | None = None) -> bool:
+        """Whether the URL is one the list says the site does not follow: its path one of skip or under one (whole
+        segments, a trailing slash aside; a segment * stands for any one segment: /org/*/* is every page below a
+        repository's home; a path written with a ? at its end only when the address carries a query: the page itself
+        stays; with text after the ? only when the query starts with it, any case: /previewpdf.aspx?name=%5cfolder
+        leaves that folder's files and follows the page's others), or, with skip_query, any query; or, found_on being
+        the page the link stands on, a link skip_from names (skips_from)."""
+        if found_on is not None and self.skips_from(url, found_on):
+            return True
+        if not self.skip and not self.skip_query:
+            return False
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return False
+        if self.skip_query and parts.query:
+            return True
+        return self._skip_path(parts) is not None
+
+    def _skip_path(self, parts, rules: tuple[str, ...] | None = None) -> str | None:
+        """The skip path (of these rules; the site's skip when none is given) that names the address (its parts), as
+        the list writes it; None when none does."""
+        segs = _segments(parts.path)
+        for rule in self.skip if rules is None else rules:
+            # a ? in the rule: only with a query (11-18: the course query's teacher and room tables, ?cDES=…), one
+            # that starts with the rule's text after it (11-19: the teachers' works among previewpdf.aspx's files)
+            b, mark, start = rule.partition("?")
+            if mark and not (parts.query and parts.query.lower().startswith(start)):
+                continue
+            if _under(segs, b):
+                return rule
+        return None
+
+    def skip_name(self, url: str) -> str:
+        """The name of its own the skip path that names the address carries (skip_names); '' when it has none, or no
+        skip path names the address."""
+        try:
+            rule = self._skip_path(urlsplit(url)) if self.skip_names else None
+        except ValueError:
+            return ""
+        return dict(self.skip_names).get(rule, "") if rule is not None else ""
+
+    def skip_google_name(self, found_on: str | None) -> str:
+        """The name of the skip_google rule the page found_on falls under: its Google files are not fetched. '' for
+        a page under none, or one that is not the site's own."""
+        if not self.skip_google or not found_on:
+            return ""
+        try:
+            if scope.site_key(found_on) != self.site:
+                return ""
+            rule = self._skip_path(urlsplit(found_on), tuple(p for p, _name in self.skip_google))
+        except ValueError:
+            return ""
+        return dict(self.skip_google).get(rule, "") if rule is not None else ""
+
+    def skips_from(self, url: str, found_on: str) -> bool:
+        """Whether a link to url on the page found_on is one skip_from names: both the site's own addresses, the
+        page's path under a pair's first path and the link's under its second."""
+        if not self.skip_from:
+            return False
+        try:
+            if scope.site_key(url) != self.site or scope.site_key(found_on) != self.site:
+                return False
+            to, on = _segments(urlsplit(url).path), _segments(urlsplit(found_on).path)
+        except ValueError:
+            return False
+        return any(_under(on, a) and _under(to, b) for a, b in self.skip_from)
+
+    @property
+    def this_round(self) -> bool:
+        """Crawled now: a round-one site, or a round-two site a batch carries (now)."""
+        return self.round == "1" or (self.round == "2" and bool(self.now))
 
     @property
     def tier(self) -> int:
-        return TIER_OF_IMP[self.imp] if self.round == "1" else ROUND2_TIER
+        if self.round == "1":
+            return TIER_OF_IMP[self.imp]
+        if self.this_round:
+            return TIER_OF_IMP.get(self.imp, TIER_OF_IMP[NOW_IMP])
+        return ROUND2_TIER
 
     def holds(self, url: str) -> bool:
         """Whether the URL is inside this entry's part of its key (design §15.1). Every parameter in params must be in
@@ -157,15 +273,15 @@ class Plan:
         Never a key the list already places in round 1, a JavaScript site (owner, 10-25 15:33), nor the attachment
         service. Whether it was adopted: when not, the crawler notes the redirect for a person to look at."""
         key, src = scope.site_key(url), self.sites.get(owner)
-        if src is None or src.round != "1" or key in self._owner:
+        if src is None or not src.this_round or key in self._owner:
             return False
         if not scope.school_url(url) and not _moved_to(seed or src.home or "", url, key):
             return False
         known = self.sites.get(key)
         if known is not None and (known.round != "2" or known.why == "js_site"):
             return False
-        self._owner[key] = Site(site=src.site, round="1", imp=src.imp, name=src.name, platform=src.platform,
-                                home=src.home)
+        self._owner[key] = Site(site=src.site, round=src.round, imp=src.imp, name=src.name, platform=src.platform,
+                                home=src.home, now=src.now, caps=src.caps)
         return True
 
 
@@ -216,6 +332,59 @@ def load(path: Path | None = None) -> Plan:
     return Plan(sites, extra, checks, hashlib.sha256(raw).hexdigest(), tuple(pages))
 
 
+def _segments(path: str) -> list[str]:
+    return [x for x in path.lower().split("/") if x]
+
+
+def _under(segs: list[str], path: str) -> bool:
+    """Whether a path's segments are the path of a skip rule or under it (whole segments; * is any one segment)."""
+    want = [x for x in path.split("/") if x]
+    return len(segs) >= len(want) and all(w in ("*", x) for w, x in zip(want, segs))
+
+
+def _skip_names(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """An entry's skip_names: a mapping of skip paths of the entry (as it writes them) to a name of small letters
+    and underscores."""
+    got = entry.get("skip_names") or {}
+    skip = {p.lower() for p in entry.get("skip") or ()}
+    if not isinstance(got, Mapping) or not all(
+            isinstance(k, str) and k.lower() in skip and isinstance(v, str) and re.fullmatch(r"[a-z][a-z_]*", v)
+            for k, v in got.items()):
+        raise ValueError(f"{entry.get('site')}: skip_names maps skip paths of the entry to names (a-z and _)")
+    return tuple((k.lower(), v) for k, v in got.items())
+
+
+def _skip_google(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """An entry's skip_google: a mapping of pages (a path as skip writes one) to a name of small letters and
+    underscores."""
+    got = entry.get("skip_google") or {}
+    if not isinstance(got, Mapping) or not all(
+            isinstance(k, str) and k.startswith("/") and isinstance(v, str) and re.fullmatch(r"[a-z][a-z_]*", v)
+            for k, v in got.items()):
+        raise ValueError(f"{entry.get('site')}: skip_google maps pages (paths) to names (a-z and _)")
+    return tuple((k.lower(), v) for k, v in got.items())
+
+
+def _cap_out(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """An entry's cap_out: a list of kinds (CAP_KINDS), each once."""
+    got = entry.get("cap_out") or ()
+    if isinstance(got, str) or not all(k in CAP_KINDS for k in got) or len(set(got)) != len(got):
+        raise ValueError(f"{entry.get('site')}: cap_out is a list of kinds among {CAP_KINDS}, each once")
+    return tuple(got)
+
+
+REVISITS = ("weekly", "monthly")
+
+
+def _skip_from(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """An entry's skip_from: a list of pairs of paths (the page a link stands on, the address it names)."""
+    got = entry.get("skip_from") or ()
+    if isinstance(got, str) or not all(
+            isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(x, str) and x for x in p) for p in got):
+        raise ValueError(f"{entry.get('site')}: skip_from is a list of pairs of paths (the page, the address linked)")
+    return tuple((a.lower(), b.lower()) for a, b in got)
+
+
 def parse_site(entry: Mapping[str, Any]) -> Site:
     """One entry of the list, checked: a known round, round 1 only for important sites with a home, round 2 with its
     why (an off-campus unit with its home), params as text, leaf 0 or 1, and leaf=1 only for pages its seeds are."""
@@ -226,11 +395,25 @@ def parse_site(entry: Mapping[str, Any]) -> Site:
     if not isinstance(params, Mapping) or not all(isinstance(v, str) and v for v in params.values()):
         raise ValueError(f"{entry.get('site')}: params is a mapping of names to values written as text")
     home = entry.get("home")
+    caps = entry.get("caps")
+    if caps is not None:
+        if not isinstance(caps, Mapping) or set(caps) != set(CAP_KINDS) or not all(
+                isinstance(caps[k], int) and not isinstance(caps[k], bool) and caps[k] > 0 for k in CAP_KINDS):
+            raise ValueError(f"{entry.get('site')}: caps gives {CAP_KINDS} each a whole number above 0")
+        caps = tuple(caps[k] for k in CAP_KINDS)
+    now = entry.get("now") or ""
+    if now and (rnd != "2" or not isinstance(now, str)):
+        raise ValueError(f"{entry.get('site')}: now names the round-two batch that crawls a round-two site")
     site = Site(site=entry["site"], round=rnd, imp=entry.get("imp"), name=entry.get("name") or "",
                 why=entry.get("why") or "", platform=entry.get("platform") or "", home=home,
                 paths=tuple(p.lower() for p in entry.get("paths") or ()),
                 params=tuple((k.lower(), v.strip()) for k, v in params.items()), leaf=entry.get("leaf", 0),
-                seeds=tuple(entry.get("seeds") or ((home,) if home else ())))
+                seeds=tuple(entry.get("seeds") or ((home,) if home else ())), now=now, caps=caps,
+                skip=tuple(p.lower() for p in entry.get("skip") or ()), skip_query=bool(entry.get("skip_query")),
+                skip_from=_skip_from(entry), cap_out=_cap_out(entry), revisit=entry.get("revisit") or "",
+                skip_names=_skip_names(entry), skip_google=_skip_google(entry))
+    if site.revisit and (site.revisit not in REVISITS or not (rnd == "2" and now)):
+        raise ValueError(f"{site.site}: revisit is one of {REVISITS}, for a round-two site a batch crawled (now)")
     if rnd == "1" and (site.imp not in TIER_OF_IMP or not site.home):
         raise ValueError(f"{site.site}: a round-1 site is 全校重要 or 本系重要 and has a home")
     if rnd == "2" and site.why not in ROUND2_WHY:
@@ -323,11 +506,28 @@ def admit(plan: Plan, href: str, base: str | None = None, from_row: Mapping[str,
         if google is not None:
             got = google(url, from_row, how)
             if got is not None:
+                if got.placement.kind0 == "drive" and _leaves_google(plan, from_row):
+                    # a Drive file on a page whose Google files the list leaves (Site.skip_google): no row, no request
+                    return Admission(got.link, got.url, Placement("out", "out:skip_path", None, None, 0, "drive"),
+                                     "place")
                 return got
         elif not scope.is_google_form(url):
             return Admission(url, url, Placement("unhandled", GOOGLE_UNHANDLED, None, None, 0, _kind0(url, how)),
                              "google")
     return Admission(url, url, place(plan, url, from_row, how, directory_sites), "place")
+
+
+def _leaves_google(plan: Plan, from_row: Mapping[str, Any] | None) -> bool:
+    """Whether the page a link stands on is one whose Google files its site leaves (Site.skip_google)."""
+    page = _url_of(from_row)
+    if page is None:
+        return False
+    try:
+        owner = from_row["owner_site"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    site = plan.site(owner) if owner else None
+    return site is not None and bool(site.skip_google_name(page))
 
 
 def _shortlink(url: str, from_row: Mapping[str, Any] | None) -> Placement:
@@ -389,7 +589,8 @@ def verdict(plan: Plan, url: str, from_row: Mapping[str, Any] | None = None, how
     1 an extra seed; 2 a script or a tab a round-1 page uses is that page's resource, whatever site it is on (a tab
     pressed with no round-1 page behind it is a crawler bug: ValueError); 3 a round-1 site's part; 4 an off-campus
     frame the page hides; 5 a round-1 page's other resources (a page of a unit's site off campus that it frames among
-    them, one layer: gap ⑫ of 11-08); 6 a unit's site off campus, by the list (its paths and
+    them, one layer: gap ⑫ of 11-08); 5b a round-two site a batch crawls now, inside its reach (this round's, tier
+    本系重要 unless its imp says); 6 a unit's site off campus, by the list (its paths and
     params; leaf as the list says), before 8, which would make it one page; 7 a JavaScript site; 8 off campus, one
     layer; 9 another school site."""
     key, kind0 = scope.site_key(url), _kind0(url, how)
@@ -403,6 +604,9 @@ def verdict(plan: Plan, url: str, from_row: Mapping[str, Any] | None = None, how
         if how == "click":
             raise ValueError(f"a tab pressed with no round-1 page behind it: {url}")
         return Placement("out", "out:media", None, None, 0, kind0)
+    if site is not None and site.this_round and site.holds(url) and site.skips(url, _url_of(from_row)):
+        # a path the list says the site does not follow, or a link it does not follow from the page it stands on
+        return Placement("out", "out:skip_path", None, None, 0, kind0)
     if site is not None and site.round == "1" and site.holds(url):
         return Placement("r1", None, site.site, site.tier, leaf, kind0)
     if how == "hidden" and not scope.school_url(url):  # a tracker's frame: never a part the page lacks, nor round 2
@@ -411,6 +615,11 @@ def verdict(plan: Plan, url: str, from_row: Mapping[str, Any] | None = None, how
         got = _resource(url, site, kind0, how, from_row)
         if got is not None:
             return got
+    # 5b a round-two site a batch crawls now (Site.now), inside its reach: this round's, after a round-1 page's own
+    # parts (a unit's Wix page 性别所 frames stays that page's content, gap ⑫ of 11-08); design 2026-11-17-round2-batch2
+    # §三.1 【Claude 的执行办法: the order】
+    if site is not None and site.round == "2" and site.now and site.holds(url):
+        return Placement("r1", None, site.site, site.tier, max(leaf, site.leaf), kind0)
     if site is not None and site.round == "2" and site.why == "offsite_unit" and site.holds(url):
         return Placement("round2", "round2:offsite_unit", key, ROUND2_TIER, max(leaf, site.leaf), kind0)
     if site is not None and site.round == "2" and site.why == "js_site":
@@ -419,6 +628,37 @@ def verdict(plan: Plan, url: str, from_row: Mapping[str, Any] | None = None, how
         why = "round2:offsite_file" if kind0 == "file" else "round2:offsite"
         return Placement("round2", why, key, ROUND2_TIER, 1, kind0)
     return Placement("round2", "round2:other_site", key, ROUND2_TIER, leaf, kind0)
+
+
+def _url_of(row: Mapping[str, Any] | None) -> str | None:
+    """The address of the page a link stands on, when its row says it (a url row does; a bare mapping of a test or of
+    an old archive's row may not)."""
+    if row is None:
+        return None
+    try:
+        return row["url"]
+    except (KeyError, IndexError):
+        return None
+
+
+def came_by_skipped_link(site: Site, row: Mapping[str, Any], row_by_id) -> bool:
+    """Whether a url row of the site, got before a skip_from rule came, is one the rule would never have brought: the
+    link that first found it (found_from: the row of the page it stood on), or the one that found that page, and so
+    on up, is a link the rule names (the older outline an outline page linked, the page it redirects to, the files and
+    the yet older outlines that page links). row_by_id(id) gives a row or None. A row first found another way (a
+    class's table, a seed) is not, whatever else links it."""
+    if not site.skip_from:
+        return False
+    seen: set[Any] = set()
+    while row is not None and row["id"] not in seen:
+        seen.add(row["id"])
+        up = row_by_id(row["found_from"]) if row["found_from"] is not None else None
+        if up is None:
+            return False
+        if site.skips_from(row["url"], up["url"]):
+            return True
+        row = up
+    return False
 
 
 def _round1_page(row: Mapping[str, Any] | None) -> bool:

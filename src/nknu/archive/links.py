@@ -121,6 +121,16 @@ IMAGE_WHY = ("captcha", "album", "data", "tiny", "decor_name", "chrome", "decor:
 # lh*-rt.googleusercontent.com and the picture). Round 1 fetches them right after their page (design §23 B,
 # 【用户同意 Claude 的建议】 10-27: 「可以，听你的」; how 【Claude 的执行办法】), by the ordinary rules of a picture (image_need)
 GOOGLE_SITES_IMAGE = re.compile(r"(?i)^https://sites\.google\.com/sitesv-images-rt/")
+# 11-18 evening (爬虫judge: 「见到 blur_ 就排原图这条规则进每晚用的程序」「目标是认得出字，不需要最大的原始档」): a picture
+# of Wix's media server, by its media id (static.wixstatic.com/media/<id>, a size of it after: /v1/fill/…); a size Wix
+# blurs on purpose (the placeholder a page's <img> holds until its script puts the real size: …,blur_2,…); and the
+# picture whole and clear inside 1920 by 1920, which a page that writes blurred sizes only is also read as asking for
+# (how wix-clear; the server answers the whole picture scaled down, never cut: probe of 11-18, a 4800x3200 JPEG came
+# back 1920x1280)
+WIX_MEDIA = re.compile(r"(?i)^(?:https?:)?//static\.wixstatic\.com/media/([^/?#]+)")
+WIX_BLUR = re.compile(r"/v1/[^?#]*[,/]blur_\d")
+WIX_CLEAR = "https://static.wixstatic.com/media/{id}/v1/fit/w_1920,h_1920,q_90/{id}"
+WIX_CLEAR_HOW = "wix-clear"
 GSIMG = "gsimg:"  # page_res.res_key and how of such a picture: gsimg:<page id>/<n>/<element id> (google_sites_keys)
 # the W3C Referrer Policy's tokens (§11: a browser ignores any other), the legacy keywords the HTML standard still maps
 # for <meta name="referrer">, and the default a browser uses when a page says nothing (Fetch: the request's policy is
@@ -142,7 +152,7 @@ _WP_PAGE = re.compile(r"/page/\d+/?$")
 @dataclass(frozen=True)
 class Image:
     src: str  # as written (a data: image cut short)
-    how: str  # src, data-src, data-original, data-lazy-src, srcset, picture, bg, data-bg, background, link
+    how: str  # src, data-src, data-original, data-lazy-src, srcset, picture, bg, data-bg, background, link, wix-clear
     zone: str
     alt: str = ""
     width: int | None = None
@@ -555,6 +565,7 @@ def extract(html: str, url: str, content_css: str | None = None, _depth: int = 0
             got.unhandle("js_postback", target, node)
     _attr_links(tree, got)
     _images(tree, got)
+    _wix_clear(got)
     _selects(tree, got)
     _get_forms(tree, got)
     extra = _data_code(tree, got, url, _depth)
@@ -996,6 +1007,26 @@ def _images(tree: LexborHTMLParser, got: _Collect) -> None:
                     got)
     for node in tree.css("body[background], table[background], td[background], th[background], tr[background]"):
         _background(node.attributes.get("background") or "", "background", node, got)
+
+
+def _wix_clear(got: _Collect) -> None:
+    """A Wix picture the page writes in blurred sizes only (WIX_BLUR: every address of its media id) is also asked for
+    whole and clear (WIX_CLEAR), as a picture of the page where its placeholders stand: their best zone, their first
+    words, their sizes as the least likely to be tiny (_merge). A picture with a clear size written, or with no size
+    (the picture itself), asks for no more."""
+    by_id: dict[str, list[Image]] = {}
+    for img in got.images.values():
+        m = WIX_MEDIA.match(img.src)
+        if m:
+            by_id.setdefault(m.group(1), []).append(img)
+    for media, imgs in by_id.items():
+        if not all(WIX_BLUR.search(i.src) for i in imgs):
+            continue
+        whole = imgs[0]
+        for other in imgs[1:]:
+            whole = _merge(whole, other)
+        src = WIX_CLEAR.format(id=media)
+        got.images.setdefault(src, replace(whole, src=src, how=WIX_CLEAR_HOW, node_id=""))
 
 
 def _background(src: str, how: str, node: LexborNode, got: _Collect) -> None:

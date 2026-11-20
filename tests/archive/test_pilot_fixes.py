@@ -154,7 +154,7 @@ def test_a_file_get_that_fails_starts_the_chain_again_from_its_get_once(tmp_path
 
 import pytest
 
-from nknu.archive import google_api, jscheck, links, profiles, scope
+from nknu.archive import google_api, jscheck, links, profiles, reconcile, scope
 from nknu.archive.crawler import DRIVE_MEDIA_GAP
 from tests.archive.test_archive import make as make_net
 from tests.archive.test_crawler_round1 import drive
@@ -275,8 +275,9 @@ RUNTIME_PIC = "https://sites.google.com/sitesv-images-rt/AMxu72uc32nFHxEN3BPfa=w
 
 
 def _runtime_picture_page(tmp_path, picture):
-    """A page whose body is one line and a runtime picture, crawled; then the reconciliation's thin judgement, as after
-    a real round (design §23 F6: the test asserts on what thin_pages leaves, never on a state made up by hand)."""
+    """A page whose body is one line and a runtime picture, crawled; then the thin judgement, as a rejudge makes it
+    after a real round (design §23 F6: the test asserts on what thin_pages leaves, never on a state made up by
+    hand)."""
     crawler, net, _clock = make(tmp_path, {
         ("GET", "/robots.txt"): snap("x", 404),
         ("GET", "/a/home"): lambda t: snap(HOME, html=f'<p>辅导中心的页</p><img src="{RUNTIME_PIC}" alt="首頁">'),
@@ -383,42 +384,6 @@ def test_the_decisions_the_pilot_settled():
     assert profiles.decision("c.nknu.edu.tw/reality", "select:ddl_Class") == "ignore"  # 「全部」 shown, walked whole
     assert profiles.decision("sso.nknu.edu.tw/site/100061", "js_link:isFinite") == "ignore"  # a JavaScript builtin
     assert profiles.decision("w.nknu.edu.tw", "js_link:parseInt") == "ignore"
-
-
-# ---------------------------------------------------------------- R6 and a page that POSTs for its data
-
-
-from nknu.archive import reconcile
-from nknu.archive.reconcile import PASS, Sources, SpotView
-from tests.archive.test_reconcile import PLAN, SITE, W, _clean_site, _ok_types, _same_spot
-
-
-def test_r6_judges_a_page_that_posts_for_its_data_as_a_data_address_type(tmp_path):
-    c, net = _clean_site(tmp_path)
-    fr = c.frontier
-    _ok_types(fr)
-    same = _same_spot(tmp_path)
-    timeline = f"{W}/Unit/Info/ajaxServices/ajaxTimeline.aspx"
-    about = fr.row(f"{W}/about.html")
-    fr.x("UPDATE page_type SET source='jscheck' WHERE key=?", (about["page_type"],))  # a person's verdict would stand
-
-    def spot(url):
-        view = same(url)
-        return SpotView(view.url, view.final_url, view.html, view.screenshot, data_posts=(timeline,)) \
-            if url == about["url"] else view
-
-    res = reconcile.reconcile_sites(fr, tmp_path, [SITE], batch="pilot", plan=PLAN, sources=Sources(cc_dir=None),
-                                    spot=spot).sites[0]
-    r6 = res.checks["R6"]
-    assert r6.status == PASS and r6.counts.get("data_post") == 1  # what the browser showed matched the archive
-    assert [i["problem"] for i in r6.items] == ["data_post"]
-    pt = fr.q("SELECT verdict, method, source, note FROM page_type WHERE key=?", (about["page_type"],))[0]
-    assert (pt["verdict"], pt["method"], pt["source"]) == ("js", "data_post", "spotcheck") and "data_post:" in pt["note"]
-    level = fr.q("SELECT level FROM page_completeness WHERE id=?", (about["id"],))[0][0]
-    assert level != "complete"  # the next round reads the data address; no page of the type shows complete
-    assert fr.q("SELECT count(*) FROM event WHERE code='verdict_set'")[0][0] == 1
-    net.sink.close()
-    fr.close()
 
 
 # ---------------------------------------------------------------- the review of these fixes (10-26, one round)
