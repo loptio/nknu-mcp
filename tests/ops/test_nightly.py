@@ -683,7 +683,59 @@ def test_a_kind_decided_out_left_for_a_reason(tmp_path):
     assert left(U + "works/1.pdf") == ("decided_out", "教師著作全文")
     assert left(U + "other.pdf")[0] == "not_fetched"  # a path rule with no name explains nothing: still looked at
     assert ch.REASONS["decided_out"][2] == ch.OK_KIND and ch.DECIDED_OUT == build.DECIDED_OUT
-    assert set(ch.DECIDED_WORDS) == set(build.DECIDED_OUT.values())  # every kind decided out has its words here
+    # every kind decided out is said in words: this page's own, else the build's (a new kind needs no change here)
+    assert all(ch.decided_words(k) and ch.decided_words(k) != k for k in build.DECIDED_OUT.values())
+    assert ch.decided_words("decided_proceedings") == "研討會論文集全文"
+    build.LEFT_WORDS["decided_made_up"] = "定了不收：编的一类"
+    try:
+        assert ch.decided_words("decided_made_up") == "編的一類"
+    finally:
+        del build.LEFT_WORDS["decided_made_up"]
+
+
+def test_a_picture_whose_words_are_still_in_the_library_left_for_a_reason(tmp_path):
+    # 11-19: Google Sites gives a picture another address each time a page is read, and the export now writes the
+    # page's; the old address leaves while the same words come in under the new one (or inside the page). The build
+    # counts that as explained ('moved'), and so does the panels' comparison; a few common words prove nothing
+    gs = "https://lh3.googleusercontent.com/"
+    words = "輔導中心本學期團體諮商活動報名時間與地點說明，請同學踴躍參加"
+    page = "首頁 最新消息 " + "輔導中心本學期團體諮商活動報名時間與地點說明，請同學踴躍參加" + " 聯絡我們"
+    folder = manifest(tmp_path, "exp/g-2", [{"网址": gs + "new-1", "本地档案": "files/1.png", "缺什么": ""},
+                                             # still fetched, no document of its own: its words went into the page
+                                             {"网址": gs + "kept-1", "类型": "图片", "本地档案": "files/2.png",
+                                              "链到它的网页": "https://g.example/2/"},
+                                             {"网址": gs + "kept-2", "类型": "图片", "本地档案": "files/3.png",
+                                              "链到它的网页": "https://g.example/2"},
+                                             # its words are in a page, but not in the one that shows it
+                                             {"网址": gs + "kept-3", "类型": "图片", "本地档案": "files/4.png",
+                                              "链到它的网页": "https://g.example/"},
+                                             # 20 characters or more: anywhere in its site, like any other
+                                             {"网址": gs + "kept-4", "类型": "图片", "本地档案": "files/5.png",
+                                              "链到它的网页": "https://g.example/2"}])
+    old_docs = [("d-old", "picture", "圖", gs + "old-1", words, "", "g"),
+                ("d-in", "picture", "圖", gs + "old-2", words[:30] + "，在網頁裡", "", "g"),
+                ("d-short", "picture", "圖", gs + "old-3", "報名", "", "g"),
+                ("d-gone", "picture", "圖", gs + "old-4", "這張圖的字新庫裡哪裡都沒有，是真的不見了要看一下", "", "g"),
+                ("d-pic", "picture", "圖", gs + "kept-1", "第二階段 初步構想計畫申請", "", "g"),  # 12 characters
+                ("d-tiny", "picture", "圖", gs + "kept-2", "聯絡我們", "", "g"),  # under the picture's 10
+                ("d-else", "picture", "圖", gs + "kept-3", "第二階段 初步構想計畫申請", "", "g"),
+                ("d-long", "picture", "圖", gs + "kept-4", words[:30] + "，在網頁裡", "", "g")]
+    new_docs = [("d-new", "picture", "圖", gs + "new-1", words, "", "g"),
+                ("p1", "page", "頁", "https://g.example/", page.replace(words, words[:30] + "，在網頁裡"), "", "g"),
+                ("p2", "page", "頁", "https://g.example/2", "報名 第二階段 初步構想計畫申請 截止", "", "g")]
+    prev_db = library(tmp_path / "aca.prev.db", docs=old_docs, sites=[("g", "輔導中心", 4, "exp/g-1")])
+    new_db = library(tmp_path / "aca.db", docs=new_docs, sites=[("g", "輔導中心", 3, folder)])
+    prev, new = ch.read_library(prev_db), ch.read_library(new_db)
+    done = ch.compare(prev, new, tmp_path, dbs=(prev_db, new_db))
+    left = done["sites"][0]["lists"]["left"]
+    assert {e["id"] for e in left["words_kept"]} == {"d-old", "d-in", "d-pic", "d-long"}
+    assert {e["id"] for e in left["not_exported"]} == {"d-short", "d-gone"}
+    assert {e["id"] for e in left["unknown"]} == {"d-tiny", "d-else"}
+    assert done["totals"]["look"] == 2 and done["totals"]["unexplained"] == 2
+    assert ch.REASONS["words_kept"][2] == ch.OK_KIND
+    # without the libraries' files, the same text is still recognised by its fingerprint alone
+    alone = ch.compare(prev, new, tmp_path)["sites"][0]["lists"]["left"]
+    assert {e["id"] for e in alone["words_kept"]} == {"d-old"}
 
 
 def test_the_comparison_runs_in_the_background_and_never_writes_the_libraries(two, tmp_path):
@@ -775,3 +827,62 @@ def test_the_api_and_the_home_carry_tonight(db, tmp_path):
     # the five questions in the spec's order (panels v3 三), then the steps' detail folded
     assert [home.index(f"data-q='{q}'") for q in range(1, 6)] == sorted(home.index(f"data-q='{q}'") for q in range(1, 6))
     assert "各步驟細節" not in home or home.index("data-q='5'") < home.index("各步驟細節")
+
+
+def test_a_page_of_a_menu_only_left_for_a_reason(tmp_path):
+    # 11-19: the export marks a page whose content is in its button rows (缺什么 starts with corpus.IN_BUTTONS); the
+    # build leaves it out under in_button_rows, and the panels' own comparison says so too
+    from nknu.content import corpus
+    folder = manifest(tmp_path, "exp/a-2", [
+        {"网址": U + "outline?c=1", "分类": "抓到了", "结果": "抓到了", "本地档案": "pages/1.html",
+         "缺什么": corpus.IN_BUTTONS + "（3 位老師）"}])
+    new = {"aliases": {}, "urls": {}, "sites": {"a": {"name": "範例處", "export": folder, "docs": 0}}, "docs": {}}
+    prev = {"sites": {"a": {"name": "範例處", "export": "exp/a-1", "docs": 1}}}
+    page = ("a", "page", "課程大綱", U + "outline?c=1", "", 100, "x")
+    assert ch.why_left("d1", page, new, prev, ch.Manifests(tmp_path)) == ("menu_only", "")
+    assert ch.REASONS["menu_only"][2] == ch.OK_KIND and ch.IN_BUTTONS == corpus.IN_BUTTONS
+
+
+def test_sites_not_all_converted_in_time_are_said_on_the_night(where):
+    # 11-19: the ingest leaves a site whose files were not all converted on its old export and builds the rest
+    # (sites_waiting in its status and history line); the night says which sites wait, and for how many files
+    waiting = [{"site": "ie", "files": 12}, {"site": "math", "files": 3}]
+    crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
+    ingest(where, [run("swapped", sites_waiting=waiting)], SAID)
+    t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
+    totext = cells(t)["totext"]
+    said = "2 個網站到點還沒轉完（ie、math，還有 15 個檔），這一晚沒換它們的新資料，下一晚接著轉"
+    assert totext["state"] == nightly.DONE and totext["say"] == said
+    assert totext["sev"] == WARN and totext["fix"] == CONTENT
+    assert cells(t)["swap"]["state"] == nightly.DONE  # the rest of the sites went in
+    assert said in nightly.run_reason(run("swapped", sites_waiting=waiting))["reason"]
+    # nothing else new: the night is deferred, and says the same sites
+    ingest(where, [run("deferred", step="convert", error="lanes_timeout", sites_waiting=waiting)], SAID[:3])
+    t = nightly.tonight(where, now=at("2026-11-17T09:00:00"))
+    assert cells(t)["totext"]["say"] == said + "；沒有別的新資料，這晚不建庫"
+    assert nightly.waiting_words(run("swapped")) == "" and nightly.waiting_words({"sites_waiting": "x"}) == ""
+
+
+def test_an_outcome_and_its_error_that_say_the_same_thing_say_it_once():
+    got = nightly.run_reason(run("deferred", step="convert", error="lanes_timeout"))
+    assert got["reason"] == "兩小時內沒轉完" and got["code"] == "deferred · lanes_timeout" and not got["unknown"]
+
+
+def test_sites_the_guard_set_back_or_did_not_try_again_are_said_on_the_swap(where):
+    # 11-19: a library the swap guard stops is rebuilt without the sites it stopped for (sites_set_back), and a site
+    # whose newest export is still the one set back is not tried again (sites_refused); the swap went ahead, and
+    # the night says which sites kept their old data and why
+    back = [{"site": "a.example", "why": "unexplained_departures", "count": 232, "folder": "exp/a-3"}]
+    crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
+    ingest(where, [run("swapped", sites_set_back=back, sites_refused=["b.example"])], SAID)
+    swap = cells(nightly.tonight(where, now=at("2026-11-17T09:00:00")))["swap"]
+    said_back = "把關退回 1 個網站：a.example（說不出原因的離開太多，232 份），這一晚沒換它們的新資料"
+    said_refused = "1 個網站最新的導出還是上次被退回的那一份，這一晚沒再試（b.example），等爬蟲給新的導出"
+    assert swap["state"] == nightly.DONE and swap["say"] == f"換上了；{said_back}；{said_refused}"
+    assert swap["sev"] == WARN and swap["fix"] == CONTENT
+    # only sites not tried again: the crawler's to give a new export
+    ingest(where, [run("swapped", sites_refused=["b.example"])], SAID)
+    swap = cells(nightly.tonight(where, now=at("2026-11-17T09:00:00")))["swap"]
+    assert swap["say"] == f"換上了；{said_refused}" and swap["sev"] == WARN and swap["fix"] == CRAWLER
+    assert nightly.set_back_words(run("swapped")) == ("", "")
+    assert said_back in nightly.run_reason(run("held", sites_set_back=back))["reason"]

@@ -260,7 +260,7 @@ def run_reason(run: dict, dep: dict | None = None) -> dict:
         known = known_error(error)
         if known is None:
             unknown = True
-        else:
+        elif known not in words:  # deferred and its lanes_timeout say the same thing: once
             words.append(known)
     held = run.get("held") if isinstance(run.get("held"), dict) else {}
     for why in held.get("reasons") or ([held["reason"]] if held.get("reason") else []):
@@ -271,6 +271,9 @@ def run_reason(run: dict, dep: dict | None = None) -> dict:
             unknown = True
     if dep and dep.get("unexplained"):
         words.append(f"說不出原因地離開 {dep['unexplained']:,} 份（{sites_words(dep['by_site'])}）")
+    if waiting := waiting_words(run):
+        words.append(waiting)
+    words.extend(x for x in set_back_words(run) if x)
     return {"reason": "；".join(words), "code": " · ".join(codes), "unknown": unknown}
 
 
@@ -333,6 +336,46 @@ def sites_words(by_site: dict, shown: int = SITES_SHOWN) -> str:
     """「a.example 2、b.example 1 等」: the sites with the most first."""
     pairs = list(by_site.items())
     return "、".join(f"{k} {v:,}" for k, v in pairs[:shown]) + (" 等" if len(pairs) > shown else "")
+
+
+def waiting_words(run: dict) -> str:
+    """The sites whose files were not all converted when the lanes' time was up, in words ('' for none). Since 11-19
+    the ingest leaves such a site on the export the official library used for that night and builds the rest
+    (ingest-status.json, ingest-history.jsonl: sites_waiting [{site, files}]; the next night converts on)."""
+    sites = [w for w in run.get("sites_waiting") or [] if isinstance(w, dict) and w.get("site")]
+    if not sites:
+        return ""
+    files = sum(w["files"] for w in sites if isinstance(w.get("files"), int))
+    named = "、".join(str(w["site"]) for w in sites[:SITES_SHOWN]) + (" 等" if len(sites) > SITES_SHOWN else "")
+    left = f"，還有 {files:,} 個檔" if files else ""
+    return f"{len(sites)} 個網站到點還沒轉完（{named}{left}），這一晚沒換它們的新資料，下一晚接著轉"
+
+
+def set_back_words(run: dict) -> tuple[str, str]:
+    """(the sites the swap guard set back this night, the sites whose newest export is one it set back before), each
+    in words or ''. Since 11-19 a library the guard stops is rebuilt without the sites it stopped for: those stay on
+    the export the official library uses (sites_set_back [{site, why, count, folder}], why one of HELD_WORDS' keys),
+    and a site whose newest export is still the one set back is not tried again until the crawler exports it anew
+    (sites_refused [site]); both are written only when there are such sites."""
+    back = [b for b in run.get("sites_set_back") or [] if isinstance(b, dict) and b.get("site")]
+    refused = [str(x) for x in run.get("sites_refused") or [] if x and isinstance(x, str)]
+
+    def more(items: list) -> str:
+        return " 等" if len(items) > SITES_SHOWN else ""
+
+    said_back = said_refused = ""
+    if back:
+        def one(b: dict) -> str:
+            why = HELD_WORDS.get(str(b.get("why") or ""), tw(str(b.get("why") or "")))
+            count = f"{b['count']:,} 份" if isinstance(b.get("count"), int) else ""
+            inside = "，".join(x for x in (why.removeprefix("某站"), count) if x)
+            return f"{b['site']}" + (f"（{inside}）" if inside else "")
+        said_back = (f"把關退回 {len(back)} 個網站：{'、'.join(one(b) for b in back[:SITES_SHOWN])}{more(back)}，"
+                     "這一晚沒換它們的新資料")
+    if refused:
+        said_refused = (f"{len(refused)} 個網站最新的導出還是上次被退回的那一份，這一晚沒再試"
+                        f"（{'、'.join(refused[:SITES_SHOWN])}{more(refused)}），等爬蟲給新的導出")
+    return said_back, said_refused
 
 
 def held_words(run: dict, dep: dict | None) -> tuple[str, str]:
@@ -700,6 +743,7 @@ def _ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cel
     tip_run = "；".join(x for x in (f"{clock(start)} 開始", extra,
                                    f"有新資料的網站 {len(run.get('sites_new') or [])} 個" if run.get("sites_new") else "")
                         if x)
+    waiting = waiting_words(run)  # sites left on their old export this night: said on 轉文字, a note to look at
     # 轉文字: plan, repoint and the lanes
     early = step in ("plan", "repoint", "convert")
     if outcome == "busy":
@@ -715,7 +759,8 @@ def _ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cel
         quiet = [_cell("totext", DONE, "沒有新資料，不用轉", since=start, until=end, tip=tip_run)]
         return quiet + [_cell("build", DONE, "不用重建", until=end), _cell("swap", DONE, "庫沒換", until=end)]
     if outcome == "deferred":
-        return [_cell("totext", STOP, "兩小時內沒轉完，這晚不建庫（下一晚接著轉）", since=start, until=end, fix=CONTENT,
+        say = f"{waiting}；沒有別的新資料，這晚不建庫" if waiting else "兩小時內沒轉完，這晚不建庫（下一晚接著轉）"
+        return [_cell("totext", STOP, say, since=start, until=end, fix=CONTENT,
                       sev=WARN, tip=tip_run), _cell("build", WAIT, word="沒跑到"), _cell("swap", WAIT, word="沒跑到")]
     if outcome == "failed" and str(error or "").startswith("disk_low_"):  # checked after the lanes, before the build
         disk = f"C 盤剩 {run['disk_free_gb']} GB" if run.get("disk_free_gb") is not None else ""
@@ -728,7 +773,8 @@ def _ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cel
             f"在「{INGEST_STEPS.get(step, step)}」出錯" + (f"：{words}" if words else ""))
         return [_cell("totext", STOP, say, word="出錯", since=start, until=end, fix=CONTENT, sev=BAD, tip=tip_run),
                 _cell("build", WAIT, word="沒跑到"), _cell("swap", WAIT, word="沒跑到")]
-    totext = _cell("totext", DONE, since=start, until=keep_at or end, tip=tip_run)
+    totext = _cell("totext", DONE, waiting, since=start, until=keep_at or end, tip=tip_run,
+                   sev=WARN if waiting else "", fix=CONTENT if waiting else "")
     if outcome == "paused":
         return [totext, _cell("build", STOP, "暫停中（有 ingest.pause），只轉文字、沒建庫", since=end, until=end,
                               fix=CONTENT, sev=WARN, tip="看過沒問題，刪掉 ingest.pause 就恢復每晚換庫"),
@@ -770,10 +816,14 @@ def _ingest_cells(r: Reading, night: date, crawl_end: datetime | None, crawl_cel
         # left for no reason the build could give: lit even when the swap went ahead (爬虫judge, 11-17: 「只要有说不通
         # 的离开，即使没到门槛，也请在人会看的地方亮出来」)
         said = "換上了" + (f"，但有 {unx:,} 份說不出原因地離開（{sites_words(dep['by_site'])}）" if unx else "")
+        # sites the guard set back, or did not try again: the library was swapped without their new export (11-19)
+        back, refused = set_back_words(run)
+        said = "；".join(x for x in (said, back, refused) if x)
         tip = "\n".join(x for x in ("從換上到檢查跑完" if moment else "",
                                     f"說不出原因的：{sites_words(dep['by_site'], 12)}" if unx else "") if x)
+        fix = CONTENT if unx or back else CRAWLER if refused else ""
         swap = _cell("swap", DONE, said + (f"；{checks}" if checks else ""), since=moment or done_at or end, until=end,
-                     sev=WARN if checks or unx else OK, fix=CONTENT if unx else "", tip=tip)
+                     sev=WARN if checks or unx or back or refused else OK, fix=fix, tip=tip)
         return [totext, build, swap]
     return [totext, _cell("build", STOP, "", word="沒見過", since=build_from, until=end or now, fix=CONTENT, sev=WARN,
                           tip=f"進庫的結果是 {outcome}"), _cell("swap", WAIT, word="沒跑到")]

@@ -76,9 +76,11 @@ def root(tmp_path: Path) -> Path:
     export = tmp_path / "archive-export" / "sites" / "a"
     export.mkdir(parents=True)
     (export / "manifest.csv").write_text(
-        "类型,结果,分类,页别\n"
-        "网页,抓到了,,列表翻页\n网页,下一轮再抓,,\n网页,跳到别的网址：x,,\n按钮,要登录才看得到,,\n"
-        "附件,学校那边已经不存在,,\n附件,连不上,连接失败,\n图片,抓到了,,\n", encoding="utf-8-sig")
+        "类型,结果,分类,页别,本地档案\n"
+        "网页,抓到了,,列表翻页,\n网页,下一轮再抓,,,\n网页,跳到别的网址：x,,,\n按钮,要登录才看得到,,,\n"
+        "附件,学校那边已经不存在,,,\n附件,连不上,连接失败,,\n图片,抓到了,,,images/1.png\n"
+        # 11-19: one Google Sites picture two pages show is two rows of one file: one picture
+        "图片,抓到了,,,images/1.png\n", encoding="utf-8-sig")
     redirects = tmp_path / "archive-export" / "sites" / "r"
     redirects.mkdir(parents=True)
     (redirects / "manifest.csv").write_text("类型,结果,分类,页别\n网页,跳到别的网址（目标另算）,,\n", encoding="utf-8-sig")
@@ -124,7 +126,7 @@ def test_a_site_record_carries_kinds_quality_and_sections(root: Path) -> None:
 
 def test_crawl_outcomes_come_from_the_export_the_library_was_built_from(root: Path) -> None:
     a = data_mod.collect(root, today=TODAY)["sites"][0]
-    # got, next, gone, fail, login, todo; a redirect counts in none of them
+    # got, next, gone, fail, login, todo; a redirect counts in none of them; one file of two rows is one picture
     assert a["cr"] == {"p": [1, 1, 0, 0, 1, 0], "f": [0, 0, 1, 1, 0, 0], "i": [1, 0, 0, 0, 0, 0]}
     assert a["pg"] == 1
 

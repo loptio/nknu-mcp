@@ -705,6 +705,8 @@ def test_a_path_the_site_list_does_not_walk_is_a_rule_said_in_words(made):
     # 11-19: the crawler's three new rule codes read as words, and a named skip path nobody wrote words for falls
     # back to the plain rule's
     assert pagecheck.reason_words("out:skip_path:teacher_fulltext") == "教師著作全文，定了不收"
+    assert pagecheck.reason_words("out:skip_path:proceedings") == "研討會論文集全文，定了不收"
+    assert pagecheck.reason_words("out:skip_path:teaching_materials") == "中小學教材下載區，定了不收"
     assert pagecheck.reason_words("out:cap_image") == "這一站超過圖片上限，名單寫明不抓"
     assert pagecheck.reason_words("out:wix_size") == "同一張圖的另一個尺寸"
     assert pagecheck.reason_words("out:skip_path:some_new_name") == "名單寫明這條路徑不往下翻"

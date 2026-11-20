@@ -113,7 +113,9 @@ REASON_WORDS = {
     "out:skip_path": "名單寫明這條路徑不往下翻",  # round1.Site's skip paths (11-17): a rule, never missing
     # 11-19 (the crawler's rules batch): a skip path with its own name, a site's pictures past its cap declined by
     # the list, and the other sizes of a Wix picture already kept: all three are rules, never missing
-    "out:skip_path:teacher_fulltext": "教師著作全文，定了不收", "out:cap_image": "這一站超過圖片上限，名單寫明不抓",
+    "out:skip_path:teacher_fulltext": "教師著作全文，定了不收", "out:skip_path:proceedings": "研討會論文集全文，定了不收",
+    "out:skip_path:teaching_materials": "中小學教材下載區，定了不收",
+    "out:cap_image": "這一站超過圖片上限，名單寫明不抓",
     "out:wix_size": "同一張圖的另一個尺寸",
     "media:drive_video": "雲端影片，只記檔名和大小", "media:drive_audio": "雲端聲音檔，只記檔名和大小",
     "media:drive_installer": "安裝檔，只記檔名和大小", "media": "影音或安裝檔，只記檔名和大小",

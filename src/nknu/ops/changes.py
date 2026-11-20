@@ -20,6 +20,9 @@ NO_DATA, the area marks and the 列表翻页 page kind; documents.GONE_FILE_SUFF
   6. no row for it: when the site's export changed, the crawler's new export does not list it; when it did not, the
      input was the same and the build changed (its program or its settings)
   7. else 查不出原因: the export lists it, the crawler got it, and the build left it out
+A document that 5 or 6 found no file or row for, whose whole text is still in a document of its site in the new
+library (the same Google Sites picture at the address the export writes now, 11-19), left for that reason instead; so
+does a picture whose row has a file and whose words were read into the page that shows it (from 10 characters).
 Reasons 1–5 that the school or the build's merging explain are fine (ok); a file the crawler did not get this time, an
 address the new export does not list, a site gone, or the same input built differently may be ours to fix (look);
 查不出原因 is red on the page.
@@ -56,6 +59,12 @@ try:
 except ImportError:
     GONE, MOVED, NO_DATA, LIST_PAGER = "学校已删除", "学校把这则公告转到别的页", "学校回答没有资料", "列表翻页"
     AREA_MARKS = ("内文区是空的", "找不到内文区")
+# 11-19: a page whose content is its button rows' (a course outline several teachers give shows only the teachers' menu;
+# each choice is a row of its own). The export says so in 缺什么 and the build leaves the page out (corpus.IN_BUTTONS)
+try:
+    from nknu.content.corpus import IN_BUTTONS
+except ImportError:
+    IN_BUTTONS = "内容在按钮行"
 # the export's 分类 of a row with no file because the school took the address away: the build's swap guard counts it
 # as the school's (nknu.content.build._departures), and so does this comparison (review 2026-11-17)
 try:
@@ -74,9 +83,42 @@ WIX_PICTURE = re.compile(r"^(?:https?:)?//static\.wixstatic\.com/media/([^/?#]+)
 try:
     from nknu.content.build import DECIDED_OUT
 except ImportError:
-    DECIDED_OUT = {"out:skip_path:teacher_fulltext": "decided_teacher_fulltext"}
-DECIDED_WORDS = {"decided_teacher_fulltext": "教師著作全文"}  # the kind, said after the reason's name
+    DECIDED_OUT = {"out:skip_path:teacher_fulltext": "decided_teacher_fulltext",
+                   "out:skip_path:proceedings": "decided_proceedings"}
+# the kind, said after the reason's name; a kind the build adds and no line here knows is said in the build's own
+# words for it (LEFT_WORDS, made Traditional), so a new kind needs no change here
+DECIDED_WORDS = {"decided_teacher_fulltext": "教師著作全文", "decided_proceedings": "研討會論文集全文",
+                 "decided_teaching_materials": "中小學教材下載區"}
+
+
+def decided_words(kind: str) -> str:
+    if kind in DECIDED_WORDS:
+        return DECIDED_WORDS[kind]
+    try:
+        from nknu.content.build import LEFT_WORDS
+    except ImportError:
+        return kind
+    return tw(str(LEFT_WORDS.get(kind) or kind)).removeprefix("定了不收：")
+
+
 CALENDAR_SINCE = date(2023, 1, 1)  # documents.CALENDAR_SINCE: the library holds events from this day on
+# 11-19: a document whose address the new export does not list or whose row has no file, while every word of it is in
+# a document of the same site of the new library: the same picture at the address the export now writes for it (Google
+# Sites gives a picture another address each time a page is read), or a picture now read into its page. The build
+# counts it as explained (nknu.content.build._moved_words, its 'moved'); so does this. Whole texts of MOVED_MIN
+# characters or more only, so that a few common words are no proof
+try:
+    from nknu.content.build import MOVED_MIN, _moved_words
+except ImportError:
+    MOVED_MIN, _moved_words = 20, None
+MOVED_FROM = ("not_exported", "not_fetched", "same_export")  # the reasons the words still being there replace
+# a picture whose row has a file and that is no document of its own any more (its words read into the page that shows
+# it, 11-19 afternoon): its words are looked for too, down to the least a picture was a document with (the build's),
+# and only in the pages its row says link to it (the build's _linked_from)
+try:
+    from nknu.content.build import PICTURE_MOVED_MIN, PICTURE_ROW, _linked_from
+except ImportError:
+    PICTURE_MOVED_MIN, PICTURE_ROW, _linked_from = 10, "图片", None
 
 # key: (the short name the page shows, the sentence its floating card holds, its kind, who fixes it when it is ours)
 REASONS = {
@@ -89,11 +131,14 @@ REASONS = {
                     OK_KIND, ""),
     "same_image": ("同一張圖留了別的尺寸", "Wix 網站同一張圖有好幾個尺寸，導出只留一個；新庫裡有這張圖的另一份", OK_KIND, ""),
     "decided_out": ("定了不收", "這一類資料決定不收，名單寫明不抓，導出不給檔，建庫不收；是哪一類寫在後面", OK_KIND, ""),
+    "menu_only": ("只有選單的頁", "這一頁只有「請先選擇教師」這類選單，內容在按了以後的各頁（另外收了），建庫不收這一頁", OK_KIND, ""),
     "pager": ("公告列表的分頁", "列表翻頁的網頁不進庫，每一則公告另外收了", OK_KIND, ""),
     "copy": ("併成副本", "別處有一模一樣的一份，合成一份；留下的那份見它的編號", OK_KIND, ""),
     "format": ("其他格式", "同一個檔的另一種格式（例如 PDF 和 Word），只留一份", OK_KIND, ""),
     "duplicate": ("同一網址重複", "同一個網址導出了兩次，只留一份", OK_KIND, ""),
     "renumbered": ("換了編號", "同一個網址還在新庫裡，只是文件的編號換了", OK_KIND, ""),
+    "words_kept": ("字都還在庫裡", "這一份的字全都還在新庫同一個網站的文件裡：換了網址（Google 協作平台的圖每次讀網頁都換）或併進了網頁",
+                   OK_KIND, ""),
     "series": ("併進行事曆系列", "每週重複的行事曆合成一個系列，這一次是其中一次", OK_KIND, ""),
     "calendar_gone": ("行事曆上沒有了", "學校的行事曆這一次沒有這一筆（學校改了行事曆）", OK_KIND, ""),
     "before_2023": ("2023 年以前的行事曆", "庫只收 2023 年起的行事曆", OK_KIND, ""),
@@ -250,6 +295,8 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
         return "gone", ""
     if MOVED in lacks:
         return "moved", ""
+    if IN_BUTTONS in lacks:
+        return "menu_only", ""
     if NO_DATA in lacks:
         return "no_data", ""
     if str(row.get("页别") or "") == LIST_PAGER:
@@ -270,7 +317,7 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
             if picture.group(1) in held:
                 return "same_image", ""
         if str(row.get("分类") or "") == RULE_DECLINED and (kind := DECIDED_OUT.get(str(row.get("原因代码") or ""))):
-            return "decided_out", DECIDED_WORDS.get(kind, kind)
+            return "decided_out", decided_words(kind)
         return "not_fetched", tw(str(row.get("结果") or "")) or "沒有檔案"
     if same_folder:
         return "same_export", ""
@@ -287,7 +334,35 @@ def _entry(doc_id: str, fp: tuple, note: str = "", what: list[str] | None = None
     return out
 
 
-def compare(prev: dict, new: dict, root: Path, hold: set[str] | None = None) -> dict:
+def moved_least(key: str, fp: tuple, new: dict, manifests: Manifests) -> tuple:
+    """How a document that left for key may be found with its words still in the new library: (MOVED_MIN,) for a
+    reason MOVED_FROM, anywhere in its site; (PICTURE_MOVED_MIN, pages) for a picture whose export row has a file (查
+    不出原因, or 導出沒換), in the pages its row says link to it only; () when its words explain nothing."""
+    site, _kind, _title, url = fp[:4]
+    after = new["sites"].get(site)
+    rows = manifests.rows(after["export"]) if after else None
+    row = _row_of(rows, url) if rows else None
+    if key in ("unknown", "same_export") and row and row.get("本地档案") and row.get("类型") == PICTURE_ROW:
+        return (PICTURE_MOVED_MIN, _linked_from(row)) if _linked_from is not None else ()
+    return (MOVED_MIN,) if key in MOVED_FROM else ()
+
+
+def words_kept(maybe: list[tuple], pd: dict, nd: dict, dbs: tuple[Path, Path] | None) -> set[str]:
+    """The doc_ids of maybe ((doc_id, site, least[, pages]) of prev's documents) whose words are all in a document of
+    the same site of new: the same text (the fingerprints' digest; not for one looked for in given pages only), else,
+    when both libraries' files are given and the build is importable, inside one (the build's own _moved_words)."""
+    if not maybe:
+        return set()
+    held = {(fp[0], fp[6]) for fp in nd.values()}
+    found = {m[0] for m in maybe if len(m) == 3 and (m[1], pd[m[0]][6]) in held}
+    rest = [m for m in maybe if m[0] not in found]
+    if rest and dbs and _moved_words is not None:
+        found |= _moved_words(dbs[0], dbs[1], rest)
+    return found
+
+
+def compare(prev: dict, new: dict, root: Path, hold: set[str] | None = None,
+            dbs: tuple[Path, Path] | None = None) -> dict:
     """The two libraries' differences, per site (the module docstring): {'totals': {new, changed, left, unexplained,
     look, look_fix}, 'sites': [{site, name, new, changed, left, unexplained, look, reasons: {key: n}, held, lists:
     {new, changed, left: {key: [...]}}}], 'unexplained': [... with site], 'reasons': REASONS as dicts}. Sites with
@@ -320,10 +395,13 @@ def compare(prev: dict, new: dict, root: Path, hold: set[str] | None = None) -> 
                 r["lists"]["changed"].append(_entry(doc_id, fp, what=what))
     unexplained: list[dict] = []
     look_fixers: dict[str, int] = {}
-    for doc_id, fp in pd.items():
-        if doc_id in nd:
-            continue
-        key, note = why_left(doc_id, fp, new, prev, manifests)
+    left = {doc_id: why_left(doc_id, fp, new, prev, manifests) for doc_id, fp in pd.items() if doc_id not in nd}
+    maybe = [(doc_id, pd[doc_id][0], *how) for doc_id, (key, _note) in left.items()
+             if (how := moved_least(key, pd[doc_id], new, manifests)) and pd[doc_id][5] >= how[0]]
+    for doc_id in words_kept(maybe, pd, nd, dbs):
+        left[doc_id] = ("words_kept", "")
+    for doc_id, (key, note) in left.items():
+        fp = pd[doc_id]
         r = row(fp[0])
         r["left"] += 1
         r["reasons"][key] = r["reasons"].get(key, 0) + 1
@@ -396,7 +474,7 @@ class Changes:
         try:
             prev = self._library(self.prev_db, keys[0])
             new = self._library(self.new_db, keys[1])
-            result = compare(prev, new, self.root, read_hold(self.hold))
+            result = compare(prev, new, self.root, read_hold(self.hold), (self.prev_db, self.new_db))
             swapped = new["meta"].get("vec_built_at") or new["meta"].get("built_at")
             result.update(state="ready", keys=list(map(str, keys)),
                           prev={"built_at": prev["meta"].get("built_at"),

@@ -929,3 +929,13 @@ def test_a_sites_line_says_whether_it_is_fine_and_what_is_not():
     assert "%" not in LexborHTMLParser(html).text()  # counts, no shares
     counting = kinds_html("a.example", None, "")
     assert "計算中" in counting and "/aca/" not in counting
+
+
+def test_an_export_counts_a_file_several_rows_share_once(tmp_path):
+    # 11-19: a Google Sites picture several pages show is a row a page, all of one file (as a redirect's row shares
+    # its landing page's): the export summary's files are files, its rows stay rows
+    rows = [{"类型": "图片", "结果": "抓到了", "网址": f"https://lh3.example/{i}", "本地档案": "images/1.png"} for i in range(3)]
+    rows.append({"类型": "网页", "结果": "抓到了", "网址": "https://g.example/", "本地档案": "pages/1.html"})
+    (tmp_path / "manifest.json").write_text(json.dumps({"网站": "g", "项目": rows}, ensure_ascii=False), encoding="utf-8")
+    summary = pipeline.manifest_summary(tmp_path)
+    assert summary["rows"] == 4 and summary["files"] == 2 and summary["kinds"]["图片"] == 3

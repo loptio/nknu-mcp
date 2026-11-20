@@ -2,14 +2,19 @@
 
 三样东西都在实验室电脑的 Docker 里跑，只读，只有那台电脑自己连得到。从 Mac 看要先开隧道。
 
-## 现况（2026-11-18 晚）
+## 现况（2026-11-19 早）
 
-- **实验室电脑上装的**：11-18 20:27 那一版（包 7c801a72）。检视台、资料库都是这一版；资料总览 11-18 11:07 换过顶栏的两个档。上一版在 `/work/inspect-code.prev`（11-18 19:00）。
-- **没提交**：11-18 这两天的面板改动都在工作区里（`src/nknu/ops/`、`deploy/lab-inspect/`、`tests/ops/`；新档 `src/nknu/ops/home_page.py`）。测试 `uv run --no-sync pytest tests/ops tests/overview -q -p no:cacheprovider` 879 个过。
+- **实验室电脑上装的**：11-19 09:22 那一版（包 c35d4916）。检视台是这一版；资料库是 11-18 20:27 装的模板（之后没改）；资料总览 11-18 11:07 换过顶栏的两个档。上一版在 `/work/inspect-code.prev`（11-19 08:29）。
+- **提交到哪**：c563dbd（11-19 早，没推送）以后的改动还在工作区：`changes.py`、`nightly.py`、`pagecheck.py`、`pipeline.py`、`deploy/lab-overview/overview_data.py`、对应的测试档和这份说明。测试 `uv run --no-sync pytest tests/ops tests/overview -q -p no:cacheprovider` 886 个过。
 - **各页做到哪**：每晚運行（首页）11-18 重做过，还会再改（JS 网站的定期更新接进来以后；长期的「留意」和新出现的还没分开）。单站页、文件搜尋、測試、文件追踪、网页核查、资料库查询页 11-18 都整页看过、改过；资料总览看过没改。爬虫看板是爬虫那边的程序，没动。
 - **没核对到的**：文件追踪页里 PDF 原档那一格（浏览器自带的 PDF 检视器，无头浏览器画不出来）；点选和滚动是照截图和网址核对的，没用真鼠标试过。
 - **还没清的**：旧页面留下、现在没人用的零件（`tonight_page.funnel_html`、`nightbars_table`，`pipeline_page.site_steps`、`stage_html`，`charts.py` 的 ECharts）。
-- **改好了、还没装的（等 11-19 爬虫那批装完一起装，只重启检视台）**：爬虫 11-19 的三个新原因代码有了白话（`out:skip_path:teacher_fulltext`、`out:cap_image`、`out:wix_size`，在 `pagecheck.REASON_WORDS`）；面板自己的新旧库比对多一个原因「定了不收」（`changes.py` 的 `decided_out`，照建库的 `DECIDED_OUT`），教师著作全文离开时不会算成「這次沒抓到」。校外网站每周轮一次新增的栏位（`revisit_tonight`、`revisit_idle`、`put_back.revisit`、`seen.tsv` 的「没轮到」）面板目前都没读，不用改。测试 880 个过。
+- **11-19 装进去的（08:29、09:22 两次）**：爬虫 11-19 新原因代码的白话（`out:skip_path:teacher_fulltext`、`out:skip_path:proceedings`、`out:cap_image`、`out:wix_size`，在 `pagecheck.REASON_WORDS`）；面板自己的新旧库比对多两个原因：「定了不收」（`decided_out`，照建库的 `DECIDED_OUT`；新种类没有自己的白话时用建库 `LEFT_WORDS` 的说法）和「只有選單的頁」（`menu_only`，照 `corpus.IN_BUTTONS`）；每晚運行读进库新加的 `sites_waiting`（到点还没转完、这一晚留在旧导出的网站），写在各晚的原因里，也会写在「轉文字」那一格（`nightly.waiting_words`）。各晚原因那一处在真页面上核对过；「轉文字」那一格要等有一晚是带 `sites_waiting` 换库的才看得到。校外网站每周轮一次新增的栏位（`revisit_tonight`、`revisit_idle`、`put_back.revisit`、`seen.tsv` 的「没轮到」）面板目前都没读。
+- **11-19 12:41 又装了一次**（`INSTALLED` 2026-11-19T12:41:50 a2eade0b，`.prev` 是 09:22 那一版；在内容 12:18 换库以后）：`deferred` 和它的 `lanes_timeout` 说的是同一句，各晚的原因里只说一次（`nightly.run_reason`）。小毛病。同一批：每晚运行读进库 11-19 09:43 新加的 `sites_set_back`（把关退回、这一晚留在旧导出的网站，带原因和份数）和 `sites_refused`（最新导出还是上次被退回那一份、没再试的网站），写在「換庫」那一格和各晚的原因里（`nightly.set_back_words`），在真页面上还没看过；「定了不收」多教材下载区（`out:skip_path:teaching_materials`）。爬虫 11-19 每晚多一步「看课程查询页的学期」（存档 `reports/schedule-term.json`，学期变了有 `schedule_term` 警告事件），每晚運行还没显示，等那一页再动时一起考虑。库的 meta 新加的 `volumes_json`（十万字以上的附件算背景）面板没有显示，没改。11-19 中午爬虫改了导出：Google 协作平台的图每读一次网页就换网址，导出现在写网页里的那个网址，几页共用的一张图是几行同一个档。为此：「昨晚變了什麼」多一个原因「字都還在庫裡」（离开的文件，字全都还在新库同一个网站里，算有原因；同一段字靠指纹认，字被并进网页的借建库的 `_moved_words` 认，和建库的把关一样，不到 20 个字的不算），不然这些站每晚都会把换了网址的图标成「留意」；单站页导出的「檔」和资料总览的抓取结果，几行同一个档只算一个。测试 886 个过。装完在真页面上看过：「昨晚變了什麼」离开 256 份全有原因（定了不收 248＝教师著作 241＋教材下载区 7，只有选单的页 1，并成副本 7），留意 0；11-18 那晚 deferred 的原因只说一次「兩小時內沒轉完」。`sites_set_back`、`sites_refused` 还没碰上真的例子，没在真页面上看过。
+- **11-19 14:04 再装一次**（`INSTALLED` 2026-11-19T14:04:29 b49a639b，`.prev` 是 12:41 那一版）：跟上内容把关下午的新认法——导出那一行「类型＝图片」、有档、却不再单独成文件的（字并进了显示它的网页），也查字在不在同站新库里，门槛照建库的 `PICTURE_MOVED_MIN`（10 个字；`changes.moved_least`）。装前真页面上 13:22 那次换库有 20 张这样的图标成红色「查不出原因」（台湾学 11、停车场 8、论坛 1），装后 20 张都是「字都還在庫裡」，查不出原因 0、留意 0。测试 886 个过。14:08 又装一次（`INSTALLED` 2026-11-19T14:08:47 3034f8b8）：跟内容把关一致，图片的字只在导出「链到它的网页」那几页里找（`build._linked_from`），图片不走指纹那条捷径。装完内容 14:02 起的重试进库正在跑，两份库是同一份，14:22 换库后在真页面上看过：离开 202 份，字都還在庫裡 167、换了编号 33、并成副本 1、查不出原因 1（辅导中心一张 unnamed.png），和内容把关的 `aca.swap.json` 一份不差（moved 167、renumbered 33、merged 1、row_not_read 1）。14:59 再装一次（`INSTALLED` 2026-11-19T14:59:43 01ef993e）：抄进内容定稿的建库程序——图片 20 个字以上照全站认，10～19 个字的只在「链到它的网页」里认（判断在 `build._moved_words` 里，面板只把网页集合传过去，不另写一套）。装后同一次换库：字都還在庫裡 168、换了编号 33、并成副本 1，查不出原因 0（辅导中心那张 20 个字以上，全站找到了）。测试 886 个过。
+- **对照库 aca1115.db（11-15）清掉**：11-19 下午用户同意清理实验室上的旧试验库，面板用不到它（只有 Datasette 当「對照庫」开着）。compose.yaml 只开 `aca.db`、metadata.yaml 拿掉 `aca1115`。judge 删档后 18:32 装上（`up -d --no-deps datasette`，只重建 datasette，放掉了旧档）；Datasette 现在只有「正式庫」，首页、库、文件表都开得了。
+- **面板用的爬虫程序比爬虫自己的旧一点**：面板抄的是 `/work/src`（建库用的那一份），11-19 早上它的 `archive/` 还是 11-18 的；爬虫自己跑的在 `/crawl/code-update`。分类用的 `outcome.py` 两边只差一句注释，不影响数字；`/work/src` 换成新的以后照下一条重装。
+- **转文字、建库、每晚进库的程序 11-19 起在 `deploy/lab-pipeline/`**（旧位置是转接档）；面板只读它们写的状态档和日志（`lab_pc/` 下的 `build.status`、`ingest.log`、`lane*.log`，`ingest-status.json` 等），这些都还在原处，没改。
 - **建库或爬虫的程序在 `/work/src` 更新以后**要照「换程序」重装一次（面板用自己抄的一份）；01:00～04:00 每晚更新在跑，不重启检视台。
 - 每一轮改了什么、为什么：`docs/superpowers/specs/2026-11-17-panels-v3-questions.md` 第九到十三节；截图在 `research/dashboard_redesign_2026-11-18/shots/`。
 
@@ -149,7 +154,7 @@ Datasette 的模板是照 0.65.5 改的：换 Datasette 版本以前，要先拿
 
 | 服务 | 实验室电脑的口 | 是什么 |
 |---|---|---|
-| `datasette` | 8001 | 现成的工具 Datasette（官方映像，0.65.5）。把资料库变成可以点、筛、数的网页。读正式库 `aca.db` 和教务处对照库 `aca1115.db` |
+| `datasette` | 8001 | 现成的工具 Datasette（官方映像，0.65.5）。把资料库变成可以点、筛、数的网页。读正式库 `aca.db`（11-15 的对照库 `aca1115.db` 11-19 清掉了） |
 | `mcp` | 8766 | 我们的 MCP 服务，HTTP 模式。和以后给学生的 AI 用的是同一支程序、同一个库 |
 | `ops` | 8878 | 检视台：搜索测试、文件追踪、网页核查三页（网页核查另外只读挂着爬虫的账本和 WARC） |
 

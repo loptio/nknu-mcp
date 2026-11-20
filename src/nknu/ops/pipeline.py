@@ -729,6 +729,7 @@ def manifest_summary(folder: Path) -> dict:
     missing_examples: dict[str, list[tuple[str, str]]] = {}  # up to MISSING_SHOWN of each (the site page's lists)
     examples: dict[str, list[tuple[str, str]]] = {}
     paging = files = 0
+    seen: set[str] = set()
     refill: dict[str, int] = {}
     refills: list[tuple[str, str, str, str]] = []
     for r in rows:
@@ -744,7 +745,8 @@ def manifest_summary(folder: Path) -> dict:
                 shown.append((str(r.get("网址") or ""), str(r.get("标题") or "")))
         if str(r.get("页别") or "") == "列表翻页":
             paging += 1
-        if r.get("本地档案"):
+        if (saved := r.get("本地档案")) and saved not in seen:  # one file of several rows (a redirect's landing page,
+            seen.add(saved)  # a Google Sites picture several pages show, 11-19) is one file
             files += 1
         origin = str(r.get("来源") or "")
         if origin in REFILL:

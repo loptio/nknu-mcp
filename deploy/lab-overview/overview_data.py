@@ -253,8 +253,13 @@ def _crawl(root: Path, export: str | None) -> tuple[dict[str, collections.Counte
     path = root / (export or "-") / "manifest.csv"
     if export and path.is_file():
         with path.open(encoding="utf-8-sig", newline="") as f:
+            seen: set[str] = set()
             for r in csv.DictReader(f):
                 o = outcome(r.get("结果", ""), r.get("分类", ""))
+                if o == "got" and (saved := r.get("本地档案")):  # one file several rows got (a Google Sites picture
+                    if saved in seen:  # several pages show, written once a page since 11-19) is counted once
+                        continue
+                    seen.add(saved)
                 bag[r.get("类型", "")][o] += 1
                 if o == "got" and r.get("页别") == "列表翻页":
                     pager += 1
