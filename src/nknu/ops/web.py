@@ -37,7 +37,7 @@ section 二; owner: 「可以按你的建议走吧，不用问我了」), the ba
   check (/check?url=<address or id>) stay where they were.
 
     python -m nknu.ops.web [--db research/pipeline_2026-11-02/aca.db] [--root .] [--host 127.0.0.1] [--port 8878]
-                           [--viewer-url http://127.0.0.1:18877] [--questions DIR] [--gold FILE]
+                           [--questions DIR] [--gold FILE]
                            [--archive /crawl/archive] [--no-dense] [--no-rerank]
 """
 
@@ -55,7 +55,7 @@ import time
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import uvicorn
 from starlette.applications import Starlette
@@ -66,6 +66,7 @@ from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
 from nknu.ops import history, nightly, pagecheck
+from nknu.ops import overview as overview_mod
 from nknu.ops.board import Board
 from nknu.ops.changes import Changes
 from nknu.ops.check_page import check_body, check_form, empty_raw
@@ -75,7 +76,7 @@ from nknu.ops.explain import explain_search
 from nknu.ops.home_page import home_body
 from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
-from nknu.ops.pipeline import Pipeline, Where, site_detail
+from nknu.ops.pipeline import Pipeline, Where, log_tail, site_detail
 from nknu.ops.pipeline_page import changes_title
 from nknu.ops.search_page import board_html, newset_html, search_body, why_head
 from nknu.ops.site_page import Kinds, now_line
@@ -256,7 +257,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                today_fn: Callable[[], date] = today_tpe, code_root: Path | None = None,
                pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "",
                archive: Path | None = None, watch: tuple[tuple[str, str, str], ...] = (),
-               mcp_url: str = "", ops_db: Path | None = None, record: bool = True) -> Starlette:
+               mcp_url: str = "", ops_db: Path | None = None, record: bool = True,
+               disks: tuple[tuple[str, str], ...] = (), public_log: Path | None = None) -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
     browser reaches the archive viewer ('' : no link); questions and gold: load_questions; config: the search's
     settings (None: the server's); models: embedder and reranker in place of the process's shared ones (tests);
@@ -266,7 +268,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     crawler's archive folder (frontier.db and its WARC files) 網頁核查 reads, None: the page says it is not mounted;
     watch: the services 流水線 asks whether they answer, (name, address from this process, how: 'mcp' or 'http');
     ops_db: the nights' record this service keeps (nknu.ops.history; None: not kept, the pages say so); record: whether
-    its background thread runs (tests call app.state.recorder.tick themselves)."""
+    its background thread runs (tests call app.state.recorder.tick themselves); public_log: the public service's query
+    log, read only (None: 查詢服務 says nothing of its use)."""
     db_path, root = Path(db_path), Path(root)
     code_root = Path(code_root) if code_root is not None else REPO_ROOT
     pipeline_src = Path(pipeline_src) if pipeline_src is not None else root / "src"
@@ -349,12 +352,12 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         """網頁核查's results as they stand, never starting its sweep (a restart's 17 minutes are its own to start)."""
         return sweep.overview() if sweep is not None else None
 
-    where = Where(root=root, db=db_path, archive=archive, services=tuple(watch),
+    where = Where(root=root, db=db_path, archive=archive, services=tuple(watch), disks=tuple(disks), public_log=public_log,
                   board=lambda: scores.snapshot(start=False), sweep=sweep_overview, today=today_fn)
     flow = Pipeline(where)
     # where a step's links go by their short names: the scoreboard is on 搜尋, the school's 網頁核查 on 文件
-    panels = {"overview": overview_url, "board": "/try#board", "check": "/check", "tables": tables_url,
-              "crawl": f"{viewer_url}/progress" if viewer_url else ""}
+    # the crawler's own board is no panel since 2026-11-21 (the panels became one; viewer_url is taken and not used)
+    panels = {"overview": overview_mod.PATH, "board": "/try#board", "check": "/check", "tables": tables_url}
     every_site = theme.entry_href("sites", "ops")  # 網站, the one list of every site (資料總覽)
     tables = (tables_url or theme.panels()["hosts"]["tables"]).rstrip("/")  # 資料庫, its queries of one site
     kinds = Kinds(where.library)  # each site's documents per kind, counted once per library file
@@ -363,7 +366,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     night_changes = Changes(where.library, root)
     # 每晚紀錄 (panels v3 2026-11-17 一): the one file this service writes, never under /work or /crawl
     store = history.Store(ops_db, forbidden=(root, archive))
-    recorder = history.Recorder(store, where, changes=night_changes, kinds=kinds)
+    recorder = history.Recorder(store, where, changes=night_changes, kinds=kinds, flow=flow)
 
     def tonight_now(request: Request) -> tuple[dict, dict]:
         changes = night_changes.snapshot()
@@ -382,7 +385,13 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         snap = flow.snapshot(fresh=request.query_params.get("fresh") == "1")
         night, changes = tonight_now(request)
         hist = history.home_history(store, tonight_night(night))
-        body = home_body(snap, night, changes, hist, panels, every_site)
+        # 問題 against the list kept for the night before (nknu.ops.standing): none kept yet, the page says from when
+        base = store.problem_base(night["default"])
+        note = ""
+        if base is None and store.enabled:
+            note = ("問題清單從這一晚開始記；下一晚跑完，這裡會分成新出現的、之前就有的、好了的"
+                    if store.problems_kept(night["default"]) else "這一晚的問題清單還沒記下（這一晚跑完、各步驟讀過一次以後才記）")
+        body = home_body(snap, night, changes, hist, panels, every_site, base=base, base_note=note)
         conn = connect(db_path)
         try:
             return shell("每晚運行 · 檢視台", body, db_info(conn), tab="tonight")
@@ -586,6 +595,62 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         p = request.query_params
         return (p.get("url") or p.get("ref") or "").strip()
 
+    def stored(request: Request) -> dict | None:
+        """The stored answer a request names: ?id= the ledger's number (u<id> or bare), else an address."""
+        ref = request.query_params.get("id", "").strip() or check_ref(request)
+        return pagecheck.archived_record(archive, ref, ledgers=ledgers)
+
+    def stored_page(request: Request, what: str) -> Response:
+        """A stored page as its source or its visible text (the crawler's viewer /source and /text, until the panels
+        became one, 2026-11-21), under the page's address and a way back to its check."""
+        rec = stored(request)
+        conn = connect(db_path)
+        try:
+            info = db_info(conn)
+        finally:
+            conn.close()
+        if rec is None or not pagecheck.is_markup(rec["ctype"], rec["body"]):
+            why = "存檔裡沒有這一頁的內容" if rec is None else "存的不是網頁，沒有原始碼或文字可以看"
+            return shell(f"{what} · 網頁核查", f"<section class='card pad'><span class='pill none'>{e(why)}</span></section>",
+                         info, tab="doc", status=404)
+        text = pagecheck.decode(rec["body"], rec["ctype"])
+        shown = text if what == "原始 HTML" else pagecheck.visible_text(text)
+        back = "/check?" + urlencode({"url": rec["url"]})
+        other = ("/check/text", "整頁文字") if what == "原始 HTML" else ("/check/source", "原始 HTML")
+        head = (f"<section class='card pad stored-h'><b>{e(what)}</b><span class='url mono'>{e(unquote(rec['url']))}</span>"
+                f"<span class='soft small'>{len(shown):,} 個字元</span><a class='btn' href='{e(back)}'>核查這一頁</a>"
+                f"<a class='btn' href='{e(other[0])}?{urlencode({'url': rec['url']})}'>{other[1]}</a></section>")
+        return shell(f"{rec.get('title') or unquote(rec['url'])} · {what}",
+                     f"{head}<pre class='card pad stored'>{e(shown)}</pre>", info, tab="doc")
+
+    def check_source(request: Request) -> Response:
+        return stored_page(request, "原始 HTML")
+
+    def check_text(request: Request) -> Response:
+        return stored_page(request, "整頁文字")
+
+    def check_file(request: Request) -> Response:
+        """A stored answer's own bytes (the crawler's viewer /raw until 2026-11-21): a page or an SVG under the
+        strictest policy (nothing runs, nothing loads), a PDF, a picture or plain text as the browser shows them (a
+        picture and a PDF only when their bytes are what the type says), anything else as a download."""
+        rec = stored(request)
+        if rec is None:
+            return PlainTextResponse("not found", status_code=404, headers={"X-Content-Type-Options": "nosniff"})
+        body, ctype = rec["body"], rec["ctype"]
+        kind = ctype.split(";", 1)[0].strip().lower()
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+        if pagecheck.is_markup(ctype, body) or kind == "image/svg+xml":
+            return Response(body, media_type=ctype or "text/html", headers={**headers, "Content-Security-Policy": ARCHIVED_CSP})
+        if image := pagecheck.image_type(body):
+            return Response(body, media_type=image, headers={**headers, "Content-Security-Policy": CHECK_RES_CSP})
+        if kind == "application/pdf" and body[:5] == b"%PDF-":
+            return Response(body, media_type="application/pdf", headers=headers)
+        if kind == "text/plain":
+            return Response(body, media_type=ctype, headers={**headers, "Content-Security-Policy": CHECK_RES_CSP})
+        name = quote(unquote(urlsplit(rec["url"]).path.rsplit("/", 1)[-1]) or f"u{rec['id']}")
+        return Response(body, media_type="application/octet-stream",
+                        headers={**headers, "Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+
     # one read-only ledger connection for every check and archived image, and the last few checks kept a short while:
     # the panel and its frame (/check/raw) ask for the same check, which used to be made twice (the review of 11-16)
     ledgers = pagecheck.LedgerCache(archive) if archive is not None else None
@@ -640,6 +705,10 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         3). A site (?site=, or its key pasted back) is its page /site, words are 文件搜尋 (/doc), and nothing asked is
         the school's 網頁核查 (doc_page.school_body)."""
         p = request.query_params
+        if number := p.get("id", "").strip():  # the ledger's number of an address (an export row's 存档编号, u<id>)
+            address = pagecheck.address_of(archive, number, ledgers=ledgers)
+            if address:
+                return moved("/check", [("url", address)])
         ref, key = check_ref(request), p.get("site", "").strip()
         sw = swept()
         conn = connect(db_path)
@@ -750,6 +819,42 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return RedirectResponse(target, status_code=302,
                                 headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
 
+    # 網站 (資料總覽, a service of its own until 2026-11-21: nknu.ops.overview): its thread computes, a request only
+    # hands out what it last made
+    sites_state = overview_mod.State(root)
+
+    def sites_page(request: Request) -> Response:
+        sites_state.start()
+        with sites_state.lock:
+            page, page_gz = sites_state.page, sites_state.page_gz
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if page is None:
+            return Response(overview_mod.WAITING, media_type="text/html; charset=utf-8", headers=headers)
+        if "gzip" in (request.headers.get("accept-encoding") or ""):
+            return Response(page_gz, media_type="text/html; charset=utf-8",
+                            headers={**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return Response(page, media_type="text/html; charset=utf-8", headers=headers)
+
+    def sites_stamp(_request: Request) -> Response:
+        sites_state.start()
+        return JSONResponse(sites_state.said(), headers={"Cache-Control": "no-store"})
+
+    def sites_data(_request: Request) -> Response:
+        with sites_state.lock:
+            data = sites_state.data
+        if data is None:
+            return JSONResponse({"error": "還在統計"}, status_code=404)
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    def log_api(request: Request) -> Response:
+        """The last lines of one of the logs the steps write (pipeline.LOG_FILES, by its short name: never a path)."""
+        p = request.query_params
+        n = p.get("n", "")
+        got = log_tail(where, p.get("name", ""), int(n) if n.isascii() and n.isdigit() else 50)
+        if got is None:
+            return JSONResponse({"error": "沒有這份紀錄"}, status_code=404, headers={"Cache-Control": "no-store"})
+        return JSONResponse(got, headers={"Cache-Control": "no-store"})
+
     def guarded(endpoint: Callable[[Request], Response], api: bool) -> Callable[[Request], Response]:
         """endpoint, whose failure is said in words (as JSON for the commands, as a page for the owner) and logged
         whole: one odd record never leaves the owner with a bare 500."""
@@ -771,6 +876,9 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
     routes = [Route("/", guarded(home, False), methods=["GET"]),
               Route("/site", guarded(site_view, False), methods=["GET"]),
+              Route(overview_mod.PATH, guarded(sites_page, False), methods=["GET"]),
+              Route(f"{overview_mod.PATH}/stamp", guarded(sites_stamp, True), methods=["GET"]),
+              Route(f"{overview_mod.PATH}/data.json", guarded(sites_data, True), methods=["GET"]),
               Route("/doc", guarded(doc_view, False), methods=["GET"]),
               Route("/doc/find", guarded(doc_find, True), methods=["GET"]),
               Route("/search", guarded(search_page, False), methods=["GET"]),
@@ -781,10 +889,14 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/api/pipeline", guarded(pipeline_api, True), methods=["GET"]),
               Route("/api/tonight", guarded(tonight_api, True), methods=["GET"]),
               Route("/api/history", guarded(history_api, True), methods=["GET"]),
+              Route("/api/log", guarded(log_api, True), methods=["GET"]),
               Route("/pipeline/site", guarded(pipeline_site, False), methods=["GET"]),
               Route("/file", guarded(original, True), methods=["GET"]),
               Route("/check", guarded(check_panel, False), methods=["GET"]),
               Route("/check/raw", guarded(check_raw, True), methods=["GET"]),
+              Route("/check/source", guarded(check_source, False), methods=["GET"]),
+              Route("/check/text", guarded(check_text, False), methods=["GET"]),
+              Route("/check/file", guarded(check_file, True), methods=["GET"]),
               Route("/check/res", guarded(check_res, True), methods=["GET"]),
               Route("/check/go", guarded(check_go, True), methods=["GET"]),
               Route("/check/list", guarded(check_list, True), methods=["GET"]),
@@ -829,9 +941,11 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         stops cleanly."""
         if record:
             recorder.start()
+            sites_state.start()  # in a test the page's first request starts it
         try:
             yield
         finally:
+            sites_state.close()
             await run_in_threadpool(recorder.close)
             if sweep is not None:
                 await run_in_threadpool(sweep.close)
@@ -840,6 +954,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     app.state.sweep = sweep
     app.state.kinds = kinds
     app.state.store, app.state.recorder = store, recorder
+    app.state.sites = sites_state
     app.add_middleware(LocalOnly)
     return app
 
@@ -858,8 +973,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="在哪个位址上听：默认 127.0.0.1；实验室的 Docker 容器里用 0.0.0.0，由 Docker 只从主机自己的 "
                          "127.0.0.1 转进来。不管听哪里，只回答用本机名字连进来的请求")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"端口（默认 {DEFAULT_PORT}）")
-    ap.add_argument("--viewer-url", default="", help="从你的浏览器看爬虫检视器的网址（文件追踪第一步会链过去）")
-    ap.add_argument("--overview-url", default="", help="从你的浏览器看资料总览的网址（顶栏链过去）")
+    ap.add_argument("--viewer-url", default="", help="不用了：爬虫看板 11-21 起不再是面板（看原样在 /check）；留着只为旧的 compose 还能开")
+    ap.add_argument("--overview-url", default="", help="不用了：资料总览 11-21 并进检视台（/sites）；留着只为旧的 compose 还能开")
     ap.add_argument("--tables-url", default="", help="从你的浏览器看 Datasette 的网址（顶栏链过去）")
     ap.add_argument("--questions", type=Path, default=None, help="测试题的资料夹（research/eval_2026-11-01）")
     ap.add_argument("--gold", type=Path, default=None, help="标准答案的档（默认是测试题资料夹里的 gold_docs.json）")
@@ -869,13 +984,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--watch", action="append", default=[], metavar="名字=方式:网址",
                     help="流水线页要问「有没有回应」的服务（从这个程序连得到的网址），可以给好几次。方式：mcp（握手，"
                          "每小时真的搜一次）、datasette（看它开着的库是不是正式库）、overview（资料总览的 /stamp）、"
-                         "http（只看有没有回应）")
+                         "public（对外服务的 /health：活着没有、库多旧；不搜，免得进它的查询纪录）、http（只看有没有回应）")
     ap.add_argument("--ops-db", default="",
                     help="每晚纪录的档（检视台自己写的小资料库；实验室是 /ops/ops.db，磁碟区 nknu-ops）；不给或写不进去时，"
                          "页面照常、只说没有在记")
     ap.add_argument("--mcp-url", default="",
                     help="「測試」那一页调用的搜索服务（MCP）网址，从这个程序连得到的（实验室是 http://mcp:8766/mcp）；"
                          "不给就用 --watch 里方式是 mcp 的那一个，都没有就是那一页说没有设定")
+    ap.add_argument("--disk", action="append", default=[], metavar="名字=资料夹",
+                    help="首页要说剩余空间的硬盘，给它上面的一个资料夹（从这个程序看得到的），可以给好几次；"
+                         "实验室：C 槽=/host-c、D 槽=/crawl/archive/warc")
+    ap.add_argument("--public-log", default="",
+                    help="对外服务的查询纪录 queries.jsonl（只读挂进来的），首页「查詢服務」说它最近 24 小时的使用；不给就不说")
     add_model_flags(ap)
     args = ap.parse_args(argv)
     if not args.db.is_file():
@@ -885,8 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
     for item in args.watch:
         name, _, rest = item.partition("=")
         how, _, url = rest.partition(":")
-        if not name.strip() or how not in ("mcp", "datasette", "overview", "http") or not url.startswith("http"):
-            print(f"--watch 要写成 名字=方式:网址（方式是 mcp、datasette、overview 或 http）：{item}", file=sys.stderr)
+        if not name.strip() or how not in ("mcp", "datasette", "overview", "public", "http") or not url.startswith("http"):
+            print(f"--watch 要写成 名字=方式:网址（方式是 mcp、datasette、overview、public 或 http）：{item}", file=sys.stderr)
             return 2
         watch.append((name.strip(), url.strip(), how))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -894,7 +1014,10 @@ def main(argv: list[str] | None = None) -> int:
                      overview_url=args.overview_url, tables_url=args.tables_url,
                      config=config_from(args), archive=Path(args.archive) if args.archive else None,
                      watch=tuple(watch), mcp_url=mcp_url_of(args.mcp_url, watch),
-                     ops_db=Path(args.ops_db) if args.ops_db else None)
+                     ops_db=Path(args.ops_db) if args.ops_db else None,
+                     disks=tuple((name.strip(), path.strip()) for name, _, path in (d.partition("=") for d in args.disk)
+                                 if name.strip() and path.strip()),
+                     public_log=Path(args.public_log) if args.public_log else None)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

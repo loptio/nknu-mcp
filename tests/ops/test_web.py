@@ -115,7 +115,7 @@ def test_the_old_addresses_go_where_their_pages_went(lib):
     assert lib.get("/check", follow_redirects=False).status_code == 200  # nothing asked: 全校網頁核查 itself (11-18)
     assert to("/check", site="a.example", only="gap") == "/site?site=a.example&only=gap#check"
     assert lib.get("/trace", params={"ref": "d3"}, follow_redirects=False).status_code == 200  # a trace stays
-    assert to("/site") == "http://127.0.0.1:18879/"  # no site asked: 網站, where every site is
+    assert to("/site") == "/sites"  # no site asked: 網站, where every site is (the panel's own page since 11-21)
 
 
 def test_the_second_tab_of_try_explains_the_search_on_the_library(lib):
@@ -166,7 +166,7 @@ def test_the_trace_page_shows_the_five_steps(site):
     page = site.get("/trace", params={"ref": NOTICE_URL})
     assert page.status_code == 200
     for word in ("① 抓取", "② 匯出", "③ 轉文字", "④ 建庫", "⑤ 搜尋", "115-1 停修公告", "公告頁日期欄", "註冊組",
-                 "申請人：王OO。", "http://viewer.test/page?id=80", "/file?"):
+                 "申請人：王OO。", "/check?id=80", "存檔裡的原樣", "/file?"):
         assert word in page.text, word
 
 
@@ -277,7 +277,7 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
     with TestClient(app, base_url=BASE) as client:
         pages = {path: client.get(path).text for path in ("/", "/try", "/doc", "/trace?ref=d3")}
     for path, page in pages.items():
-        assert "href='http://127.0.0.1:18879/'" in page and "href='http://127.0.0.1:18001/'" in page, path
+        assert "href='/sites'" in page and "href='http://127.0.0.1:18001/'" in page, path
         assert "href='/doc'" in page and "href='/'" in page and "class='nk-bar'" in page, path
         assert ">資料庫<svg" in page and "<summary>工具" in page and "翻庫" not in page, path
     marked = {path: page.split("aria-current='page'>", 1)[1].split("<", 1)[0] for path, page in pages.items()}
@@ -475,3 +475,29 @@ def test_the_trace_page_leads_to_the_page_check_of_its_address(site):
     """design 2026-11-16-page-check-design.md section 一: a document with an address offers 「核查這一頁」."""
     page = site.get("/trace", params={"ref": NOTICE_URL}).text
     assert "/check?url=" in page and "核查這一頁" in page and "aria-current='page'>文件搜尋</a>" in page
+
+
+def test_the_sites_overview_is_a_page_of_the_panel_itself(lib):
+    # 2026-11-21: 資料總覽 was a service and a port of its own; it is /sites here, computed in its own thread, so a
+    # request only hands out what that thread last made (the waiting page until the first computation ends)
+    first = lib.get("/sites")
+    assert first.status_code == 200 and first.headers["cache-control"] == "no-store"
+    stamp = lib.get("/sites/stamp").json()
+    assert set(stamp) == {"stamp", "built", "state", "error"}
+    state = lib.app.state.sites
+    if state.page is None:  # the made-up library of this test is not one the overview can read: said, not a 500
+        assert "正在統計" in first.text and lib.get("/sites/data.json").status_code == 404
+    with state.lock:
+        state.page, state.page_gz, state.data = b"<p>sites</p>", __import__("gzip").compress(b"<p>sites</p>"), {"k": 1}
+    assert lib.get("/sites").text == "<p>sites</p>" and lib.get("/sites/data.json").json() == {"k": 1}
+    assert lib.get("/sites", headers={"Accept-Encoding": "gzip"}).headers["content-encoding"] == "gzip"
+
+
+def test_the_log_route_answers_a_known_name_and_nothing_else(lib):
+    # 2026-11-21: the end of a step's log, asked for by the home's folds; a name of pipeline.LOG_FILES, never a path
+    got = lib.get("/api/log", params={"name": "ingest"})
+    assert got.status_code == 200 and got.json()["file"] == "ingest.log" and got.json()["lines"] == []
+    assert got.headers["cache-control"] == "no-store"
+    for bad in ("", "passwd", "../ingest.log", "/etc/passwd"):
+        assert lib.get("/api/log", params={"name": bad}).status_code == 404, bad
+    assert lib.get("/api/log", params={"name": "ingest"}, headers={"host": "evil.example"}).status_code == 403

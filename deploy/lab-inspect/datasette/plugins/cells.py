@@ -4,8 +4,8 @@
 - a link column of the canned queries (metadata.yaml builds them as text, 'http://127.0.0.1:…' || …) shows a short
   word, not the whole address;
 - a value the library stores as a code shows its word as a small tag (the code floats over it, for a filter or a
-  query of the owner's own); a document's kind takes the hue 資料總覽 gives that kind (deploy/lab-overview/
-  page.html's --k0…--k4, the only hues of these pages);
+  query of the owner's own); a document's kind takes the hue 資料總覽 gives that kind
+  (src/nknu/ops/overview_page.html's --k0…--k4, the only hues of these pages);
 - a document id is followed by a link that traces it in 檢視台; a site's code links its list of documents;
 - a no-date reason (a query's 「原因」) shows its short name, its whole sentence floating over it (owner 11-15: 「很多
   名字看着不直觉 然后感觉是想缩短文字 但又想保留细节导致不上不下的」, and 资料总览's floating words as the way to give

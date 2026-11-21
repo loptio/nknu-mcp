@@ -1175,7 +1175,7 @@ function setLive(text, tip) {
 }
 function watchLive() {
   let pending = false;
-  const check = () => fetch('stamp', { cache: 'no-store' })
+  const check = () => fetch(LINKS.stamp || 'stamp', { cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
     .then(j => {
       setLive(j.state === 'error' ? '更新失敗' : '', j.state === 'error' ? j.error + '。顯示的是上一次的資料' : '');

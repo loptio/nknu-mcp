@@ -115,13 +115,24 @@ color:var(--ink3);font-size:12px}
 .chk-frame{height:70vh;min-height:360px}}
 .chk-side h2{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);font-weight:650;margin:0 0 8px}
 .chk-side h2 .faint{font-weight:400;margin-left:auto}
-[data-b]{--c:var(--ink3)}[data-b=got],[data-b=look]{--c:var(--good)}[data-b=next],[data-b=review]{--c:var(--warn)}
-[data-b=failed],[data-b=missing]{--c:var(--bad)}
-.sw{position:relative;display:inline-block;flex:none;width:22px;height:12px;border-bottom:2.5px solid var(--c)}
-.sw::after{content:"";position:absolute;right:-2px;bottom:-5px;width:7px;height:7px;border-radius:50%;background:var(--c)}
-.sw[data-b=look]::after{background:var(--warn)}.sw[data-b=review],.sw[data-b=missing]{border-bottom-style:dashed}
-.sw[data-b=gone]{border-bottom:0;background:linear-gradient(var(--c),var(--c)) center/100% 2px no-repeat}
-.sw[data-b=notlink]{border-bottom:1px solid var(--line2)}.sw[data-b=notlink]::after{display:none}
+[data-b]{--c:var(--mute-s)}[data-b=got],[data-b=look]{--c:var(--good-s)}[data-b=next],[data-b=review]{--c:var(--warn-s)}
+[data-b=failed],[data-b=missing]{--c:var(--bad-s)}
+/* a state's key is a plain stroke of its colour, solid or dashed as the page draws it. Until 2026-11-21 it was a
+   small copy of a link's mark, a line with a dot hanging off its end, which read as a slider and as nothing else
+   (the owner: 「我不懂为什么你这里的图标要这样设计呀，看着也不直觉呀」); how a link and a picture are marked is now
+   shown once, as they look on the page, in the line above the table (.lg-how) */
+.sw{position:relative;display:inline-block;flex:none;width:20px;height:0;border-top:3px solid var(--c);border-radius:2px}
+.sw[data-b=review],.sw[data-b=missing]{border-top-style:dashed;border-radius:0}
+.sw[data-b=look]::after{content:"";position:absolute;right:-1px;top:-5px;width:7px;height:7px;border-radius:50%;
+background:var(--warn-s)}
+.sw[data-b=notlink]{border-top:1px solid var(--line2)}
+.lg-how{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:0 0 10px;font-size:12px;color:var(--ink2)}
+.lg-how>span{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.lg-a{color:var(--ink);text-decoration:underline 2px var(--good-s);text-underline-offset:3px}
+.lg-a::after{content:"";display:inline-block;width:6px;height:6px;margin-left:3px;border-radius:50%;background:var(--good-s);
+vertical-align:middle}
+.lg-box{display:inline-block;width:18px;height:13px;outline:2px solid var(--good-s);outline-offset:-1px;
+background:var(--sunk)}
 table.legend2{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
 table.legend2 th{font-size:12px;color:var(--ink3);font-weight:600;text-align:right;padding:0 0 5px 8px}
 table.legend2 th:first-child{text-align:left;padding-left:0}
@@ -270,6 +281,18 @@ def _facts(s: dict) -> str:
                     f"data-tip='{e(doc.get('title') or doc['doc_id'])}'>{icon('trace', 12)}文件追蹤</a>")
     elif page or s.get("state") == "not_in_ledger":
         bits.append("<span class='tag' data-tip='庫裡沒有這個網址的文件'>沒進庫</span>")
+    # the stored answer as it was kept (the crawler's viewer showed these until the panels became one, 2026-11-21):
+    # a page's source and its visible text, a file's own bytes; a button's answer has no address of its own to ask by
+    if page and s.get("state") in ("ok", "not_html") and not s.get("press"):
+        ref = urlencode({"url": page["url"]})
+        if s["state"] == "ok":
+            bits.append(f"<a class='btn' href='/check/source?{ref}' target='_blank' "
+                        "data-tip='存檔裡這一頁的原始 HTML，一個字都沒動'>原始 HTML</a>")
+            bits.append(f"<a class='btn' href='/check/text?{ref}' target='_blank' "
+                        "data-tip='整頁上看得到的字（選單、頁尾都在內；建庫讀的正文看左邊虛線框）'>整頁文字</a>")
+        else:
+            bits.append(f"<a class='btn' href='/check/file?{ref}' target='_blank' "
+                        "data-tip='存檔裡的這個檔，照原樣打開；瀏覽器開不了的會下載'>打開存下來的檔</a>")
     shown = (page or {}).get("url") or s.get("url") or ""
     if shown:
         press = (s.get("press") or {}).get("label", "")
@@ -281,6 +304,14 @@ def _facts(s: dict) -> str:
 def _tone(bucket: str) -> str:
     return {"got": "good", "look": "good", "next": "warn", "review": "warn", "failed": "bad",
             "missing": "bad"}.get(bucket, "none")
+
+
+# how the marks on the stored page read, said once with the marks themselves: a link as a link is marked there, a
+# picture as a picture is; the rows under it are then only colour and stroke
+LEGEND_HOW = ("<p class='lg-how'><span><span class='lg-a'>連結</span>畫底線和圓點</span>"
+              "<span><i class='lg-box'></i>圖片、按鈕畫外框</span>"
+              "<span data-tip='綠：抓到了。黃：留到下一輪，或還沒決定。紅：失敗，或帳本裡沒有。灰：照規則不抓、要登入、"
+              "學校已刪除這類不算漏的。虛線：帳本裡沒有，或爬蟲還沒決定怎麼處理'>顏色是結果，虛線是還沒著落</span></p>")
 
 
 def legend_html(counts: dict) -> str:
@@ -300,7 +331,7 @@ def legend_html(counts: dict) -> str:
         return "<div class='soft small'>這一頁沒有連結、圖片和按鈕</div>"
     head = "".join(f"<th>{e(word)}</th>" for _, word in WHATS)
     total = "".join(f"<td class='num'>{totals[w]}</td>" for w, _ in WHATS)
-    return (f"<table class='legend2'><tr><th></th>{head}</tr>{''.join(rows)}"
+    return (f"{LEGEND_HOW}<table class='legend2'><tr><th></th>{head}</tr>{''.join(rows)}"
             f"<tr class='sum'><td>合計</td>{total}</tr></table>")
 
 

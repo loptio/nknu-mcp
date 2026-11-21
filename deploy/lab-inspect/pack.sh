@@ -14,8 +14,9 @@ mkdir -p "$OUT"
 PACKED=(inspect-code.tar inspect-code.tar.sha256 inspect-code.base.sha256 install.sh compose.yaml)
 (cd "$OUT" && rm -f "${PACKED[@]}")  # 输出资料夹用过的话，先拿掉上一次的五个档
 
-NEW=(src/nknu/ops deploy/lab-inspect)
-CHANGED=(src/nknu/retrieval/hybrid.py src/nknu/retrieval/search.py src/nknu/retrieval/server.py src/nknu/admin/cli.py)
+NEW=(src/nknu/ops deploy/lab-inspect src/nknu/core/model_service.py)
+CHANGED=(src/nknu/retrieval/hybrid.py src/nknu/retrieval/search.py src/nknu/retrieval/server.py src/nknu/admin/cli.py
+         src/nknu/core/models.py)
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store' \
   -cf "$OUT/inspect-code.tar" "${NEW[@]}" "${CHANGED[@]}"

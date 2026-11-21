@@ -5,7 +5,7 @@
    Two rounds made it (both 2026-11-15):
    - 「可视化dashboard全部换繁体字」: Traditional Chinese fonts first (the first rule below);
    - 「太難看懂字太雜了…沒有用一些視覺化方法點綴，顏色也沒有考慮過」: the same paper, ink and cards as 資料總覽 and 檢視台
-     (deploy/lab-overview/page.html, src/nknu/ops/look.py), so the three panels read as one; and colour with two jobs:
+     (src/nknu/ops/overview_page.html, src/nknu/ops/look.py), so the three panels read as one; and colour with two jobs:
      a document's kind, in the four hues 資料總覽 gives the kinds (--k0…--k4: 公告, 一般網頁, 附件, 行事曆, 校外連結;
      validated there with the dataviz skill's validator in both themes); and how many (the bars on the map,
      beside a facet, in the list of sites, behind a column of counts), in 資料總覽's violet for amounts, --amt (its

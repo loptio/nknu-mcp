@@ -24,7 +24,8 @@ from nknu.content.schema import create_schema
 from nknu.settings import REPO_ROOT
 
 KIT = REPO_ROOT / "deploy" / "lab-inspect"
-PORTS = {"datasette": "127.0.0.1:8001:8001", "mcp": "127.0.0.1:8766:8766", "ops": "127.0.0.1:8878:8878"}
+PORTS = {"datasette": "127.0.0.1:8001:8001", "mcp": "127.0.0.1:8766:8766", "ops": "127.0.0.1:8878:8878",
+         "models": "127.0.0.1:8780:8780"}  # models: the machine's one copy of the two scoring models (11-21)
 
 
 def _plugin(name: str = "local_only"):
@@ -96,8 +97,11 @@ def test_the_services_come_back_with_docker():
     assert {s.get("restart") for s in _compose()["services"].values()} == {"unless-stopped"}
 
 
-def test_the_two_services_of_ours_listen_inside_the_container_only_for_docker():
+def test_the_services_of_ours_listen_inside_the_container_only_for_docker():
     services = _compose()["services"]
+    # the scoring models load once, in models; mcp and ops ask it (nknu.core.model_service, 11-21)
+    assert " ".join(services["models"]["command"]) == "python -m nknu.core.model_service --host 0.0.0.0 --port 8780"
+    assert all(services[s]["environment"]["NKNU_MODELS_URL"] == "http://models:8780" for s in ("mcp", "ops"))
     mcp, ops = " ".join(services["mcp"]["command"]), " ".join(services["ops"]["command"])
     assert "nknu.retrieval.server" in mcp and "--http" in mcp and "--host 0.0.0.0" in mcp and "--port 8766" in mcp
     assert "nknu.ops.web" in ops and "--host 0.0.0.0" in ops and "--port 8878" in ops and "--root /work" in ops
@@ -127,7 +131,7 @@ def test_the_nights_record_is_the_one_place_the_ops_service_writes():
     compose = _compose()
     services = compose["services"]
     writable = {name: [v for v in s["volumes"] if not v.endswith(":ro")] for name, s in services.items()}
-    assert writable == {"datasette": [], "mcp": [], "ops": ["nknu-ops:/ops"]}
+    assert writable == {"datasette": [], "mcp": [], "models": [], "ops": ["nknu-ops:/ops"]}
     assert compose["volumes"]["nknu-ops"] == {"name": "nknu-ops"}
     command = " ".join(services["ops"]["command"])
     assert "--ops-db /ops/ops.db" in command
@@ -750,8 +754,8 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     committed file, which the lab PC does not hold until the next code sync)."""
     repo, out = tmp_path / "repo", tmp_path / "out"
     files = ("src/nknu/retrieval/hybrid.py", "src/nknu/retrieval/search.py", "src/nknu/retrieval/server.py",
-             "src/nknu/admin/cli.py", "src/nknu/ops/web.py", "deploy/lab-inspect/install.sh",
-             "deploy/lab-inspect/compose.yaml")
+             "src/nknu/admin/cli.py", "src/nknu/core/models.py", "src/nknu/ops/web.py",
+             "src/nknu/core/model_service.py", "deploy/lab-inspect/install.sh", "deploy/lab-inspect/compose.yaml")
     for name in files:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text("ONE\n", encoding="utf-8")
@@ -765,7 +769,7 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     assert got.returncode == 0, got.stderr
     base = dict(reversed(line.split("  ")) for line in (out / "inspect-code.base.sha256").read_text().splitlines())
     one = hashlib.sha256(b"ONE\n").hexdigest()
-    assert base == {name: one for name in files[:4]}
+    assert base == {name: one for name in files[:5]}
     names = subprocess.run(["tar", "-tf", str(out / "inspect-code.tar")], check=True, capture_output=True, text=True)
     assert "src/nknu/ops/web.py" in names.stdout and "src/nknu/retrieval/hybrid.py" in names.stdout
 

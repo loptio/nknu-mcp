@@ -31,7 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.error
@@ -99,6 +101,12 @@ class Step:
     # what runs inside the step on its own schedule: [name, tone (ok, warn, bad, none), words] (the crawl's weekly
     # revisit of the outside sites, its browser-opened sites, its course-term check)
     sides: list[list] = field(default_factory=list)
+    sides_label: str = ""  # what the sides are, where they are no runs (the services' step: 這台電腦)
+    # the public service's use (the services' step: its query log of the last day): lines as sides, and the last
+    # searches that found nothing [time, interface, the searched words as logged (masked by the service)]
+    usage: list[list] = field(default_factory=list)
+    usage_label: str = ""
+    usage_missed: list[list] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +120,8 @@ class Where:
     db: Path
     archive: Path | None = None
     services: tuple[tuple[str, str, str], ...] = ()
+    disks: tuple[tuple[str, str], ...] = ()  # (name, a folder on it): the drives whose free space the page says
+    public_log: Path | None = None  # the public service's query log (queries.jsonl), read only; None: not mounted
     board: Callable[[], dict | None] | None = None
     sweep: Callable[[], dict | None] | None = None
     today: Callable[[], date] = field(default=lambda: datetime.now(TAIPEI).date())
@@ -264,6 +274,40 @@ def tail(path: Path, size: int = 16384) -> list[str]:
         return []
     lines = data.decode("utf-8", errors="replace").splitlines()
     return lines[1:] if end > size else lines  # the first may be cut
+
+
+# the logs whose end a page can show, by a short name (never a path from a request). Owner 11-21, of an error that
+# said 「細節在存檔的 update.log」: the page read the log to judge the night and left the owner to ssh for its words
+LOG_FILES = {"update": "update.log", "export": "export.log", "laneA": "laneA.log", "laneB": "laneB.log",
+             "laneC": "laneC.log", "build": "build.log", "ingest": "ingest.log"}
+# nothing a log should hold, and nothing a page may show if one does: a Google key, a key or token in an address,
+# a header that carries one
+_SECRETS = ((re.compile(r"AIza[0-9A-Za-z_\-]{10,}"), "（遮掉的金鑰）"),
+            (re.compile(r"(?i)([?&](?:key|api_key|access_token|token)=)[^&\s\"']+"), r"\1（遮掉）"),
+            (re.compile(r"(?i)((?:authorization|x-goog-api-key|cookie)\s*[:=]\s*)\S.*"), r"\1（遮掉）"))
+
+
+def log_tail(where: Where, name: str, lines: int = 50) -> dict | None:
+    """The last lines of one of LOG_FILES as it stands ({name, file, at, lines}), None for a name that is none of
+    them or a log this service has no folder of; lines that cannot be read are an empty list."""
+    if name not in LOG_FILES:
+        return None
+    kit = where.pipe / "lab_pc"
+    folder = (where.archive if name == "update" else where.root / EXPORTS if name == "export" else kit)
+    if folder is None:
+        return None
+    path = folder / LOG_FILES[name]
+    got = tail(path, 96 * 1024)[-max(1, min(int(lines), 200)):]
+    shown = []
+    for line in got:
+        for pattern, word in _SECRETS:
+            line = pattern.sub(word, line)
+        shown.append(line[:1500])
+    try:
+        at = datetime.fromtimestamp(path.stat().st_mtime, TAIPEI).isoformat(timespec="seconds")
+    except OSError:
+        at = ""
+    return {"name": name, "file": path.name, "at": at, "lines": shown}
 
 
 def open_ro(path: Path) -> sqlite3.Connection:
@@ -745,7 +789,7 @@ def bucket_words() -> dict[str, str]:
 
 def crawl_step(where: Where) -> Step:
     step = Step("crawl", "爬取", "爬蟲照網站清單抓網頁和檔案，存進帳本和存檔；每晚再看一次各站的列表和首頁")
-    step.more = [("看爬蟲進度", "crawl"), ("網頁核查", "check")]
+    step.more = [("網頁核查", "check")]  # 看爬蟲進度 (the crawler's own board) until the panels became one, 2026-11-21
     archive = where.archive
     if archive is None or not (archive / "frontier.db").exists():
         step.say = "檢視台沒有掛上爬蟲的帳本"
@@ -1435,7 +1479,7 @@ def left_out_words(key: str) -> str:
     return tw(key)
 
 
-# site_report.FLAG_WORDS's keys, in the words 資料總覽 shows them (deploy/lab-overview/page.html's CK; one concept, one
+# site_report.FLAG_WORDS's keys, in the words 資料總覽 shows them (src/nknu/ops/overview_page.html's CK; one concept, one
 # word on every panel: redesign 2026-11-17)
 FLAG_WORDS = {"none": "沒有文件進庫", "self": "用標題找不回文件", "empty": "網頁沒文字", "no_date": "沒日期",
               "same_title": "多份文件同一標題", "same_opening": "選單混進正文", "fragments": "附件一字一行"}
@@ -1767,9 +1811,24 @@ def ask_service(name: str, url: str, how: str) -> dict:
     """Whether a service answers, and what it says of itself: {'name', 'up', 'ms', 'words', 'built'}.
     mcp: the MCP handshake (no model loaded), and once an hour a real search through it (SEARCH_EVERY);
     datasette: the built_at of the library it has open (it keeps the file it opened until restarted);
-    overview: its /stamp (which library its numbers are of); http: any answer counts (the crawler's viewer computes
-    every page, so it is never asked for one)."""
+    overview: its /stamp (which library its numbers are of); public: the public service's /health (alive, its
+    library's age; never a search: that would go into its query log and load its models); http: any answer counts
+    (the crawler's viewer computes every page, so it is never asked for one)."""
     try:
+        if how == "public":
+            code, raw, ms = _ask(url)
+            info = json.loads(raw or b"{}") if code == 200 else {}
+            if code != 200:
+                return {"name": name, "up": False, "ms": ms, "interface": True,
+                        "words": "回 503：它讀不到庫" if code == 503 else f"連線回 {code}"}
+            words = f"有回應（{ms:.0f} 毫秒）"
+            if info.get("built_at"):
+                words += f"；讀的庫 {stamp(info['built_at'])} 建的" + (
+                    f"、{info['docs']:,} 份" if isinstance(info.get("docs"), int) else "")
+            stale = bool(info.get("stale"))
+            if stale:
+                words += f"；它說庫已經 {info.get('age_hours', '?')} 小時沒換"
+            return {"name": name, "up": True, "ms": ms, "words": words, "stale": stale, "interface": True}
         if how == "mcp":
             code, raw, ms = _ask(url, body=MCP_HELLO)
             if code != 200:
@@ -1813,8 +1872,202 @@ def ask_service(name: str, url: str, how: str) -> dict:
         return {"name": name, "up": False, "ms": None, "words": f"連不上（{type(exc).__name__}）"}
 
 
+GB = 2 ** 30
+DISK_WARN, DISK_BAD = (0.15, 50 * GB), (0.05, 15 * GB)  # a drive is said when its free share or its free bytes fall under
+
+
+def gpu_memory() -> tuple[int, int] | None:
+    """(used, total) MiB of the first graphics card as nvidia-smi says it, None without one or without an answer."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=8, check=False).stdout
+        used, total = (int(x) for x in out.strip().splitlines()[0].split(","))
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+    return (used, total) if total else None
+
+
+MEMINFO = Path("/proc/meminfo")
+MEM_WARN = 0.10  # Docker's memory with less than this share available: worth a look 【Claude】
+
+
+def memory(path: Path = MEMINFO) -> tuple[int, int, int] | None:
+    """(total, available, swap used) in bytes of the memory this container sees: on the lab PC the Docker Desktop
+    machine's (Windows gives it half of its 128 GB; Windows' own memory and page file are out of a container's reach),
+    where the builds, the lanes and the services all run. None where there is no /proc/meminfo (a Mac)."""
+    try:
+        text = path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    kb = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts and parts[0].isdigit():
+            kb[name] = int(parts[0]) * 1024
+    if not kb.get("MemTotal") or "MemAvailable" not in kb:
+        return None
+    return kb["MemTotal"], kb["MemAvailable"], max(0, kb.get("SwapTotal", 0) - kb.get("SwapFree", 0))
+
+
+def machine(where: Where) -> list[list]:
+    """The machine everything runs on, a line a drive (where.disks: free space, said in amber and red as it runs
+    out), one for the memory Docker has (memory) and one for the graphics card's: [name, tone, words]. Until
+    2026-11-21 no panel said any, and this one machine has been near these limits before (C: went from 36 to 23 GB
+    free within a day while builds ran, the page file the likely cause: docs/project-blueprint.md)."""
+    rows: list[list] = []
+    for name, path in where.disks:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            rows.append([name, NONE, "讀不到（這一槽沒有掛給檢視台）"])
+            continue
+        share = usage.free / usage.total if usage.total else 0.0
+        tone = (BAD if share < DISK_BAD[0] or usage.free < DISK_BAD[1]
+                else WARN if share < DISK_WARN[0] or usage.free < DISK_WARN[1] else OK)
+        rows.append([name, tone, f"還剩 {usage.free / GB:,.0f} GB（共 {usage.total / GB:,.0f} GB，用了 {1 - share:.0%}）"])
+    if mem := memory():
+        total, free, swap = mem
+        words = f"用了 {(total - free) / GB:.1f} GB（共 {total / GB:.1f} GB，Docker 分到的那一份）"
+        if swap >= GB / 10:  # the Docker machine's swap file is on C: (a few GB is usual after a build)
+            words += f"；交換區用了 {swap / GB:.1f} GB"
+        rows.append(["記憶體", WARN if free / total < MEM_WARN else OK, words])
+    if gpu := gpu_memory():
+        used, total = gpu
+        rows.append(["顯示卡記憶體", WARN if used / total > 0.92 else OK,
+                     f"用了 {used / 1024:.1f} GB（共 {total / 1024:.1f} GB）"])
+    return rows
+
+
+PUBLIC_HOURS = 24  # the public service's use is said over the last this many hours 【Claude】
+PUBLIC_MISSED = 10  # searches that found nothing listed, the latest first 【Claude】
+PUBLIC_SLOW = 10_000  # ms: the slowest tenth over this is worth a look (a search waits at most 20 s, then fails) 【Claude】
+# searches timed before a middle and a slowest tenth are said (and can light the step): the first search after the
+# service starts loads its models, about 17 s (lab, 11-21 23:02; the 接口 session's note), and alone would light a
+# day, so the step is lit only by two or more searches over PUBLIC_SLOW 【Claude】
+PUBLIC_TIMED = 5
+LOG_CHUNK = 256 * 1024  # bytes read at a time from the end of the query log (it grows to 20 MB before it rotates)
+VIA_WORDS = {"mcp": "MCP", "web": "網頁", "api": "接口"}
+TOOL_WORDS = {"search": "搜尋", "fetch": "讀全文"}
+# what a failed call's 'error' says (nknu.retrieval.public, asked for 2026-11-21); bad_args is the caller's own
+FAIL_WORDS = {"busy": "排隊太久", "unavailable": "庫讀不到", "internal": "程式出錯", "bad_args": "參數不對"}
+
+
+def _query_lines(path: Path, since: datetime) -> tuple[list[dict], bool]:
+    """The query log's lines written since `since`, oldest first, read from the end back; and whether a line older
+    than since was reached (False: the file began after it, or could not be read). A line that is no JSON or has no
+    time is skipped."""
+    out: list[dict] = []
+    try:
+        f = path.open("rb")
+    except OSError:
+        return out, False
+    with f:
+        f.seek(0, 2)
+        pos, rest = f.tell(), b""
+        while pos > 0:
+            size = min(LOG_CHUNK, pos)
+            pos -= size
+            f.seek(pos)
+            lines = (f.read(size) + rest).split(b"\n")
+            rest = lines.pop(0) if pos > 0 else b""  # the first may be cut: kept for the next read
+            for raw in reversed(lines):
+                try:
+                    line = json.loads(raw)
+                    at = datetime.fromisoformat(line["t"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if at < since:
+                    out.reverse()
+                    return out, True
+                out.append({**line, "_at": at})
+    out.reverse()
+    return out, False
+
+
+def query_lines(path: Path, since: datetime) -> list[dict]:
+    """The lines since `since` of the query log and, when the current file began after it, of its last rotated copy
+    (queries.jsonl.1)."""
+    lines, whole = _query_lines(path, since)
+    if not whole:
+        older, _ = _query_lines(path.with_name(path.name + ".1"), since)
+        lines = older + lines
+    return lines
+
+
+def _share(part: int, whole: int) -> str:
+    return f"{part / whole:.0%}" if whole else "—"
+
+
+def public_usage(path: Path, now: datetime | None = None) -> tuple[list[list], list[list]]:
+    """The public service's last PUBLIC_HOURS from its query log: ([name, tone, words] lines, the last searches that
+    found nothing). How long a call took and the calls that failed are said only once the log writes them ('ms',
+    'error'); before that the lines say the log does not keep them. 2026-11-21: a review of the panels found the
+    service students use on no panel; the owner: 「8770那个可以动了」."""
+    now = now or now_tpe()
+    if not path.exists():
+        return [["查詢紀錄", NONE, "讀不到（紀錄檔沒有掛給檢視台，或服務還沒寫過）"]], []
+    lines = query_lines(path, now - timedelta(hours=PUBLIC_HOURS))
+    if not lines:
+        last = next((x for x in reversed(tail(path)) if x.strip()), "")
+        try:
+            when = stamp(json.loads(last)["t"])
+        except (ValueError, KeyError, TypeError):
+            when = ""
+        return [["查詢", NONE, "沒有人查" + (f"（最後一次 {when}）" if when else "")]], []
+    failed = [x for x in lines if x.get("error")]
+    done = [x for x in lines if not x.get("error")]
+    tools = {k: sum(1 for x in done if x.get("tool") == k) for k in TOOL_WORDS}
+    vias = {k: sum(1 for x in lines if x.get("via") == k) for k in VIA_WORDS}
+    parts = "、".join(f"{TOOL_WORDS[k]} {n:,}" for k, n in tools.items() if n)
+    where_from = "、".join(f"{VIA_WORDS[k]} {n:,}" for k, n in vias.items() if n)
+    rows = [["查詢", OK, f"{len(lines):,} 次" + (f"：{parts}" if parts else "") + (f"（{where_from}）" if where_from else "")
+             + f"；最後一次 {stamp(lines[-1]['t'])}"]]
+    searches = [x for x in done if x.get("tool") == "search"]
+    missed = [x for x in searches if not x.get("found")]
+    if searches:
+        rows.append(["查無資料", OK, f"{len(missed):,} 次，占搜尋的 {_share(len(missed), len(searches))}"])
+    new_log = any("ms" in x for x in lines)  # the log writes how long and what failed (2026-11-21 on)
+    # how long a search took that answered: a refused argument or a missing document answers in milliseconds and
+    # would pull the middle down (the lab's first lines with times, 11-21 23:02: the middle read 0.0 s)
+    times = sorted(int(x["ms"]) for x in searches if isinstance(x.get("ms"), (int, float)))
+    if 0 < len(times) < PUBLIC_TIMED:  # too few for a middle or a slowest tenth: each said, nothing lit
+        rows.append(["多慢", OK, f"答完的 {len(times)} 次各花 " + "、".join(f"{ms / 1000:.1f}" for ms in times) + " 秒"])
+    elif times:
+        mid, slow = times[len(times) // 2], times[max(0, -(-len(times) * 9 // 10) - 1)]  # nearest-rank tenth
+        over = sum(1 for ms in times if ms > PUBLIC_SLOW)
+        words = f"一半在 {mid / 1000:.1f} 秒內答完，最慢的一成要 {slow / 1000:.1f} 秒以上"
+        if over == 1:  # most likely the first search after a restart, which loads the models
+            words += f"；超過 {PUBLIC_SLOW // 1000} 秒的只有 1 次（服務重啟後第一次搜尋要先載入模型，約 17 秒）"
+        rows.append(["多慢", WARN if slow > PUBLIC_SLOW and over >= 2 else OK, words])
+    else:
+        rows.append(["多慢", NONE, "沒有答完的搜尋可以算" if new_log else "紀錄還沒記每次花多久"])
+    if failed:
+        kinds: dict[str, int] = {}
+        for x in failed:
+            kinds[str(x["error"])] = kinds.get(str(x["error"]), 0) + 1
+        ours = sum(n for k, n in kinds.items() if k != "bad_args")
+        rows.append(["沒答成", WARN if ours else OK, f"{len(failed):,} 次：" + "、".join(
+            f"{FAIL_WORDS.get(k, k)} {n:,}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))])
+    elif new_log:
+        rows.append(["沒答成", OK, "沒有"])
+    else:
+        rows.append(["沒答成", NONE, "紀錄還沒記沒答成的那幾次"])
+    shown = [[stamp(x["t"]), VIA_WORDS.get(x.get("via"), x.get("via") or ""), str(x.get("query") or "")]
+             for x in reversed(missed[-PUBLIC_MISSED:])]
+    return rows, shown
+
+
 def serve_step(where: Where) -> Step:
-    step = Step("serve", "查詢服務", "給學生的 AI 用的搜尋服務（MCP），和這幾個面板")
+    step = Step("serve", "查詢服務", "給學生和他們的 AI 用的對外服務（MCP、網頁、接口），檢視台「測試」用的 MCP，和資料庫")
+    step.sides, step.sides_label = machine(where), "這台電腦"
+    if where.public_log is not None:
+        step.usage, step.usage_missed = public_usage(where.public_log)
+        step.usage_label = f"對外服務最近 {PUBLIC_HOURS} 小時"
+    low = [(name, tone, words) for name, tone, words in step.sides if tone in (WARN, BAD)]
     if not where.services:
         step.say = "沒設定要看哪些服務"
         return step
@@ -1836,12 +2089,23 @@ def serve_step(where: Where) -> Step:
     if late:
         state, fix = WARN, CONTENT
         say = "、".join(f"{a['name']}還開著舊庫（{stamp(a['built'])} 那份）" for a in late) + "：換庫後要重啟它"
+    stale = [a for a in answers if a.get("stale")]
+    if stale:  # the public service reads the library in use on every query: an old one means the nights stopped
+        state, fix = WARN, CONTENT
+        say = "；".join(f"{a['name']}{a['words'].rsplit('；', 1)[-1]}" for a in stale)
     if down:
         state = BAD
-        fix = INTERFACE if any(a["name"].startswith("搜尋") for a in down) else PANEL
+        fix = INTERFACE if any(a["name"].startswith("搜尋") or a.get("interface") for a in down) else PANEL
         say = "、".join(a["name"] for a in down) + " 沒有回應"
         step.lost = [(f"{a['name']}：{a['words']}", 1) for a in down]
         step.lost_label = "沒回應的服務"
+    for name, tone, words in low:  # a drive running out, or the card's memory nearly full: the step is lit for it
+        state = worst(state, tone)
+        say += f"；{name}{words}"
+    for name, tone, words in step.usage:  # the public service failing to answer, or slow
+        if tone in (WARN, BAD):
+            state = worst(state, tone)
+            say += f"；對外服務{name}：{words}"
     step.at = now_tpe().isoformat(timespec="seconds")
     step.state, step.say, step.fix = state, say, fix
     return step
@@ -2017,6 +2281,7 @@ class Pipeline:
 
     def _run(self) -> None:
         started = time.monotonic()
+        began = now_tpe().isoformat(timespec="seconds")
         self.where.sites = {}
         steps = [guarded(probe, self.where, key, name) for key, name, probe in self.probes]
         try:
@@ -2026,7 +2291,7 @@ class Pipeline:
             log.exception("流水线：每站的表没做成")
             sites = []
         state, say = overall(steps, sites)
-        snap = {"at": now_tpe().isoformat(timespec="seconds"), "took": span(time.monotonic() - started),
+        snap = {"at": now_tpe().isoformat(timespec="seconds"), "began": began, "took": span(time.monotonic() - started),
                 "state": state, "say": say, "steps": [asdict(s) for s in steps], "sites": sites,
                 "site_cols": [c for c in SITE_COLS if any(c[0] in r["cells"] for r in sites)]}
         with self._lock:
@@ -2046,6 +2311,11 @@ class Pipeline:
             snap = dict(self._snap) if self._snap else {"steps": [], "state": NONE, "say": "", "at": ""}
         snap["running"] = running
         return snap
+
+    def last(self) -> dict | None:
+        """The last reading as it is, however old, and no new one started (None before the first has ended)."""
+        with self._lock:
+            return dict(self._snap) if self._snap else None
 
     def wait(self, timeout: float | None = None) -> None:
         thread = self._thread

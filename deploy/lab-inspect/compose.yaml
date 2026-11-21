@@ -23,6 +23,9 @@ x-ours: &ours   # 跑我们自己程序的两个服务：映像 nknu-pipeline（
     PYTHONDONTWRITEBYTECODE: "1"         # /work 是只读的
     PYTHONPATH: /work/inspect-code/src   # 检视工具自己那份程序（映像预设的是建库用的 /work/src）
     NKNU_CONFIG_DIR: /work/config        # 单位表、网站对单位表这些设定照旧读建库用的那份
+    # 两个打分模型只载一份（11-21）：mcp 和 ops 问 models 那个服务要向量和重排分数，自己不载（nknu.core.model_service）。
+    # models 停了或在重启时，mcp 和 ops 这一次不用那个模型排序（和模型不在时一样），不会停
+    NKNU_MODELS_URL: http://models:8780
   volumes:
     - nknu-work:/work:ro
     - nknu-models:/models:ro
@@ -84,6 +87,15 @@ services:
         max-file: "3"
 
   # MCP 服务：和以后给学生的 AI 用的是同一支程序、同一个库。MCP Inspector 连这里。
+  # 两个打分模型（bge-m3、bge-reranker-v2-m3）在这台电脑上只载这一份（11-21，以前 mcp、ops、对外服务各载一份，
+  # 一份约 2.2 GB 显存）。同一个 compose 的服务用 http://models:8780；别的 compose（对外服务）经
+  # host.docker.internal:8780。只算数字，不读库，不碰学校的资料
+  models:
+    <<: *ours
+    command: ["python", "-m", "nknu.core.model_service", "--host", "0.0.0.0", "--port", "8780"]
+    ports:
+      - "127.0.0.1:8780:8780"
+
   mcp:
     <<: *ours
     command: ["python", "-m", "nknu.retrieval.server", "--db", "research/pipeline_2026-11-02/aca.db",
@@ -105,9 +117,13 @@ services:
       - nknu-crawl:/crawl:ro
       - D:/nknu-crawl/warc:/crawl/archive/warc:ro
       - nknu-ops:/ops
+      # 只为量 C 槽还剩多少（11-21）：磁碟区在 Docker 的虚拟硬盘里，从里面量不到 C 槽；挂一个 C 槽上的资料夹（只读）才量得到
+      - C:/nknu-transfer/inspect:/host-c:ro
+      # 对外服务（8770）的查询纪录，只读（11-21）：首页「查詢服務」说它最近 24 小时的使用
+      - C:/nknu-transfer/public/log:/public-log:ro
     command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
-              "--host", "0.0.0.0", "--port", "8878", "--viewer-url", "http://127.0.0.1:18877",
-              "--overview-url", "http://127.0.0.1:18879", "--tables-url", "http://127.0.0.1:18001",
+              "--host", "0.0.0.0", "--port", "8878",
+              "--tables-url", "http://127.0.0.1:18001",
               "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
               "--archive", "/crawl/archive",
               # 每晚纪录：每 5 分钟看一次各晚，跑完的那一晚记一笔（每晚運行、单站页的 14 晚长条读它）
@@ -116,11 +132,15 @@ services:
               "--mcp-url", "http://mcp:8766/mcp",
               # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
               # （11-16 在 ops 里实测都连得到）。mcp 是握手、每小时真的搜一次；datasette 看它开的是不是正式库；
-              # overview 看资料总览算的是哪一份库；http 只看有没有回应（爬虫看板每一页都要现算，不问页面）
+              # 资料总览 11-21 并进检视台（/sites）、爬虫看板同一晚停用（看原样在 /check），都不用再问
               "--watch", "搜尋服務（MCP）=mcp:http://mcp:8766/mcp",
               "--watch", "資料庫=datasette:http://datasette:8001",
-              "--watch", "資料總覽=overview:http://host.docker.internal:8879",
-              "--watch", "爬蟲看板=http:http://host.docker.internal:8877/"]
+              "--watch", "模型服務=http:http://models:8780/health",
+              # 对外服务在另一个 compose（C:\nknu-transfer\public）：只问它的 /health，不搜（搜会进它的查询纪录、载入模型）
+              "--watch", "對外服務（8770）=public:http://host.docker.internal:8770/health",
+              "--public-log", "/public-log/queries.jsonl",
+              # 首页「查詢服務」那一格说这台电脑的硬盘还剩多少、显卡内存用了多少（11-21）
+              "--disk", "C 槽=/host-c", "--disk", "D 槽（爬蟲存檔）=/crawl/archive/warc"]
     ports:
       - "127.0.0.1:8878:8878"
 

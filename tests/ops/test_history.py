@@ -46,11 +46,11 @@ def store(tmp_path_factory) -> history.Store:
     return history.Store(tmp_path_factory.mktemp("ops") / "ops.db")
 
 
-def test_the_store_makes_its_four_tables_and_says_its_schema(store):
+def test_the_store_makes_its_tables_and_says_its_schema(store):
     assert store.enabled and store.error == ""
     conn = sqlite3.connect(store.path)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert names == {"meta", "nights", "steps", "sites"}
+    assert names == {"meta", "nights", "steps", "sites", "problem_lists", "problems"}  # the last two: 2026-11-21
     assert conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == history.SCHEMA
     cols = {r[1] for r in conn.execute("PRAGMA table_info(nights)")}
     assert {"night", "state", "counted_by", "new", "changed", "left", "unexplained", "docs", "digest"} <= cols

@@ -24,6 +24,12 @@ What a record holds, and where each part comes from:
                   finished night; new, left, unexplained from the comparison (exact: site_counts 1) or the ingest's
                   unexplained per site
 
+  problems        the home's list of what is not normal (nknu.ops.tonight_page.problems, one record an issue:
+                  nknu.ops.standing), kept for the night the home opens on once that night has finished, from a reading
+                  of the steps made after it ended; rewritten for SETTLE after the night's end (the swap's comparison
+                  and a follow-up by hand reach it), then left as it is: the night after, the home compares with it
+                  (新出現, 之前就有, 好了). Never kept while a chain runs (the night is not final then)
+
 A value a later reading does not have never wipes one an earlier reading wrote (a NULL keeps what is stored), and a
 comparison's counts are never replaced by the ingest's coarser ones. The first tick after start backfills every night
 since the chain went live (at most nightly.PICKABLE days) from what exists: the ingest's history, the crawler's
@@ -54,6 +60,10 @@ FINAL = ("ok", "warn", "bad", "missed")  # a night in one of these has finished 
 COUNTS = ("new", "changed", "left", "unexplained", "look")
 SITE_COUNTS = ("new", "left", "unexplained")
 DATED = ("notice", "page", "attachment")  # the kinds a date is looked for on (site_page.DATED)
+SETTLE = timedelta(hours=1)  # a night's list of problems may be rewritten this long after the night ended 【Claude】
+PROBLEM_BACK = 60  # nights of lists looked back through for how long a problem has been listed 【Claude】
+PROBLEM_KEEP = 120  # nights of lists kept 【Claude】
+PROBLEM_COLS = ("key", "sev", "place", "state", "reason", "href")
 SWAPPED = "swapped"
 CALM = ("nothing_new", "held", "failed", "paused", "deferred", "busy")  # the library in use did not change
 
@@ -85,6 +95,14 @@ CREATE TABLE IF NOT EXISTS sites (
   night TEXT NOT NULL, site TEXT NOT NULL, name TEXT,
   docs INTEGER, undated INTEGER, new INTEGER, left INTEGER, unexplained INTEGER,
   PRIMARY KEY (night, site)
+);
+CREATE TABLE IF NOT EXISTS problem_lists (  -- a night whose list of problems is kept (it may be empty)
+  night TEXT PRIMARY KEY, at TEXT NOT NULL, digest TEXT NOT NULL  -- at: when the steps were read
+);
+CREATE TABLE IF NOT EXISTS problems (
+  night TEXT NOT NULL, key TEXT NOT NULL,  -- key: what the problem is from one night to the next (nknu.ops.standing)
+  sev TEXT, place TEXT, state TEXT, reason TEXT, href TEXT,
+  PRIMARY KEY (night, key)
 );
 """
 NIGHT_COLS = ("night", "state", "word", "started_at", "ended_at", "swapped", "counted_by", "site_counts", *COUNTS,
@@ -219,7 +237,69 @@ class Store:
         with self._lock, self._db() as conn:
             return int(conn.execute("SELECT count(*) FROM nights").fetchone()[0])
 
+    def problems_kept(self, night: str) -> str | None:
+        """When the steps were read for the list of problems kept for a night; None: none is kept."""
+        if not self.enabled:
+            return None
+        with self._lock, self._db() as conn:
+            row = conn.execute("SELECT at FROM problem_lists WHERE night = ?", (night,)).fetchone()
+        return row["at"] if row else None
+
+    def problem_base(self, before: str) -> dict | None:
+        """The list kept for the last night before `before`: {'night', 'at', 'rows': {key: record}, 'runs': {key:
+        (the nights in a row it has been listed up to that night, whether the lists go no further back)}}; None when
+        no earlier night has one. A night between two kept ones that has none ends the count as open: nothing is
+        known of it."""
+        if not self.enabled:
+            return None
+        with self._lock, self._db() as conn:
+            kept = [r["night"] for r in conn.execute(
+                "SELECT night FROM problem_lists WHERE night < ? ORDER BY night DESC LIMIT ?", (before, PROBLEM_BACK))]
+            if not kept:
+                return None
+            at = conn.execute("SELECT at FROM problem_lists WHERE night = ?", (kept[0],)).fetchone()["at"]
+            rows = {r["key"]: {k: r[k] for k in PROBLEM_COLS} for r in conn.execute(
+                f"SELECT {', '.join(PROBLEM_COLS)} FROM problems WHERE night = ?", (kept[0],))}
+            keys: dict[str, set[str]] = {night: set() for night in kept}
+            for r in conn.execute("SELECT night, key FROM problems WHERE night BETWEEN ? AND ?", (kept[-1], kept[0])):
+                if r["night"] in keys:
+                    keys[r["night"]].add(r["key"])
+        runs: dict[str, tuple[int, bool]] = {}
+        for key in rows:
+            count, at_night, open_ = 1, date.fromisoformat(kept[0]), True
+            for night in kept[1:]:
+                day = date.fromisoformat(night)
+                if (at_night - day).days != 1:  # a night with no list between them
+                    break
+                if key not in keys[night]:
+                    open_ = False
+                    break
+                count, at_night = count + 1, day
+            runs[key] = (count, open_)
+        return {"night": kept[0], "at": at, "rows": rows, "runs": runs}
+
     # ---------------------------------------------------------------- writing
+
+    def put_problems(self, night: str, recs: list[dict], *, at: str) -> bool:
+        """Keep the list of problems of a night (the whole list replaces the one kept); True when it changed."""
+        if not self.enabled:
+            return False
+        recs = sorted(({k: r.get(k) for k in PROBLEM_COLS} for r in recs), key=lambda r: r["key"])
+        digest = hashlib.blake2b(json.dumps(recs, sort_keys=True, ensure_ascii=False).encode(),
+                                 digest_size=8).hexdigest()
+        with self._lock, self._db() as conn:
+            old = conn.execute("SELECT digest FROM problem_lists WHERE night = ?", (night,)).fetchone()
+            if old is not None and old["digest"] == digest:
+                return False
+            conn.execute("DELETE FROM problems WHERE night = ?", (night,))
+            conn.execute("INSERT OR REPLACE INTO problem_lists (night, at, digest) VALUES (?, ?, ?)", (night, at, digest))
+            conn.executemany(f"INSERT INTO problems (night, {', '.join(PROBLEM_COLS)}) VALUES "
+                             f"(?, {', '.join('?' * len(PROBLEM_COLS))})",
+                             [(night, *(r[k] for k in PROBLEM_COLS)) for r in recs])
+            oldest = (date.fromisoformat(night) - timedelta(days=PROBLEM_KEEP)).isoformat()
+            conn.execute("DELETE FROM problems WHERE night < ?", (oldest,))
+            conn.execute("DELETE FROM problem_lists WHERE night < ?", (oldest,))
+            return True
 
     def put(self, rec: dict, *, at: datetime | None = None) -> bool:
         """Write one night's record, merged with what is stored for it (module docstring); True when anything
@@ -420,8 +500,10 @@ class Recorder:
     changes and kinds: the app's Changes and site_page.Kinds (their snapshots are made in their own threads; a look
     that finds them not ready writes what it has and the next look adds the rest)."""
 
-    def __init__(self, store: Store, where: Where, *, changes=None, kinds=None, every: float = RECORD_EVERY) -> None:
+    def __init__(self, store: Store, where: Where, *, changes=None, kinds=None, flow=None,
+                 every: float = RECORD_EVERY) -> None:
         self.store, self.where, self.changes, self.kinds, self.every = store, where, changes, kinds, every
+        self.flow = flow  # the app's Pipeline (the steps as last read): the list of problems is kept from it
         self.backfilled = False
         self.last: dict = {}
         self._stop = threading.Event()
@@ -464,8 +546,40 @@ class Recorder:
                 if rec is not None and self.store.put(rec, at=now):
                     wrote += 1
             self.backfilled = True
-            self.last = {"at": now.isoformat(timespec="seconds"), "wrote": wrote, "nights": len(finished)}
+            try:
+                listed = self.keep_problems(now, changes)
+            except Exception:
+                log.exception("每晚纪录：问题清单这一次没留成")
+                listed = False
+            self.last = {"at": now.isoformat(timespec="seconds"), "wrote": wrote, "nights": len(finished),
+                         "problems": listed}
             return wrote
+
+    def keep_problems(self, now: datetime, changes: dict | None) -> bool:
+        """Keep the home's list of problems for the night the home opens on (module docstring: problems); True when
+        a list was written. Not while that night runs or waits, not while the swap's comparison is being made, and
+        only from a reading of the steps begun after the night ended (one from during the run is the run's, not the
+        night's): when the reading at hand is older, a new one is asked for and the next look keeps it."""
+        if self.flow is None or (changes or {}).get("state") == "computing":
+            return False
+        from nknu.ops import standing, tonight_page  # here, not on top: tonight_page reads this module
+
+        t = nightly.tonight(self.where, changes=changes, now=now)
+        night = next((x for x in t["nights"] if x["night"] == t["default"]), None)
+        if night is None or night["state"] not in FINAL:
+            return False
+        ends = [pl.when_of(c.get("until")) for c in night["cells"] if c.get("until")]
+        ended = max((x for x in ends if x is not None), default=None)
+        snap = self.flow.last()
+        read = pl.when_of(snap.get("began") or snap.get("at")) if snap else None
+        if read is None or not snap.get("steps") or (ended is not None and read < ended):
+            self.flow.snapshot()
+            return False
+        kept = self.store.problems_kept(t["default"])
+        if kept is not None and (ended is None or read > ended + SETTLE):
+            return False  # kept and settled: it stays what the night left, for the night after to compare with
+        rows = tonight_page.problems(t, snap, tonight_page.handle_rows(snap, changes))
+        return self.store.put_problems(t["default"], standing.records(rows), at=snap["at"])
 
     def _loop(self) -> None:
         while not self._stop.is_set():

@@ -7,7 +7,7 @@ Owner 11-15, after two rounds on these pages: 「太難看懂字太雜了…整�
 - what a sentence said is drawn where it can be (a scoreboard of the test questions, a ruler of where the gold answers
   stand, the candidates' funnel, each score as a bar of its parts, a document's dates on a line, its chunks as a
   strip), and the exact numbers wait behind a hover or a click;
-- colour does three jobs and nothing else, as on 資料總覽 (deploy/lab-overview/page.html, whose paper and ink these
+- colour does three jobs and nothing else, as on 資料總覽 (src/nknu/ops/overview_page.html, whose paper and ink these
   are): how much = one blue, --acc (bars, counts, places, the chunks' strip; also what is picked and the one button
   that acts), the same blue 資料總覽 took for its amounts after the owner said of it, 11-15, 「整體顏色也是單純的黑色」
   (these pages had drawn their amounts in ink too); good or bad = green / amber / red (a verdict, a step's state,
@@ -105,6 +105,8 @@ font-weight:700;font-variant-numeric:tabular-nums;border-radius:4px;overflow:hid
 .legend i{width:10px;height:10px;border-radius:3px;flex:none}
 .legend .prog{margin-left:auto;color:var(--ink2);font-variant-numeric:tabular-nums}.legend .prog[hidden]{display:none}
 .legend i.cut{background:var(--cut)}.legend i.rel{background:var(--amt)}.legend i.add{background:var(--good)}
+.stored-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-bottom:12px}.stored-h .url{flex:1 1 240px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+pre.stored{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);max-width:none}
 .newset-of{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 4px;font-size:13px}
 table.newset-t th.grp{text-align:center;border-bottom:0;padding-bottom:0}
 .newset-box{overflow-x:auto}table.newset-t{min-width:440px}
@@ -364,7 +366,7 @@ border-radius:10px;text-decoration:none}.found a:hover{background:var(--hover)}
 .gaps{margin:16px 0 0;padding:12px 16px 12px 34px;border:1px dashed var(--line2);border-radius:12px;color:var(--ink2);
 font-size:13px}.gaps li{margin:2px 0}
 
-/* the floating word on a mark: 資料總覽's card (deploy/lab-overview/page.html's .tip) */
+/* the floating word on a mark: 資料總覽's card (src/nknu/ops/overview_page.html's .tip) */
 .tip{position:fixed;z-index:60;max-width:320px;padding:8px 10px;border-radius:10px;background:var(--surface);
 border:1px solid var(--line2);color:var(--ink2);font-size:12px;line-height:1.5;white-space:pre-line;pointer-events:none;
 box-shadow:0 10px 28px rgba(0,0,0,.16)}

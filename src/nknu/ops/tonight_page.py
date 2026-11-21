@@ -52,8 +52,9 @@ def n(value: int | None) -> str:
 def handle_rows(snap: dict, changes: dict | None) -> list[dict]:
     """The sites to look at, the most urgent first: every site whose row in 流水線's table has a cell to look at (its
     issues: the step, the source's own reason as the probe wrote it), and every site the last swap's comparison found
-    documents leaving for no reason (or maybe ours). {key, name, href, sev, issues: [{sev, what, step}], unexplained,
-    docs}. Nobody is named to fix anything (spec 2026-11-17-panels-v3-questions.md 八.2)."""
+    documents leaving for no reason (or maybe ours). {key, name, href, sev, issues: [{sev, what, step, kind}],
+    unexplained, docs}; kind: the cell's column, or unexplained / look of the swap (what the issue is from one night to
+    the next: nknu.ops.standing). Nobody is named to fix anything (spec 2026-11-17-panels-v3-questions.md 八.2)."""
     rows: dict[str, dict] = {}
     for r in snap.get("sites") or []:
         issues = r.get("issues")
@@ -68,14 +69,17 @@ def handle_rows(snap: dict, changes: dict | None) -> list[dict]:
                                              "href": r.get("href") or "/site?site=" + quote(r["key"], safe=""),
                                              "issues": [], "unexplained": 0,
                                              "docs": ((r.get("cells") or {}).get("docs") or {}).get("n") or 0})
-            row["issues"].append({"sev": it.get("state") or WARN, "what": what, "step": step})
+            row["issues"].append({"sev": it.get("state") or WARN, "what": what, "step": step,
+                                  "kind": it.get("col") or "cell"})
     if changes and changes.get("state") == "ready":
         for s in changes.get("sites") or []:
             found = []
             if s.get("unexplained"):
-                found.append({"sev": BAD, "what": f"上次換庫說不出原因地離開 {s['unexplained']:,} 份", "step": "換庫"})
+                found.append({"sev": BAD, "what": f"上次換庫說不出原因地離開 {s['unexplained']:,} 份", "step": "換庫",
+                              "kind": "unexplained"})
             if s.get("look"):
-                found.append({"sev": WARN, "what": f"上次換庫可能是我們這邊漏掉的 {s['look']:,} 份", "step": "換庫"})
+                found.append({"sev": WARN, "what": f"上次換庫可能是我們這邊漏掉的 {s['look']:,} 份", "step": "換庫",
+                              "kind": "look"})
             if not found:
                 continue
             row = rows.setdefault(s["site"], {"key": s["site"], "name": s.get("name") or s["site"],
@@ -107,7 +111,8 @@ def part_state(c: dict) -> str:
 
 
 def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
-    """Every step or site that is not normal, one row each ({sev, where, href, state, reason, code, unknown, when}),
+    """Every step or site that is not normal, one row each ({sev, where, href, state, reason, code, unknown, when,
+    issues: [{key, sev, what}]: what the row is from one night to the next, a site's row one for each of its issues),
     the worse first (spec 八.5): the night's parts that stopped or warn (their source's own reason: a status file's
     reason or error, a log line, as written; a code no dictionary knows marked 沒見過), every run of the night that
     did not end well, 流水線's steps that are not normal (what each probe says), and the sites to look at. Nothing
@@ -121,27 +126,40 @@ def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
         if c.get("state") == STOP or c.get("sev") in (WARN, BAD) or c.get("unknown"):
             covered.add(STEP_OF_CELL.get(c.get("key"), ""))
             sev = BAD if c.get("sev") == BAD else WARN
+            reason = c.get("reason") or c.get("say") or ""
+            key = f"part:{c.get('key')}" + (f":{c['code']}" if c.get("code") else "")
             out.append({"sev": sev, "where": c["name"], "href": "#nights", "state": part_state(c),
-                        "reason": c.get("reason") or c.get("say") or "", "code": c.get("code") or "",
-                        "unknown": bool(c.get("unknown")), "when": stamp(c.get("until") or c.get("since"))})
+                        "reason": reason, "code": c.get("code") or "",
+                        "unknown": bool(c.get("unknown")), "when": stamp(c.get("until") or c.get("since")),
+                        "issues": [{"key": key, "sev": sev, "what": reason}]})
     for x in night.get("runs") or []:  # a run that did not end well, beside the one the parts are drawn from
         if x.get("shown") or x.get("outcome") in ("swapped", "nothing_new", "running"):
             continue
-        out.append({"sev": BAD if x.get("outcome") == "failed" else WARN, "where": f"進庫第 {x['run']} 次",
+        sev = BAD if x.get("outcome") == "failed" else WARN
+        out.append({"sev": sev, "where": f"進庫第 {x['run']} 次",
                     "href": "#nights", "state": "沒見過" if x.get("unknown") else "出錯" if x.get("outcome") == "failed"
                     else "停了", "reason": x.get("reason") or "", "code": x.get("code") or "",
-                    "unknown": bool(x.get("unknown")), "when": stamp(x.get("until"))})
+                    "unknown": bool(x.get("unknown")), "when": stamp(x.get("until")),
+                    # one run of one night: an event, never the same problem the night after
+                    "issues": [{"key": f"run:{night.get('night')}:{x['run']}", "sev": sev, "what": x.get("reason") or ""}]})
     for s in snap.get("steps") or []:
         if s.get("key") == "nightly" or s.get("state") not in (WARN, BAD) or s.get("key") in covered:
             continue
+        reason = strip_fixer(s.get("say") or "")
         out.append({"sev": s["state"], "where": s["name"], "href": f"#step-{s['key']}",
-                    "state": "出錯" if s["state"] == BAD else "留意", "reason": strip_fixer(s.get("say") or ""),
-                    "code": "", "unknown": False, "when": stamp(s.get("at"))})
+                    "state": "出錯" if s["state"] == BAD else "留意", "reason": reason,
+                    "code": "", "unknown": False, "when": stamp(s.get("at")),
+                    "issues": [{"key": f"step:{s['key']}", "sev": s["state"], "what": reason}]})
     for r in handle:
         it = r["issues"][0]
+        issues: dict[str, dict] = {}  # two cells of one step (抓到, 漏抓的網頁) are two issues: the cell names it
+        for x in r["issues"]:
+            issues.setdefault(f"site:{r['key']}:{x.get('kind') or x.get('step') or ''}",
+                              {"sev": x["sev"], "what": x["what"]})
         out.append({"sev": r["sev"], "where": r["name"], "href": r["href"], "state": "出錯" if r["sev"] == BAD else "留意",
                     "reason": it["what"] + (f"（還有 {len(r['issues']) - 1} 件）" if len(r["issues"]) > 1 else ""),
-                    "code": "", "unknown": False, "when": ""})
+                    "code": "", "unknown": False, "when": "",
+                    "issues": [{"key": k, **v} for k, v in issues.items()]})
     rank = {BAD: 0, WARN: 1}
     return sorted(out, key=lambda x: rank.get(x["sev"], 2))
 
@@ -201,9 +219,12 @@ def problem_html(x: dict) -> str:
     code = (f"<span class='mono faint v3-code'>{e(x['code'])}</span>" if x.get("code") else "")
     seen = "<span class='v3-unseen' data-tip='這個代碼面板沒見過：照原樣列出，不當成正常'>沒見過</span>" if x.get("unknown") else ""
     where = f"<a href='{e(x['href'])}'>{e(x['where'])}</a>" if x.get("href") else e(x["where"])
+    # since which night it has been listed (nknu.ops.standing), and whether it got worse since the night before
+    age = (f"<span class='v3-age' data-tip='{e(x.get('age_tip') or '')}'>{e(x['age'])}</span>" if x.get("age") else "")
+    worse = "<span class='v3-worse' data-tip='上一晚是留意，現在是出錯'>變嚴重</span>" if x.get("worse") else ""
     return (f"<li data-sev='{e(x['sev'])}'><span class='v3-m' data-state='{e(x['sev'])}'>"
             f"{icon(STATE_ICON.get(x['sev'], 'dash'), 11)}</span><span class='v3-pw'>{where}</span>"
-            f"<span class='v3-ps'>{e(x['state'])}</span><span class='v3-pr'>{e(x['reason'])}{code}{seen}</span>"
+            f"<span class='v3-ps'>{e(x['state'])}</span><span class='v3-pr'>{e(x['reason'])}{code}{seen}{worse}{age}</span>"
             f"<span class='v3-pt num'>{e(x['when'])}</span></li>")
 
 
@@ -550,6 +571,9 @@ li[data-sev=bad] .v3-ps{color:var(--bad-ink);font-weight:650}li[data-sev=warn] .
 .v3-unseen{display:inline-block;margin-left:8px;font-size:11px;font-weight:650;color:var(--warn-ink);padding:0 7px;
 border-radius:999px;border:1px solid currentColor;white-space:nowrap}
 .v3-pt{font-size:12px;color:var(--ink3);white-space:nowrap}
+.v3-age,.v3-worse{display:inline-block;margin-left:8px;padding:0 6px;border-radius:4px;font-size:12px;white-space:nowrap;
+  background:var(--sunk);color:var(--ink2)}
+.v3-worse{background:var(--bad-bg);color:var(--bad-ink);font-weight:650}
 .v3-more-p{margin:6px 0 0;font-size:13px}
 .v3-none{margin:0;font-size:14px;color:var(--ink2)}
 .v3-m{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;flex:none;vertical-align:-3px;

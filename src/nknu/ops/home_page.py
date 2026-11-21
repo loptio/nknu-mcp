@@ -30,10 +30,10 @@ from __future__ import annotations
 from datetime import datetime
 from urllib.parse import quote
 
-from nknu.ops import charts
+from nknu.ops import charts, standing
 from nknu.ops.look import e, icon
 from nknu.ops.nightly import DONE, RUN, STOP, clock
-from nknu.ops.pipeline import BAD, NONE, OK, WARN, span, stamp, when_of
+from nknu.ops.pipeline import BAD, LANES, LOG_FILES, NONE, OK, WARN, span, stamp, when_of
 from nknu.ops.pipeline_page import AGAIN, link, strip_fixer
 from nknu.ops.tonight_page import (
     CLOCK,
@@ -70,6 +70,7 @@ NOISE = ("讀這一步花了", "「還沒抓到的」只顯示數字")
 SHOWN_CHANGED = 8  # sites of the last swap listed before 還有 N 個
 SPLIT_PARTS = 6  # parts of a step's split bar beside what came out: the largest reasons, the rest as one
 SHOWN_NIGHT_SITES = 8
+SHOWN_OLD = 5  # rows of 之前就有 in sight at the least, however many are new 【Claude】
 STALE_HOURS = 30  # a library swapped in longer ago than a night and a morning is said in the warning colour
 
 
@@ -118,10 +119,13 @@ def stuck(t: dict) -> dict | None:
                 None)
 
 
-def said(t: dict, changes: dict | None, rows: list[dict], reading: bool = False) -> str:
+def said(t: dict, changes: dict | None, rows: list[dict], reading: bool = False, fresh: int | None = None) -> str:
     """The sentence on top: tonight_page.headline's one template; a part that runs but went silent is named in it;
-    while the steps are still being read it does not say 沒有問題 (nothing is known of them yet)."""
+    while the steps are still being read it does not say 沒有問題 (nothing is known of them yet). fresh: how many of
+    the problems the night before did not have (None: no night to compare with), said after their count."""
     text = headline(t, changes, rows)
+    if fresh is not None and rows and not reading and text.endswith("個問題"):
+        text += f"，其中新出現 {fresh} 個" if fresh else "，都是之前就有的"
     if reading and not rows and text.endswith("；沒有問題"):
         text = text[: -len("沒有問題")] + "正在讀每一步的紀錄"
     c = stuck(t)
@@ -131,7 +135,7 @@ def said(t: dict, changes: dict | None, rows: list[dict], reading: bool = False)
 
 
 def status_section(snap: dict, t: dict, changes: dict | None, rows: list[dict], state: str, api: str,
-                   now: datetime) -> str:
+                   now: datetime, new: int | None = None) -> str:
     reading = not snap.get("steps")
     if reading and state == OK:  # nothing read of the steps yet: no green mark for what is not known
         state = NONE
@@ -154,7 +158,7 @@ def status_section(snap: dict, t: dict, changes: dict | None, rows: list[dict], 
     live = " data-live" if t.get("live") else ""
     body = (f"<div class='hm-now' data-tonight='{e(api)}' data-sig='{e(t.get('sig'))}'{live}>"
             f"<div class='v3-state' data-state='{e(state)}'><span class='v3-dot'>{drawing}</span><b>{e(word)}</b></div>"
-            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading))}</p>{fresh}{pause}</div></div>")
+            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading, new))}</p>{fresh}{pause}</div></div>")
     return section(1, "now", "", f"<div class='hm-pad'>{body}</div>")
 
 
@@ -300,7 +304,49 @@ def sides_html(step: dict) -> str:
         f"<li><b>{e(name)}</b>"
         + (f"<span class='pill {TONE_PILL[tone]}'>{e(TONE_WORDS[tone])}</span>" if tone in ("warn", "bad") else "")
         + f"<span>{e(words)}</span></li>" for name, tone, words in (r[:3] for r in rows))
-    return f"<div class='hm-sides'><h4>這一步裡另外跑的</h4><ul>{items}</ul></div>"
+    return f"<div class='hm-sides'><h4>{e(step.get('sides_label') or '這一步裡另外跑的')}</h4><ul>{items}</ul></div>"
+
+
+def usage_html(step: dict) -> str:
+    """The public service's use (pipeline.public_usage): a line each as the sides are, and, folded, the last searches
+    that found nothing, in the words the service logged (it masks phone numbers, student numbers and addresses)."""
+    rows = [r for r in step.get("usage") or [] if len(r) >= 3]
+    if not rows:
+        return ""
+    items = "".join(
+        f"<li><b>{e(name)}</b>"
+        + (f"<span class='pill {TONE_PILL[tone]}'>{e(TONE_WORDS[tone])}</span>" if tone in ("warn", "bad") else "")
+        + f"<span>{e(words)}</span></li>" for name, tone, words in (r[:3] for r in rows))
+    missed = [m for m in step.get("usage_missed") or [] if len(m) >= 3]
+    fold = ""
+    if missed:
+        lis = "".join(f"<li><span class='num faint'>{e(at)}</span><span class='faint'>{e(via)}</span><span>{e(q)}</span></li>"
+                      for at, via, q in missed)
+        fold = (f"<details class='hm-log hm-missed'><summary>{icon('right', 12)}最近查無資料的 {len(missed)} 次"
+                "<span class='faint'>照服務記下的原樣，電話、學號、信箱已遮掉</span></summary>"
+                f"<ul>{lis}</ul></details>")
+    return (f"<div class='hm-sides hm-usage'><h4>{e(step.get('usage_label') or '對外服務')}</h4><ul>{items}</ul>"
+            f"{fold}</div>")
+
+
+# the logs a node's panel can show the end of (pipeline.LOG_FILES' names): asked for when the fold is opened
+NODE_LOGS = {"crawl": (("update", "每晚更新"),), "export": (("export", "導出"), ("update", "每晚更新")),
+             # the three lanes named as the step itself names them (pipeline.LANES, from lanes.sh's routes): written
+             # here by hand at first, C was called 認圖片的字 (it converts archives; images are B's) 2026-11-21
+             "totext": tuple((f"lane{k}", words.removesuffix("的程序")) for k, words in LANES),
+             "build": (("build", "建庫"),), "swap": (("ingest", "每晚進庫"),),
+             # the 33 questions and the real-data checks are the build's last two steps (build.sh 7, 8): its log
+             "check": (("build", "建庫（兩種檢查是它最後兩步）"),)}
+
+
+def logs_html(key: str) -> str:
+    """The end of a node's logs, each a fold that asks for its last 50 lines when opened (HOME_JS). Until
+    2026-11-21 an error said 「細節在存檔的 update.log」 and the owner had to ssh for it."""
+    folds = "".join(
+        f"<details class='hm-log' data-log='{e(name)}'><summary>{icon('right', 12)}紀錄最後 50 行"
+        f"<span class='faint'>{e(words)} · {e(LOG_FILES[name])}</span><span class='faint' data-when></span></summary>"
+        "<pre class='hm-logpre'></pre></details>" for name, words in NODE_LOGS.get(key, ()))
+    return folds
 
 
 def run_html(cell: dict | None) -> str:
@@ -343,8 +389,8 @@ def node_panel(x: dict, panels: dict[str, str]) -> str:
     act = f"<p class='hm-links'>{''.join(links)}</p>" if links else ""
     empty = "" if step else "<p class='v3-empty'>讀不到這一步的紀錄</p>"
     return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{does}{say}{run_html(cell)}"
-            f"{sides_html(step)}{io_html(step)}{link_html(step)}{split_bar(step)}{words}{reasons}{more}{act}{empty}"
-            "</article>")
+            f"{sides_html(step)}{usage_html(step)}{io_html(step)}{link_html(step)}{split_bar(step)}{words}{reasons}{more}"
+            f"{logs_html(x['key'])}{act}{empty}</article>")
 
 
 # ------------------------------------------------------------------------------------------------ 4 每晚紀錄
@@ -538,10 +584,51 @@ def changes_section(changes: dict | None, t: dict) -> str:
 # ------------------------------------------------------------------------------------------------ 3 問題
 
 
-def problems_section(rows: list[dict], reading: bool) -> str:
+def _listed(rows: list[dict], shown: int) -> str:
+    """Rows of 問題, the first `shown` in sight and the rest folded (never dropped)."""
+    lis = "".join(problem_html(x) for x in rows[:shown])
+    rest = ""
+    if len(rows) > shown:
+        rest = (f"<details class='hm-rest'><summary>{icon('right', 12)}還有 {len(rows) - shown} 個</summary>"
+                f"<ul class='v3-problems'>{''.join(problem_html(x) for x in rows[shown:])}</ul></details>")
+    return f"<ul class='v3-problems'>{lis}</ul>{rest}"
+
+
+def night_name(night: str) -> str:
+    """A night as the pages name it (nightly.label_of): 「11-20 夜」."""
+    return f"{night[5:]} 夜"
+
+
+def split_html(parts: dict, at: str = "") -> str:
+    """問題 against the night before (nknu.ops.standing.split): what is new first, then what was already listed (each
+    with the nights it has been), then, folded, what the night before listed and now is gone."""
+    new, old, gone = parts["new"], parts["old"], parts["gone"]
+    kept = f" data-tip='那一晚的問題清單是 {e(stamp(at))} 記下的'" if at else ""
+    head = (f"<h3 class='v3-problems-h hm-ph'>新出現<span class='hm-count num'{' data-new' if new else ''}>{len(new)}</span>"
+            f"<span class='hm-ph-sub'{kept}>和 {e(night_name(parts['night']))}比</span></h3>")
+    out = head + (_listed(new, SHOWN_PROBLEMS) if new else f"<p class='v3-none'>{mark('ok')} 沒有新出現的</p>")
+    if old:
+        out += (f"<h3 class='v3-problems-h hm-ph'>之前就有<span class='hm-count num'>{len(old)}</span></h3>"
+                + _listed(old, max(SHOWN_OLD, SHOWN_PROBLEMS - len(new))))
+    if gone:
+        rows = [{"sev": OK, "where": g.get("place") or "", "href": g.get("href") or "", "state": "好了",
+                 "reason": f"上一晚：{g.get('reason') or g.get('state') or ''}", "code": "", "unknown": False, "when": ""}
+                for g in gone]
+        out += (f"<details class='hm-rest hm-gone'><summary>{icon('right', 12)}好了的 {len(gone)} 個"
+                f"<span class='hm-ph-sub'>上一晚有、現在沒有</span></summary>"
+                f"<ul class='v3-problems'>{''.join(problem_html(x) for x in rows)}</ul></details>")
+    return out
+
+
+def problems_section(rows: list[dict], reading: bool, parts: dict | None = None, at: str = "", note: str = "") -> str:
+    """問題. parts: the rows against the night before (standing.split; None: no night to compare with, the rows are
+    listed as they are, and note says why); at: when that night's list was kept."""
     wait = "<p class='v3-empty hm-pad'>正在讀每一步的紀錄</p>" if reading else ""
-    if not rows:  # the night's own problems are listed at once; the steps' are added when their reading is in
-        body = wait or f"<p class='v3-none hm-pad'>{mark('ok')} 沒有問題</p>"
+    tail = f"<p class='hm-pnote'>{e(note)}</p>" if note else ""
+    if parts is not None and (rows or parts["gone"]):
+        body = f"<div class='hm-pad'>{split_html(parts, at)}</div>{wait}"
+    elif not rows:  # the night's own problems are listed at once; the steps' are added when their reading is in
+        body = wait or f"<div class='hm-pad'><p class='v3-none'>{mark('ok')} 沒有問題</p>{tail}</div>"
     else:
         lis = "".join(problem_html(x) for x in rows[:SHOWN_PROBLEMS])
         more = len(rows) - SHOWN_PROBLEMS
@@ -549,7 +636,7 @@ def problems_section(rows: list[dict], reading: bool) -> str:
         if more > 0:
             rest = (f"<details class='hm-rest'><summary>{icon('right', 12)}還有 {more} 個</summary>"
                     f"<ul class='v3-problems'>{''.join(problem_html(x) for x in rows[SHOWN_PROBLEMS:])}</ul></details>")
-        body = f"<div class='hm-pad'><ul class='v3-problems'>{lis}</ul>{rest}</div>{wait}"
+        body = f"<div class='hm-pad'><ul class='v3-problems'>{lis}</ul>{rest}{tail}</div>{wait}"
     count = f"<span class='hm-count num'>{len(rows)}</span>" if rows else ""
     return section(3, "problems", "問題", body, aside=count)
 
@@ -582,7 +669,12 @@ if(!fromHash())show(root.dataset.first);
 addEventListener('hashchange',()=>{if(fromHash())near()});
 root.addEventListener('click',ev=>{const row=ev.target.closest('[data-row]');
 const a=ev.target.closest('[data-pick]')||(row&&!ev.target.closest('a,button,summary')?row.querySelector('[data-pick]'):null);
-if(!a)return;ev.preventDefault();const id=a.dataset.pick;history.replaceState(null,'','#'+id);if(show(id))near()})})();"""
+if(!a)return;ev.preventDefault();const id=a.dataset.pick;history.replaceState(null,'','#'+id);if(show(id))near()});
+root.addEventListener('toggle',ev=>{const d=ev.target;if(!d.matches||!d.matches('details[data-log]')||!d.open)return;
+const pre=d.querySelector('pre'),when=d.querySelector('[data-when]');pre.textContent='讀取中…';
+fetch('/api/log?name='+encodeURIComponent(d.dataset.log),{cache:'no-store'}).then(r=>r.json()).then(j=>{
+pre.textContent=j.lines&&j.lines.length?j.lines.join('\\n'):'這份紀錄是空的，或讀不到';pre.scrollTop=pre.scrollHeight;
+if(when)when.textContent=j.at?'最後寫入 '+j.at.slice(5,16).replace('T',' '):''}).catch(()=>{pre.textContent='讀不到這份紀錄'})},true)})();"""
 
 CSS = """
 .hm{display:grid;grid-template-columns:minmax(0,1fr) 384px;gap:0 20px;align-items:start;
@@ -592,6 +684,11 @@ grid-template-areas:"chain side" "problems side" "nights side" "changes side"}
 overscroll-behavior:contain}
 .hm-card{overflow:hidden}
 .hm-pad{padding:14px 18px}
+.hm-ph{display:flex;align-items:center;gap:8px;margin:14px 0 6px}.hm-ph:first-child{margin-top:0}
+.hm-ph-sub{font-size:12px;font-weight:400;color:var(--ink3)}
+.hm-count[data-new]{background:var(--ink);color:var(--bg)}
+.hm-gone summary .hm-ph-sub{margin-left:4px}.hm-gone li{color:var(--ink2)}.hm-gone .v3-pr{color:var(--ink2)}
+.hm-pnote{margin:10px 0 0;font-size:12px;color:var(--ink3)}
 .hm-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 7px;border-radius:999px;
 background:var(--hover);color:var(--ink2);font-size:12px;font-weight:650}
 .v3-h .faint.num{margin-left:auto}
@@ -655,6 +752,11 @@ line-height:1.45}
 .hm-link li.hm-sum{margin-top:3px;padding-top:4px;border-top:1px solid var(--line2);color:var(--ink)}
 .hm-link li.hm-sum b{font-weight:700}.hm-link li[data-tip]>span:nth-child(2){text-decoration:underline dotted var(--ink3)}
 .hm-sides ul{gap:7px}
+.hm-usage{margin-top:12px}.hm-missed{margin-top:8px}
+.hm-missed ul{gap:4px;margin-top:6px}.hm-missed li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;
+  font-size:13px;overflow-wrap:anywhere}
+.hm-log summary{flex-wrap:wrap}.hm-log summary .faint{font-size:12px}
+.hm-logpre{max-height:340px;overflow:auto;margin:6px 0 0;padding:10px 12px;border-radius:10px;background:var(--sunk);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2)}
 .hm-sides li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;line-height:1.5;overflow-wrap:anywhere}
 .hm-sides li>b{font-weight:650;white-space:nowrap}.hm-sides li>span:last-child{flex:1 1 100%;color:var(--ink2)}
 .hm-split{display:flex;gap:2px;height:14px;border-radius:4px;overflow:hidden}
@@ -663,11 +765,11 @@ line-height:1.45}
 .hm-panel .rs{margin:0;max-width:none}
 .hm-panel .rs li{grid-template-columns:minmax(0,1.7fr) minmax(40px,1fr) 56px;align-items:baseline}
 .hm-panel .rs-w{white-space:normal;overflow:visible;line-height:1.4}
-.hm-notes summary,.hm-rest summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;font-size:13px;
+.hm-notes summary,.hm-rest summary,.hm-log summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;font-size:13px;
 color:var(--ink2);padding:2px 0}
-.hm-notes summary::-webkit-details-marker,.hm-rest summary::-webkit-details-marker{display:none}
-.hm-notes summary .ic,.hm-rest summary .ic{transition:transform .15s}
-.hm-notes[open] summary .ic,.hm-rest[open] summary .ic{transform:rotate(90deg)}
+.hm-notes summary::-webkit-details-marker,.hm-rest summary::-webkit-details-marker,.hm-log summary::-webkit-details-marker{display:none}
+.hm-notes summary .ic,.hm-rest summary .ic,.hm-log summary .ic{transition:transform .15s}
+.hm-notes[open] summary .ic,.hm-rest[open] summary .ic,.hm-log[open] summary .ic{transform:rotate(90deg)}
 .hm-notes ul{margin:6px 0 0;padding:0 0 0 18px;display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--ink2);
 line-height:1.5;overflow-wrap:anywhere}
 .hm-links{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px}
@@ -743,16 +845,18 @@ padding:11px 16px}
 
 
 def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dict[str, str], all_href: str = "",
-              now: datetime | None = None) -> str:
+              now: datetime | None = None, base: dict | None = None, base_note: str = "") -> str:
     """The page under the top bar (the module docstring). snap: pipeline.Pipeline.snapshot; t: nightly.tonight;
     changes: changes.Changes.snapshot; hist: history.home_history; panels: where a step's links go by their short
-    names; all_href: 網站 (every site)."""
+    names; all_href: 網站 (every site); base: the list of problems kept for the night before the one the page opens
+    on (history.Store.problem_base; None: none kept, and base_note says so under 問題)."""
     if now is None:
         now = datetime.fromisoformat(t["now"]) if t.get("now") else datetime.now().astimezone()
     reading = not snap.get("steps")
     handle = [] if reading else handle_rows(snap, changes)
     rows = problems(t, snap, handle)
     state = mark_state(t, rows)
+    parts = standing.split(rows, base, reading=reading, swap_known=(changes or {}).get("state") != "computing")
     where = {**panels, "#sites": all_href}  # 「看每站的數字」: every site is listed on 網站
     nodes = chain_nodes(snap, t, changes)
     nights = night_rows(t, hist, now)
@@ -764,10 +868,11 @@ def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dic
                 + ("（正在重新讀）" if snap.get("running") else " · <a href='/?fresh=1'>現在重讀</a>") + "</p>")
     again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if reading or snap.get("running") else ""
     return (f"<style>{charts.CSS}{SHARED_CSS}{CSS}</style>"
-            + status_section(snap, t, changes, rows, state, "/api/tonight?brief=1", now)
+            + status_section(snap, t, changes, rows, state, "/api/tonight?brief=1", now,
+                             len(parts["new"]) if parts is not None else None)
             + f"<div class='hm' data-home data-first='{e(first_pick(nodes, nights))}'>{flow}"
             + f"<aside class='hm-side' aria-label='選中的步驟或夜晚'>{side}</aside>"
-            + problems_section(rows, reading)
+            + problems_section(rows, reading, parts, (base or {}).get("at") or "", base_note)
             + section(4, "nights", "每晚紀錄", nights_html(nights) + record_note(hist))
             + changes_section(changes, t) + "</div>" + when
             + again + f"<script>{TONIGHT_JS}</script><script>{HOME_JS}</script>")

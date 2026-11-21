@@ -1,4 +1,5 @@
-"""资料总览, live (deploy/lab-overview/): the data read from a small library, and the service's own rules.
+"""网站（资料总览）, live, inside 检视台 since 2026-11-21 (nknu.ops.overview, overview_data; a service of its own in
+deploy/lab-overview/ until then): the data read from a small library, and the rules of keeping it current.
 
 The fixture is a made-up library in the repo layout the lab PC has under /work: three sites (a department, an office, and
 a 品保 site whose only page was merged into the department's), an export manifest, the round-1 list and a build report.
@@ -7,30 +8,18 @@ a 品保 site whose only page was merged into the department's), an export manif
 from __future__ import annotations
 
 import datetime
-import importlib.util
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
 
-HERE = Path(__file__).resolve().parents[2] / "deploy" / "lab-overview"
+from nknu.ops import overview as server
+from nknu.ops import overview_data as data_mod
+
 TODAY = datetime.date(2026, 11, 15)
 EPOCH = datetime.date(1970, 1, 1)
 
-
-def _load(name: str):
-    if str(HERE) not in sys.path:
-        sys.path.insert(0, str(HERE))
-    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-data_mod = _load("overview_data")
-server = _load("server")
 
 
 def day(text: str) -> int:
@@ -200,13 +189,6 @@ def test_the_owner_s_simplified_list_is_shown_in_traditional_and_the_school_s_ow
         ("颱風停課公告", "", "", "")]
 
 
-def test_only_local_names_are_answered() -> None:
-    for ok in ("127.0.0.1:18879", "localhost", "LOCALHOST:8879", "[::1]:8879", "127.0.0.1"):
-        assert server.host_ok(ok), ok
-    for bad in ("example.com", "192.168.1.5:8879", "", None, "127.0.0.1.evil.com", "localhost.evil.com:80"):
-        assert not server.host_ok(bad), bad
-
-
 def test_a_change_is_used_once_it_has_held_for_one_check() -> None:
     w = server.Watch()
     assert w.due(("a",))  # the first time: at once
@@ -230,13 +212,17 @@ def test_the_page_carries_its_data_safely_and_the_service_keeps_one_computation(
     assert first["live"] is True and len(first["stamp"]) == 16 and state.error == ""
     state.tick()  # nothing changed: the same data stays
     assert state.data is first
+    said = state.said()
+    assert said == {"stamp": first["stamp"], "built": first["built"], "state": "ok", "error": ""}
+    linked = server.render("<script id='links'>__LINKS__</script>", {}).decode("utf-8")
+    assert '"stamp": "/sites/stamp"' in linked  # where the page asks whether it is still current
 
 
 def test_a_failed_computation_tells_the_page_why(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(server, "today", lambda: TODAY)
     state = server.State(tmp_path, "__DATA__")  # no library there
     state.tick()
-    assert state.data is None and state.error.startswith("統計失敗：")
+    assert state.data is None and state.error.startswith("統計失敗：") and state.said()["state"] == "error"
 
 
 def test_the_build_s_checks_are_shown_only_for_the_library_they_were_made_of(root: Path) -> None:
@@ -279,7 +265,7 @@ def test_a_file_dated_by_its_own_table_row_is_a_date_source_of_its_own(root: Pat
 
 # ---------------------------------------------------------------- redesign 2026-11-17 (research/dashboard_redesign_2026-11-17)
 
-PAGE = (HERE / "page.html").read_text(encoding="utf-8")
+PAGE = server.PAGE.read_text(encoding="utf-8")
 
 
 def _line(prefix: str) -> str:
@@ -328,7 +314,7 @@ def test_the_build_s_reminders_say_what_is_wrong_in_plain_words() -> None:
 def test_every_site_leads_to_its_page_in_the_inspection_panel() -> None:
     """Structure design 2026-11-17 section 二: 網站 keeps its charts and its list, and every site in it leads to the
     one page of that site (檢視台 /site): its name in the list is a link, and the inspector has one clear way there.
-    The address comes from panels.json through server.py (__LINKS__), not written in the page twice."""
+    The address comes from panels.json through nknu.ops.overview (__LINKS__), not written in the page twice."""
     assert '<script id="links" type="application/json">__LINKS__</script>' in PAGE
     assert "const SITE_PAGE = LINKS.site ||" in PAGE and "const TABLES = LINKS.tables ||" in PAGE
     assert '<a class="nm-a" href="\' + esc(SITE_PAGE + encodeURIComponent(s.k)) + \'"' in PAGE

@@ -5,11 +5,11 @@ Since the structure design of 2026-11-17 (docs/superpowers/specs/2026-11-17-pane
 「可以按你的建议走吧，不用问我了」) the bar holds four entries, 每晚運行 | 網站 | 搜尋 | 找文件 (panels.json "pages"; 今晚 | 網站 | 試用 | 文件 until the owner's
 「一个页面叫"今晚"你觉得合理吗」, 11-17), and at its
 right end a small 「工具」 menu (a native <details>: it opens with a click, Enter or Space, Escape closes it) holding the
-two tools that are no entry of their own, 資料庫 and 爬蟲進度 (panels.json "tools"). A page of a tool marks the menu's
-button, not an entry.
+tools that are no entry of their own, 網頁核查 and 資料庫 (panels.json "tools"; 爬蟲進度, the crawler's own board, until
+the panels became one on 2026-11-21). A page of a tool marks the menu's button, not an entry.
 
-Standard library only, no package imports: 資料總覽's server (deploy/lab-overview/server.py) loads this file by path
-from its own folder, 資料庫's plugin from the inspect copy, 檢視台 as nknu.ops.theme.bar. The style is theme.css's .nk-*.
+Standard library only, no package imports: 資料庫's plugin loads this file from the inspect copy, 檢視台 as
+nknu.ops.theme.bar (網站, 資料總覽's page, is 檢視台's own since 2026-11-21). The style is theme.css's .nk-*.
 """
 
 from __future__ import annotations

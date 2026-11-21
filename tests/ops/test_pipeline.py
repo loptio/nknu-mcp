@@ -10,6 +10,7 @@ import threading
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -318,7 +319,8 @@ def test_the_home_lists_only_the_sites_to_look_at_and_leads_to_every_site():
                        "cells": {"docs": {"n": 12}}, "why": []}]}
     rows = tonight_page.handle_rows(snap, None)
     assert [r["key"] for r in rows] == ["a.example"]
-    assert rows[0]["issues"] == [{"sev": WARN, "what": "庫裡一份文件也沒有（看是學校沒東西還是建庫丟了）", "step": "建庫"}]
+    assert rows[0]["issues"] == [{"sev": WARN, "what": "庫裡一份文件也沒有（看是學校沒東西還是建庫丟了）", "step": "建庫",
+                                  "kind": "docs"}]
     # since 2026-11-18 a site to look at is a row of 問題, once (the separate table said the same sites again)
     html = home_page.problems_section(tonight_page.problems(TONIGHT, {"steps": []}, rows), False)
     assert "甲處" in html and "乙處" not in html and "data-q='3'" in html
@@ -878,13 +880,14 @@ def test_a_sites_issues_name_the_step_and_a_reading_without_them_still_works():
                                    None)
     for rows in (old, new):
         assert rows[0]["issues"] == [{"sev": WARN, "what": "新導出用舊資料補的從 0 筆變成 3 筆（最近抓壞的變多）",
-                                      "step": "導出"}]
+                                      "step": "導出", "kind": "refill"}]
     # the last swap's departures nobody can explain make a site the most urgent, the build's to look at
     changes = {"state": "ready", "reasons": {}, "sites": [{"site": "b.example", "name": "乙處", "unexplained": 2,
                                                             "look": 0, "reasons": {}}]}
     both = tonight_page.handle_rows({"sites": [row]}, changes)
     assert [r["key"] for r in both] == ["b.example", "a.example"] and both[0]["sev"] == BAD
-    assert both[0]["issues"][0] == {"sev": BAD, "what": "上次換庫說不出原因地離開 2 份", "step": "換庫"}
+    assert both[0]["issues"][0] == {"sev": BAD, "what": "上次換庫說不出原因地離開 2 份", "step": "換庫",
+                                    "kind": "unexplained"}
 
 
 # ---------------------------------------------------------------- one site's page (structure design 2026-11-17 二)
@@ -1158,3 +1161,115 @@ def test_the_home_draws_a_steps_link_and_its_side_runs():
     assert home_page.link_html({}) == "" and home_page.sides_html({}) == ""
     sides = home_page.sides_html(step)
     assert sides.count("<li>") == 2 and sides.count("class='pill") == 1 and "出錯 &lt;x&gt;" in sides
+
+
+# ---------------------------------------------------------------- 紀錄的最後幾行、這台電腦（11-21）
+
+
+def test_a_logs_last_lines_are_given_by_its_short_name_and_never_show_a_key(where, tmp_path):
+    kit = where.pipe / "lab_pc"
+    kit.mkdir(parents=True, exist_ok=True)
+    lines = [f"[ingest 2026-11-21 02:{i:02d}:00] 步骤 {i}" for i in range(60)]
+    lines += ["GET https://www.googleapis.com/drive/v3/files?key=AIzaSyA-made-up-key-123456&q=x 403",
+              "x-goog-api-key: AIzaSyA-made-up-key-123456", "结束：swapped"]
+    (kit / "ingest.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    got = pipeline.log_tail(where, "ingest")
+    assert got["file"] == "ingest.log" and len(got["lines"]) == 50 and got["lines"][-1] == "结束：swapped" and got["at"]
+    shown = "\n".join(got["lines"])
+    assert "AIza" not in shown and "made-up-key" not in shown and "&q=x 403" in shown  # the key gone, the rest kept
+    assert len(pipeline.log_tail(where, "ingest", 5)["lines"]) == 5 and len(pipeline.log_tail(where, "ingest", 9999)["lines"]) == 63
+    assert pipeline.log_tail(where, "laneA")["lines"] == []           # a log not there: nothing, never an error
+    assert pipeline.log_tail(where, "../../etc/passwd") is None       # a name, never a path
+    assert pipeline.log_tail(where, "update") is None                 # no archive folder given: no such log here
+    where.archive = tmp_path / "crawl"
+    where.archive.mkdir()
+    (where.archive / "update.log").write_text("2026-11-21 01:00:02 定期更新开始\n", encoding="utf-8")
+    assert pipeline.log_tail(where, "update")["lines"] == ["2026-11-21 01:00:02 定期更新开始"]
+
+
+def test_the_machines_drives_are_said_and_one_running_out_lights_the_step(where, monkeypatch):
+    usage = SimpleNamespace
+    sizes = {"/c": usage(total=476 * pipeline.GB, free=195 * pipeline.GB), "/d": usage(total=932 * pipeline.GB, free=527 * pipeline.GB)}
+
+    def disk_usage(path):
+        if path not in sizes:
+            raise FileNotFoundError(path)
+        return sizes[path]
+
+    monkeypatch.setattr(pipeline.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: (1229, 20480))
+    monkeypatch.setattr(pipeline, "memory", lambda: None)
+    where.disks = (("C 槽", "/c"), ("D 槽", "/d"), ("E 槽", "/nowhere"))
+    rows = {name: (tone, words) for name, tone, words in pipeline.machine(where)}
+    assert rows["C 槽"] == (OK, "還剩 195 GB（共 476 GB，用了 59%）") and rows["D 槽"][0] == OK
+    assert rows["E 槽"] == (NONE, "讀不到（這一槽沒有掛給檢視台）")
+    assert rows["顯示卡記憶體"] == (OK, "用了 1.2 GB（共 20.0 GB）")
+    step = pipeline.serve_step(where)  # no services set: the machine is still said
+    assert step.sides_label == "這台電腦" and len(step.sides) == 4
+    sizes["/d"] = usage(total=932 * pipeline.GB, free=100 * pipeline.GB)    # under 15% free: worth a look
+    assert {n: t for n, t, _w in pipeline.machine(where)}["D 槽"] == WARN
+    sizes["/c"] = usage(total=476 * pipeline.GB, free=10 * pipeline.GB)     # under 15 GB: red
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: (19500, 20480))     # the card nearly full
+    rows = {n: t for n, t, _w in pipeline.machine(where)}
+    assert rows["C 槽"] == BAD and rows["顯示卡記憶體"] == WARN
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: None)               # no card to ask: no line
+    assert "顯示卡記憶體" not in {n for n, _t, _w in pipeline.machine(where)}
+
+
+def test_the_memory_docker_has_is_read_from_the_containers_own_view(tmp_path, monkeypatch):
+    # the lab's ops container on 2026-11-21 22:45 (its /proc/meminfo, abridged): Windows gives Docker half its 128 GB
+    info = tmp_path / "meminfo"
+    info.write_text("MemTotal:       65642552 kB\nMemFree:         1000000 kB\nMemAvailable:   48035580 kB\n"
+                    "Cached:           843036 kB\nSwapTotal:      16777216 kB\nSwapFree:       13538792 kB\n",
+                    encoding="ascii")
+    total, free, swap = pipeline.memory(info)
+    assert (round(total / pipeline.GB, 1), round(free / pipeline.GB, 1), round(swap / pipeline.GB, 1)) == (62.6, 45.8, 3.1)
+    assert pipeline.memory(tmp_path / "none") is None  # a Mac: no line
+    (tmp_path / "odd").write_text("MemTotal: x kB\n", encoding="ascii")
+    assert pipeline.memory(tmp_path / "odd") is None
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: None)
+    monkeypatch.setattr(pipeline, "memory", lambda: (total, free, swap))
+    rows = {n: (t, w) for n, t, w in pipeline.machine(Where(root=tmp_path, db=tmp_path / "x.db"))}
+    assert rows["記憶體"] == (OK, "用了 16.8 GB（共 62.6 GB，Docker 分到的那一份）；交換區用了 3.1 GB")
+    monkeypatch.setattr(pipeline, "memory", lambda: (total, total // 20, 0))  # 5% left: worth a look, no swap said
+    assert {n: (t, w) for n, t, w in pipeline.machine(Where(root=tmp_path, db=tmp_path / "x.db"))}["記憶體"] == \
+        (WARN, "用了 59.5 GB（共 62.6 GB，Docker 分到的那一份）")
+
+
+def test_a_drive_running_out_is_said_on_the_services_step(where, server, monkeypatch):
+    monkeypatch.setattr(pipeline.shutil, "disk_usage", lambda _p: SimpleNamespace(total=476 * pipeline.GB, free=10 * pipeline.GB))
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: None)
+    monkeypatch.setattr(pipeline, "memory", lambda: None)
+    where.services, where.disks = _services(server), (("C 槽", "/c"),)
+    step = pipeline.serve_step(where)
+    assert step.state == BAD and "C 槽還剩 10 GB" in step.say
+
+
+def test_the_home_folds_the_end_of_a_nodes_logs_and_names_the_machine():
+    from nknu.ops import home_page
+
+    assert home_page.logs_html("serve") == ""
+    # 品質檢查 runs as the build's last two steps: its fold is the build's log, said so (a reviewer's catch, 11-21)
+    check = home_page.logs_html("check")
+    assert "data-log='build'" in check and "建庫（兩種檢查是它最後兩步）" in check
+    page = home_page.logs_html("totext")
+    assert page.count("<details class='hm-log'") == 3 and "data-log='laneB'" in page and "laneC.log" in page
+    assert "紀錄最後 50 行" in page and "/api/log?name=" in home_page.HOME_JS
+    # each lane's fold is named what the lane does (lanes.sh: A pdf and office, B pages and images, C archives): the
+    # names written by hand at first called C 認圖片的字, and a stuck OCR would have sent the reader to the wrong log
+    assert home_page.NODE_LOGS["totext"] == (("laneA", "轉 PDF 和 Office 檔"), ("laneB", "轉網頁和圖片"),
+                                             ("laneC", "轉壓縮檔"))
+    lanes = (Path(__file__).resolve().parents[2] / "deploy/lab-pipeline/lanes.sh").read_text(encoding="utf-8")
+    assert "A) ROUTES=pdf,office,office_old" in lanes and "C) ROUTES=archive" in lanes
+    assert "B) ROUTES=page,image,data,unsupported" in lanes  # a lane given other work fails here: rename the fold
+    # the script is one the browser can read: a line break inside its quotes stops the whole home's script (11-21,
+    # caught on the lab's page: the join's \\n was written as a real line break)
+    assert "join('\\n')" in home_page.HOME_JS
+    import shutil
+    import subprocess
+    if node := shutil.which("node"):
+        for script in (home_page.HOME_JS,):
+            done = subprocess.run([node, "--check", "-"], input=script, capture_output=True, text=True, check=False)
+            assert done.returncode == 0, done.stderr[:300]
+    sides = home_page.sides_html({"sides": [["C 槽", "bad", "還剩 10 GB"]], "sides_label": "這台電腦"})
+    assert "<h4>這台電腦</h4>" in sides and "class='pill bad'" in sides

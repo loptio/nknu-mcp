@@ -280,8 +280,10 @@ def _crawl_card(c: dict | None, viewer_url: str) -> str:
     if not c:
         return f"<div class='in faint'>{UNSEEN}</div>"
     number = c["archive_id"][1:] if c["archive_id"][:1] == "u" and c["archive_id"][1:].isdigit() else ""
-    link = (f"<a class='btn' href='{e(viewer_url.rstrip('/'))}/page?id={number}' target='_blank' "
-            f"data-tip='在爬蟲存檔看抓下來的原樣'>{icon('out', 12)}爬蟲存檔</a>" if viewer_url and number else "")
+    # the stored answer, in 檢視台's own page of it since 2026-11-21 (the crawler's viewer, /page?id=, until then);
+    # viewer_url is no longer asked for
+    link = (f"<a class='btn' href='/check?id={number}' target='_blank' "
+            f"data-tip='看存檔裡抓下來的原樣：網頁上色核查，檔案照原樣打開'>{icon('out', 12)}存檔裡的原樣</a>" if number else "")
     state = "good" if c["result"] == "抓到了" else "warn"
     result = (f"<span class='pill {state}'>{e(tw(c['result']) or '沒抓到')}</span>"
               + (f" <small>（{e(tw(c['reason']))}）</small>" if c["reason"] else ""))

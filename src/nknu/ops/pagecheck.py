@@ -1042,25 +1042,26 @@ _CSS_BAD = re.compile(r"expression\s*\(|javascript:|behavior\s*:|-moz-binding|\\
 _CSS_IMAGE_SET = re.compile(r"(?:-webkit-)?image-set\s*\(", re.IGNORECASE)
 
 # the marks, inside the stored page (it keeps the school's white whatever the panel's mode: design section 二's
-# 「原样白底」); the colours are look.CSS's light good / warn / bad and greys, never --acc nor violet
+# 「原样白底」); the colours are theme.css's light stroke steps (--good-s, --warn-s, --bad-s, --mute-s: each 3.5:1 or
+# more on white as a 2px line; until 2026-11-21 the fills' amber, 2.9:1, and a grey of 3.3:1), never --acc nor violet
 MARK_CSS = """
 html{color-scheme:light;background:#fff}body{margin:8px;color:#161615;background:#fff;
 font:14px/1.5 system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif}
-[data-b]{cursor:pointer;--c:#908e88}
-[data-b=got],[data-b=look]{--c:#348757}[data-b=next],[data-b=review]{--c:#c48d25}
+[data-b]{cursor:pointer;--c:#55534e}
+[data-b=got],[data-b=look]{--c:#2e9a5a}[data-b=next],[data-b=review]{--c:#b57600}
 [data-b=failed],[data-b=missing]{--c:#a42d15}[data-b=notlink]{cursor:default}
 a[data-b]{color:#161615;text-decoration:underline 2px var(--c);text-underline-offset:3px}
-a[data-b=review],a[data-b=missing]{text-decoration-style:dashed}a[data-b=gone]{text-decoration:line-through 2px #908e88}
+a[data-b=review],a[data-b=missing]{text-decoration-style:dashed}a[data-b=gone]{text-decoration:line-through 2px #55534e}
 a[data-b]:not([data-b=notlink])::after{content:"";display:inline-block;width:6px;height:6px;margin:0 1px 0 3px;
 border-radius:50%;background:var(--c);vertical-align:middle}
-a[data-b=look]::after{background:#c48d25}a[data-b=notlink]{text-decoration:underline 1px #cfcec6}
+a[data-b=look]::after{background:#b57600}a[data-b=notlink]{text-decoration:underline 1px #cfcec6}
 img[data-b],input[data-b],button[data-b],.nk-box[data-b],.nk-noimg[data-b],.nk-bg[data-b],.nk-act[data-b]{outline:3px
 solid var(--c);outline-offset:-1px}.nk-act[data-b]{outline-width:2px;outline-style:dotted}
 img[data-b=review],img[data-b=missing],.nk-noimg[data-b=review],.nk-noimg[data-b=missing],input[data-b=review],
 input[data-b=missing],button[data-b=missing],button[data-b=review],.nk-box[data-b=missing],.nk-box[data-b=review],
 .nk-bg[data-b=missing],.nk-bg[data-b=review]{outline-style:dashed}
 .nk-bg{background-size:cover;background-repeat:no-repeat}
-img[data-b=look]{outline-color:#348757;box-shadow:0 0 0 6px #c48d25}
+img[data-b=look]{outline-color:#2e9a5a;box-shadow:0 0 0 6px #b57600}
 .nk-noimg{display:inline-block;box-sizing:border-box;min-width:48px;min-height:32px;vertical-align:middle;
 background:repeating-linear-gradient(45deg,#f3f2ee 0 6px,#e7e6e0 6px 12px);border:1px solid #cfcec6}
 .nk-box{display:block;margin:6px 0;padding:10px 12px;border:1px solid #cfcec6;border-radius:6px;background:#f3f2ee;
@@ -1525,6 +1526,67 @@ def archived_image(archive: Path | None, url: str, *, ledgers: LedgerCache | Non
         return None
     kind = image_type(body)
     return (body, kind) if kind else None
+
+
+_ROW_REF = re.compile(r"[up]?(\d{1,12})")  # the ledger's number of an address, as the export (存档编号 u<id>) writes it
+
+
+def archived_record(archive: Path | None, ref: str, *, ledgers: LedgerCache | None = None) -> dict | None:
+    """The stored answer of one address, as the crawler kept it (the crawler's viewer showed it at /page, /source,
+    /text and /raw until the panels became one, 2026-11-21): ref is the ledger's number of the address (u<id>, or the
+    bare number) or an address, which is followed through its redirects; a number is taken as it is, the row asked
+    for. {id, url, status, ctype, title, fetched_at, body}, or None: not in the ledger, never fetched, unreadable."""
+    ref = (ref or "").strip()
+    if archive is None or not ref or not (Path(archive) / LEDGER).exists():
+        return None
+    with _ledger(Path(archive), ledgers) as conn:
+        ledger = Ledger(conn)
+        if m := _ROW_REF.fullmatch(ref):
+            row = ledger.by_id(int(m.group(1)))
+        else:
+            row = ledger.by_url(scope.canonical(ref) or ref)
+            if row is not None and row["result"] == "redirect":
+                row = ledger.land(row).row
+        if row is None or not row["warc"] or row["warc_offset"] is None:
+            return None
+        found = {k: row[k] for k in ("id", "url", "ctype", "title", "fetched_at")}
+        warc, offset = row["warc"], row["warc_offset"]
+    try:
+        _u, status, headers, body = postback.read_response(Path(archive), warc, offset)
+    except (ValueError, OSError):
+        return None
+    return {**found, "status": status, "ctype": headers.get("content-type") or found["ctype"] or "", "body": body}
+
+
+def address_of(archive: Path | None, ref: str, *, ledgers: LedgerCache | None = None) -> str:
+    """The address the ledger keeps under a number (u<id> or the bare number), '' when it has none."""
+    m = _ROW_REF.fullmatch((ref or "").strip())
+    if archive is None or m is None or not (Path(archive) / LEDGER).exists():
+        return ""
+    with _ledger(Path(archive), ledgers) as conn:
+        row = Ledger(conn).by_id(int(m.group(1)))
+    return str(row["url"]) if row is not None else ""
+
+
+def is_markup(ctype: str | None, body: bytes) -> bool:
+    """Whether a stored answer is a page (HTML by its type, or by how it begins when the type says nothing)."""
+    kind = (ctype or "").split(";", 1)[0].strip().lower()
+    if kind in ("text/html", "application/xhtml+xml"):
+        return True
+    return not kind and body[:512].lstrip()[:1] == b"<"
+
+
+def visible_text(page: str) -> str:
+    """What a reader sees of a page as plain lines: scripts, styles and templates gone, blank lines dropped."""
+    try:
+        tree = LexborHTMLParser(page)
+    except SelectolaxError:
+        return ""
+    for node in tree.css("script, style, noscript, template"):
+        node.decompose()
+    body = tree.body
+    lines = (line.strip() for line in (body.text(separator="\n") if body is not None else "").splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def live_url(url: str) -> str:

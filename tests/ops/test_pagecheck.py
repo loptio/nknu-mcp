@@ -12,6 +12,7 @@ import struct
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 from selectolax.lexbor import LexborHTMLParser
@@ -717,3 +718,54 @@ def test_a_path_the_site_list_does_not_walk_is_a_rule_said_in_words(made):
     conn.close()
     later = _by_id(pagecheck.check(made.archive, PAGE))["c-later"]
     assert later["bucket"] == "rule" and "名單寫明這條路徑不往下翻" in later["tip"]
+
+
+# ---------------------------------------------------------------- the stored answer as it was kept (11-21)
+
+def _number(made, url: str) -> int:
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER)
+    try:
+        return conn.execute("SELECT id FROM url WHERE url = ?", (url,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_a_stored_page_is_shown_as_its_source_and_as_its_visible_text(client, made):
+    # the crawler's viewer showed these (/source, /text) until the panels became one, 2026-11-21
+    source = client.get("/check/source", params={"url": PAGE})
+    assert source.status_code == 200 and "原始 HTML" in source.text and "核查這一頁" in source.text
+    assert "&lt;html" in source.text.lower() or "&lt;!doctype" in source.text.lower()  # the page's own markup, escaped
+    text = client.get("/check/text", params={"url": PAGE})
+    assert text.status_code == 200 and "整頁文字" in text.text
+    shown = text.text.split("<pre class='card pad stored'>", 1)[1].split("</pre>", 1)[0]
+    assert shown.strip() and "&lt;" not in shown  # what a reader sees: no tags
+    # a file is no page: said, never a 500
+    assert client.get("/check/source", params={"url": made.pdf}).status_code == 404
+    assert "存檔裡沒有這一頁的內容" in client.get("/check/text", params={"url": SITE + "none.aspx"}).text
+
+
+def test_the_ledgers_number_of_an_address_opens_its_check(client, made):
+    page = scope.canonical(PAGE)
+    n = _number(made, page)
+    for given in (f"u{n}", str(n)):  # as an export row's 存档编号 writes it, or bare
+        got = client.get("/check", params={"id": given}, follow_redirects=False)
+        assert got.status_code == 307 and got.headers["location"] == "/check?" + urlencode({"url": page})
+        assert client.get("/check/source", params={"id": given}).status_code == 200
+    assert pagecheck.address_of(made.archive, "u999999") == "" and pagecheck.address_of(made.archive, "停修") == ""
+    assert pagecheck.archived_record(made.archive, f"u{n}")["url"] == page
+    assert pagecheck.archived_record(made.archive, SITE + "News/Fail.aspx") is None  # never fetched: nothing stored
+
+
+def test_a_stored_file_is_opened_as_it_is_and_a_page_under_the_strictest_policy(client, made):
+    pdf = client.get("/check/file", params={"url": made.pdf})
+    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf" and pdf.content == PDF
+    assert pdf.headers["x-content-type-options"] == "nosniff"
+    assert client.get("/check/file", params={"id": str(_number(made, made.pic))}).headers["content-type"] == "image/png"
+    page = client.get("/check/file", params={"url": PAGE})
+    csp = page.headers["content-security-policy"]
+    assert "default-src 'none'" in csp and "sandbox" in csp and "script-src" not in csp  # nothing runs, nothing loads
+    assert client.get("/check/file", params={"url": SITE + "none.pdf"}).status_code == 404
+    # a type the browser has no business showing is a download, named by its address
+    rec = {"id": 7, "url": "https://x.example/a/規則.docx", "ctype": "application/msword", "body": b"\xd0\xcf\x11\xe0"}
+    assert not pagecheck.is_markup(rec["ctype"], rec["body"]) and pagecheck.is_markup("", b"  <html>")
+    assert pagecheck.visible_text("<body><script>x()</script><p>甲</p>\n\n<p> 乙 </p><style>p{}</style></body>") == "甲\n乙"
