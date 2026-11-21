@@ -271,6 +271,38 @@ def io_html(step: dict) -> str:
                                            for w, c, noun in rows) + "</dl>")
 
 
+def link_html(step: dict) -> str:
+    """和上一步對帳: how what came into the step follows from what the step before put out, a term a line (the step's
+    link), and whether the terms add up (link_left). A term of nothing is not drawn."""
+    rows = [r for r in step.get("link") or [] if len(r) >= 3 and (r[0] in ("", "=") or r[2])]
+    if not rows:
+        return ""
+    left = step.get("link_left")
+    verdict = ("" if left is None else "<span class='pill good'>對得上</span>" if not left
+               else f"<span class='pill warn'>還差 {abs(int(left)):,} 對不上</span>")
+    total = " class='hm-sum'"
+    items = "".join(
+        f"<li{total if r[0] == '=' else ''}{tip_attr(r[3] if len(r) > 3 else '')}>"
+        f"<span class='hm-sg'>{e(r[0])}</span><span>{e(r[1])}</span><b class='num'>{int(r[2]):,}</b></li>" for r in rows)
+    return f"<div class='hm-link'><h4>和上一步對帳{verdict}</h4><ul>{items}</ul></div>"
+
+
+def tip_attr(tip: str) -> str:
+    return f" data-tip='{e(tip)}'" if tip else ""
+
+
+def sides_html(step: dict) -> str:
+    """What runs inside the step on its own schedule (the step's sides): a line each, marked when it needs a look."""
+    rows = [r for r in step.get("sides") or [] if len(r) >= 3]
+    if not rows:
+        return ""
+    items = "".join(
+        f"<li><b>{e(name)}</b>"
+        + (f"<span class='pill {TONE_PILL[tone]}'>{e(TONE_WORDS[tone])}</span>" if tone in ("warn", "bad") else "")
+        + f"<span>{e(words)}</span></li>" for name, tone, words in (r[:3] for r in rows))
+    return f"<div class='hm-sides'><h4>這一步裡另外跑的</h4><ul>{items}</ul></div>"
+
+
 def run_html(cell: dict | None) -> str:
     """A node's part of the latest night: its hours and how long, the source's own words of it."""
     if cell is None:
@@ -311,7 +343,8 @@ def node_panel(x: dict, panels: dict[str, str]) -> str:
     act = f"<p class='hm-links'>{''.join(links)}</p>" if links else ""
     empty = "" if step else "<p class='v3-empty'>讀不到這一步的紀錄</p>"
     return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{does}{say}{run_html(cell)}"
-            f"{io_html(step)}{split_bar(step)}{words}{reasons}{more}{act}{empty}</article>")
+            f"{sides_html(step)}{io_html(step)}{link_html(step)}{split_bar(step)}{words}{reasons}{more}{act}{empty}"
+            "</article>")
 
 
 # ------------------------------------------------------------------------------------------------ 4 每晚紀錄
@@ -613,6 +646,17 @@ color:var(--ink2);overflow-wrap:anywhere}
 .hm-io dt{color:var(--ink3);font-size:12px}.hm-io dd{margin:0;color:var(--ink2)}
 .hm-io dd b{color:var(--ink);font-size:14px;font-weight:700}
 .hm-counts>div{grid-template-columns:76px minmax(0,1fr)}
+.hm-link h4,.hm-sides h4{display:flex;align-items:center;gap:8px;margin:0 0 6px}
+.hm-link ul,.hm-sides ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;font-size:13px}
+.hm-link ul{padding:8px 12px;border-radius:10px;background:var(--sunk);gap:3px}
+.hm-link li{display:grid;grid-template-columns:12px minmax(0,1fr) max-content;gap:8px;align-items:baseline;color:var(--ink2);
+line-height:1.45}
+.hm-link li .hm-sg{color:var(--ink3);text-align:center}.hm-link li b{color:var(--ink);font-weight:600}
+.hm-link li.hm-sum{margin-top:3px;padding-top:4px;border-top:1px solid var(--line2);color:var(--ink)}
+.hm-link li.hm-sum b{font-weight:700}.hm-link li[data-tip]>span:nth-child(2){text-decoration:underline dotted var(--ink3)}
+.hm-sides ul{gap:7px}
+.hm-sides li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;line-height:1.5;overflow-wrap:anywhere}
+.hm-sides li>b{font-weight:650;white-space:nowrap}.hm-sides li>span:last-child{flex:1 1 100%;color:var(--ink2)}
 .hm-split{display:flex;gap:2px;height:14px;border-radius:4px;overflow:hidden}
 .hm-split i{min-width:2px;background:var(--amt2)}.hm-split i.hm-out{background:var(--amt)}
 .hm-split i:nth-child(odd):not(.hm-out){background:var(--amt3)}

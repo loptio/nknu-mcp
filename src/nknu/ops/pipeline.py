@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -90,6 +90,15 @@ class Step:
     share: bool = True  # whether the bar says its percentage (not where the rest is by design, as the build's merges)
     flow_words: str = ""  # one sentence in place of the in/out, where they are not a loss (the export's rows)
     paused: bool = False  # the nightly ingest is switched off by hand (ingest.pause): the home says so on top
+    # how what came in follows from what the step before put out, a line a term: [sign ('' the start, '+', '−', '='),
+    # words, count, more words floating over it]; link_left: what the terms leave unaccounted (0: they add up; None:
+    # nothing to add up). 2026-11-21, owner: 「上一步出的和下一步进的对不上」: the steps counted in different units
+    # (addresses, rows, files, records) and a stage between two of them (assemble) was on no panel 【Claude】
+    link: list[list] = field(default_factory=list)
+    link_left: int | None = None
+    # what runs inside the step on its own schedule: [name, tone (ok, warn, bad, none), words] (the crawl's weekly
+    # revisit of the outside sites, its browser-opened sites, its course-term check)
+    sides: list[list] = field(default_factory=list)
 
 
 @dataclass
@@ -347,9 +356,20 @@ def run_state(conn: sqlite3.Connection, now: datetime) -> dict:
     without ending (killed, the power off). How a run ended is the crawler's own words (progress.RUN_END_ZH)."""
     _outcome, progress = _crawler()
     rows = conn.execute("SELECT rowid, at, code, message FROM event WHERE code IN ('run_start', 'run_end')"
-                        " ORDER BY rowid DESC LIMIT 2").fetchall()
+                        " ORDER BY rowid DESC LIMIT 8").fetchall()
     if not rows:
         return {"state": NONE, "words": "爬蟲還沒跑過", "at": "", "took": "", "running": False}
+    if rows[0][2] == "run_end":
+        # the nightly script runs the browser-opened sites again after the night's own run (nightly_update.sh 5b): a
+        # run of those sites alone is theirs (crawl_sides says it), and 上一輪 is the run before it. 2026-11-21: every
+        # morning the page said 上一輪 … 結束（5 站）
+        js = js_sites(conn)
+        for i in range(0, len(rows) - 1, 2):
+            if rows[i][2] != "run_end" or rows[i + 1][2] != "run_start":
+                break
+            if not js or not set(_message(rows[i + 1][3]).get("sites") or []) <= js:
+                rows = rows[i:]
+                break
     last = rows[0]
     if last[2] == "run_end":
         start = rows[1] if len(rows) > 1 and rows[1][2] == "run_start" else None
@@ -559,7 +579,8 @@ def round2_open(conn: sqlite3.Connection) -> list[str]:
     return sorted({s for s in sites if isinstance(s, str)}) if isinstance(sites, list) else []
 
 
-def crawl_buckets(conn: sqlite3.Connection, sites: set[str], batch_sites: list[str] = ()
+def crawl_buckets(conn: sqlite3.Connection, sites: set[str], batch_sites: list[str] = (),
+                  review: dict[str, int] | None = None
                   ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]] | None]:
     """Per site, its addresses by the crawler's own category of their result (outcome.user_bucket: got, failed,
     review, pending_check, …): the ledger's url_result, the rules 看板, the export and 網頁核查 all use; and, apart
@@ -594,7 +615,121 @@ def crawl_buckets(conn: sqlite3.Connection, sites: set[str], batch_sites: list[s
             continue
         bucket = outcome.user_bucket(result)
         per[bucket] = per.get(bucket, 0) + n
+        if review is not None and bucket == "review" and per is out.get(site):
+            review[result] = review.get(result, 0) + n  # the bucket's results, each by its own code
     return out, batch
+
+
+def js_sites(conn: sqlite3.Connection) -> set[str]:
+    """The sites the browser opens (the last jsfetch_start's), {} where the ledger has none."""
+    try:
+        row = conn.execute("SELECT message FROM event WHERE code = 'jsfetch_start' ORDER BY rowid DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return set()
+    return {s for s in (_message(row[0]).get("sites") or []) if isinstance(s, str)} if row else set()
+
+
+def _utc(value: str | float | None) -> str:
+    """A time as the ledger writes its own (UTC, ISO), '' when it cannot be read."""
+    at = when_of(value)
+    return at.astimezone(UTC).isoformat() if at else ""
+
+
+def crawl_sides(conn: sqlite3.Connection, archive: Path, now: datetime) -> list[list]:
+    """What the nightly crawl does beside its own run, each from the file the crawler writes of it: the weekly
+    revisit of the outside sites (update-status.json revisit_tonight, put_back.revisit; the night of Saturday 01:00),
+    the sites a browser opens (the ledger's jsfetch_end events of this night), the course-term check
+    (reports/schedule-term.json). Until 2026-11-21 none of the three was on a panel: whether they ran could not be
+    seen 【Claude】."""
+    out: list[list] = []
+    status = read_json(archive / "reports" / "update-status.json")
+    status = status if isinstance(status, dict) else {}
+    started = _utc(status.get("night_started"))
+    night = stamp(status.get("night_started"))
+    # 1 the outside sites
+    tonight = [s for s in status.get("revisit_tonight") or [] if isinstance(s, str)]
+    idle = [s for s in status.get("revisit_idle") or [] if isinstance(s, str)]
+    put = (status.get("put_back") or {}).get("revisit") if isinstance(status.get("put_back"), dict) else None
+    name = "校外網站每週重看"
+    if "revisit_tonight" not in status:
+        out.append([name, NONE, "爬蟲的狀態檔沒有這一項（還沒跑過，或讀不到）"])
+    elif not tonight:
+        out.append([name, NONE, f"{night} 這一晚沒輪到（每週六凌晨那一晚才看，共 {len(idle)} 站）"])
+    else:
+        states: dict[str, int] = {}
+        try:
+            qs = ",".join("?" * len(tonight))
+            for state, n in conn.execute(f"SELECT state, count(*) FROM url_result WHERE owner_site IN ({qs})"
+                                         " AND fetched_at >= ? GROUP BY 1", (*tonight, started)):
+                states[str(state)] = n
+            left = conn.execute(f"SELECT count(*) FROM url_result WHERE owner_site IN ({qs})"
+                                " AND state = 'pending' AND reason = 'update_revisit'", tuple(tonight)).fetchone()[0]
+        except sqlite3.Error:
+            states, left = {}, None
+        words = f"{night} 這一晚輪到 {len(tonight)} 站，排了 {int(put or 0):,} 頁（首頁和首頁連到的頁）"
+        if states:
+            words += f"：抓了 {states.get('done', 0):,} 個網址" + (f"、失敗 {states['failed']:,}" if states.get("failed")
+                                                               else "")
+        if left:
+            words += f"；還有 {left:,} 頁沒輪到抓"
+        out.append([name, WARN if left else OK, words + (f"；沒輪到的 {len(idle)} 站" if idle else "")])
+    # 2 the sites a browser opens
+    name = "要用瀏覽器開的網站"
+    try:
+        events = conn.execute("SELECT at, level, code, message FROM event WHERE code IN ('jsfetch_start',"
+                              " 'jsfetch_end') ORDER BY rowid DESC LIMIT 8").fetchall()
+    except sqlite3.Error:
+        events = []
+    mine = [ev for ev in events if started and str(ev[0]) >= started]
+    if not events:
+        out.append([name, NONE, "帳本裡沒有瀏覽器開網頁的紀錄"])
+    elif not mine:
+        out.append([name, WARN, f"{night} 這一晚沒開（爬取或檢查沒過就不開）；上一次是 {stamp(events[0][0])}"])
+    elif mine[0][2] == "jsfetch_start":
+        out.append([name, OK, f"在開：{stamp(mine[0][0])} 開始，{len(_message(mine[0][3]).get('sites') or [])} 站"])
+    else:
+        ends = [(ev[1], _message(ev[3])) for ev in mine if ev[2] == "jsfetch_end"]
+        total: dict[str, int] = {}
+        sites: set[str] = set()
+        for _level, msg in ends:
+            for site, per in (msg.get("sites") or {}).items():
+                sites.add(site)
+                for k in ("opened", "incomplete", "requests", "skipped"):
+                    total[k] = total.get(k, 0) + int((per or {}).get(k) or 0)
+        how = {"finished": "都開完了", "stop": "有人要它停", "error": "出錯"}
+        last_end = str(ends[0][1].get("end") or "")
+        bad = any(level == "error" or str(msg.get("end")) == "error" for level, msg in ends)
+        words = (f"{night} 這一晚開了 {len(ends)} 趟、{len(sites)} 站：共開 {total.get('opened', 0):,} 頁、送了 "
+                 f"{total.get('requests', 0):,} 個請求")
+        if total.get("incomplete"):
+            words += f"、{total['incomplete']:,} 頁沒開完整"
+        if total.get("skipped"):
+            words += f"、到上限沒開 {total['skipped']:,} 頁"
+        words += f"；{stamp(mine[0][0])} 結束：{how.get(last_end, tw(last_end) or '沒說怎麼結束')}"
+        out.append([name, BAD if bad else WARN if last_end not in ("finished", "") else OK, words])
+    # 3 the course term
+    name = "課表學期"
+    term = read_json(archive / "reports" / "schedule-term.json")
+    if not isinstance(term, dict):
+        out.append([name, NONE, "還沒有課表學期的紀錄（reports/schedule-term.json）"])
+    else:
+        at, since = stamp(term.get("at")), ago(term.get("at"), now)
+        if term.get("changed") is None:
+            tone, words = WARN, f"{at} 讀不到課程查詢頁存下的那一份，分不出學期換了沒"
+        elif not term.get("changed"):
+            tone, words = OK, f"沒變：{tw(str(term.get('page_term') or ''))}（{at} 看的，沒送請求）"
+        elif term.get("walk") == "done":
+            tone, words = OK, (f"{at} 發現換成 {tw(str(term.get('page_term') or ''))}"
+                               f"（原來 {tw(str(term.get('ledger_term') or ''))}），課表重走完了")
+        else:
+            tone, words = WARN, f"{at} 發現換成 {tw(str(term.get('page_term') or ''))}，課表沒走完，下一晚再走"
+        if term.get("open"):
+            words += (f"；{tw(str(term['open']))} 的課表還在進：這一晚放行 {int(term.get('let_go') or 0):,} 行、還壓著 "
+                      f"{int(term.get('held_left') or 0):,} 行")
+        if since is not None and since > 36 * 3600:
+            tone, words = WARN, words + f"；已經 {span(since)} 沒再看（每晚都該看一次）"
+        out.append([name, tone, words])
+    return out
 
 
 PLAIN_BUCKET = {"要人看": "待確認"}
@@ -623,7 +758,12 @@ def crawl_step(where: Where) -> Step:
         run = run_state(conn, now)
         night = crawler_night(conn, archive, now)
         open_sites = round2_open(conn)
-        buckets, batch = crawl_buckets(conn, keys, open_sites)
+        review: dict[str, int] = {}
+        buckets, batch = crawl_buckets(conn, keys, open_sites, review)
+        try:
+            step.sides = crawl_sides(conn, archive, now)
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            step.sides = [["爬取裡另外跑的三件事", NONE, "這一次讀不到（爬蟲正在寫帳本時會這樣，下一次再讀）"]]
     finally:
         conn.close()
     words = bucket_words()
@@ -648,6 +788,13 @@ def crawl_step(where: Where) -> Step:
     step.bar = [totals.get("got", 0), meant] if meant else []
     step.lost = [(words.get(b, b), n) for b, n in sorted(totals.items(), key=lambda bn: -bn[1])
                  if b != "got" and b not in NOT_MEANT and n]
+    # 待確認 (the crawler's 要人看) is a dozen causes in one bucket: each cause on its own line, in the crawler's own
+    # words of the result (owner 11-21: a bucket that cannot say why says nothing)
+    if review and sum(review.values()) == totals.get("review"):
+        labels = getattr(_crawler()[0], "RESULT_LABEL", {})
+        split = [(f"待確認：{tw(str(labels.get(code) or code)).split('；')[0]}", n)
+                 for code, n in sorted(review.items(), key=lambda kv: -kv[1])]
+        step.lost = sorted([row for row in step.lost if row[0] != words.get("review")] + split, key=lambda r: -r[1])
     step.lost_label = "還沒抓到的（照爬蟲自己的分類）"
     if left_aside:
         step.notes.insert(0, "不算在內：" + "、".join(f"{words.get(b, b)} {n:,}" for b, n in left_aside.items()))
@@ -676,6 +823,10 @@ def crawl_step(where: Where) -> Step:
             whole = sum(sum(per.values()) for per in batch.values())
             step.notes.insert(0, f"{head}：抓到 {got:,} / {whole:,} 個網址，不算在上面的比例裡")
     page_check_cells(where, step)
+    for name, tone, words in step.sides:  # one of the side runs went wrong: the step is lit and says which
+        if tone == BAD:
+            state = worst(state, WARN)
+            say += f"；{name}：{words}"
     step.state, step.say = state, say
     step.fix = CRAWLER if state in (BAD, WARN) else ""
     return step
@@ -710,6 +861,7 @@ def page_check_cells(where: Where, step: Step) -> None:
 FETCHED = "抓到了"  # the export's 结果 for a row the crawler has (nknu.archive.export)
 MISSING_SHOWN = 20  # examples kept of each kind of 缺什么 (the site page's reason lists) 【Claude】
 _manifest_sums: dict[tuple[str, int], dict] = {}  # (manifest path, its time of change) -> its summary
+_manifest_ids: dict[tuple[str, int], tuple[frozenset[int], dict[int, str]]] = {}  # the same key -> manifest_ids
 
 
 def manifest_summary(folder: Path) -> dict:
@@ -728,7 +880,10 @@ def manifest_summary(folder: Path) -> dict:
     missing: dict[str, int] = {}
     missing_examples: dict[str, list[tuple[str, str]]] = {}  # up to MISSING_SHOWN of each (the site page's lists)
     examples: dict[str, list[tuple[str, str]]] = {}
-    paging = files = 0
+    paging = files = file_rows = got_buttons = both = got_no_file = 0
+    file_else: dict[str, int] = {}  # rows with a file whose 结果 is not 抓到了 (an older answer filled in, …)
+    got_ids: set[int] = set()
+    else_ids: dict[int, str] = {}
     seen: set[str] = set()
     refill: dict[str, int] = {}
     refills: list[tuple[str, str, str, str]] = []
@@ -739,15 +894,31 @@ def manifest_summary(folder: Path) -> dict:
         outcomes[result] = outcomes.get(result, 0) + 1
         if result != FETCHED and len(examples.setdefault(result, [])) < 20:
             examples[result].append((str(r.get("网址") or ""), str(r.get("标题") or "")))
-        for part in missing_parts(str(r.get("缺什么") or "")):
+        parts = missing_parts(str(r.get("缺什么") or ""))
+        both += REVIEW_LINKED in parts and EMBED_MISSING in parts
+        ref = str(r.get("存档编号") or "")
+        if ref[:1] == "u" and ref[1:].isdigit():  # a row of an address (the ledger's url.id); a… is a button's
+            if result == FETCHED:
+                got_ids.add(int(ref[1:]))
+            else:
+                else_ids[int(ref[1:])] = result
+        elif result == FETCHED:
+            got_buttons += 1
+        for part in parts:
             missing[part] = missing.get(part, 0) + 1
             if len(shown := missing_examples.setdefault(part, [])) < MISSING_SHOWN:
                 shown.append((str(r.get("网址") or ""), str(r.get("标题") or "")))
         if str(r.get("页别") or "") == "列表翻页":
             paging += 1
-        if (saved := r.get("本地档案")) and saved not in seen:  # one file of several rows (a redirect's landing page,
-            seen.add(saved)  # a Google Sites picture several pages show, 11-19) is one file
-            files += 1
+        if result == FETCHED and not r.get("本地档案"):
+            got_no_file += 1
+        if saved := r.get("本地档案"):
+            file_rows += 1  # what the to-text run takes: a row, even one whose file another row has too
+            if result != FETCHED:
+                file_else[result] = file_else.get(result, 0) + 1
+            if saved not in seen:  # one file of several rows (a redirect's landing page, a Google Sites picture
+                seen.add(saved)  # several pages show, 11-19) is one file
+                files += 1
         origin = str(r.get("来源") or "")
         if origin in REFILL:
             refill[origin] = refill.get(origin, 0) + 1
@@ -755,13 +926,25 @@ def manifest_summary(folder: Path) -> dict:
                 refills.append((str(r.get("网址") or ""), str(r.get("标题") or ""), origin, str(r.get("备注") or "")))
     summary = {"site": manifest.get("网站") or "", "name": manifest.get("名称") or "",
                "exported_at": manifest.get("导出时间") or "", "as_of": manifest.get("资料截至") or "",
-               "rows": len(rows), "files": files, "kinds": kinds, "outcomes": outcomes, "missing": missing,
+               "rows": len(rows), "files": files, "file_rows": file_rows, "got_buttons": got_buttons,
+               "both": both, "got_no_file": got_no_file, "file_else": file_else,
+               "kinds": kinds, "outcomes": outcomes, "missing": missing,
                "paging": paging, "refill": refill, "refills": refills,
                "examples": examples, "missing_examples": missing_examples}
     _manifest_sums[key] = summary
+    _manifest_ids[key] = (frozenset(got_ids), else_ids)
     while len(_manifest_sums) > 400:  # about three exports a site at most are ever asked about
-        _manifest_sums.pop(next(iter(_manifest_sums)))
+        _manifest_ids.pop(old := next(iter(_manifest_sums)), None)
+        _manifest_sums.pop(old)
     return summary
+
+
+def manifest_ids(folder: Path) -> tuple[frozenset[int], dict[int, str]]:
+    """The ledger ids (url.id) of an export's address rows: those it says were fetched, and the others with their 结果.
+    Apart from the summary, which goes out as JSON."""
+    path = folder / "manifest.json"
+    manifest_summary(folder)
+    return _manifest_ids.get((str(path), path.stat().st_mtime_ns), (frozenset(), {}))
 
 
 # what 缺什么 can say, by the words a part holds (nknu.archive.export: progress's reasons, then the export's own marks;
@@ -770,7 +953,10 @@ MISSING_WORDS = (("学校回答没有资料", "學校回答「沒有資料」"),
                  ("找不到内文区", "找不到內文區"), ("列表没翻完", "列表沒翻完"), ("待判定", "待判定"),
                  ("缺内嵌页或按钮", "頁面裡的內嵌頁或按鈕沒抓到"), ("学校那边已不存在", "連到的資源學校已不存在或要登入"),
                  ("连接失败", "連線失敗"), ("缺附件", "附件沒抓到"), ("缺图片", "圖片沒抓到"), ("下一轮", "留到下一輪補抓"),
-                 ("要人看", "待確認"))
+                 ("要人看：页面几乎是空的", "這一頁幾乎是空的"),
+                 ("要人看（", "頁面連到的東西裡有待確認的"), ("要人看", "待確認"))
+EMBED_MISSING, REVIEW_LINKED, REVIEW_PLAIN = "頁面裡的內嵌頁或按鈕沒抓到", "頁面連到的東西裡有待確認的", "待確認"
+REVIEW_SAID = ("這一頁幾乎是空的", REVIEW_LINKED)  # 要人看 with what it is about: the bare word says nothing beside them
 
 
 # 来源 of a row whose file is an older answer than this round's (nknu.archive.export ORIGIN_OLD, ORIGIN_PREV): this
@@ -784,6 +970,9 @@ REFILL = {"10-24 旧存档": "10-24 舊存檔", "上一次抓到的": "每晚更
 RULE_MARK = "按规则不抓"
 
 
+_REVIEW_SAID = re.compile(r"要人看(?:：页面几乎是空的|（)")
+
+
 def missing_parts(words: str) -> list[str]:
     """The kinds of what a row's 缺什么 names (MISSING_WORDS' names), each once; words naming none of them are one
     kind of their own."""
@@ -791,6 +980,8 @@ def missing_parts(words: str) -> list[str]:
     if not words:
         return []
     found = [name for mark, name in MISSING_WORDS if mark in words]
+    if any(name in found for name in REVIEW_SAID) and "要人看" not in _REVIEW_SAID.sub("", words):
+        found.remove(REVIEW_PLAIN)  # 「要人看：…」 and 「要人看（N 个）」 are each one kind, not 待確認 as well
     if not found and RULE_MARK in words:  # left out by rule: nothing is missing (no kind of its own, no gap drawn)
         return []
     return found or [tw(words.split("（", 1)[0])]
@@ -830,6 +1021,91 @@ def refill_words(before: int, now: int) -> str:
     return f"用舊存檔頂替的筆數：庫用的導出 {before:,}，新導出 {now:,}"
 
 
+def export_link(where: Where, step: Step, fetched: int, got_ids: set[int], else_ids: dict[int, str],
+                got_buttons: int) -> int:
+    """How the export's fetched rows follow from the addresses the crawl fetched, by the ledger's ids on the rows
+    (存档编号 u<url.id>): fetched addresses on no export in use (by what they are), on one under another 结果, the rows
+    a button brought (no address of their own), and rows the exports call fetched that the ledger now does not (an
+    export older than tonight's crawl, an address another site owns).
+
+    A fetched address the export gives no row of its own is one of three kinds by design (the crawler session,
+    2026-11-21, which placed all 6,133 of that night: research/crawler_design_2026-11-19/day/off_manifest_1121.out):
+    a site's script (.js, kept as a part of its pages: kind0 script, while kind says file), a Drive record (the request
+    that asked a file's name and size; the file itself has its row), the landing of a redirect (the row is the first
+    address's, the landing in its 最后落地网址). Any other is returned (0: none) and is the crawler's to look at: the
+    kinds are told by the ledger's own columns, not by looking each landing up in the manifests 【Claude】."""
+    archive = where.archive
+    if archive is None or not (archive / "frontier.db").exists() or not fetched:
+        return 0
+    keys = {s.get("site") for s in library_facts(where.library)["sites"] if s.get("site")}
+    crawled = on_got = 0
+    off: dict[str, int] = {}
+    stray: dict[str, int] = {}
+    other: dict[str, int] = {}
+    try:
+        conn = open_ledger(archive)
+        try:
+            for uid, site, kind, via in conn.execute(
+                    "SELECT id, owner_site, coalesce(kind0, kind), found_via FROM url_result WHERE result = 'ok'"):
+                if site not in keys:
+                    continue
+                crawled += 1
+                if uid in got_ids:
+                    on_got += 1
+                elif uid in else_ids:
+                    word = tw(else_ids[uid]).split("（")[0] or "沒寫結果"
+                    other[word] = other.get(word, 0) + 1
+                elif str(kind) in OFF_BY_DESIGN:
+                    off[OFF_BY_DESIGN[str(kind)]] = off.get(OFF_BY_DESIGN[str(kind)], 0) + 1
+                elif via in ("redirect", "scheme_switch"):
+                    off[OFF_LANDING] = off.get(OFF_LANDING, 0) + 1
+                else:
+                    word = OFF_KIND.get(str(kind), str(kind))
+                    stray[word] = stray.get(word, 0) + 1
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        step.notes.append("這一次沒和爬取對帳：爬蟲正在寫帳本，下一次再對")
+        return 0
+
+    def said(parts: dict[str, int]) -> str:
+        return "\n".join(f"{k}：{v:,}" for k, v in sorted(parts.items(), key=lambda kv: -kv[1]))
+
+    gone = len(got_ids) - on_got
+    twice = fetched - got_buttons - len(got_ids)  # an address two exports hold (a file two sites link) is two rows
+    # the crawl step's own figure leaves out round two's open batch (crawl_step: its cells hold what it counted):
+    # the link starts at that figure and says the batch as a term, so the two steps show one number
+    shown = sum(int((row["cells"].get("crawl") or {}).get("n") or 0) for row in where.sites.values())
+    start = [["", "爬取抓到的網址", crawled, ""]]
+    if 0 < shown < crawled:
+        start = [["", "爬取抓到的網址", shown, ""],
+                 ["+", "第二輪這一批抓到的（爬取那一步另外算）", crawled - shown, ""]]
+    step.link = [*start,
+                 ["−", "抓到了、照設計不另開一筆的（不是內容，或記在別的筆上）", sum(off.values()),
+                  said(off) + OFF_LIMIT if off else ""],
+                 ["−", "抓到了、清單上沒有，也說不出原因的", sum(stray.values()), said(stray)],
+                 ["−", "清單上有，記的是別的結果", sum(other.values()), said(other)],
+                 ["+", "清單記「抓到了」、帳本現在不是（清單比今晚的爬取舊，或網址歸別的網站）", gone, ""],
+                 ["+", "同一個網址在清單上不只一筆（幾個網站都連到它）", twice, ""],
+                 ["+", "按鈕按出來的內容（清單一筆，爬蟲不算網址）", got_buttons, ""],
+                 ["=", "清單上「抓到了」的", fetched, ""]]
+    step.link_left = fetched - (crawled - sum(off.values()) - sum(stray.values()) - sum(other.values()) + gone + twice
+                                + got_buttons)
+    return sum(stray.values())
+
+
+# a fetched address no export in use holds: the kinds that have no row by design (the ledger's coalesce(kind0, kind)),
+# the landing of a redirect, and the names of the other kinds
+_DRIVE = "Google 雲端硬碟的檔案資訊和資料夾清單（檔案本身那一筆在清單上）"
+OFF_BY_DESIGN = {"script": "網站的程式檔（.js：是網頁的零件，不是內容）", "drive": _DRIVE, "drive_list": _DRIVE}
+OFF_LANDING = "跳轉後的落點（清單記在原來那個網址上）"
+# what the count does not prove (the crawler session, 11-21): the kinds are the ledger's, so a landing whose first
+# address has no row, or a Drive record whose file has none, would still be counted here. Its own scripts look each
+# one up in the manifests (research/crawler_design_2026-11-19/day/off_manifest_1121.py, off_manifest_drive_1121.py)
+OFF_LIMIT = "\n這是照帳本裡的種類分的，沒有逐個到清單裡核對它記在哪一筆上；要逐個核對，請爬蟲跑它的核對腳本"
+OFF_KIND = {"file": "檔案", "image": "圖片", "embed": "內嵌頁", "page": "網頁"}
+
+
 def export_step(where: Where) -> Step:
     """The exports the library was built from (sites.export), each summed up from its manifest, and the crawler's
     newer exports the library has not taken yet (current.tsv against sites.export)."""
@@ -839,7 +1115,10 @@ def export_step(where: Where) -> Step:
     newest = current_exports(where.root)
     night = night_export(where.archive)
     held, paused = export_held(night), export_paused(night)  # the crawler held these sites' new export (11-17)
-    rows = fetched = with_files = 0
+    rows = fetched = with_files = file_rows = got_buttons = both = got_no_file = 0
+    file_else: dict[str, int] = {}
+    got_ids: set[int] = set()
+    else_ids: dict[int, str] = {}
     missing: dict[str, int] = {}
     refill: dict[str, int] = {}
     more_refill: list[str] = []
@@ -864,6 +1143,18 @@ def export_step(where: Where) -> Step:
         rows += summary["rows"]
         fetched += summary["outcomes"].get(FETCHED, 0)
         with_files += summary.get("files", 0)
+        file_rows += summary.get("file_rows", 0)
+        got_buttons += summary.get("got_buttons", 0)
+        both += summary.get("both", 0)
+        got_no_file += summary.get("got_no_file", 0)
+        for k, v in (summary.get("file_else") or {}).items():
+            file_else[k] = file_else.get(k, 0) + v
+        try:
+            ids = manifest_ids(folder)
+        except OSError:
+            ids = (frozenset(), {})
+        got_ids |= ids[0]
+        else_ids.update(ids[1])
         latest = max(latest, str(summary["exported_at"] or ""))
         for k, v in summary["missing"].items():
             missing[k] = missing.get(k, 0) + v
@@ -916,10 +1207,21 @@ def export_step(where: Where) -> Step:
     step.at = latest
     step.into = [("筆（每筆一個網頁、檔案或圖片）", rows)]
     step.figure, step.unit = f"{rows:,}", "筆"
-    step.flow_words = f"清單共 {rows:,} 筆（每筆一個網頁、檔案或圖片），其中 {with_files:,} 筆存下了檔案"
-    step.out = [("筆存下了檔案", with_files)]
+    step.flow_words = f"清單共 {rows:,} 筆（每筆一個網頁、檔案或圖片），其中 {file_rows:,} 筆存下了檔案"
+    if file_rows > with_files:
+        step.flow_words += f"（{file_rows - with_files:,} 筆和別筆共用同一個檔，不同的檔 {with_files:,} 個）"
+    step.out = [("筆存下了檔案", file_rows)]
     step.lost = [(k, v) for k, v in sorted(missing.items(), key=lambda kv: -kv[1])][:8]
     step.lost_label = "清單上註明缺東西的（一筆可能缺好幾樣）"
+    if both:
+        step.notes.append(f"「{REVIEW_LINKED}」和「{EMBED_MISSING}」有 {both:,} 筆是同一批網頁：一筆算了兩樣")
+    stray = export_link(where, step, fetched, got_ids, else_ids, got_buttons)
+    if step.link:  # on from the fetched rows to the rows with a file, which is what the to-text run is given
+        kept = "\n".join(f"{tw(k).split('（')[0] or '沒寫結果'}：{v:,}" for k, v in sorted(file_else.items(), key=lambda kv: -kv[1]))
+        step.link += [["−", "抓到了、沒有存下檔案的", got_no_file, ""],
+                      ["+", "沒記「抓到了」、但清單上有檔的（這次沒抓好用舊存檔頂替的也在這裡）", sum(file_else.values()), kept],
+                      ["=", "存下了檔案的", file_rows, ""]]
+        step.link_left = abs(step.link_left or 0) + abs(file_rows - (fetched - got_no_file + sum(file_else.values())))
     if refill:
         step.notes.insert(0, f"這次沒抓好、用舊存檔頂替的 {sum(refill.values()):,} 筆："
                           + "、".join(f"{REFILL[k]} {v:,}" for k, v in refill.items()))
@@ -948,6 +1250,9 @@ def export_step(where: Where) -> Step:
     if failed:
         state, fix = WARN, CRAWLER
         say = f"導出失敗 {len(failed)} 站：" + "、".join(ln.split("\t")[0] for ln in failed[:5])
+    if stray and state == OK:  # fetched, on no export, and of no kind that is left off by design: content may be missing
+        state, fix = WARN, CRAWLER
+        say = f"有 {stray:,} 個抓到的網址不在任何一份導出清單上，也說不出原因（細節在「和上一步對帳」）"
     if unread:
         state, fix = WARN, CONTENT
         say = f"庫用的導出有 {len(unread)} 站讀不到了：" + "、".join(unread[:5])
@@ -1023,6 +1328,20 @@ def lane_state_words(lane: dict) -> str:
     return {"running": "在轉", "stopped": "停了", "stale": "被中斷"}.get(lane["state"], "看不到")
 
 
+def exported_file_rows(where: Where) -> int | None:
+    """The rows with a file of the exports the library was built from (what the to-text run was given), None when
+    one of them cannot be read."""
+    rows = 0
+    for site in library_facts(where.library)["sites"]:
+        if not site.get("site") or not site.get("export"):
+            continue
+        try:
+            rows += manifest_summary(folder_of(where.root, site["export"])).get("file_rows", 0)
+        except (OSError, ValueError):
+            return None
+    return rows
+
+
 def totext_step(where: Where) -> Step:
     step = Step("totext", "轉文字",
                 "把導出的網頁、PDF、Office、圖片（掃描的用 OCR 認字）、壓縮檔讀成文字；三條線分工轉，同一個檔只轉一次")
@@ -1034,6 +1353,13 @@ def totext_step(where: Where) -> Step:
     lanes = lane_states(pipe / "lab_pc", now)
     total = int(summary.get("files") or sum(v for v in by_status.values() if isinstance(v, int)))
     step.into = [("個檔和網頁", total)]
+    members = summary.get("members")
+    file_rows = exported_file_rows(where)
+    if isinstance(members, int) and file_rows is not None:
+        step.link = [["", "導出存下檔案的（清單上一筆算一個）", file_rows, ""],
+                     ["+", "壓縮檔裡拆出來的檔", members, "一個壓縮檔是清單上的一筆，裡面的檔各轉各的"],
+                     ["=", "轉文字經手的", total, ""]]
+        step.link_left = total - file_rows - members
     step.out = [("個轉成文字", int(by_status.get("ok") or 0))]
     step.figure, step.unit = f"{int(by_status.get('ok') or 0):,}", "個轉成文字"
     step.bar = [int(by_status.get("ok") or 0), total] if total else []
@@ -1143,6 +1469,72 @@ def build_status(kit: Path) -> dict:
     return {"state": "ok" if rest.startswith("ok") else "", "at": at, "line": line}
 
 
+_assembled: dict[tuple[str, int], dict] = {}  # (report path, its time of change) -> its counts
+# what assemble takes of the to-text run's files and gives no record of its own (AssembleReport), in plain words
+ASSEMBLE_OUT = (("images_inlined", "圖的字併進了顯示它的網頁", "網頁上的圖讀出來的字放進那一頁，圖自己不另成一筆"),
+                ("images_no_text", "圖沒讀出夠多的字，也沒有收進庫的網頁顯示它", ""),
+                ("containers_dropped", "壓縮檔本身（裡面的檔各成一筆）", ""),
+                ("data_rows", "不用轉文字的資料（行事曆由建庫直接讀、雲端硬碟資料夾的清單）", ""),
+                ("format_merged", "同一份文件的另一種格式（併成一筆）", "同一份文件有 PDF 也有 Word：留字多的那份"))
+
+
+def assembled(where: Where, inputs: object) -> dict[str, int] | None:
+    """The per-site assemble reports (<corpus>.assemble_report.json beside each corpus the library was built from)
+    summed: records, and what took no record by ASSEMBLE_OUT's keys. None when the library names no inputs or a
+    report cannot be read (a library built before the reports were kept)."""
+    total: dict[str, int] = {}
+    if not isinstance(inputs, list) or not inputs:
+        return None
+    for item in inputs:
+        corpus = str((item or {}).get("corpus") or "") if isinstance(item, dict) else ""
+        if not corpus.endswith(".json"):
+            return None
+        path = folder_of(where.root, corpus[:-len(".json")] + ".assemble_report.json")
+        try:
+            key = (str(path), path.stat().st_mtime_ns)
+            if key not in _assembled:
+                got = json.loads(path.read_text(encoding="utf-8"))
+                _assembled[key] = {"records": int(got.get("records") or 0),
+                                   **{k: len(v) if isinstance(v := got.get(k), dict) else int(v or 0)
+                                      for k, _w, _t in ASSEMBLE_OUT}}
+                while len(_assembled) > 600:
+                    _assembled.pop(next(iter(_assembled)))
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        for k, v in _assembled[key].items():
+            total[k] = total.get(k, 0) + v
+    return total
+
+
+def build_link(where: Where, step: Step, facts: dict, left: dict[str, int]) -> None:
+    """How the build's documents follow from the to-text run: the files it handled, less what assemble folds away
+    (ASSEMBLE_OUT), are the records; with the calendar events the build reads itself they are what the build
+    sorts into documents and what it leaves out. The events are counted from the build's own tallies (its event
+    documents, the series it folded, the ones before 2023): the build keeps no count of what it read."""
+    summary = read_json(where.pipe / "totext" / "summary.json")
+    handled = int(summary.get("files") or 0) if isinstance(summary, dict) else 0
+    sums = assembled(where, facts["inputs"])
+    if not handled or sums is None:
+        return
+    taken = [[k, words, sums.get(k, 0), tip] for k, words, tip in ASSEMBLE_OUT if sums.get(k)]
+    records = sums["records"]
+    events = int((facts["kinds"] or {}).get("event") or 0) + sum(left.get(w, 0) for w in EVENT_LEFT)
+    formats = left.get(FORMAT_LEFT, 0)  # assemble folded them: the build counts them among what it left out
+    whole = facts["docs"] + sum(left.values())
+    step.into = [("筆記錄（轉文字的結果整理成的）", records), ("個行事曆事件（建庫自己讀的）", events)]
+    step.link = ([["", "轉文字經手的（讀不出字的也往下走，文件只剩標題）", handled, ""]]
+                 + [["−", words, n, tip] for _k, words, n, tip in taken]
+                 + [["=", "整理成的記錄", records, ""],
+                    ["+", "行事曆事件（建庫直接從行事曆讀）", events, "照建庫的數字算的：進庫的事件、合成系列的、2023 年以前的"],
+                    ["+", "整理時已經併掉、建庫也記了一筆的另一種格式", formats, ""],
+                    ["=", "成為文件的，加上沒成為文件的", whole, f"文件 {facts['docs']:,} + 沒成為文件的 {sum(left.values()):,}"]])
+    step.link_left = abs(records - (handled - sum(row[2] for row in taken))) + abs(whole - (records + events + formats))
+
+
+EVENT_LEFT = ("每週重複的行事曆，合成一個系列", "2023 年以前的行事曆")  # LEFT_OUT's words of the events left out
+FORMAT_LEFT = "同一個檔的其他格式"
+
+
 def build_step(where: Where) -> Step:
     step = Step("build", "建庫",
                 "把轉好的文字整理成文件：合併副本、定日期和單位、切小段、算向量，建好先把關（有網站少一半就不換）再換上")
@@ -1164,6 +1556,7 @@ def build_step(where: Where) -> Step:
     step.out = [("份文件", facts["docs"]), ("個小段（搜尋時比對的單位）", facts["chunks"])]
     step.figure, step.unit, step.bar = f"{facts['docs']:,}", "份文件", [facts["docs"], before] if before else []
     step.share = False  # its share is mostly merged repeats: a percentage would read as a loss
+    build_link(where, step, facts, left)
     step.more = [("看庫裡有什麼", "overview"), ("看每站的數字", "#sites")]
     swapped = facts.get("swapped_at") or facts["built_at"]
     state, say, fix = OK, f"正式庫 {stamp(swapped)} 換上、正在用（{facts['docs']:,} 份文件）", ""

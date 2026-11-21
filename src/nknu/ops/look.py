@@ -105,6 +105,14 @@ font-weight:700;font-variant-numeric:tabular-nums;border-radius:4px;overflow:hid
 .legend i{width:10px;height:10px;border-radius:3px;flex:none}
 .legend .prog{margin-left:auto;color:var(--ink2);font-variant-numeric:tabular-nums}.legend .prog[hidden]{display:none}
 .legend i.cut{background:var(--cut)}.legend i.rel{background:var(--amt)}.legend i.add{background:var(--good)}
+.newset-of{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 4px;font-size:13px}
+table.newset-t th.grp{text-align:center;border-bottom:0;padding-bottom:0}
+.newset-box{overflow-x:auto}table.newset-t{min-width:440px}
+table.newset-t td.num,table.newset-t th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-left:6px;padding-right:4px}
+table.newset-t tbody th{font-weight:500;color:var(--ink2);white-space:normal;min-width:7em}
+table.newset-t tr.main th,table.newset-t tr.main td{font-weight:700;color:var(--ink)}
+table.newset-t th.grp{white-space:nowrap}table.newset-t td:nth-child(3),table.newset-t td:nth-child(6),table.newset-t thead tr+tr th:nth-child(1),table.newset-t thead tr+tr th:nth-child(4){padding-left:16px}
+.newset .small{margin:10px 0 0}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:2px 14px;margin-top:14px}
 .tile{display:flex;align-items:center;gap:11px;padding:6px 8px;border-radius:10px;text-decoration:none;min-width:0}
 .tile:hover{background:var(--hover)}

@@ -110,7 +110,9 @@ _NOTE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (\S.*)$")
 # the nightly script's note() lines (nightly_update.sh), by how they start, and what each says
 MARKS = (("定期更新开始", "start"), ("有 update.pause", "pause"), ("上一晚的定期更新还在跑", "busy"), ("备份好了", "backup"),
          ("放回好了", "putback"), ("run 结束", "ran"), ("变动清单算好了", "reviewed"), ("run 没有好好结束", "badrun"),
-         ("停在：", "stop"), ("导出好了", "exported"), ("今晚没有要导出的网站", "exported"), ("定期更新结束", "end"))
+         ("停在：", "stop"), ("导出好了", "exported"), ("今晚没有要导出的网站", "exported"), ("定期更新结束", "end"),
+         # the sites a browser opens, after the change list and before the export (nightly_update.sh 5b, since 11-18)
+         ("JS 网站开始", "js_start"), ("JS 网站结束", "js_end"))
 _logs: dict[str, dict] = {}  # path -> {'ino', 'offset', 'rest', 'events', 'head'}
 _logs_lock = threading.Lock()
 KEEP_EVENTS = 4000  # marker lines kept (about 12 a night) 【Claude】
@@ -547,6 +549,11 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
     stuck_until = f"；{clock(moved + timedelta(seconds=STUCK))} 還沒動靜就算沒有收尾" if moved else ""
     reviewed = marks.get("reviewed", (None,))[0]
     ended = marks.get("end", (None,))[0]
+    # the sites a browser opens run after the change list (about three quarters of an hour): they are crawling, so
+    # where the script noted their end, 爬取 runs to it and 導出 starts there. Until 2026-11-21 their time was 導出's
+    js_end = marks.get("js_end", (None,))[0]
+    handed = js_end if reviewed and js_end and js_end > reviewed else reviewed
+    js_open = "js_start" in marks and "js_end" not in marks
     # 爬取: from the script's start to its change list
     if stopped and stop_step(stopped[1])[0] not in EXPORT_STEPS:
         step, by_hand = stop_step(stopped[1])
@@ -555,7 +562,9 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
                       tip=str(status.get("note") or "") or "細節在存檔的 update.log", reason=tw(stopped[1]), code=step)
         return crawl, _cell("export", WAIT, word="沒跑到"), stopped[0]
     if reviewed:
-        crawl = _cell("crawl", DONE, since=start, until=reviewed, tip=count_tip)
+        js_tip = f"其中要用瀏覽器開的網站 {clock(marks['js_start'][0])}–{clock(js_end)}" if handed is js_end and \
+            "js_start" in marks else ""
+        crawl = _cell("crawl", DONE, since=start, until=handed, tip="\n".join(x for x in (count_tip, js_tip) if x))
     elif alive:
         doing = ("抓網頁" if "putback" in marks and "ran" not in marks else "算有哪些變動" if "ran" in marks
                  else "排今晚要看的網址" if "backup" in marks else "備份帳本")
@@ -583,7 +592,7 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
     if stopped:
         step, by_hand = stop_step(stopped[1])
         export = _cell("export", STOP, f"停在「{step_words(step)}」" + ("（有人停了它）" if by_hand else ""), word="出錯",
-                       since=reviewed, until=stopped[0], fix=CRAWLER, sev=BAD, tip="細節在存檔的 update.log",
+                       since=handed, until=stopped[0], fix=CRAWLER, sev=BAD, tip="細節在存檔的 update.log",
                        reason=tw(stopped[1]), code=step)
         return crawl, export, stopped[0]
     if ended:
@@ -595,34 +604,34 @@ def crawl_cells(r: Reading, night: date) -> tuple[dict, dict, datetime | None]:
         held_tip = "\n".join(x for x in (pl.held_words(held), pl.held_words(paused, paused=True)) if x)
         aside = f"；人工暫緩 {len(paused)} 站" if paused else ""
         if failed:
-            export = _cell("export", STOP, f"有 {len(failed)} 站失敗（下一晚再導）", word="出錯", since=reviewed,
+            export = _cell("export", STOP, f"有 {len(failed)} 站失敗（下一晚再導）", word="出錯", since=handed,
                            until=ended, fix=CRAWLER, sev=BAD,
                            tip="\n".join(x for x in ("、".join(failed[:12]), held_tip) if x),
                            reason="失敗的網站：" + "、".join(failed[:6]) + (" 等" if len(failed) > 6 else ""))
         elif held:  # the crawler held the new export back on purpose: the old one stays in use (11-17)
-            export = _cell("export", DONE, f"攔下 {len(held)} 站{aside}", since=reviewed, until=ended, fix=CRAWLER,
+            export = _cell("export", DONE, f"攔下 {len(held)} 站{aside}", since=handed, until=ended, fix=CRAWLER,
                            sev=WARN, tip="\n".join(x for x in (held_tip, tip) if x),
                            reason="；".join(f"{k}：{tw(v)}" for k, v in list(held.items())[:6]))
         elif alarms:
-            export = _cell("export", STOP, f"有 {len(alarms)} 站警報，這晚沒導出它們", word="出錯", since=reviewed,
+            export = _cell("export", STOP, f"有 {len(alarms)} 站警報，這晚沒導出它們", word="出錯", since=handed,
                            until=ended, fix=CRAWLER, sev=BAD,
                            tip="\n".join(f"{k}：{tw(str(v))}" for k, v in list(alarms.items())[:12]),
                            reason="；".join(f"{k}：{tw(str(v))}" for k, v in list(alarms.items())[:6]))
         else:
             n = re.search(r"导出 (\d+) 个网站", marks["end"][1])
             say = (f"導了 {n.group(1)} 站" if n else "") + aside
-            export = _cell("export", DONE, say.removeprefix("；"), since=reviewed, until=ended,
+            export = _cell("export", DONE, say.removeprefix("；"), since=handed, until=ended,
                            tip="\n".join(x for x in (held_tip, tip) if x))
         return crawl, export, ended
     if alive:
-        doing = "記下各站看過的時間" if "exported" in marks else "導出"
-        return crawl, _cell("export", RUN, doing, since=reviewed, now=now, phrase=f"導出（{doing}）"), None
+        doing = "記下各站看過的時間" if "exported" in marks else "開要用瀏覽器開的網站" if js_open else "導出"
+        return crawl, _cell("export", RUN, doing, since=handed, now=now, phrase=f"導出（{doing}）"), None
     if stuck:
-        return crawl, _cell("export", RUN, stuck_say, word="可能卡住", since=reviewed, now=now, fix=CRAWLER, sev=WARN,
+        return crawl, _cell("export", RUN, stuck_say, word="可能卡住", since=handed, now=now, fix=CRAWLER, sev=WARN,
                             tip="導出會排隊等前一次導出跑完，最多等兩小時，等的時候不寫紀錄" + stuck_until,
                             reason=f"update.log {stuck_say}"), None
     last = max(at for at, _w in marks.values())
-    return crawl, _cell("export", STOP, f"沒有收尾（紀錄停在 {clock(last)}）", word="出錯", since=reviewed, until=last,
+    return crawl, _cell("export", STOP, f"沒有收尾（紀錄停在 {clock(last)}）", word="出錯", since=handed, until=last,
                         fix=CRAWLER, sev=BAD, reason=last_line(marks)), last
 
 

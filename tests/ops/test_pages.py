@@ -427,3 +427,43 @@ def test_the_stored_page_is_drawn_in_plain_flow_after_its_own_scraps_of_style():
 
     src = inspect.getsource(pagecheck.Marked.html)
     assert "{styles}<style>{MARK_CSS}{FLOW_CSS}</style>" in src  # after the page's own styles and the marks
+
+
+# ---------------------------------------------------------------- the new question set on 測試 (11-21)
+
+NEWSET = {"set": "2026-11-18", "run": "final", "questions": 194, "tops": [1, 3, 10],
+          "library": "aca.db 2026-11-21T04:03:26+08:00（88966 份文件）", "measured_at": "2026-11-21T10:00:00+08:00",
+          "groups": [{"key": "B", "n": 83, "q": [29, 48, 69], "a1": [37, 53, 72], "a": [44, 65, 77]},
+                     {"key": "B/open", "n": 41, "q": [15, 24, 35], "a1": [1, 2, 3], "a": [22, 33, 39]},
+                     {"key": "B/sealed", "n": 42, "q": [14, 24, 34], "a1": [1, 2, 3], "a": [22, 32, 38]},
+                     {"key": "A", "n": 100, "q": [75, 82, 91], "a1": [1, 2, 3], "a": [72, 93, 97]}],
+          "b_asked": {"all": 94, "answered": 83, "related_only": 9, "absent": 2}}
+
+
+def test_the_new_question_sets_totals_say_which_library_they_measured():
+    page = search_page.newset_html(NEWSET, "2026-11-21T04:03:26+08:00")
+    assert "新題庫成績" in page and "現在這份庫的成績" in page and "不是現在這份庫的成績" not in page
+    row = re.search(r"<tr class=main>.*?</tr>", page, re.DOTALL).group(0)
+    assert re.findall(r">(\d+)</td>", row) == ["83", "29", "48", "69", "44", "65", "77"]  # as written, then the agent's
+    assert "77 / 83 題（93%）" in row and "共出了 94 題，其中 83 題庫裡有答案" in page and "9 題庫裡只有相關的資料" in page
+    # measured on another library than the one in use: said on top, never left to be read as today's score
+    old = search_page.newset_html(NEWSET, "2026-11-22T04:01:00+08:00")
+    assert "不是現在這份庫的成績" in old and "2026-11-22 04:01" in old
+    assert search_page.newset_html(None, "x") == "" and search_page.newset_html({"groups": []}, "x") == ""
+    late = search_page.newset_html({**NEWSET, "b_asked": {**NEWSET["b_asked"], "expired": 2}}, "x")
+    assert "其中 2 題有時效、量的時候已經過期，沒算" in late and "過期" not in page and "不加在一起" in page
+
+
+def test_the_test_page_shows_the_new_sets_totals_when_the_file_is_beside_the_record(tmp_path, tmp_path_factory,
+                                                                                    monkeypatch):
+    monkeypatch.setattr(vectors, "_CACHE", {})
+    w = world.build(tmp_path)
+    ops = tmp_path_factory.mktemp("ops") / "ops.db"
+    app = web.create_app(w.db, tmp_path, models=models(), today_fn=lambda: TODAY, ops_db=ops, record=False)
+    with TestClient(app, base_url="http://127.0.0.1:8878") as client:
+        assert "新題庫成績" not in client.get("/try").text
+        ops.with_name(web.NEWSET_FILE).write_text(json.dumps(NEWSET, ensure_ascii=False), encoding="utf-8")
+        page = client.get("/try").text
+        assert "新題庫成績" in page and "不是現在這份庫的成績" in page
+        ops.with_name(web.NEWSET_FILE).write_text("{broken", encoding="utf-8")
+        assert "新題庫成績" not in client.get("/try").text

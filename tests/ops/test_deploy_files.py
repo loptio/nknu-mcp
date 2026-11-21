@@ -962,3 +962,40 @@ def test_the_table_panel_names_a_column_first_and_its_code_after_it_quieter():
     css = (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
     code = re.search(r"\.insp table\.cols th code \{[^}]*\}", css).group(0)
     assert "font-size: 11px" in code and "var(--ink3)" in code and "var(--mono)" in code
+
+
+# ---------------------------------------------------------------- the new question set's totals (11-21)
+
+def _eval_summary():
+    spec = importlib.util.spec_from_file_location("eval_summary", REPO_ROOT / "deploy/lab-inspect/eval_summary.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RUN_ROWS = [{"id": "B001", "path": "B", "half": "平时", "question": "暑修怎么报名？", "q": 1, "a1": 4, "a": 2},
+            {"id": "B002", "path": "B", "half": "封存", "question": "封存的题目", "q": None, "a1": 12, "a": 9},
+            {"id": "B003", "path": "B", "half": "封存", "question": "封存的另一题", "q": 3, "a1": None, "a": None},
+            {"id": "A001", "path": "A", "half": "平时", "question": "从文件出的题", "q": 11, "a1": 1, "a": 1}]
+
+
+def test_the_new_question_sets_summary_holds_totals_and_no_question():
+    import json
+
+    module = _eval_summary()
+    questions = {"questions": [{"path": "B 从学生出发", "verdict": "有答案"}] * 3 + [
+        {"path": "B 从学生出发", "verdict": "只有相关"}, {"path": "B 从学生出发", "verdict": "库里没有"},
+        {"path": "A 从文件出题", "verdict": "有答案"}]}
+    got = module.summary({"library": "aca.db 2026-11-21T04:03:26+08:00（88966 份文件）", "rows": RUN_ROWS}, questions,
+                         "2026-11-21T10:00:00+08:00", "final")
+    groups = {g["key"]: g for g in got["groups"]}
+    assert groups["B"] == {"key": "B", "n": 3, "q": [1, 2, 2], "a1": [0, 0, 1], "a": [0, 1, 2]}
+    assert groups["B/open"]["n"] == 1 and groups["B/sealed"]["q"] == [0, 1, 1] and groups["A"]["a"] == [1, 1, 1]
+    assert got["b_asked"] == {"all": 5, "answered": 3, "expired": 0, "related_only": 1, "absent": 1}
+    assert got["questions"] == 6
+    # a time-limited question past its date when the run was made is not among the run's rows: said, not hidden
+    late = {"questions": [{"path": "B 从学生出发", "verdict": "有答案", "expires_on": "2026-11-30"},
+                          {"path": "B 从学生出发", "verdict": "有答案", "expires_on": "2026-12-31"}]}
+    assert module.summary({"rows": []}, late, "2026-12-01T10:00:00+08:00", "x")["b_asked"]["expired"] == 1
+    said = json.dumps(got, ensure_ascii=False)
+    assert "暑修" not in said and "B001" not in said and "封存的题目" not in said  # counts only: no question, no id

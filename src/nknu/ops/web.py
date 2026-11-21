@@ -77,7 +77,7 @@ from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
 from nknu.ops.pipeline import Pipeline, Where, site_detail
 from nknu.ops.pipeline_page import changes_title
-from nknu.ops.search_page import board_html, search_body, why_head
+from nknu.ops.search_page import board_html, newset_html, search_body, why_head
 from nknu.ops.site_page import Kinds, now_line
 from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
@@ -97,6 +97,7 @@ log = logging.getLogger(__name__)
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 DEFAULT_PORT = 8878
 MAX_LIMIT = 50  # the most results a page or the API explains at once 【Claude】
+NEWSET_FILE = "eval194.json"  # the new question set's totals, beside the nights' record (ops' own volume)
 # what an archived page is shown under: it loads nothing and runs nothing (the archive viewer's PREVIEW_CSP)
 ARCHIVED_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; "
                 "frame-src 'none'; form-action 'none'; sandbox")
@@ -796,6 +797,16 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     # sees it, called from here through mcp_url ('' : the page says it is not set)
     trying = TryPage(mcp_url)
 
+    def newset() -> object:
+        """The new question set's totals (deploy/lab-inspect/eval_summary.py), kept beside the nights' record; None
+        without the record's folder or the file."""
+        if ops_db is None:
+            return None
+        try:
+            return json.loads(ops_db.with_name(NEWSET_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def try_view(request: Request) -> Response:
         """搜尋: the service called as an agent calls it; its second tab, 搜尋測試's explanation (why_of); with nothing
         asked, the scoreboard of the test questions under the forms."""
@@ -803,7 +814,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         try:
             why = why_of(request, conn)
             asked_something = why is not None or bool(request.query_params.get("call"))
-            board = "" if asked_something else board_html(board_now())
+            board = "" if asked_something else (
+                newset_html(newset(), db_info(conn).get("built_at")) + board_html(board_now()))
             title, body = trying.page(request.query_params, why=why, board=board)
             return shell(title, body, db_info(conn), tab="try")
         finally:

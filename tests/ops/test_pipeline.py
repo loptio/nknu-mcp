@@ -939,3 +939,222 @@ def test_an_export_counts_a_file_several_rows_share_once(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps({"网站": "g", "项目": rows}, ensure_ascii=False), encoding="utf-8")
     summary = pipeline.manifest_summary(tmp_path)
     assert summary["rows"] == 4 and summary["files"] == 2 and summary["kinds"]["图片"] == 3
+
+
+# ---------------------------------------------------------------- 對帳、爬取裡另外跑的、待確認（11-21）
+
+
+def test_what_needs_a_look_says_what_it_is_about():
+    parts = pipeline.missing_parts
+    assert parts("要人看：页面几乎是空的") == ["這一頁幾乎是空的"]
+    assert parts("要人看（2 个）、缺内嵌页或按钮（1 个）") == ["頁面裡的內嵌頁或按鈕沒抓到", "頁面連到的東西裡有待確認的"]
+    assert parts("要人看") == ["待確認"]
+
+
+def _rows_export(folder: Path) -> None:
+    rows = [{"类型": "网页", "结果": "抓到了", "网址": "https://s.example/a", "本地档案": "pages/a.html", "存档编号": "u1",
+             "缺什么": "要人看（1 个）、缺内嵌页或按钮（1 个）"},
+            {"类型": "网页", "结果": "抓到了", "网址": "https://s.example/b#按钮=1", "本地档案": "pages/b.html",
+             "存档编号": "a7"},
+            {"类型": "附件", "结果": "按规则不抓", "网址": "https://s.example/c.pdf", "存档编号": "u2"},
+            {"类型": "图片", "结果": "抓到了", "网址": "https://s.example/i.png", "本地档案": "pages/a.html",
+             "存档编号": "u3"}]
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "manifest.json").write_text(json.dumps({"网站": "s", "项目": rows}, ensure_ascii=False), encoding="utf-8")
+
+
+def test_an_export_counts_its_rows_with_a_file_its_button_rows_and_the_ledgers_ids(tmp_path):
+    _rows_export(tmp_path)
+    summary = pipeline.manifest_summary(tmp_path)
+    assert (summary["rows"], summary["file_rows"], summary["files"]) == (4, 3, 2)
+    assert summary["got_buttons"] == 1 and summary["both"] == 1
+    assert summary["got_no_file"] == 0 and summary["file_else"] == {}
+    assert pipeline.manifest_ids(tmp_path) == (frozenset({1, 3}), {2: "按规则不抓"})
+    json.dumps(summary)  # the summary goes out as JSON: the ids are kept apart from it
+
+
+def _address_ledger(rows: list[tuple]) -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE url_result (id INTEGER, owner_site TEXT, kind TEXT, kind0 TEXT, found_via TEXT, result TEXT)")
+    conn.executemany("INSERT INTO url_result VALUES (?, ?, ?, ?, ?, ?)", rows)
+    return conn
+
+
+def test_the_export_follows_from_the_crawl_term_by_term(where, ledger):
+    site = "school.example"
+    ledger(_address_ledger([
+        (1, site, "page", None, "link", "ok"),         # fetched, and the export says so
+        (2, site, "file", None, "link", "ok"),         # on the export under another result
+        (3, site, "file", "script", "link", "ok"),     # a site's .js: kind says file, kind0 script; no row by design
+        (4, site, "image", None, "redirect", "ok"),    # a redirect's landing: the row is the first address's
+        (5, site, "page", None, "link", "failed"),     # the export (older) says fetched, the ledger no longer
+        (6, "elsewhere.example", "page", None, "link", "ok"),  # another site's: never counted
+        (7, site, "drive", "drive", "redirect", "ok")]))       # a Drive record: the file itself has its row
+    step = Step("export", "導出", "")
+    # the exports' fetched rows: u1, u1 again in a second export, u5, and a button's row
+    assert pipeline.export_link(where, step, 4, {1, 5}, {2: "按规则不抓"}, 1) == 0
+    by_words = {words: (sign, n, tip) for sign, words, n, tip in step.link}
+    assert step.link[0][:3] == ["", "爬取抓到的網址", 5] and step.link[-1][:3] == ["=", "清單上「抓到了」的", 4]
+    off = by_words["抓到了、照設計不另開一筆的（不是內容，或記在別的筆上）"]
+    assert off[:2] == ("−", 3) and "程式檔（.js：是網頁的零件，不是內容）：1" in off[2] and "跳轉後的落點" in off[2]
+    assert "Google 雲端硬碟的檔案資訊和資料夾清單（檔案本身那一筆在清單上）：1" in off[2]
+    assert by_words["抓到了、清單上沒有，也說不出原因的"][1] == 0
+    assert by_words["清單上有，記的是別的結果"][:2] == ("−", 1) and "按規則不抓：1" in by_words["清單上有，記的是別的結果"][2]
+    assert by_words["同一個網址在清單上不只一筆（幾個網站都連到它）"][1] == 1
+    assert by_words["按鈕按出來的內容（清單一筆，爬蟲不算網址）"][1] == 1 and step.link_left == 0
+    # a fetched file on no export that is none of those kinds may be content left out: counted apart and returned
+    ledger(_address_ledger([(1, site, "page", None, "link", "ok"), (8, site, "file", None, "link", "ok")]))
+    step = Step("export", "導出", "")
+    assert pipeline.export_link(where, step, 1, {1}, {}, 0) == 1 and step.link_left == 0
+    stray = {words: (n, tip) for _s, words, n, tip in step.link}["抓到了、清單上沒有，也說不出原因的"]
+    assert stray == (1, "檔案：1")
+    # round two's open batch is not in the crawl step's own figure: the link starts at that figure and adds the batch
+    where.sites = {site: {"cells": {"crawl": {"n": 3}}}}
+    ledger(_address_ledger([(i, site, "page", None, "link", "ok") for i in range(1, 5)]))
+    step = Step("export", "導出", "")
+    pipeline.export_link(where, step, 4, {1, 2, 3, 4}, {}, 0)
+    assert [row[:3] for row in step.link[:2]] == [["", "爬取抓到的網址", 3], ["+", "第二輪這一批抓到的（爬取那一步另外算）", 1]]
+    assert step.link_left == 0
+
+
+def test_the_to_text_run_takes_the_exports_rows_with_a_file_and_the_files_inside_archives(where):
+    _totext(where)
+    _rows_export(where.root / "archive-export" / "sites" / "school.example-1")
+    path = where.pipe / "totext" / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**summary, "files": 5, "members": 2}), encoding="utf-8")
+    step = pipeline.totext_step(where)
+    assert [row[:3] for row in step.link] == [["", "導出存下檔案的（清單上一筆算一個）", 3], ["+", "壓縮檔裡拆出來的檔", 2],
+                                              ["=", "轉文字經手的", 5]] and step.link_left == 0
+    path.write_text(json.dumps({**summary, "files": 9, "members": 2}), encoding="utf-8")
+    assert pipeline.totext_step(where).link_left == 4  # four files the export's rows do not account for
+
+
+def _assembled(where: Where, **counts) -> None:
+    conn = sqlite3.connect(where.library)
+    conn.execute("UPDATE meta SET value = ? WHERE key = 'inputs_json'",
+                 (json.dumps([{"site": "school.example", "corpus": f"{PIPE}/corpus/school.example.json"}]),))
+    conn.commit()
+    conn.close()
+    folder = where.pipe / "corpus"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "school.example.assemble_report.json").write_text(json.dumps(counts), encoding="utf-8")
+
+
+def test_the_build_follows_from_the_to_text_run_through_the_records(where):
+    # the library of the fixture: 5 documents and 10 left out; 20 files handled, 5 of them folded away by assemble
+    _totext(where)
+    path = where.pipe / "totext" / "summary.json"
+    path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "files": 20}), encoding="utf-8")
+    _assembled(where, records=15, images_inlined=3, containers_dropped=1, data_rows={"4": "行事历"}, images_no_text=0)
+    step = pipeline.build_step(where)
+    assert step.into[0] == ("筆記錄（轉文字的結果整理成的）", 15) and step.link_left == 0
+    words = [row[1] for row in step.link]
+    assert "圖的字併進了顯示它的網頁" in words and "圖沒讀出夠多的字，也沒有收進庫的網頁顯示它" not in words
+    assert [row[2] for row in step.link if row[0] == "="] == [15, 15]
+    _assembled(where, records=14, images_inlined=3, containers_dropped=1, data_rows={"4": "行事历"})
+    assert pipeline.build_step(where).link_left == 2  # a record short of the files, and one short of the documents
+    # a library whose inputs name no corpus (built before the reports were kept) has no link to show
+    (where.pipe / "corpus" / "school.example.assemble_report.json").unlink()
+    step = pipeline.build_step(where)
+    assert step.link == [] and step.link_left is None and step.into[0][1] == 15
+
+
+def _side_ledger(archive: Path, *, status: dict | None, term: dict | None, events: list, urls: list = ()):
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE event (at TEXT, level TEXT, code TEXT, message TEXT)")
+    conn.execute("CREATE TABLE url_result (owner_site TEXT, state TEXT, reason TEXT, fetched_at TEXT)")
+    conn.executemany("INSERT INTO event VALUES (?, ?, ?, ?)", [(a, lv, c, json.dumps(m)) for a, lv, c, m in events])
+    conn.executemany("INSERT INTO url_result VALUES (?, ?, ?, ?)", urls)
+    (archive / "reports").mkdir(parents=True, exist_ok=True)
+    for name, what in (("update-status.json", status), ("schedule-term.json", term)):
+        if what is not None:
+            (archive / "reports" / name).write_text(json.dumps(what, ensure_ascii=False), encoding="utf-8")
+    return conn
+
+
+SAT = datetime(2026, 11, 21, 9, 0, tzinfo=pipeline.TAIPEI)
+JS = {"opened": 30, "incomplete": 1, "requests": 150, "skipped": 0}
+
+
+def test_the_crawls_three_side_runs_are_each_said_from_the_crawlers_own_files(tmp_path):
+    status = {"night_started": "2026-11-21T01:03:34+08:00", "revisit_tonight": ["out.example", "two.example"],
+              "revisit_idle": ["wix.example"], "put_back": {"revisit": 446}}
+    term = {"at": "2026-11-21T01:03:38+08:00", "page_term": "115 第一學期", "ledger_term": "115 第一學期",
+            "changed": False, "walk": None, "open": None, "let_go": 0, "held_left": 0}
+    events = [("2026-11-19T18:03:48+00:00", "info", "jsfetch_start", {"sites": ["js.example"]}),
+              ("2026-11-19T18:18:08+00:00", "info", "jsfetch_end", {"end": "finished", "sites": {"js.example": JS}}),
+              ("2026-11-20T18:41:47+00:00", "info", "jsfetch_start", {"sites": ["js.example"]}),
+              ("2026-11-20T18:56:03+00:00", "info", "jsfetch_end", {"end": "finished", "sites": {"js.example": JS}}),
+              ("2026-11-20T18:57:33+00:00", "info", "jsfetch_start", {"sites": ["js.example"]}),
+              ("2026-11-20T19:11:01+00:00", "info", "jsfetch_end", {"end": "finished", "sites": {"js.example": JS}})]
+    urls = [("out.example", "done", None, "2026-11-20T17:30:00+00:00")] * 5 + [
+        ("out.example", "failed", "http_500", "2026-11-20T17:31:00+00:00"),
+        ("out.example", "done", None, "2026-11-13T17:30:00+00:00"),   # the Saturday before: not this night's
+        ("two.example", "pending", "update_revisit", None)]           # put back and not reached
+    sides = {name: (tone, words) for name, tone, words in pipeline.crawl_sides(
+        _side_ledger(tmp_path, status=status, term=term, events=events, urls=urls), tmp_path, SAT)}
+    tone, words = sides["校外網站每週重看"]
+    assert tone == WARN and "輪到 2 站，排了 446 頁" in words and "抓了 5 個網址、失敗 1" in words and "還有 1 頁沒輪到抓" in words
+    tone, words = sides["要用瀏覽器開的網站"]  # the two passes of this night, never the night before's
+    assert tone == OK and "開了 2 趟、1 站：共開 60 頁、送了 300 個請求、2 頁沒開完整" in words and "都開完了" in words
+    assert sides["課表學期"] == (OK, "沒變：115 第一學期（11-21 01:03 看的，沒送請求）")
+
+
+def test_a_side_run_that_did_not_run_or_went_wrong_says_so(tmp_path):
+    status = {"night_started": "2026-11-20T01:00:10+08:00", "revisit_tonight": [], "revisit_idle": ["a", "b"]}
+    term = {"at": "2026-11-18T01:03:38+08:00", "page_term": "115 第二學期", "ledger_term": "115 第一學期",
+            "changed": True, "walk": "not whole", "open": "115 第二學期", "let_go": 1500, "held_left": 3200}
+    events = [("2026-11-18T18:41:47+00:00", "info", "jsfetch_start", {"sites": ["js.example"]}),
+              ("2026-11-18T18:56:03+00:00", "info", "jsfetch_end", {"end": "finished", "sites": {}})]
+    conn = _side_ledger(tmp_path, status=status, term=term, events=events)
+    sides = {name: (tone, words) for name, tone, words in pipeline.crawl_sides(conn, tmp_path, SAT)}
+    assert sides["校外網站每週重看"][0] == NONE and "沒輪到（每週六凌晨那一晚才看，共 2 站）" in sides["校外網站每週重看"][1]
+    assert sides["要用瀏覽器開的網站"][0] == WARN and "這一晚沒開" in sides["要用瀏覽器開的網站"][1]
+    tone, words = sides["課表學期"]
+    assert tone == WARN and "課表沒走完" in words and "放行 1,500 行、還壓著 3,200 行" in words and "沒再看" in words
+    # an error of the browser's run is red, and nothing written yet is no verdict
+    bad = [("2026-11-19T18:41:47+00:00", "error", "jsfetch_end", {"end": "error", "detail": "x", "sites": {}})]
+    sides = {n: t for n, t, _w in pipeline.crawl_sides(_side_ledger(tmp_path, status=status, term=None, events=bad),
+                                                       tmp_path, SAT)}
+    assert sides["要用瀏覽器開的網站"] == BAD
+    (tmp_path / "reports" / "schedule-term.json").unlink()
+    (tmp_path / "reports" / "update-status.json").unlink()
+    sides = {n: t for n, t, _w in pipeline.crawl_sides(_side_ledger(tmp_path, status=None, term=None, events=[]),
+                                                       tmp_path, SAT)}
+    assert set(sides.values()) == {NONE}
+
+
+def test_the_last_run_is_the_nights_own_and_not_the_browser_sites_after_it(where, ledger):
+    events = [("2026-11-16T17:03:39+00:00", "run_start", {"sites": ["school.example", "b.example"]}),
+              ("2026-11-16T18:40:56+00:00", "run_end", {"reason": "waiting"}),
+              ("2026-11-16T18:41:47+00:00", "jsfetch_start", {"sites": ["js.example"]}),
+              ("2026-11-16T18:56:47+00:00", "run_start", {"sites": ["js.example"]}),
+              ("2026-11-16T18:57:32+00:00", "run_end", {"reason": "finished"})]
+    ledger(_ledger(events, {}, RESULTS))
+    step = pipeline.crawl_step(where)
+    assert "結束（2 站）" in step.say and step.took == "1 小時 37 分"
+
+
+def test_what_the_crawl_holds_for_a_look_is_said_cause_by_cause(where, ledger):
+    results = [("school.example", "ok", 5), ("school.example", "thin", 3), ("school.example", "too_large", 1)]
+    events = [("2026-11-16T06:54:23+00:00", "run_start", {"sites": ["school.example"]}),
+              ("2026-11-16T06:55:53+00:00", "run_end", {"reason": "finished"})]
+    ledger(_ledger(events, {}, results))
+    step = pipeline.crawl_step(where)
+    assert ("待確認：頁面幾乎是空的", 3) in step.lost and ("待確認：檔案太大，沒抓", 1) in step.lost
+    assert not any(words == "待確認" for words, _n in step.lost)
+
+
+def test_the_home_draws_a_steps_link_and_its_side_runs():
+    from nknu.ops import home_page
+
+    step = {"link": [["", "導出存下檔案的", 3, ""], ["+", "壓縮檔裡拆出來的檔", 2, "各轉<各>的"], ["−", "沒有的", 0, ""],
+                     ["=", "轉文字經手的", 5, ""]], "link_left": 0,
+            "sides": [["課表學期", "ok", "沒變"], ["要用瀏覽器開的網站", "bad", "出錯 <x>"]]}
+    page = home_page.link_html(step)
+    assert "對得上" in page and "沒有的" not in page and "data-tip='各轉&lt;各&gt;的'" in page and "class='hm-sum'" in page
+    assert "還差 4 對不上" in home_page.link_html({**step, "link_left": -4})
+    assert home_page.link_html({}) == "" and home_page.sides_html({}) == ""
+    sides = home_page.sides_html(step)
+    assert sides.count("<li>") == 2 and sides.count("class='pill") == 1 and "出錯 &lt;x&gt;" in sides

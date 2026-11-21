@@ -886,3 +886,21 @@ def test_sites_the_guard_set_back_or_did_not_try_again_are_said_on_the_swap(wher
     assert swap["say"] == f"換上了；{said_refused}" and swap["sev"] == WARN and swap["fix"] == CRAWLER
     assert nightly.set_back_words(run("swapped")) == ("", "")
     assert said_back in nightly.run_reason(run("held", sites_set_back=back))["reason"]
+
+
+def test_the_sites_a_browser_opens_are_crawl_time_not_export_time(where):
+    # 11-21: the browser-opened sites run after the change list and before the export; the script notes their start
+    # and end, and until now their three quarters of an hour were counted as 導出's
+    night = [*NIGHT[:5], ("2026-11-17 01:52:00", "JS 网站开始（w3.nknu.edu.tw,ord.nknu.edu.tw）"),
+             ("2026-11-17 02:35:00", "JS 网站结束（都好）"),
+             ("2026-11-17 02:50:00", "导出好了（35 个网站；每站的结果在 x）"),
+             ("2026-11-17 02:51:00", "定期更新结束（导出 35 个网站；seen.tsv 写好了）")]
+    crawler_log(where, night, at("2026-11-17T02:51:00"))
+    crawler_status(where)
+    c = cells(nightly.tonight(where, now=at("2026-11-17T09:00:00")))
+    assert c["crawl"]["when"] == "02:35 · 1 小時 35 分" and c["export"]["when"] == "02:51 · 16 分鐘"
+    assert "其中要用瀏覽器開的網站 01:52–02:35" in c["crawl"]["tip"] and "新的 135" in c["crawl"]["tip"]
+    # while the browser is still opening them the night says so
+    crawler_log(where, night[:6], at("2026-11-17T02:10:00"))
+    c = cells(nightly.tonight(where, now=at("2026-11-17T02:12:00")))
+    assert c["export"]["state"] == nightly.RUN and "開要用瀏覽器開的網站" in c["export"]["say"]
