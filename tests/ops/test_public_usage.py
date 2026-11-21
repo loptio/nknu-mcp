@@ -40,14 +40,14 @@ def test_the_log_as_it_is_today_says_what_it_has_and_what_it_does_not_keep(tmp_p
     path = log(tmp_path / "queries.jsonl",
                line(60 * 30),  # older than a day: not counted
                line(120, via="web"), line(90, via="api", query="校園地圖", found=False, ids=[]),
-               line(30, tool="fetch", query=None, id="d1"), line(10, query="0912345678 的宿舍", found=False, ids=[]))
+               line(30, tool="fetch", query=None, id="d1"), line(10, query="[MASKED] 的宿舍", found=False, ids=[]))  # as the service logs it
     rows = rows_of(path)
     assert rows["查詢"] == (OK, "4 次：搜尋 3、讀全文 1（MCP 2、網頁 1、接口 1）；最後一次 11-22 08:50")
     assert rows["查無資料"] == (OK, "2 次，占搜尋的 67%")
     assert rows["多慢"] == (NONE, "紀錄還沒記每次花多久")
     assert rows["沒答成"] == (NONE, "紀錄還沒記沒答成的那幾次")  # never 「沒有」 from a log that cannot say
     _, missed = pipeline.public_usage(path, NOW)
-    assert missed == [["11-22 08:50", "MCP", "0912345678 的宿舍"], ["11-22 07:30", "接口", "校園地圖"]]
+    assert missed == [["11-22 08:50", "MCP", "[MASKED] 的宿舍"], ["11-22 07:30", "接口", "校園地圖"]]
 
 
 def test_once_the_log_keeps_time_and_failures_they_are_said_and_a_failure_of_ours_lights_the_step(tmp_path):
