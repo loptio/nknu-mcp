@@ -263,13 +263,22 @@ def _shared(kind: str, load: Callable[[], object]):
 
 def shared_embedder() -> Embedder:
     """The process's one bge-m3, loaded on first use behind a lock; after a failed load, tried again only once
-    RETRY_AFTER_S has passed."""
+    RETRY_AFTER_S has passed. With NKNU_MODELS_URL set, the machine's one copy in the model service instead
+    (nknu.core.model_service, 2026-11-21: the resident services each held a copy of both models on the card)."""
+    from nknu.core import model_service
+
+    if url := model_service.remote_url():
+        return _shared("embedder", lambda: model_service.remote_embedder(url))
     return _shared("embedder", load_embedder)
 
 
 def shared_reranker() -> Reranker:
     """The process's one reranker, loaded on first use behind a lock; after a failed load, tried again only once
-    RETRY_AFTER_S has passed."""
+    RETRY_AFTER_S has passed. With NKNU_MODELS_URL set, the model service's (shared_embedder)."""
+    from nknu.core import model_service
+
+    if url := model_service.remote_url():
+        return _shared("reranker", lambda: model_service.remote_reranker(url))
     return _shared("reranker", load_reranker)
 
 
