@@ -65,6 +65,8 @@ NAME = "nknu"  # plan 2026-11-08 T4: no longer 教務處's alone ("nknu-aca" bef
 DEFAULT_DB = REPO_ROOT / "research" / "pipeline_2026-11-02" / "aca.db"
 DEFAULT_PORT = 8766
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
+# what a client shows a person for each tool (design 2026-11-21-outward-interfaces-design §三) 【Claude】
+SEARCH_TITLE, FETCH_TITLE = "搜尋高師大資料", "讀一份文件"
 MAX_LEN = {"query": 300, "id": 1000, "part": 20, "unit": 50}  # id: a URL the library holds too (design §三)
 DEFAULT_LIMIT, MAX_LIMIT = 10, 50  # design §二 limit: the reranker orders about the first 50
 DATE_DEPTH = 20  # sort=date reorders at least the 20 most relevant (design §二 sort) 【Claude】
@@ -409,7 +411,8 @@ def create_mcp(db_path: Path, *, search_fn: SearchFn | None = None, today_fn: Ca
     texts = texts_for(db_path)
     mcp = FastMCP(NAME, instructions=texts.instructions, mask_error_details=True, middleware=[ShortErrors()])
 
-    @mcp.tool(name="search", description=texts.search, output_schema=None, annotations=READ_ONLY)
+    @mcp.tool(name="search", title=SEARCH_TITLE, description=texts.search, output_schema=None,
+              annotations=READ_ONLY)
     def search(query: Annotated[str, Field(description=QUERY_DESCRIPTION)],
                detail: Annotated[Literal["snippet", "passage", "full"],
                                  Field(description=DETAIL_DESCRIPTION)] = DEFAULT_DETAIL,
@@ -421,7 +424,8 @@ def create_mcp(db_path: Path, *, search_fn: SearchFn | None = None, today_fn: Ca
                                           detail=detail, limit=limit, unit=_clean(unit, "unit"), sort=sort))
 
     # design §一: read is fetch since 11-17, the name ChatGPT's deep research and company knowledge take
-    @mcp.tool(name="fetch", description=FETCH_DESCRIPTION, output_schema=None, annotations=READ_ONLY)
+    @mcp.tool(name="fetch", title=FETCH_TITLE, description=FETCH_DESCRIPTION, output_schema=None,
+              annotations=READ_ONLY)
     def fetch(id: Annotated[str, Field(description=ID_DESCRIPTION)],
               part: Annotated[str | int, Field(description=PART_DESCRIPTION)] = "") -> ToolResult:
         return _run(lambda: read_answer(db_path, _clean(id, "id"), _clean(part, "part"), today=today_fn()))
