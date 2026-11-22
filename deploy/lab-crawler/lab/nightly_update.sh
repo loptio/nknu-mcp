@@ -168,6 +168,19 @@ if [ -n "$JS" ] && [ "$stopping" -eq 0 ]; then
   if [ "$js_ok" -eq 1 ]; then note "JS 网站结束（都好）"; else note "JS 网站结束（有一步出错，细节在 update.log；这一晚照常导出）"; fi
 fi
 
+# 5c. 浏览器备用（11-22）：别的网站这一晚抓到了、但内容区不见或正文变空的网页（no_area、thin、empty_detail），用浏览器
+#     再开一次（jsfetch fallback，每晚最多 50 页、每站 10 页）。开出来有原文没有的内容，导出就用浏览器版（浏览器显示版）；
+#     开不出来照旧用上一次好的那份。设了 JS_FALLBACK=1、或 lab/ 里有 js_fallback.on 这个档才跑（默认不跑：还没在实验室
+#     试过）；出错只记下来，不挡导出
+if { [ "${JS_FALLBACK:-0}" = "1" ] || [ -e "$LAB/js_fallback.on" ]; } && [ "$stopping" -eq 0 ]; then
+  note "浏览器备用开始"
+  if "$PY" -m nknu.archive.jsfetch fallback --dir "$ROOT" --exclude-sites "$JS" --gap 1-2 >> "$LOG" 2>&1; then
+    note "浏览器备用结束"
+  else
+    note "浏览器备用出错（细节在 update.log；这一晚照常导出）"
+  fi
+fi
+
 # 6. 导出今晚有变动的网站（导出那一批 T7；设计 §7.4）：状态档的 sites_changed 去掉警报压着的（update export-list），
 #    照导出服务的 export_sites.sh 导，NIGHTLY=1：定期更新的网站不看「还没爬完」（休息中的服务器的网址留到下一晚，
 #    不挡导出）。每站的结果写进 EXPORT_RESULTS，给下一步写 seen.tsv。JS 网站每晚都列进去（导出依据算进浏览器显示版：

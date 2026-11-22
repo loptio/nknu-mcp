@@ -564,6 +564,44 @@ def select_pages(fr: Frontier, sites: Collection[str], now: datetime, *, again: 
     return sorted(picked, key=lambda r: (not _is_home(r["url"]), r["id"]))
 
 
+# The fallback pass (11-22, the owner: the browser as a backup when a site changes or the crawler's own reading fails
+# and a page comes back without its content): pages of any other site that this night's answer left without their
+# content (the crawler's flags below), opened in the browser the same night. for_export already writes a look in
+# place of a page's answer when the look shows anything the answer lacks; a look that shows nothing more leaves the
+# page to the export's last good answer, as before. Each answer is looked at once (a page fetched again and still
+# lacking is opened again); capped per night and per site. 【Claude】
+FALLBACK_FLAGS = ("no_area", "thin", "empty_detail")
+FALLBACK_HOURS = 14  # "this night": answers fetched this long before the pass (the update starts at 01:00)
+FALLBACK_LIMIT = 50
+FALLBACK_PER_SITE = 10
+
+
+def select_fallback(fr: Frontier, now: datetime, *, exclude: Collection[str] = (), hours: float = FALLBACK_HOURS,
+                    limit: int = FALLBACK_LIMIT, per_site: int = FALLBACK_PER_SITE) -> list[sqlite3.Row]:
+    """The pages the fallback pass opens: HTML pages fetched in the last hours whose answer carries one of
+    FALLBACK_FLAGS, of sites not in exclude (the JS sites have their own pass), that no look has seen in this answer
+    yet; at most per_site of a site and limit in all, in the ledger's order."""
+    since = (now - timedelta(hours=hours)).astimezone(UTC).isoformat(timespec="seconds")
+    flagged = " OR ".join(f"(','||coalesce(u.flags,'')||',') LIKE '%,{f},%'" for f in FALLBACK_FLAGS)
+    keys = tuple(dict.fromkeys(exclude))
+    outside = f"AND u.site NOT IN ({','.join('?' * len(keys))}) " if keys else ""
+    rows = fr.q("SELECT u.* FROM url u WHERE u.kind='page' AND u.state='done' AND u.status=200 "
+                "AND (u.sniff='html' OR (u.sniff IS NULL AND u.ctype LIKE 'text/html%')) "
+                f"AND ({flagged}) AND u.fetched_at >= ? {outside}"
+                "AND NOT EXISTS (SELECT 1 FROM js_render r WHERE r.url_id = u.id AND r.fetched_at = u.fetched_at) "
+                "ORDER BY u.id", (since, *keys))
+    picked: list[sqlite3.Row] = []
+    per: Counter[str] = Counter()
+    for row in rows:
+        if len(picked) >= limit:
+            break
+        if per[row["site"]] >= per_site:
+            continue
+        per[row["site"]] += 1
+        picked.append(row)
+    return picked
+
+
 def for_export(fr: Frontier, url_id: int) -> tuple[sqlite3.Row | None, str | None]:
     """Which look the export gives for a page (spec §5 ⑤): (the js_render row whose rendered record to export, None)
     when its newest complete look added something (judge's js, links of its own site, or any new text) — the newest
@@ -613,9 +651,13 @@ class JsFetchRun:
                  resolver: Callable[[str], tuple] = resolve, clock: Callable[[], float] = wall,
                  sleep: Callable[[float], None] = time.sleep, rng: random.Random | None = None,
                  school_lock: Path | None = None, campus_url: str | None = CAMPUS_URL,
-                 local_address: Callable[[], str | None] = local_address):
+                 local_address: Callable[[], str | None] = local_address,
+                 pick: Callable[[Frontier, datetime], list[sqlite3.Row]] | None = None):
         self.root = Path(root)
         self.sites = tuple(dict.fromkeys(sites))
+        # pick: the pages to open, chosen by the caller (the fallback pass, select_fallback) instead of select_pages
+        # over sites; the report then holds the sites of the pages picked
+        self.pick = pick
         self.gap = check_gap(gap)
         self.limit, self.max_per_site, self.again = limit, max_per_site, again
         self.browser, self.client_factory, self.resolver = browser, client_factory, resolver
@@ -633,7 +675,7 @@ class JsFetchRun:
 
     def run(self) -> dict[str, SiteReport]:
         db = self.root / "frontier.db"
-        if not self.sites:
+        if not self.sites and self.pick is None:
             raise JsFetchRefused("没有给网站（--sites）：什么都不开")
         if not db.exists():
             raise JsFetchRefused(f"找不到待抓清单：{db}")
@@ -666,10 +708,14 @@ class JsFetchRun:
 
     def _run(self, fr: Frontier) -> dict[str, SiteReport]:
         ensure_table(fr)
-        report = {site: SiteReport() for site in self.sites}
-        due = select_pages(fr, self.sites, self._now(), again=self.again)
-        fr.event("info", "jsfetch_start", json.dumps({"sites": list(self.sites), "due": len(due),
-                                                      "max_per_site": self.max_per_site}, ensure_ascii=False))
+        if self.pick is None:
+            due = select_pages(fr, self.sites, self._now(), again=self.again)
+        else:
+            due = self.pick(fr, self._now())
+        report = {site: SiteReport() for site in (self.sites or dict.fromkeys(r["site"] for r in due))}
+        fr.event("info", "jsfetch_start", json.dumps({"sites": list(report), "due": len(due), "fallback": self.pick
+                                                      is not None, "max_per_site": self.max_per_site},
+                                                     ensure_ascii=False))
         fetcher = JsFetcher(self.root, fr, browser=self.browser, gap=self.gap, client_factory=self.client_factory,
                             resolver=self.resolver, clock=self.clock, sleep=self.sleep, rng=self.rng,
                             max_per_host=self.max_per_site, campus_url=self.campus_url,
@@ -706,7 +752,7 @@ class JsFetchRun:
             self.end_reason, self.end_detail = "error", f"{type(exc).__name__}: {exc}"[:300]
             self._end(fr, report)
             raise
-        for uid, kind in classify(fr, self.sites).items():
+        for uid, kind in (classify(fr, self.sites).items() if self.pick is None else ()):
             site = fr.q("SELECT site FROM url WHERE id=?", (uid,))[0]["site"]
             setattr(report[site], kind, getattr(report[site], kind) + 1)
         self._end(fr, report)
@@ -753,6 +799,27 @@ def _cmd_run(a: argparse.Namespace) -> int:
         return 2
     for site, r in report.items():
         print(_report_line(site, r))
+    print(f"结束：{ {'finished': '做完了', 'stop': '照 STOP 停了', 'error': '出错'}.get(run.end_reason or '', '?') }"
+          + (f"（{run.end_detail}）" if run.end_detail else ""))
+    return 1 if run.end_reason == "error" else 0
+
+
+def _cmd_fallback(a: argparse.Namespace) -> int:
+    exclude = [s.strip() for s in (a.exclude_sites or "").split(",") if s.strip()]
+
+    def pick(fr: Frontier, now: datetime) -> list[sqlite3.Row]:
+        return select_fallback(fr, now, exclude=exclude, hours=a.hours, limit=a.limit, per_site=a.per_site)
+
+    run = JsFetchRun(Path(a.dir), (), gap=_gap(a.gap), pick=pick, **_factories)
+    try:
+        report = run.run()
+    except JsFetchRefused as exc:
+        print(f"没有开：{exc}")
+        return 2
+    if not report:
+        print("这一晚没有缺内容的网页要用浏览器补")
+    for site, r in report.items():
+        print(f"{site}：浏览器补开 {r.opened} 页，没开完整 {r.incomplete}，送了 {r.requests} 个请求")
     print(f"结束：{ {'finished': '做完了', 'stop': '照 STOP 停了', 'error': '出错'}.get(run.end_reason or '', '?') }"
           + (f"（{run.end_detail}）" if run.end_detail else ""))
     return 1 if run.end_reason == "error" else 0
@@ -850,6 +917,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-per-site", type=int, default=None, help="这一遍每个网站最多送几个请求（试跑用）")
     r.add_argument("--again", action="store_true", help="连续两次失手、不再自动试的页也再开一次")
     r.set_defaults(fn=_cmd_run)
+    fb = sub.add_parser("fallback", help="备用：这一晚抓到了、但内容区不见或正文变空的网页，用浏览器再开一次")
+    fb.add_argument("--dir", required=True, help="存档资料夹（有 frontier.db）")
+    fb.add_argument("--exclude-sites", default="", help="不补的网站键，逗号分开（要 JavaScript 的网站有自己那一步）")
+    fb.add_argument("--hours", type=float, default=FALLBACK_HOURS, help=f"算「这一晚」的小时数，默认 {FALLBACK_HOURS}")
+    fb.add_argument("--limit", type=int, default=FALLBACK_LIMIT, help=f"这一遍最多开几页，默认 {FALLBACK_LIMIT}")
+    fb.add_argument("--per-site", type=int, default=FALLBACK_PER_SITE,
+                    help=f"每个网站最多开几页，默认 {FALLBACK_PER_SITE}")
+    fb.add_argument("--gap", default="2-5", help="每个回应之后等几秒（下限-上限），默认 2-5")
+    fb.set_defaults(fn=_cmd_fallback)
     one = sub.add_parser("render", help="单页试：在一个空的临时资料夹里开一页，印出结果")
     one.add_argument("url")
     one.add_argument("--dir", required=True, help="空的临时资料夹（不能是正式账本）")
