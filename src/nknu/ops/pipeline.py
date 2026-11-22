@@ -107,6 +107,9 @@ class Step:
     usage: list[list] = field(default_factory=list)
     usage_label: str = ""
     usage_missed: list[list] = field(default_factory=list)
+    # the step's numbers as numbers, for a page that draws them (總覽, nknu.ops.panorama): the sentences above say the
+    # same in words, and a page that read its numbers back out of them broke on the first rewording (2026-11-22)
+    nums: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1729,6 +1732,8 @@ def check_step(where: Where) -> Step:
         step.figure, step.unit = f"{int(q.get('top10') or 0)}/{int(q.get('n') or 33)}", "題答案排進前 10"
         step.bar = [int(q.get("top10") or 0), int(q.get("n") or 33)]
         parts.append(f"33 題測試：答案排第 1 的 {q.get('top1')} 題、前 3 的 {q.get('top3')} 題、前 10 的 {q.get('top10')} 題")
+        step.nums.update(n=int(q.get("n") or 33), top1=q.get("top1"), top3=q.get("top3"), top10=q.get("top10"),
+                         agent={k: a.get(k) for k in ("top1", "top3", "top10")} if a else None)
         if a:
             step.notes.append(f"讓 AI 自己改寫問題再搜（agent 重放）：第 1 {a.get('top1')}、前 3 {a.get('top3')}、"
                               f"前 10 {a.get('top10')} 題")
@@ -1737,6 +1742,7 @@ def check_step(where: Where) -> Step:
             stale.append("真資料檢查")
         if real["passed"] is not None:
             parts.append(f"真資料檢查 {real['passed'] + real['failed']} 項過了 {real['passed']} 項")
+            step.nums.update(real_passed=real["passed"], real_total=real["passed"] + real["failed"])
         step.lost = [(f"真資料檢查第 {k} 項：{tw(v)}", 1) for k, v in real["fails"].items()]
         step.lost_label = "沒通過的檢查"
     say = "；".join(parts)
@@ -1760,6 +1766,7 @@ def check_step(where: Where) -> Step:
             state, fix = WARN, CONTENT
             say = "比上一次建庫退步了：" + "；".join(worse)
         step.notes.append(f"和上一次建庫比（{before.name}）" + ("：沒有退步" if not worse else ""))
+    step.nums["stale"] = bool(stale)
     if stale:
         state = NONE
         say = "、".join(stale) + " 是上一份庫的結果（新庫的檢查還在跑，換庫後約 50 分鐘才跑完）"
@@ -1913,36 +1920,49 @@ def memory(path: Path = MEMINFO) -> tuple[int, int, int] | None:
     return kb["MemTotal"], kb["MemAvailable"], max(0, kb.get("SwapTotal", 0) - kb.get("SwapFree", 0))
 
 
-def machine(where: Where) -> list[list]:
-    """The machine everything runs on, a line a drive (where.disks: free space, said in amber and red as it runs
-    out), one for the memory Docker has (memory) and one for the graphics card's: [name, tone, words]. Until
-    2026-11-21 no panel said any, and this one machine has been near these limits before (C: went from 36 to 23 GB
-    free within a day while builds ran, the page file the likely cause: docs/project-blueprint.md)."""
-    rows: list[list] = []
+def machine_read(where: Where) -> list[dict]:
+    """The machine everything runs on, one dict a line: a drive each (where.disks: free space, said in amber and red
+    as it runs out), the memory Docker has (memory), the graphics card's. {name, tone, words, used, total (GB; None
+    where unreadable), swap (GB, memory only)}. Until 2026-11-21 no panel said any, and this one machine has been near
+    these limits before (C: went from 36 to 23 GB free within a day while builds ran, the page file the likely cause:
+    docs/project-blueprint.md)."""
+    rows: list[dict] = []
     for name, path in where.disks:
         try:
             usage = shutil.disk_usage(path)
         except OSError:
-            rows.append([name, NONE, "讀不到（這一槽沒有掛給檢視台）"])
+            rows.append({"name": name, "tone": NONE, "words": "讀不到（這一槽沒有掛給檢視台）", "used": None, "total": None})
             continue
         share = usage.free / usage.total if usage.total else 0.0
         tone = (BAD if share < DISK_BAD[0] or usage.free < DISK_BAD[1]
                 else WARN if share < DISK_WARN[0] or usage.free < DISK_WARN[1] else OK)
-        rows.append([name, tone, f"還剩 {usage.free / GB:,.0f} GB（共 {usage.total / GB:,.0f} GB，用了 {1 - share:.0%}）"])
+        rows.append({"name": name, "tone": tone,
+                     "words": f"還剩 {usage.free / GB:,.0f} GB（共 {usage.total / GB:,.0f} GB，用了 {1 - share:.0%}）",
+                     "used": round((usage.total - usage.free) / GB, 1), "total": round(usage.total / GB, 1)})
     if mem := memory():
         total, free, swap = mem
         words = f"用了 {(total - free) / GB:.1f} GB（共 {total / GB:.1f} GB，Docker 分到的那一份）"
         if swap >= GB / 10:  # the Docker machine's swap file is on C: (a few GB is usual after a build)
             words += f"；交換區用了 {swap / GB:.1f} GB"
-        rows.append(["記憶體", WARN if free / total < MEM_WARN else OK, words])
+        rows.append({"name": "記憶體", "tone": WARN if free / total < MEM_WARN else OK, "words": words,
+                     "used": round((total - free) / GB, 1), "total": round(total / GB, 1), "swap": round(swap / GB, 1)})
     if gpu := gpu_memory():
         used, total = gpu
-        rows.append(["顯示卡記憶體", WARN if used / total > 0.92 else OK,
-                     f"用了 {used / 1024:.1f} GB（共 {total / 1024:.1f} GB）"])
+        rows.append({"name": "顯示卡記憶體", "tone": WARN if used / total > 0.92 else OK,
+                     "words": f"用了 {used / 1024:.1f} GB（共 {total / 1024:.1f} GB）",
+                     "used": round(used / 1024, 1), "total": round(total / 1024, 1)})
     return rows
 
 
+def machine(where: Where) -> list[list]:
+    """machine_read's lines as the page says them: [name, tone, words]."""
+    return [[m["name"], m["tone"], m["words"]] for m in machine_read(where)]
+
+
 PUBLIC_HOURS = 24  # the public service's use is said over the last this many hours 【Claude】
+# 總覽 draws the calls of each of the last this many days, read from the same log (it keeps every call; 2026-11-22: a
+# day's use alone said nothing about whether students come back) 【Claude】
+PUBLIC_DAYS = 7
 PUBLIC_MISSED = 10  # searches that found nothing listed, the latest first 【Claude】
 PUBLIC_SLOW = 10_000  # ms: the slowest tenth over this is worth a look (a search waits at most 20 s, then fails) 【Claude】
 # searches timed before a middle and a slowest tenth are said (and can light the step): the first search after the
@@ -1988,29 +2008,57 @@ def _query_lines(path: Path, since: datetime) -> tuple[list[dict], bool]:
     return out, False
 
 
-def query_lines(path: Path, since: datetime) -> list[dict]:
+def lines_since(path: Path, since: datetime) -> tuple[list[dict], bool]:
     """The lines since `since` of the query log and, when the current file began after it, of its last rotated copy
-    (queries.jsonl.1)."""
+    (queries.jsonl.1); and whether the two reach back past since (False: the log began after it)."""
     lines, whole = _query_lines(path, since)
     if not whole:
-        older, _ = _query_lines(path.with_name(path.name + ".1"), since)
+        older, whole = _query_lines(path.with_name(path.name + ".1"), since)
         lines = older + lines
-    return lines
+    return lines, whole
+
+
+def query_lines(path: Path, since: datetime) -> list[dict]:
+    """lines_since's lines."""
+    return lines_since(path, since)[0]
 
 
 def _share(part: int, whole: int) -> str:
     return f"{part / whole:.0%}" if whole else "—"
 
 
-def public_usage(path: Path, now: datetime | None = None) -> tuple[list[list], list[list]]:
+def usage_days(lines: list[dict], now: datetime, kept_from: date | None = None) -> list[list]:
+    """[day 'YYYY-MM-DD', calls, searches] for each of the last PUBLIC_DAYS days (Taipei), today last. A day with no
+    line is a 0, so a quiet day shows as one; a day before kept_from (the log began that day) is None, None: no record
+    is no quiet day."""
+    today = now.astimezone(TAIPEI).date()
+    days = {(today - timedelta(days=i)).isoformat(): [0, 0] for i in range(PUBLIC_DAYS - 1, -1, -1)}
+    for x in lines:
+        got = days.get(x["_at"].astimezone(TAIPEI).date().isoformat())
+        if got is not None:
+            got[0] += 1
+            got[1] += int(x.get("tool") == "search" and not x.get("error"))
+    return [[d, *((None, None) if kept_from and d < kept_from.isoformat() else (c, s))] for d, (c, s) in days.items()]
+
+
+def public_usage(path: Path, now: datetime | None = None,
+                 nums: dict | None = None) -> tuple[list[list], list[list]]:
     """The public service's last PUBLIC_HOURS from its query log: ([name, tone, words] lines, the last searches that
     found nothing). How long a call took and the calls that failed are said only once the log writes them ('ms',
-    'error'); before that the lines say the log does not keep them. 2026-11-21: a review of the panels found the
+    'error'); before that the lines say the log does not keep them. nums, when given, gets the same as numbers, and
+    the calls of each of the last PUBLIC_DAYS days ('days', usage_days). 2026-11-21: a review of the panels found the
     service students use on no panel; the owner: 「8770那个可以动了」."""
     now = now or now_tpe()
+    nums = {} if nums is None else nums
     if not path.exists():
         return [["查詢紀錄", NONE, "讀不到（紀錄檔沒有掛給檢視台，或服務還沒寫過）"]], []
-    lines = query_lines(path, now - timedelta(hours=PUBLIC_HOURS))
+    since = now - timedelta(hours=PUBLIC_HOURS)
+    first_day = datetime.combine((now.astimezone(TAIPEI) - timedelta(days=PUBLIC_DAYS - 1)).date(), datetime.min.time(),
+                                 TAIPEI)
+    week, reached = lines_since(path, min(since, first_day))
+    lines = [x for x in week if x["_at"] >= since]
+    kept_from = None if reached else week[0]["_at"].astimezone(TAIPEI).date() if week else now.astimezone(TAIPEI).date()
+    nums.update(hours=PUBLIC_HOURS, calls=len(lines), days=usage_days(week, now, kept_from))
     if not lines:
         last = next((x for x in reversed(tail(path)) if x.strip()), "")
         try:
@@ -2058,14 +2106,27 @@ def public_usage(path: Path, now: datetime | None = None) -> tuple[list[list], l
         rows.append(["沒答成", NONE, "紀錄還沒記沒答成的那幾次"])
     shown = [[stamp(x["t"]), VIA_WORDS.get(x.get("via"), x.get("via") or ""), str(x.get("query") or "")]
              for x in reversed(missed[-PUBLIC_MISSED:])]
+    errors: dict[str, int] = {}
+    for x in failed:
+        errors[str(x["error"])] = errors.get(str(x["error"]), 0) + 1
+    enough = len(times) >= PUBLIC_TIMED
+    nums.update(tools=tools, via=vias, searches=len(searches), missed=len(missed), timed=len(times),
+                mid_ms=times[len(times) // 2] if enough else None,
+                slow_ms=times[max(0, -(-len(times) * 9 // 10) - 1)] if enough else None,
+                over_ms=sum(1 for ms in times if ms > PUBLIC_SLOW), failed=len(failed),
+                failed_ours=sum(n for k, n in errors.items() if k != "bad_args"), errors=errors,
+                kept_failures=new_log, last=lines[-1]["t"])
     return rows, shown
 
 
 def serve_step(where: Where) -> Step:
     step = Step("serve", "查詢服務", "給學生和他們的 AI 用的對外服務（MCP、網頁、接口），檢視台「測試」用的 MCP，和資料庫")
-    step.sides, step.sides_label = machine(where), "這台電腦"
+    box = machine_read(where)
+    step.sides, step.sides_label = [[m["name"], m["tone"], m["words"]] for m in box], "這台電腦"
+    step.nums["machine"] = [{k: v for k, v in m.items() if k != "words"} for m in box]
     if where.public_log is not None:
-        step.usage, step.usage_missed = public_usage(where.public_log)
+        step.nums["usage"] = {}
+        step.usage, step.usage_missed = public_usage(where.public_log, nums=step.nums["usage"])
         step.usage_label = f"對外服務最近 {PUBLIC_HOURS} 小時"
     low = [(name, tone, words) for name, tone, words in step.sides if tone in (WARN, BAD)]
     if not where.services:

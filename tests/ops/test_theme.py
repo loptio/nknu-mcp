@@ -39,7 +39,7 @@ def _blocks(css: str) -> list[str]:
 def test_both_dark_blocks_are_the_same_and_every_colour_has_a_dark_step():
     light, dark_media, dark_forced = _blocks(THEME)
     assert dark_media.split() == dark_forced.split()
-    names = set(re.findall(r"(--[a-z0-9-]+):", light)) - {"--font", "--mono", "--amt", "--page", "--gutter"}  # not colours
+    names = set(re.findall(r"(--[a-z0-9-]+):", light)) - {"--font", "--mono", "--amt", "--page", "--gutter", "--nk-bar-h"}  # not colours
     assert names - set(re.findall(r"(--[a-z0-9-]+):", dark_media)) <= {"--on-w", "--on-k", "--on-good", "--on-good2",
                                                                          "--on-warn", "--on-bad"}
 
@@ -82,33 +82,53 @@ def test_the_faint_grey_reads_on_every_paper_in_both_themes():
 
 
 def _entries(html: str) -> list[str]:
-    """The four entries of a bar as they read, in order."""
-    nav = html.split("<nav class='nk-tabs'", 1)[1].split("</nav>", 1)[0]
+    """The entries of a bar as they read, in order (the tools after them, in the same row)."""
+    nav = html.split("<nav class='nk-tabs'", 1)[1].split("<span class='nk-sep'", 1)[0]
     return re.findall(r">([^<>]+)</a>", nav)
 
 
-def test_the_bar_has_four_entries_and_a_tools_menu_and_links_its_own_host_by_path():
-    # structure design 2026-11-17 section 二: 今晚 | 網站 | 試用 | 文件, and 資料庫 in the 工具 menu (爬蟲進度, the crawler's
-    # own board, left it when the panels became one, 2026-11-21)
+def _tools(html: str) -> list[str]:
+    """The tools in the bar's row (the copy 更多 holds for a narrow window aside)."""
+    row = html.split("<span class='nk-sep'", 1)[1].split("<details", 1)[0]
+    return re.findall(r">([^<>]+)(?:<svg[^>]*>.*?</svg>)?</a>", row)
+
+
+def test_the_bar_is_one_row_of_entries_and_tools_and_links_its_own_host_by_path():
+    # structure design 2026-11-17 section 二: the entries; 2026-11-22 (owner: the pages top left and the tools top right
+    # were two places to look): 總覽 first, the tools in the same row after a thin line, folded into 更多 when narrow
     html = bar.bar("try", "ops", "資料截至 x")
-    assert _entries(html) == ["每晚運行", "網站", "測試", "文件搜尋"]
+    assert _entries(html) == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"]
+    assert _tools(html) == ["網頁核查", "單位", "資料庫"]
     assert "aria-current='page'>測試</a>" in html and html.count("aria-current") == 1
-    assert "href='/'" in html and "href='/try'" in html and "href='/doc'" in html  # its own host's: by path
+    assert "href='/'" in html and "href='/tonight'" in html and "href='/try'" in html  # its own host's: by path
     assert "href='/sites'" in html and "18879" not in html  # 網站 (資料總覽) is 檢視台's own page since 2026-11-21
-    menu = html.split("<details class='nk-tools'>", 1)[1].split("</details>", 1)[0]
-    assert menu.startswith("<summary>工具") and ">資料庫<svg" in menu and "網頁核查" in menu
-    assert "href='http://127.0.0.1:18001/'" in menu
-    assert "爬蟲進度" not in html and "18877" not in html and "target='_blank'" not in menu
-    assert "class='nk-meta'>資料截至 x</span>" in html and html.index("nk-meta") < html.index("nk-tools")
-    assert "e.key==='Escape'" in html  # the menu closes by Escape, a click outside, or the focus leaving it
+    assert html.count("class='nk-tool'") == 3 and ">網頁核查</a>" in html  # the same panel's tool: no arrow out
+    more = html.split("<details class='nk-more'>", 1)[1].split("</details>", 1)[0]
+    assert more.startswith("<summary>更多") and ">資料庫<svg" in more and "網頁核查" in more
+    assert "href='http://127.0.0.1:18001/'" in more
+    assert "爬蟲進度" not in html and "18877" not in html and "target='_blank'" not in more
+    end = html.split("<div class='nk-end'>", 1)[1]
+    assert end.startswith("<span class='nk-meta'>資料截至 x</span><button type='button' class='nk-mode'")
+    assert "e.key==='Escape'" in html  # 更多 closes by Escape, a click outside, or the focus leaving it
+    assert "localStorage.getItem(k)" in html and "r.setAttribute('data-theme',n)" in html  # the light/dark switch
 
 
-def test_a_tools_page_marks_the_menus_button_and_no_entry():
+def test_the_bar_stays_on_top_and_the_tools_fold_into_more_on_a_narrow_window():
+    assert re.search(r"\.nk-bar \{ position: sticky; top: 0;", THEME) and "--nk-bar-h:" in THEME
+    narrow = THEME.split("@media (max-width: 860px) {", 1)[1].split("\n}", 1)[0]
+    assert "a.nk-tool, .nk-sep, .nk-meta { display: none; }" in narrow and ".nk-more { display: block; }" in narrow
+    # a part of a page that stays on top as it scrolls starts under the bar
+    for name in ("home_page.py", "try_page.py", "check_page.py", "tc.css", "overview_page.html"):
+        assert "var(--nk-bar-h" in SHEETS.get(name, "") or "var(--nk-bar-h" in (
+            REPO / "src/nknu/ops" / name).read_text(encoding="utf-8"), name
+
+
+def test_a_tools_page_marks_its_tool_and_more_and_no_entry():
     html = bar.bar("tables", "tables")
-    assert "aria-current='page'>資料庫<svg" in html and "<details class='nk-tools nk-on'>" in html
-    assert all("aria-current" not in a for a in html.split("</nav>", 1)[0].split("<a ")[1:])
-    assert "href='http://127.0.0.1:18878/'" in html and "href='/'" in html  # 今晚 by address; 資料庫 itself by path
-    assert "<details class='nk-tools'>" in bar.bar("doc", "ops")  # a page of an entry leaves the button plain
+    assert "aria-current='page'>資料庫</a>" in html and "<details class='nk-more nk-on'>" in html  # its own: no arrow
+    assert all("aria-current" not in a for a in html.split("<span class='nk-sep'", 1)[0].split("<a ")[1:])
+    assert "href='http://127.0.0.1:18878/'" in html and "href='/'" in html  # 總覽 by address; 資料庫 itself by path
+    assert "<details class='nk-more'>" in bar.bar("doc", "ops")  # a page of an entry leaves 更多 plain
 
 
 def test_the_entries_and_a_sites_page_are_one_address_wherever_they_are_linked_from():
@@ -148,7 +168,7 @@ def test_the_sites_page_carries_the_theme_and_the_bar_as_every_page_of_the_panel
 
     page = overview.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
     assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>網站</a>" in page
-    assert _entries(page) == ["每晚運行", "網站", "測試", "文件搜尋"] and "<details class='nk-tools'>" in page
+    assert _entries(page) == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"] and "<details class='nk-more'>" in page
     # its links to a site's page and to 資料庫 come from panels.json, as the bar's do: a site's page by path (the same
     # service now), 資料庫 by its address, righted on the lab PC's own ports as the bar's are
     assert '"site": "/site?site="' in page and '"tables": "http://127.0.0.1:18001"' in page

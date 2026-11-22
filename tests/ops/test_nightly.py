@@ -288,8 +288,8 @@ def test_the_page_opens_on_last_night_until_tonights_hour_comes(where):
     t = nightly.tonight(where, now=at("2026-11-18T01:10:00"))
     assert t["default"] == "2026-11-17" and cells(t)["crawl"]["say"] == "該開始了"
     marks = t["nights"]
-    assert len(marks) == 7 and marks[-1]["night"] == "2026-11-17" and marks[-1]["href"] == "/"
-    assert marks[-2]["href"] == "/?night=2026-11-16"
+    assert len(marks) == 7 and marks[-1]["night"] == "2026-11-17" and marks[-1]["href"] == "/tonight"
+    assert marks[-2]["href"] == "/tonight?night=2026-11-16"
 
 
 def test_a_night_can_be_picked(where):
@@ -311,7 +311,7 @@ def test_a_night_out_of_reach_is_ignored(where):
 def test_a_far_night_in_the_address_never_breaks_a_page(db, tmp_path):
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
-        for path in ("/?night=9999-12-31", "/api/tonight?night=9999-12-31", "/site?site=nope&night=9999-12-31"):
+        for path in ("/tonight?night=9999-12-31", "/api/tonight?night=9999-12-31", "/site?site=nope&night=9999-12-31"):
             assert client.get(path).status_code in (200, 404)
 
 
@@ -816,7 +816,7 @@ def test_the_api_and_the_home_carry_tonight(db, tmp_path):
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         got = client.get("/api/tonight")
-        home = client.get("/").text
+        home = client.get("/tonight").text
     assert got.status_code == 200 and got.headers["cache-control"] == "no-store"
     data = got.json()
     assert len(data["nights"]) == 7 and data["sentence"]["text"] and data["changes"]["state"] == "none"

@@ -31,30 +31,37 @@ DOCS_SHOWN = 40  # documents listed for what is typed; the rest counted 【Claud
 KIND_COLOUR = {"notice": 0, "page": 1, "attachment": 2, "event": 3, "link": 4}
 
 CSS = """
-form.ask.dc-ask{margin:0 0 14px}
-.dc-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+search:has(>form.dc-ask){display:block}
+form.ask.dc-ask{margin:0 0 16px}
+search:has(+#doc-list .dc-empty){max-width:860px;margin:20px auto 0}
+.dc-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
 @media (max-width:900px){.dc-two{grid-template-columns:minmax(0,1fr)}}
 .dc-two .plist{margin-top:0}
+.dc-two .plist ol{max-height:calc(100vh - 230px);overflow:auto;scrollbar-width:thin}
 .dc-sites{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 14px;font-size:13px}
 .dc-sites .lab{color:var(--ink3);font-size:12px;margin-right:2px}
-.dc-sites a{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--line2);border-radius:8px;
-background:var(--surface);color:var(--ink);text-decoration:none}.dc-sites a:hover{background:var(--hover)}
+.dc-sites a{display:inline-flex;align-items:center;gap:4px;padding:4px 11px;border:1px solid var(--line2);border-radius:999px;
+background:var(--surface);color:var(--ink);font-weight:600;text-decoration:none}.dc-sites a:hover{background:var(--hover)}
 .dc-sites a .ic{color:var(--ink3)}
 a.prow .pn .ic{margin-right:6px;color:var(--ink3);vertical-align:-2px}
 a.prow .pn .dc-k .ic{color:inherit}.dc-k0{color:var(--k0)}.dc-k1{color:var(--k1)}.dc-k2{color:var(--k2)}.dc-k3{color:var(--k3)}.dc-k4{color:var(--k4)}
 .dc-school h2.sec{margin-top:18px}
-form.ask.chk-ask+#doc-list{margin-top:14px}
-.dc-empty{padding:18px 20px;display:flex;flex-direction:column;gap:14px}
-.dc-empty h2{font-size:14px;font-weight:650;margin:0}
-.dc-hints{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.dc-hints li{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:10px;background:var(--sunk);font-size:13px}
-.dc-hints b{font-weight:650}.dc-hints span{color:var(--ink2);line-height:1.5}
-.dc-try{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px}
+form.ask.chk-ask+#doc-list,search:has(>form.chk-ask)+#doc-list{margin-top:14px}
+.dc-empty{max-width:860px;margin:0 auto;padding:22px 24px;display:flex;flex-direction:column;gap:16px}
+.dc-empty h2{font-size:14px;font-weight:700;margin:0}
+.dc-hints{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media (max-width:640px){.dc-hints{grid-template-columns:minmax(0,1fr)}}
+.dc-hints li{display:flex;flex-direction:column;gap:3px;padding:12px 14px;border-radius:12px;background:var(--sunk);
+border:1px solid var(--line);font-size:13px}
+.dc-hints b{font-weight:650;color:var(--ink)}.dc-hints span{color:var(--ink2);font-size:12px;line-height:1.5}
+.dc-try{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px}
 .dc-try .lab{color:var(--ink3);font-size:12px;margin-right:2px}
-.dc-try a{padding:4px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--surface);color:var(--ink);
-text-decoration:none}.dc-try a:hover{background:var(--hover)}
-.dc-two-say{margin:0;font-size:13px;color:var(--ink2);line-height:1.6}
-.dc-empty .dc-more{display:inline-flex;align-items:center;gap:4px;font-size:13px}
+.dc-try a{padding:5px 14px;border:1px solid var(--line2);border-radius:999px;background:var(--surface);color:var(--ink);
+font-weight:600;text-decoration:none;transition:background-color .14s}.dc-try a:hover{background:var(--hover)}
+.dc-two-say{margin:0;padding:10px 14px;border-radius:10px;background:var(--sunk);font-size:12px;color:var(--ink2);line-height:1.6}
+.dc-empty .dc-more{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:9px;
+border:1px solid var(--line2);background:var(--surface);text-decoration:none;font-size:13px;font-weight:600}
+.dc-empty .dc-more:hover{background:var(--hover)}
 """
 
 # As one types, the list follows (one request a moment after the last key, the answer to the latest kept), and while the
@@ -87,9 +94,9 @@ EXAMPLES = ("學雜費", "選課", "宿舍")  # words a student's question has, 
 
 
 def doc_form(q: str, *, focus: bool = True) -> str:
-    return (f"<form class='ask dc-ask' id='doc-ask' action='/doc' method='get'><div class='box'>"
+    return (f"<search><form class='ask dc-ask' id='doc-ask' action='/doc' method='get'><div class='box'>"
             f"<input name='q' value='{e(q)}' placeholder='標題裡的字、網址或文件編號' aria-label='要找的文件或網頁'"
-            f" autocomplete='off'{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form>")
+            f" autocomplete='off' enterkeyhint='search'{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form></search>")
 
 
 def _doc_rows(docs: list[dict]) -> str:

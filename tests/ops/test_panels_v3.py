@@ -420,14 +420,14 @@ def test_the_app_keeps_the_record_where_it_is_told_and_says_when_it_cannot(db, t
     assert app.state.store.enabled and ops.exists()
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         got = client.get("/api/history").json()
-        home = client.get("/").text
+        home = client.get("/tonight").text
     assert got["enabled"] and len(got["days"]) == 14 and got["file"] == str(ops)
     assert "還沒有紀錄：第一晚跑完以後就有" in home
     inside = web.create_app(where_db, tmp_path, models=models(), today_fn=lambda: TODAY, ops_db=tmp_path / "o.db",
                             record=False)
     assert not inside.state.store.enabled and not (tmp_path / "o.db").exists()  # never under --root (/work)
     with TestClient(inside, base_url="http://127.0.0.1:8878") as client:
-        assert "紀錄檔不能放在資料或爬蟲存檔的資料夾裡" in client.get("/").text
+        assert "紀錄檔不能放在資料或爬蟲存檔的資料夾裡" in client.get("/tonight").text
 
 
 def test_the_recorder_writes_a_finished_night_the_home_then_draws(db, tmp_path, tmp_path_factory):

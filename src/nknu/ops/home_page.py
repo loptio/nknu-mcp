@@ -27,12 +27,14 @@ shown as it is (spec 2026-11-17-panels-v3-questions.md 八 still holds). The dat
 
 from __future__ import annotations
 
-from datetime import datetime
+import math
+import re
+from datetime import date, datetime, time
 from urllib.parse import quote
 
 from nknu.ops import charts, standing
 from nknu.ops.look import e, icon
-from nknu.ops.nightly import DONE, RUN, STOP, clock
+from nknu.ops.nightly import DONE, RUN, STOP, at_night, clock
 from nknu.ops.pipeline import BAD, LANES, LOG_FILES, NONE, OK, WARN, span, stamp, when_of
 from nknu.ops.pipeline_page import AGAIN, link, strip_fixer
 from nknu.ops.tonight_page import (
@@ -134,8 +136,28 @@ def said(t: dict, changes: dict | None, rows: list[dict], reading: bool = False,
     return text
 
 
+def top_figures(changes: dict | None, parts: dict | None, rows: list[dict]) -> str:
+    """The few numbers worth seeing first, under the sentence (2026-11-22, owner: what matters could not be told from
+    the words): what the last swap brought and took, what left with no reason (a mark when any did), the problems new
+    since the night before (a mark when any are) and the ones standing. Each with its word; a state only as a mark."""
+    figs = []
+    tot = (changes or {}).get("totals") or {}
+    if (changes or {}).get("state") == "ready" and tot:
+        unx = tot.get("unexplained") or 0
+        figs += [("新進", tot.get("new") or 0, ""), ("離開", tot.get("left") or 0, ""),
+                 ("說不出原因", unx, BAD if unx else OK)]
+    if parts is not None:
+        figs += [("新問題", len(parts["new"]), WARN if parts["new"] else OK), ("之前就有的問題", len(parts["old"]), "")]
+    elif rows:
+        figs.append(("問題", len(rows), WARN))
+    if not figs:
+        return ""
+    return "<p class='hm-top'>" + "".join(
+        f"<span>{mark(tone) if tone else ''}{e(word)} <b>{n(v)}</b></span>" for word, v, tone in figs) + "</p>"
+
+
 def status_section(snap: dict, t: dict, changes: dict | None, rows: list[dict], state: str, api: str,
-                   now: datetime, new: int | None = None) -> str:
+                   now: datetime, new: int | None = None, figs: str = "") -> str:
     reading = not snap.get("steps")
     if reading and state == OK:  # nothing read of the steps yet: no green mark for what is not known
         state = NONE
@@ -158,7 +180,8 @@ def status_section(snap: dict, t: dict, changes: dict | None, rows: list[dict], 
     live = " data-live" if t.get("live") else ""
     body = (f"<div class='hm-now' data-tonight='{e(api)}' data-sig='{e(t.get('sig'))}'{live}>"
             f"<div class='v3-state' data-state='{e(state)}'><span class='v3-dot'>{drawing}</span><b>{e(word)}</b></div>"
-            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading, new))}</p>{fresh}{pause}</div></div>")
+            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading, new))}</p>{figs}{fresh}{pause}"
+            "</div></div>")
     return section(1, "now", "", f"<div class='hm-pad'>{body}</div>")
 
 
@@ -240,9 +263,16 @@ def chain_html(nodes: list[dict]) -> str:
         word = TONE_WORDS.get(x["tone"], "")
         figure = (f"<span class='hm-fig num'>{e(x['figure'])}</span><span class='hm-unit'>{e(x['unit'])}</span>"
                   if x["figure"] else "<span class='hm-fig faint'>—</span><span class='hm-unit'></span>")
+        bar = (x.get("step") or {}).get("bar") or []
+        if not bar and (st := x.get("stage")) and st.get("into") and st.get("value") is not None:
+            bar = [st["value"], st["into"]]
+        meter = ""
+        if len(bar) == 2 and bar[1]:
+            pct_w = max(4.0, min(100.0, int(bar[0]) / int(bar[1]) * 100))
+            meter = f"<span class='hm-nbar' aria-hidden='true'><i style='width:{pct_w:.1f}%'></i></span>"
         lis.append(f"<li class='hm-node' data-tone='{e(x['tone'])}'><a href='#{e(x['id'])}' data-pick='{e(x['id'])}' "
                    f"aria-label='{e(x['name'])}：{e(word)}'><span class='hm-nm'>{mark(x['tone'])}<b>{e(x['name'])}</b></span>"
-                   f"{figure}<span class='hm-line' data-tone='{e(x['line_tone'])}'>{x['line']}</span></a></li>")
+                   f"{figure}{meter}<span class='hm-line' data-tone='{e(x['line_tone'])}'>{x['line']}</span></a></li>")
     cols = f" style='grid-template-columns:repeat({len(nodes)},minmax(0,1fr))'" if len(nodes) != len(NODES) else ""
     return f"<ol class='hm-nodes'{cols}>{''.join(lis)}</ol>"
 
@@ -277,7 +307,7 @@ def io_html(step: dict) -> str:
 
 def link_html(step: dict) -> str:
     """和上一步對帳: how what came into the step follows from what the step before put out, a term a line (the step's
-    link), and whether the terms add up (link_left). A term of nothing is not drawn."""
+    link), and whether the terms add up (link_left). Folded by default when reconciled, auto-open on mismatch."""
     rows = [r for r in step.get("link") or [] if len(r) >= 3 and (r[0] in ("", "=") or r[2])]
     if not rows:
         return ""
@@ -288,21 +318,39 @@ def link_html(step: dict) -> str:
     items = "".join(
         f"<li{total if r[0] == '=' else ''}{tip_attr(r[3] if len(r) > 3 else '')}>"
         f"<span class='hm-sg'>{e(r[0])}</span><span>{e(r[1])}</span><b class='num'>{int(r[2]):,}</b></li>" for r in rows)
-    return f"<div class='hm-link'><h4>和上一步對帳{verdict}</h4><ul>{items}</ul></div>"
+    opened = " open" if left else ""
+    return (f"<details class='hm-link'{opened}><summary>{icon('right', 12)}"
+            f"<span class='hm-link-t'>和上一步對帳</span>{verdict}"
+            f"<span class='hm-link-n num'>{len(rows)} 項</span></summary><ul>{items}</ul></details>")
 
 
 def tip_attr(tip: str) -> str:
     return f" data-tip='{e(tip)}'" if tip else ""
 
 
+def _side_meter(words: str, tone: str) -> str:
+    """Proportional usage bar for hardware rows (disk, RAM, GPU) parsed from their display text; empty otherwise."""
+    m = re.search(r"用了\s*(\d+(?:\.\d+)?)%", words)
+    if m:
+        pct_v = float(m.group(1))
+    else:
+        m2 = re.search(r"用了\s*(\d+(?:\.\d+)?)\s*GB[^0-9]*共\s*(\d+(?:\.\d+)?)\s*GB", words)
+        if not m2 or not float(m2.group(2)):
+            return ""
+        pct_v = float(m2.group(1)) / float(m2.group(2)) * 100
+    w = max(2.0, min(100.0, pct_v))
+    return f"<span class='hm-meter' data-tone='{e(tone)}' aria-hidden='true'><i style='width:{w:.1f}%'></i></span>"
+
+
 def sides_html(step: dict) -> str:
-    """What runs inside the step on its own schedule (the step's sides): a line each, marked when it needs a look."""
+    """What runs inside the step on its own schedule (the step's sides): a card each, with a meter bar for hardware."""
     rows = [r for r in step.get("sides") or [] if len(r) >= 3]
     if not rows:
         return ""
     items = "".join(
         f"<li><b>{e(name)}</b>"
         + (f"<span class='pill {TONE_PILL[tone]}'>{e(TONE_WORDS[tone])}</span>" if tone in ("warn", "bad") else "")
+        + _side_meter(words, tone)
         + f"<span>{e(words)}</span></li>" for name, tone, words in (r[:3] for r in rows))
     return f"<div class='hm-sides'><h4>{e(step.get('sides_label') or '這一步裡另外跑的')}</h4><ul>{items}</ul></div>"
 
@@ -375,9 +423,10 @@ def run_html(cell: dict | None) -> str:
 def node_panel(x: dict, panels: dict[str, str]) -> str:
     step, cell = x["step"] or {}, x["cell"]
     tone = x["tone"]
-    head = (f"<header><h3>{e(x['name'])}</h3><span class='pill {TONE_PILL.get(tone, 'none')}'>{e(TONE_WORDS.get(tone, ''))}"
-            "</span></header>")
-    does = f"<p class='hm-does'>{e(step.get('does'))}</p>" if step.get("does") else ""
+    info = (f"<button type='button' class='hm-info' aria-label='{e(x['name'])}說明' "
+            f"data-tip='{e(step.get('does'))}'>?</button>") if step.get("does") else ""
+    head = (f"<header><h3>{e(x['name'])}</h3>{info}"
+            f"<span class='pill {TONE_PILL.get(tone, 'none')}'>{e(TONE_WORDS.get(tone, ''))}</span></header>")
     say = f"<p class='hm-said'>{e(strip_fixer(step.get('say') or ''))}</p>" if step.get("say") else ""
     words = f"<p class='hm-words'>{e(step['flow_words'])}</p>" if step.get("flow_words") else ""
     lost = [[w, int(c)] for w, c in step.get("lost") or [] if c]
@@ -388,9 +437,9 @@ def node_panel(x: dict, panels: dict[str, str]) -> str:
     links = [link(label, panels.get(href, href)) for label, href in step.get("more") or [] if panels.get(href, href)]
     act = f"<p class='hm-links'>{''.join(links)}</p>" if links else ""
     empty = "" if step else "<p class='v3-empty'>讀不到這一步的紀錄</p>"
-    return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{does}{say}{run_html(cell)}"
-            f"{sides_html(step)}{usage_html(step)}{io_html(step)}{link_html(step)}{split_bar(step)}{words}{reasons}{more}"
-            f"{logs_html(x['key'])}{act}{empty}</article>")
+    return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{io_html(step)}{split_bar(step)}"
+            f"{run_html(cell)}{say}{sides_html(step)}{usage_html(step)}{reasons}{link_html(step)}{words}"
+            f"{more}{logs_html(x['key'])}{act}{empty}</article>")
 
 
 # ------------------------------------------------------------------------------------------------ 4 每晚紀錄
@@ -413,7 +462,8 @@ def night_rows(t: dict, hist: dict, now: datetime) -> list[dict]:
         runs: list[dict] = []
         for s in (row or {}).get("segs") or []:
             item = {"secs": max(0.0, (s["to"] - s["from"]) * 3600), "dur": s.get("dur") or "", "tone": s["tone"],
-                    "word": s["word"], "when": s["when"], "say": s.get("say") or s.get("reason") or "", "name": s["name"]}
+                    "word": s["word"], "when": s["when"], "say": s.get("say") or s.get("reason") or "", "name": s["name"],
+                    "from": s["from"], "to": s["to"]}
             if s["key"].startswith("run"):
                 runs.append(item)
             else:
@@ -423,9 +473,12 @@ def night_rows(t: dict, hist: dict, now: datetime) -> list[dict]:
                 a, b = when_of(s.get("start")), when_of(s.get("end"))
                 secs = (b - a).total_seconds() if a and b and b > a else 0.0
                 tone = "bad" if s.get("sev") == BAD else "warn" if s.get("sev") == WARN else "done"
+                midnight = at_night(date.fromisoformat(day), time(0, 0))
                 cells[s.get("step")] = {"secs": secs, "dur": span(secs) if secs else "", "tone": tone,
                                         "word": s.get("word") or "", "say": s.get("say") or "", "name": s.get("name") or "",
-                                        "when": f"{clock(a)}–{clock(b)}" if a and b else clock(a or b)}
+                                        "when": f"{clock(a)}–{clock(b)}" if a and b else clock(a or b),
+                                        "from": (a - midnight).total_seconds() / 3600 if a else None,
+                                        "to": (max(a, b) - midnight).total_seconds() / 3600 if a and b else None}
         state = (row or {}).get("state") or rec.get("state") or ""
         tone = {"ok": "ok", WARN: "warn", BAD: "bad", "run": "run", "missed": "bad"}.get(state, "none")
         counted = rec.get("counted_by") is not None and rec.get("new") is not None
@@ -456,9 +509,9 @@ def nights_html(rows: list[dict]) -> str:
     if not rows:
         return "<p class='v3-empty hm-pad'>還沒有紀錄：第一晚跑完以後就有</p>"
     peak = max((c["secs"] for r in rows for c in [*r["cells"].values(), *r["runs"]]), default=0.0)
-    head = ("<th>夜</th>" + "".join(f"<th>{e(name)}</th>" for _k, name in NIGHT_PARTS)
-            + "<th class='n'>新進</th><th class='n'>離開</th><th class='n' data-tip='離開了、建庫和面板都說不出原因的"
-              "文件'>說不出原因</th>")
+    head = ("<th scope='col'>夜</th>" + "".join(f"<th scope='col'>{e(name)}</th>" for _k, name in NIGHT_PARTS)
+            + "<th scope='col' class='n'>新進</th><th scope='col' class='n'>離開</th>"
+              "<th scope='col' class='n' data-tip='離開了、建庫和面板都說不出原因的文件'>說不出原因</th>")
     trs = []
     for r in rows:
         pid = f"night-{r['night']}"
@@ -476,8 +529,79 @@ def nights_html(rows: list[dict]) -> str:
         flag = (f"<span class='v3-flag'>✕ {unx:,}</span>" if unx else "0" if unx == 0 else "—")
         nums = "".join(f"<td class='n'>{n(r[k])}</td>" for k in ("new", "left"))
         trs.append(f"<tr data-row='{e(pid)}'>{first}{parts}{nums}<td class='n'>{flag}</td></tr>")
-    return (f"<div class='hm-scroll'><table class='hm-nights'><thead><tr>{head}</tr></thead>"
+    return ("<div class='hm-scroll' tabindex='0' role='region' aria-label='每晚紀錄'>"
+            f"<table class='hm-nights'><thead><tr>{head}</tr></thead>"
             f"<tbody>{''.join(trs)}</tbody></table></div>")
+
+
+# the steps' colours on the nights' clock, as on 總覽 (nknu.ops.panorama.GANTT_STEPS): the violet ramp dark and light
+# by turns, the build neutral; never the states' colours (a state is a mark with its icon)
+STEP_FILL = {"crawl": "var(--q5)", "export": "var(--q2)", "totext": "var(--q4)", "build": "var(--mute-s)",
+             "swap": "var(--q3)"}
+
+
+def nights_chart(rows: list[dict]) -> str:
+    """每晚紀錄 drawn (2026-11-22, owner: 「每晚运行 一定要改 全部都是文字 哪些重要 哪些重要都看不出来」): a row a night on
+    the night's clock, a bar a step in its colour where it ran, a step that stopped or failed marked where it ended,
+    the other ingest runs hatched; at the right when the new library went in (or why none did) and what came in and
+    left. A row picks its night for the side panel, as the table's did; the table (nights_html) stays one click away."""
+    drawn = [r for r in rows if r["cells"] or r["runs"]]
+    if not drawn:
+        return ""
+    parts = [c for r in drawn for c in [*r["cells"].values(), *r["runs"]] if c.get("from") is not None]
+    lo = min(1, math.floor(min((c["from"] for c in parts), default=1)))
+    hi = max(lo + 5, min(lo + 13, math.ceil(max((c["to"] for c in parts if c.get("to") is not None), default=6))))
+    width = hi - lo
+
+    def at(h: float) -> float:
+        return max(0.0, min(100.0, (h - lo) / width * 100))
+
+    step = 1 if width <= 6 else 2
+    ticks = "".join(f"<span style='left:{at(h):.2f}%'>{h % 24:02d}:00</span>" for h in range(lo, hi, step))
+    legend = "".join(f"<span><i style='background:{STEP_FILL[k]}'></i>{e(name)}</span>" for k, name in NIGHT_PARTS)
+    legend += "<span><i class='hm-grun'></i>另一次進庫</span>"
+    out = []
+    for r in rows:
+        pid = f"night-{r['night']}"
+        segs = []
+        for key, name in NIGHT_PARTS:
+            c = r["cells"].get(key)
+            if not c or c.get("from") is None:
+                continue
+            a, b = at(c["from"]), at(c["to"] if c.get("to") is not None else c["from"])
+            tip = "\n".join(x for x in (f"{c['when']}" + (f"（{c['dur']}）" if c["dur"] else ""), c["word"], c["say"]) if x)
+            segs.append(f"<i class='hm-gseg' style='left:{a:.2f}%;width:{max(0.6, b - a):.2f}%;background:{STEP_FILL[key]}' "
+                        f"tabindex='0' data-tip-h='{e(name)}' data-tip='{e(tip)}'></i>")
+            if c["tone"] in ("warn", "bad", "stop"):
+                segs.append(f"<b class='hm-gmark' style='left:calc({b:.2f}% + 3px)' data-tone='{e(c['tone'])}' "
+                            f"tabindex='0' data-tip-h='{e(name)}：{e(c['word'])}' data-tip='{e(c['say'] or c['when'])}'>"
+                            f"{mark(c['tone'])}</b>")
+        for x in r["runs"]:
+            if x.get("from") is None:
+                continue
+            a, b = at(x["from"]), at(x["to"])
+            tip = f"{x['when']}：{x['word']}" + (f"（{x['say']}）" if x["say"] else "")
+            segs.append(f"<i class='hm-gseg hm-grun' style='left:{a:.2f}%;width:{max(0.6, b - a):.2f}%' tabindex='0' "
+                        f"data-tip-h='另一次進庫' data-tip='{e(tip)}'></i>")
+        swap = r["cells"].get("swap")
+        swapped = bool(swap and swap["word"] == "完成" and swap.get("when"))  # a night that stopped and was swapped later
+        end = f"{swap['when'].split('–')[0]} 換上" if swapped else (r["mark"] or r["word"] or "—")
+        if r["new"] is None or (not swapped and not r["new"] and not r["left"]):
+            moved = f"<span class='hm-gnum'>{'沒換庫' if r['cells'] and not swapped else '—'}</span>"
+        else:
+            unx = f"<span class='v3-flag'>✕ {r['unexplained']:,}</span>" if r.get("unexplained") else ""
+            moved = (f"<span class='hm-gnum' data-tip='新進 {n(r['new'])}、改了 {n(r['changed'] or 0)}、離開 "
+                     f"{n(r['left'] or 0)}；說不出原因 {n(r['unexplained'] or 0)}'><b>+{n(r['new'])}</b> "
+                     f"<span>−{n(r['left'] or 0)}</span>{unx}</span>")
+        track = (f"<span class='hm-gtrack'>{''.join(segs)}</span>" if segs
+                 else "<span class='hm-gtrack hm-gnone'></span>")
+        out.append(f"<div class='hm-grow' data-row='{e(pid)}'>"
+                   f"<span class='hm-gname'><a href='#{e(pid)}' data-pick='{e(pid)}' data-tip='{e(r['tip'])}'>"
+                   f"{mark(r['tone'])}{e(r['title'])}</a></span>{track}"
+                   f"<span class='hm-gend'>{e(end)}</span>{moved}</div>")
+    return (f"<div class='hm-gantt' style='--h:{width}'><div class='hm-gleg'>{legend}</div>"
+            f"<div class='hm-grow hm-ghours' aria-hidden='true'><span></span><span class='hm-gtrack'>{ticks}</span>"
+            f"<span></span><span></span></div>{''.join(out)}</div>")
 
 
 def record_note(hist: dict) -> str:
@@ -557,18 +681,31 @@ def changes_section(changes: dict | None, t: dict) -> str:
         -(s.get("unexplained") or 0), -((s.get("new") or 0) + (s.get("changed") or 0) + (s.get("left") or 0)),
         s.get("name") or s["site"]))
 
+    peak_c = max(((s.get("new") or 0) + (s.get("changed") or 0) + (s.get("left") or 0) for s in order), default=0)
+
     def row(s: dict) -> str:
+        nw, ch, lf = int(s.get("new") or 0), int(s.get("changed") or 0), int(s.get("left") or 0)
+        tot_s = nw + ch + lf
+        cbar = ""
+        if peak_c and tot_s:
+            w_tot = max(4.0, tot_s / peak_c * 100)
+            segs = "".join(
+                f"<i class='{cls}' style='flex:{v} 0 0'></i>"
+                for cls, v in (("hm-cn", nw), ("hm-cc", ch), ("hm-cl", lf)) if v
+            )
+            cbar = f"<span class='hm-cbar' aria-hidden='true'><span style='width:{w_tot:.1f}%'>{segs}</span></span>"
         flag = ""
         if flagged:
             got = [f"<span class='v3-flag'>✕ {s['unexplained']:,}</span>"] if s.get("unexplained") else []
             got += [f"<span class='v3-word' data-tone='warn'>要看 {s['look']:,}</span>"] if s.get("look") else []
             flag = f"<td class='n'>{' '.join(got)}</td>"
-        return (f"<tr><td><a href='/site?site={e(quote(s['site'], safe=''))}' data-tip='{e(s['site'])}'>"
-                f"{e(s.get('name') or s['site'])}</a></td>"
+        return (f"<tr><td><div class='hm-csite'><a href='/site?site={e(quote(s['site'], safe=''))}' data-tip='{e(s['site'])}'>"
+                f"{e(s.get('name') or s['site'])}</a>{cbar}</div></td>"
                 + "".join(f"<td class='n'>{n(s.get(k) or 0)}</td>" for k in ("new", "changed", "left")) + flag + "</tr>")
 
-    head = ("<tr><th>網站</th><th class='n'>新進</th><th class='n'>改了</th><th class='n'>離開</th>"
-            + ("<th class='n'>說不出原因</th>" if flagged else "") + "</tr>")
+    head = ("<tr><th scope='col'>網站</th><th scope='col' class='n'>新進</th><th scope='col' class='n'>改了</th>"
+            "<th scope='col' class='n'>離開</th>"
+            + ("<th scope='col' class='n'>說不出原因</th>" if flagged else "") + "</tr>")
     top, rest = order[:SHOWN_CHANGED], order[SHOWN_CHANGED:]
     table = f"<table class='hm-t'><thead>{head}</thead><tbody>{''.join(row(s) for s in top)}</tbody></table>"
     more = ""
@@ -606,7 +743,9 @@ def split_html(parts: dict, at: str = "") -> str:
     kept = f" data-tip='那一晚的問題清單是 {e(stamp(at))} 記下的'" if at else ""
     head = (f"<h3 class='v3-problems-h hm-ph'>新出現<span class='hm-count num'{' data-new' if new else ''}>{len(new)}</span>"
             f"<span class='hm-ph-sub'{kept}>和 {e(night_name(parts['night']))}比</span></h3>")
-    out = head + (_listed(new, SHOWN_PROBLEMS) if new else f"<p class='v3-none'>{mark('ok')} 沒有新出現的</p>")
+    out = (head + _listed(new, SHOWN_PROBLEMS)) if new else (
+        f"<div class='hm-zero'>{head}<p class='v3-none'>{mark('ok')} 沒有新出現的</p></div>"
+    )
     if old:
         out += (f"<h3 class='v3-problems-h hm-ph'>之前就有<span class='hm-count num'>{len(old)}</span></h3>"
                 + _listed(old, max(SHOWN_OLD, SHOWN_PROBLEMS - len(new))))
@@ -646,11 +785,14 @@ def problems_section(rows: list[dict], reading: bool, parts: dict | None = None,
 
 def first_pick(nodes: list[dict], nights: list[dict]) -> str:
     """What the side shows before anything is picked: the node to look at (出錯 before 留意 before the one running),
-    else the latest night."""
+    else the latest night that actually ran (skipping unstarted stubs)."""
     for tone in ("bad", "warn", "run"):
         hit = next((x for x in nodes if x["tone"] == tone and x["step"]), None)
         if hit is not None:
             return hit["id"]
+    ran = next((r for r in nights if r["cells"] or r["runs"] or r["counted"]), None)
+    if ran is not None:
+        return f"night-{ran['night']}"
     return f"night-{nights[0]['night']}" if nights else (nodes[0]["id"] if nodes else "")
 
 
@@ -677,119 +819,226 @@ pre.textContent=j.lines&&j.lines.length?j.lines.join('\\n'):'這份紀錄是空�
 if(when)when.textContent=j.at?'最後寫入 '+j.at.slice(5,16).replace('T',' '):''}).catch(()=>{pre.textContent='讀不到這份紀錄'})},true)})();"""
 
 CSS = """
-.hm{display:grid;grid-template-columns:minmax(0,1fr) 384px;gap:0 20px;align-items:start;
+.hm{display:grid;grid-template-columns:minmax(0,1fr) 396px;gap:0 20px;align-items:start;
 grid-template-areas:"chain side" "problems side" "nights side" "changes side"}
 .hm>#flow{grid-area:chain}.hm>#problems{grid-area:problems}.hm>#nights{grid-area:nights}.hm>#changes{grid-area:changes}
-.hm>.hm-side{grid-area:side;position:sticky;top:12px;margin-top:26px;max-height:calc(100vh - 24px);overflow:auto;
-overscroll-behavior:contain}
-.hm-card{overflow:hidden}
-.hm-pad{padding:14px 18px}
+.hm>.hm-side{grid-area:side;position:sticky;top:calc(var(--nk-bar-h,0px) + 12px);margin-top:28px;max-height:calc(100vh - var(--nk-bar-h,0px) - 24px);overflow:auto;
+overscroll-behavior:contain;scrollbar-width:thin}
+.hm-card{overflow:hidden;border-radius:16px}
+.hm-pad{padding:16px 20px}
+.v3-h{display:flex;align-items:center;gap:8px;margin:20px 2px 8px}
+.v3-h h2{font-size:14px;font-weight:700;letter-spacing:.01em;color:var(--ink)}
+.v3-h .faint.num{margin-left:auto;font-size:12px}
 .hm-ph{display:flex;align-items:center;gap:8px;margin:14px 0 6px}.hm-ph:first-child{margin-top:0}
 .hm-ph-sub{font-size:12px;font-weight:400;color:var(--ink3)}
-.hm-count[data-new]{background:var(--ink);color:var(--bg)}
+.hm-count{display:inline-grid;place-items:center;min-width:22px;height:20px;padding:0 7px;border-radius:999px;
+background:var(--hover);color:var(--ink2);font-size:12px;font-weight:650}
+.hm-count[data-new]{background:var(--act);color:var(--on-act)}
+.hm-zero{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:9px 14px;border-radius:12px;
+background:var(--good-bg);margin-bottom:12px}
+.hm-zero .hm-ph{margin:0;color:var(--good-ink)}.hm-zero .hm-count{background:var(--surface);color:var(--good-ink)}
+.hm-zero .v3-none{margin-left:auto;font-size:13px;font-weight:600;color:var(--good-ink)}
 .hm-gone summary .hm-ph-sub{margin-left:4px}.hm-gone li{color:var(--ink2)}.hm-gone .v3-pr{color:var(--ink2)}
 .hm-pnote{margin:10px 0 0;font-size:12px;color:var(--ink3)}
-.hm-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 7px;border-radius:999px;
-background:var(--hover);color:var(--ink2);font-size:12px;font-weight:650}
-.v3-h .faint.num{margin-left:auto}
 
-.hm-now{display:flex;gap:18px;align-items:center}
-.hm-fresh{margin:6px 0 0;font-size:14px;color:var(--ink2);display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}
+/* hero status bar */
+#now .hm-card:has(.v3-state[data-state=ok]){box-shadow:var(--shadow),inset 4px 0 0 var(--good-s)}
+#now .hm-card:has(.v3-state[data-state=warn]){box-shadow:var(--shadow),inset 4px 0 0 var(--warn-s)}
+#now .hm-card:has(.v3-state[data-state=bad]){box-shadow:var(--shadow),inset 4px 0 0 var(--bad-s)}
+#now .hm-card:has(.v3-state[data-state=run]){box-shadow:var(--shadow),inset 4px 0 0 var(--act)}
+.hm-now{display:flex;gap:16px;align-items:center}
+.hm-now .v3-state{flex-direction:row;align-items:center;gap:8px;min-width:0;padding:7px 14px 7px 9px;border-radius:999px;
+background:var(--sunk);border:1px solid var(--line)}
+.hm-now .v3-state[data-state=ok]{background:var(--good-bg);border-color:transparent}
+.hm-now .v3-state[data-state=warn]{background:var(--warn-bg);border-color:transparent}
+.hm-now .v3-state[data-state=bad]{background:var(--bad-bg);border-color:transparent}
+.hm-now .v3-dot{width:26px;height:26px}
+.hm-now .v3-dot .ic{width:14px;height:14px}
+.hm-now .v3-state b{font-size:14px;font-weight:700;white-space:nowrap}
+.hm-now .v3-say{margin:0;font-size:16px;font-weight:700;line-height:1.4;letter-spacing:-.01em}
+.hm-fresh{margin:8px 0 0;font-size:13px;color:var(--ink2);display:inline-flex;flex-wrap:wrap;align-items:center;
+gap:4px 8px;padding:4px 10px;border-radius:9px;background:var(--sunk)}
 .hm-fresh b{color:var(--ink);font-weight:650}
 .hm-lab{font-size:12px;color:var(--ink3);margin-right:2px}
-.hm-age{font-size:13px;padding:0 8px;border-radius:999px;background:var(--hover);color:var(--ink2);white-space:nowrap}
-.hm-age[data-tone=warn]{background:var(--warn-bg);color:var(--warn-ink);font-weight:650}
-.hm-sep{color:var(--ink3)}
-.hm-paused{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0;padding:5px 12px;border-radius:9px;
+.hm-age{font-size:12px;padding:1px 8px;border-radius:999px;background:var(--surface);border:1px solid var(--line);
+color:var(--ink2);white-space:nowrap}
+.hm-age[data-tone=warn]{background:var(--warn-bg);border-color:transparent;color:var(--warn-ink);font-weight:650}
+.hm-sep{color:var(--line2)}
+.hm-paused{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 0;padding:5px 12px;border-radius:9px;
 background:var(--warn-bg);color:var(--warn-ink);font-size:13px;font-weight:650}
 .hm-paused .faint{font-weight:400}
 
+/* 7-step pipeline strip */
 .hm-nodes{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
-.hm-node{position:relative;min-width:0}
+.hm-node{position:relative;min-width:0;border-top:3px solid var(--line)}
+.hm-node[data-tone=ok]{border-top-color:var(--good-s)}
+.hm-node[data-tone=warn]{border-top-color:var(--warn-s)}
+.hm-node[data-tone=bad]{border-top-color:var(--bad-s)}
+.hm-node[data-tone=run]{border-top-color:var(--act)}
 .hm-node+.hm-node{border-left:1px solid var(--line)}
-.hm-node+.hm-node::before{content:"";position:absolute;z-index:1;left:-5px;top:19px;width:8px;height:8px;
+.hm-node+.hm-node::before{content:"";position:absolute;z-index:1;left:-4px;top:20px;width:7px;height:7px;
 background:var(--surface);border-top:1.5px solid var(--line2);border-right:1.5px solid var(--line2);transform:rotate(45deg)}
-.hm-node>a{display:flex;flex-direction:column;gap:1px;height:100%;padding:13px 14px 12px;text-decoration:none;
-color:inherit;min-width:0;outline-offset:-2px}
+.hm-node>a{display:flex;flex-direction:column;gap:2px;height:100%;padding:13px 13px 12px;text-decoration:none;
+color:inherit;min-width:0;outline-offset:-3px;transition:background-color .14s}
+.hm-node:first-child>a{border-radius:0 0 0 13px}.hm-node:last-child>a{border-radius:0 0 13px 0}
 .hm-node>a:hover{background:var(--hover)}
 .hm-node>a.on{background:var(--sunk);box-shadow:inset 0 -3px 0 var(--act)}
-.hm-nm{display:flex;align-items:center;gap:7px;font-size:14px;white-space:nowrap}
+.hm-nm{display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap}
 .hm-nm b{font-weight:650;overflow:hidden;text-overflow:ellipsis}
-.hm-fig{margin-top:8px;font-size:20px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;
-text-overflow:ellipsis}
-.hm-unit{font-size:12px;color:var(--ink2);min-height:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hm-line{margin-top:7px;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.hm-line[data-tone=warn]{color:var(--warn-ink)}.hm-line[data-tone=bad]{color:var(--bad-ink)}
-.hm-line[data-tone=run]{color:var(--ink)}
+.hm-fig{margin-top:8px;font-size:20px;font-weight:700;line-height:1.15;letter-spacing:-.02em;white-space:nowrap;
+overflow:hidden;text-overflow:ellipsis}
+.hm-unit{font-size:11px;color:var(--ink2);min-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hm-nbar{display:block;height:3px;border-radius:999px;background:var(--qx);overflow:hidden;margin-top:6px}
+.hm-nbar i{display:block;height:100%;border-radius:999px;background:var(--amt)}
+.hm-node[data-tone=warn] .hm-nbar i{background:var(--warn)}
+.hm-node[data-tone=bad] .hm-nbar i{background:var(--bad)}
+.hm-line{margin-top:auto;padding-top:7px;font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;
+overflow-wrap:anywhere}
+.hm-line[data-tone=warn]{color:var(--warn-ink);font-weight:600}.hm-line[data-tone=bad]{color:var(--bad-ink);font-weight:600}
+.hm-line[data-tone=run]{color:var(--ink);font-weight:600}
 .v3-m[data-state=run]{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1.5px var(--ink)}
 .v3-m[data-state=done]{background:var(--good);color:var(--on-good)}
 
-.hm-panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);
-padding:16px 18px;display:flex;flex-direction:column;gap:12px;min-width:0;scroll-margin-top:12px}
+/* right inspector sidebar */
+.hm-panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
+padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0;scroll-margin-top:12px}
 .hm-panel[hidden]{display:none}
 .hm-side>.hm-panel+.hm-panel{margin-top:12px}.hm-js .hm-side>.hm-panel{margin-top:0}
-.hm-panel header{display:flex;align-items:center;gap:10px}
-.hm-panel h3{font-size:16px;font-weight:650}
-.hm-panel h4{margin:2px 0 -6px;font-size:12px;font-weight:650;color:var(--ink2)}
+.hm-panel header{display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.hm-panel header .pill{margin-left:auto}
+.hm-panel h3{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.hm-info{flex:none;display:inline-grid;place-items:center;width:20px;height:20px;padding:0;border-radius:50%;
+border:1px solid var(--line2);background:var(--surface);color:var(--ink3);font-size:11px;font-weight:650;cursor:help}
+.hm-info:hover,.hm-info:focus-visible{color:var(--ink);border-color:var(--ink3);background:var(--hover)}
+.hm-panel h4{margin:4px 0 -4px;font-size:12px;font-weight:650;color:var(--ink2)}
 .hm-panel p{margin:0}
-.hm-does{font-size:13px;color:var(--ink2);line-height:1.55}
-.hm-said{font-size:14px;line-height:1.55;overflow-wrap:anywhere}
-.hm-words{font-size:13px;color:var(--ink2);line-height:1.55}
-.hm-run{display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:10px;background:var(--sunk);font-size:13px;
-color:var(--ink2);overflow-wrap:anywhere}
-.hm-run-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;color:var(--ink)}
-.hm-io{margin:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
-.hm-io>div{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;align-items:baseline}
-.hm-io dt{color:var(--ink3);font-size:12px}.hm-io dd{margin:0;color:var(--ink2)}
-.hm-io dd b{color:var(--ink);font-size:14px;font-weight:700}
-.hm-counts>div{grid-template-columns:76px minmax(0,1fr)}
-.hm-link h4,.hm-sides h4{display:flex;align-items:center;gap:8px;margin:0 0 6px}
-.hm-link ul,.hm-sides ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;font-size:13px}
-.hm-link ul{padding:8px 12px;border-radius:10px;background:var(--sunk);gap:3px}
-.hm-link li{display:grid;grid-template-columns:12px minmax(0,1fr) max-content;gap:8px;align-items:baseline;color:var(--ink2);
-line-height:1.45}
+.hm-does{font-size:12px;color:var(--ink3);line-height:1.45}
+.hm-said{font-size:13px;line-height:1.55;color:var(--ink2);overflow-wrap:anywhere}
+.hm-words{font-size:12px;color:var(--ink3);line-height:1.5;padding:7px 10px;border-left:2px solid var(--line2);
+background:var(--sunk);border-radius:0 8px 8px 0}
+.hm-run{display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:10px;background:var(--sunk);
+border:1px solid var(--line);font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
+.hm-run-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;color:var(--ink);font-size:13px}
+.hm-run-h .num{margin-left:auto;color:var(--ink2);font-size:12px}
+
+/* KPI tile grid for 進/出 and night counts */
+.hm-io{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.hm-io>div{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:11px;background:var(--sunk);
+border:1px solid var(--line);min-width:0}
+.hm-io>div:only-child{grid-column:1/-1}
+.hm-io dt{color:var(--ink3);font-size:11px;font-weight:650}
+.hm-io dd{margin:0;color:var(--ink2);font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.hm-io dd b{display:block;color:var(--ink);font-size:20px;font-weight:700;line-height:1.2;margin-bottom:2px;
+letter-spacing:-.01em}
+.hm-io dd b.v3-flag{color:var(--bad-ink);font-size:16px}
+.hm-counts>div:last-child:nth-child(odd){grid-column:1/-1}
+
+/* split composition bar */
+.hm-split{display:flex;gap:2px;height:10px;border-radius:999px;overflow:hidden;background:var(--qx)}
+.hm-split i{min-width:3px;background:var(--q2);transition:opacity .12s}.hm-split i.hm-out{background:var(--amt)}
+.hm-split i:nth-child(odd):not(.hm-out){background:var(--q1)}
+.hm-split i:nth-child(4n):not(.hm-out){background:var(--line2)}
+.hm-split i:hover{opacity:.82}
+
+/* collapsible reconciliation */
+details.hm-link{border:1px solid var(--line);border-radius:11px;background:var(--sunk);padding:7px 11px}
+details.hm-link>summary{display:flex;align-items:center;gap:7px;cursor:pointer;list-style:none;font-size:12px;
+font-weight:650;color:var(--ink2);user-select:none}
+details.hm-link>summary::-webkit-details-marker{display:none}
+details.hm-link>summary .ic{transition:transform .15s;color:var(--ink3)}
+details.hm-link[open]>summary .ic{transform:rotate(90deg)}
+.hm-link-t{color:var(--ink)}.hm-link-n{margin-left:auto;font-weight:400;color:var(--ink3);font-size:11px}
+.hm-link ul{list-style:none;margin:8px 0 2px;padding:8px 0 0;border-top:1px solid var(--line);display:flex;
+flex-direction:column;gap:4px;font-size:12px}
+.hm-link li{display:grid;grid-template-columns:12px minmax(0,1fr) max-content;gap:8px;align-items:baseline;
+color:var(--ink2);line-height:1.4}
 .hm-link li .hm-sg{color:var(--ink3);text-align:center}.hm-link li b{color:var(--ink);font-weight:600}
-.hm-link li.hm-sum{margin-top:3px;padding-top:4px;border-top:1px solid var(--line2);color:var(--ink)}
+.hm-link li.hm-sum{margin-top:4px;padding-top:5px;border-top:1px solid var(--line2);color:var(--ink)}
 .hm-link li.hm-sum b{font-weight:700}.hm-link li[data-tip]>span:nth-child(2){text-decoration:underline dotted var(--ink3)}
-.hm-sides ul{gap:7px}
-.hm-usage{margin-top:12px}.hm-missed{margin-top:8px}
+
+/* side cards + hardware meters + public usage */
+.hm-sides h4{display:flex;align-items:center;gap:8px;margin:2px 0 7px}
+.hm-sides ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12px}
+.hm-sides li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:9px 11px;border-radius:11px;
+background:var(--sunk);border:1px solid var(--line);line-height:1.45;overflow-wrap:anywhere}
+.hm-sides li:has(.pill.warn){border-left:3px solid var(--warn-s)}
+.hm-sides li:has(.pill.bad){border-left:3px solid var(--bad-s)}
+.hm-sides li>b{font-size:13px;font-weight:650;color:var(--ink);white-space:nowrap}
+.hm-sides li>span:last-child{flex:1 1 100%;color:var(--ink2)}
+.hm-meter{flex:1 1 100%;display:block;height:6px;border-radius:999px;background:var(--qx);overflow:hidden;margin:2px 0}
+.hm-meter i{display:block;height:100%;border-radius:999px;background:var(--amt)}
+.hm-meter[data-tone=ok] i{background:var(--good-s)}
+.hm-meter[data-tone=warn] i{background:var(--warn)}
+.hm-meter[data-tone=bad] i{background:var(--bad)}
+.hm-usage{margin-top:2px}.hm-missed{margin-top:8px}
 .hm-missed ul{gap:4px;margin-top:6px}.hm-missed li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;
-  font-size:13px;overflow-wrap:anywhere}
-.hm-log summary{flex-wrap:wrap}.hm-log summary .faint{font-size:12px}
-.hm-logpre{max-height:340px;overflow:auto;margin:6px 0 0;padding:10px 12px;border-radius:10px;background:var(--sunk);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2)}
-.hm-sides li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;line-height:1.5;overflow-wrap:anywhere}
-.hm-sides li>b{font-weight:650;white-space:nowrap}.hm-sides li>span:last-child{flex:1 1 100%;color:var(--ink2)}
-.hm-split{display:flex;gap:2px;height:14px;border-radius:4px;overflow:hidden}
-.hm-split i{min-width:2px;background:var(--amt2)}.hm-split i.hm-out{background:var(--amt)}
-.hm-split i:nth-child(odd):not(.hm-out){background:var(--amt3)}
-.hm-panel .rs{margin:0;max-width:none}
-.hm-panel .rs li{grid-template-columns:minmax(0,1.7fr) minmax(40px,1fr) 56px;align-items:baseline}
-.hm-panel .rs-w{white-space:normal;overflow:visible;line-height:1.4}
-.hm-notes summary,.hm-rest summary,.hm-log summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;font-size:13px;
-color:var(--ink2);padding:2px 0}
-.hm-notes summary::-webkit-details-marker,.hm-rest summary::-webkit-details-marker,.hm-log summary::-webkit-details-marker{display:none}
-.hm-notes summary .ic,.hm-rest summary .ic,.hm-log summary .ic{transition:transform .15s}
+font-size:12px;overflow-wrap:anywhere;padding:6px 8px}
+
+/* reasons & folds */
+.hm-panel .rs{margin:2px 0 0;max-width:none;gap:6px}
+.hm-panel .rs li{grid-template-columns:minmax(0,1.7fr) minmax(40px,1fr) 54px;align-items:center;font-size:12px}
+.hm-panel .rs-w{white-space:normal;overflow:visible;line-height:1.35;color:var(--ink2)}
+.hm-panel .rs-b{height:7px;border-radius:999px;background:var(--qx);overflow:hidden}
+.hm-panel .rs-b i{border-radius:999px}
+.hm-notes,.hm-log{border:1px solid var(--line);border-radius:11px;padding:7px 11px;background:var(--surface)}
+.hm-notes summary,.hm-rest summary,.hm-log summary{display:flex;align-items:center;gap:6px;cursor:pointer;
+list-style:none;font-size:12px;font-weight:600;color:var(--ink2);padding:1px 0;user-select:none}
+.hm-rest summary{display:inline-flex;padding:4px 8px;border-radius:8px}
+.hm-rest summary:hover{background:var(--hover);color:var(--ink)}
+.hm-notes summary:hover,.hm-log summary:hover{color:var(--ink)}
+.hm-notes summary::-webkit-details-marker,.hm-rest summary::-webkit-details-marker,
+.hm-log summary::-webkit-details-marker{display:none}
+.hm-notes summary .ic,.hm-rest summary .ic,.hm-log summary .ic{transition:transform .15s;color:var(--ink3)}
 .hm-notes[open] summary .ic,.hm-rest[open] summary .ic,.hm-log[open] summary .ic{transform:rotate(90deg)}
-.hm-notes ul{margin:6px 0 0;padding:0 0 0 18px;display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--ink2);
-line-height:1.5;overflow-wrap:anywhere}
-.hm-links{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px}
+.hm-notes ul{margin:8px 0 2px;padding:8px 0 0 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;
+gap:5px;font-size:12px;color:var(--ink2);line-height:1.5;overflow-wrap:anywhere}
+.hm-log summary{flex-wrap:wrap}.hm-log summary .faint{font-size:11px;font-weight:400}
+.hm-logpre{max-height:320px;overflow:auto;margin:8px 0 0;padding:10px 12px;border-radius:9px;background:var(--sunk);
+font:11px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2)}
+.hm-links{display:flex;flex-wrap:wrap;gap:6px 8px;font-size:12px;padding-top:2px}
+.hm-links a{display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:8px;
+border:1px solid var(--line2);background:var(--surface);text-decoration:none;font-weight:600;color:var(--ink)}
+.hm-links a:hover{background:var(--hover)}
+
+/* night panel timeline & sites */
 .hm-parts{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:max-content max-content minmax(0,1fr);
-gap:6px 12px;font-size:13px;align-items:baseline}
+gap:7px 12px;font-size:13px;align-items:baseline}
 .hm-parts li{display:contents}
-.hm-parts li>b{font-weight:650}.hm-parts li>.num{color:var(--ink2)}
+.hm-parts li>b{display:inline-flex;align-items:center;gap:7px;font-weight:650}
+.hm-parts li>b::before{content:"";width:7px;height:7px;border-radius:50%;flex:none;background:var(--amt)}
+.hm-parts li:nth-child(1)>b::before{background:var(--q5)}
+.hm-parts li:nth-child(2)>b::before{background:var(--q3)}
+.hm-parts li:nth-child(3)>b::before{background:var(--q4)}
+.hm-parts li:nth-child(4)>b::before{background:var(--ink2)}
+.hm-parts li:nth-child(5)>b::before{background:var(--good-s)}
+.hm-parts li>.num{color:var(--ink2);font-size:12px}
 .hm-parts li>.num:last-child{grid-column:2/-1}
 .hm-part-say{grid-column:2/-1;margin-top:-4px;font-size:12px;color:var(--ink3);overflow-wrap:anywhere}
-.hm-nsites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
-.hm-nsites li{display:flex;align-items:baseline;gap:10px;min-width:0}
-.hm-nsites li a{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hm-nsites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.hm-nsites li{display:flex;align-items:baseline;gap:10px;min-width:0;padding:5px 8px;margin:0 -8px;border-radius:8px}
+.hm-nsites li:hover{background:var(--hover)}
+.hm-nsites li a{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+text-decoration:none;font-weight:600}
+.hm-nsites li a:hover{text-decoration:underline}
 .hm-nsites .num{color:var(--ink2);font-size:12px;white-space:nowrap}
 
-.hm-scroll{overflow-x:auto}
+/* problems list refinement */
+#problems .v3-problems li{padding:9px 8px;margin:0 -8px;border-radius:9px;font-size:13px;align-items:center}
+#problems .v3-problems li:hover{background:var(--hover)}
+#problems .v3-pw a{text-decoration:none}#problems .v3-pw a:hover{text-decoration:underline}
+#problems .v3-ps{padding:1px 7px;border-radius:999px;font-size:11px}
+#problems li[data-sev=warn] .v3-ps{background:var(--warn-bg)}
+#problems li[data-sev=bad] .v3-ps{background:var(--bad-bg)}
+
+/* nightly history table */
+.hm-scroll{overflow-x:auto;scrollbar-width:thin}
+.hm-scroll:focus-visible{outline:2px solid var(--act);outline-offset:-2px}
 table.hm-nights,table.hm-t{border-collapse:collapse;width:100%;font-size:13px}
-.hm-nights th,.hm-nights td{padding:9px 8px;text-align:left;white-space:nowrap;border-top:1px solid var(--line);
+.hm-nights th,.hm-nights td{padding:10px 8px;text-align:left;white-space:nowrap;border-top:1px solid var(--line);
 font-weight:400}
-.hm-nights thead th,.hm-t thead th{border-top:0;font-size:12px;font-weight:600;color:var(--ink2)}
-.hm-nights th:first-child{padding-left:18px}.hm-nights tr>:last-child{padding-right:18px}
+.hm-nights thead th,.hm-t thead th{border-top:0;font-size:12px;font-weight:650;color:var(--ink3);background:var(--surface)}
+.hm-nights thead th{position:sticky;top:0;z-index:1}
+.hm-nights th:first-child{padding-left:20px}.hm-nights tr>:last-child{padding-right:20px}
 .hm-nights .n,.hm-t .n{text-align:right;font-variant-numeric:tabular-nums}
 .hm-nights tbody tr{cursor:pointer}
 .hm-nights tbody tr:hover>*{background:var(--hover)}
@@ -798,31 +1047,92 @@ font-weight:400}
 .hm-nights tbody th a{display:inline-flex;align-items:center;gap:8px;font-weight:650;text-decoration:none}
 .hm-nights tbody th .tag{margin-left:8px}
 .hm-na{color:var(--ink3)}
-.hm-dur{display:inline-grid;grid-template-columns:44px auto;gap:7px;align-items:center}
-.hm-tr{display:block;height:8px;border-radius:2px;background:var(--qx)}
-.hm-tr i{display:block;height:100%;border-radius:2px;background:var(--amt);min-width:2px}
+.hm-dur{display:inline-grid;grid-template-columns:50px auto;gap:8px;align-items:center}
+.hm-tr{display:block;height:6px;border-radius:999px;background:var(--qx);overflow:hidden}
+.hm-tr i{display:block;height:100%;border-radius:999px;background:var(--amt);min-width:2px}
+.hm-nights tbody td:nth-child(2) .hm-tr i{background:var(--q5)}
+.hm-nights tbody td:nth-child(3) .hm-tr i{background:var(--q2)}
+.hm-nights tbody td:nth-child(4) .hm-tr i{background:var(--q4)}
+.hm-nights tbody td:nth-child(5) .hm-tr i{background:var(--mute-s)}
+.hm-nights tbody td:nth-child(6) .hm-tr i{background:var(--q3)}
 td[data-tone=run] .hm-tr i{background:none;box-shadow:inset 0 0 0 1.5px var(--ink)}
-td[data-tone=warn] .hm-tr i{background:var(--warn)}td[data-tone=bad] .hm-tr i{background:var(--bad)}
-.hm-dl{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+td[data-tone=warn] .hm-tr i{background:var(--warn)!important}
+td[data-tone=bad] .hm-tr i{background:var(--bad)!important}
+.hm-dl{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
 td[data-tone=warn] .hm-dl{color:var(--warn-ink);font-weight:650}td[data-tone=bad] .hm-dl{color:var(--bad-ink);font-weight:650}
 
-.hm-figs{display:flex;flex-wrap:wrap;gap:8px 36px;margin:0 0 12px}
-.hm-figure{display:flex;flex-direction:column;gap:1px}
-.hm-figure span{font-size:12px;color:var(--ink2)}
-.hm-figure b{font-size:20px;font-weight:700;line-height:1.25}
-.hm-figure.hm-bad b{color:var(--bad-ink)}
-table.hm-t{max-width:640px}
-.hm-t th,.hm-t td{padding:7px 0 7px 16px;text-align:left;border-top:1px solid var(--line);white-space:nowrap}
-.hm-t .n{width:64px;min-width:64px}
+/* last swap changes section */
+.hm-figs{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 16px}
+.hm-figure{flex:1 1 112px;max-width:176px;display:flex;flex-direction:column;gap:3px;padding:10px 14px;
+border-radius:12px;background:var(--sunk);border:1px solid var(--line)}
+.hm-figure span{font-size:12px;color:var(--ink2);font-weight:600}
+.hm-figure b{font-size:20px;font-weight:700;line-height:1.2;letter-spacing:-.01em}
+
+.hm-figure.hm-bad{background:var(--bad-bg);border-color:transparent}
+.hm-figure.hm-bad span,.hm-figure.hm-bad b{color:var(--bad-ink)}
+table.hm-t{max-width:none}
+.hm-t th,.hm-t td{padding:9px 0 9px 16px;text-align:left;border-top:1px solid var(--line);white-space:nowrap}
+.hm-t .n{width:68px;min-width:60px}
 .hm-t tr>:first-child{padding-left:0;white-space:normal}
-.hm-t td a{text-decoration:none;font-weight:600}.hm-t td a:hover{text-decoration:underline}
+.hm-csite{display:flex;align-items:center;gap:12px;min-width:0}
+.hm-csite a{text-decoration:none;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hm-csite a:hover{text-decoration:underline}
+.hm-cbar{flex:0 0 110px;margin-left:auto;height:6px;border-radius:999px;background:var(--qx);overflow:hidden;display:flex}
+.hm-cbar>span{display:flex;height:100%;gap:1px;border-radius:999px;overflow:hidden}
+.hm-cbar i{display:block;height:100%;min-width:2px}
+.hm-cn{background:var(--q5)}.hm-cc{background:var(--q2)}.hm-cl{background:var(--line2)}
 .hm-t tbody tr:hover td{background:var(--hover)}
 .hm-rest{margin-top:8px}.hm-rest table{margin-top:4px}.hm-rest .hm-t .n{min-width:44px}
 .hm-foot{margin:18px 2px 0;font-size:12px;color:var(--ink3)}
-.hm-note{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0;padding:10px 18px;border-top:1px solid var(--line);
+.hm-note{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0;padding:10px 20px;border-top:1px solid var(--line);
 font-size:13px}
 .v3-none{display:flex;align-items:center;gap:8px}
-@media (prefers-reduced-motion:reduce){.hm-notes summary .ic,.hm-rest summary .ic{transition:none}}
+/* 每晚紀錄 drawn: a row a night on the night's clock (nights_chart); the table folded under it */
+.hm-gantt{--h:9;padding:14px 20px 8px}
+.hm-gleg{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 10px;font-size:12px;color:var(--ink2)}
+.hm-gleg span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.hm-gleg i{width:10px;height:10px;border-radius:3px;flex:none}
+.hm-grow{display:grid;grid-template-columns:116px minmax(0,1fr) 84px 112px;align-items:center;gap:12px;padding:6px 8px;
+margin:0 -8px;border-radius:9px;font-size:13px}
+.hm-grow[data-row]{cursor:pointer}.hm-grow[data-row]:hover{background:var(--hover)}
+.hm-grow.on{background:var(--sunk);box-shadow:inset 3px 0 0 var(--act)}
+.hm-gname a{display:inline-flex;align-items:center;gap:7px;font-weight:650;text-decoration:none;white-space:nowrap}
+.hm-gtrack{position:relative;display:block;height:20px;border-radius:5px;
+background:linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/calc(100% / var(--h)) 100% repeat-x,var(--sunk)}
+.hm-gnone{background:linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/calc(100% / var(--h)) 100% repeat-x}
+.hm-ghours{padding-top:0;padding-bottom:0;cursor:default}.hm-ghours:hover{background:none}
+.hm-ghours .hm-gtrack{height:16px;background:none}
+.hm-ghours .hm-gtrack span{position:absolute;top:0;transform:translateX(-50%);font-size:11px;color:var(--ink3);
+font-variant-numeric:tabular-nums;white-space:nowrap}
+.hm-ghours .hm-gtrack span:first-child{transform:none}
+.hm-gseg{position:absolute;top:3px;bottom:3px;min-width:3px;border-radius:4px;box-shadow:0 0 0 1px var(--surface)}
+.hm-gseg:hover,.hm-gseg:focus-visible{filter:brightness(1.12);z-index:2}
+.hm-grun{background:repeating-linear-gradient(135deg,var(--q3) 0 3px,transparent 3px 6px);
+box-shadow:inset 0 0 0 1px var(--q3),0 0 0 1px var(--surface)}
+.hm-gleg i.hm-grun{box-shadow:inset 0 0 0 1px var(--q3)}
+.hm-gmark{position:absolute;top:2px;z-index:3;display:grid;place-items:center;width:16px;height:16px;border-radius:50%;
+background:var(--surface)}
+.hm-gend{color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
+.hm-gnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--ink3)}
+.hm-gnum b{color:var(--ink);font-weight:650}.hm-gnum .v3-flag{margin-left:6px}
+details.hm-table{border-top:1px solid var(--line)}
+details.hm-table>summary{padding:10px 20px;font-size:13px;color:var(--ink2);cursor:pointer}
+details.hm-table>summary:hover{color:var(--ink)}
+/* the figures under the sentence on top */
+.hm-top{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
+.hm-top>span{display:inline-flex;align-items:baseline;gap:6px;padding:5px 11px;border-radius:9px;background:var(--sunk);
+font-size:12px;color:var(--ink2);white-space:nowrap}
+.hm-top>span>b{font-size:16px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.hm-top>span>span{align-self:center}
+@media (prefers-reduced-motion:reduce){.hm-notes summary .ic,.hm-rest summary .ic,.hm-log summary .ic,
+details.hm-link>summary .ic,.hm-node>a{transition:none}}
+@media (max-width:700px){
+.hm-gantt{padding:12px 14px 6px}
+.hm-grow{grid-template-columns:auto minmax(0,1fr) auto;row-gap:5px}
+.hm-grow>.hm-gtrack{grid-column:1/-1;grid-row:2}
+.hm-grow>.hm-gend{grid-column:2;grid-row:1}
+.hm-ghours>span:not(.hm-gtrack){display:none}.hm-ghours>.hm-gtrack{grid-row:1}
+}
 
 @media (max-width:1100px){
 .hm{grid-template-columns:minmax(0,1fr);grid-template-areas:"chain" "side" "problems" "nights" "changes"}
@@ -830,16 +1140,21 @@ font-size:13px}
 }
 @media (max-width:900px){
 .hm-nodes{grid-template-columns:minmax(0,1fr)!important}
-.hm-node+.hm-node{border-left:0;border-top:1px solid var(--line)}
-.hm-node+.hm-node::before{left:22px;top:-5px;transform:rotate(135deg)}
-.hm-node>a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"nm fig" "line unit";gap:2px 12px;
-padding:11px 16px}
+.hm-node{border-top:0;border-left:3px solid var(--line)}
+.hm-node[data-tone=ok]{border-left-color:var(--good-s)}.hm-node[data-tone=warn]{border-left-color:var(--warn-s)}
+.hm-node[data-tone=bad]{border-left-color:var(--bad-s)}.hm-node[data-tone=run]{border-left-color:var(--act)}
+.hm-node+.hm-node{border-left-width:3px;border-top:1px solid var(--line)}
+.hm-node+.hm-node::before{left:22px;top:-4px;transform:rotate(135deg)}
+.hm-node>a{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"nm fig" "line unit" "bar bar";
+gap:2px 12px;padding:11px 16px}
 .hm-nm{grid-area:nm}.hm-fig{grid-area:fig;margin:0;font-size:16px;text-align:right}
-.hm-unit{grid-area:unit;text-align:right;min-height:0}.hm-line{grid-area:line;margin:0}
-.hm-node>a.on{box-shadow:inset 3px 0 0 var(--act)}
-.hm-now{align-items:flex-start;gap:12px}
+.hm-unit{grid-area:unit;text-align:right;min-height:0}.hm-line{grid-area:line;margin:0;padding:0}
+.hm-nbar{grid-area:bar;margin-top:5px}
+.hm-node>a.on{box-shadow:inset -3px 0 0 var(--act)}
+.hm-now{flex-direction:column;align-items:flex-start;gap:10px}
 .hm-pad{padding:12px 14px}
-.hm-nights th:first-child{position:sticky;left:0;background:var(--surface);padding-left:14px;z-index:1}
+.hm-cbar{display:none}
+.hm-nights th:first-child{position:sticky;left:0;background:var(--surface);padding-left:14px;z-index:2}
 }
 """
 
@@ -865,14 +1180,17 @@ def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dic
     when = ""
     if snap.get("at"):
         when = (f"<p class='hm-foot'>各步驟的紀錄每 5 分鐘讀一次，這次 {e(stamp(snap.get('at')))}"
-                + ("（正在重新讀）" if snap.get("running") else " · <a href='/?fresh=1'>現在重讀</a>") + "</p>")
+                + ("（正在重新讀）" if snap.get("running") else " · <a href='/tonight?fresh=1'>現在重讀</a>") + "</p>")
     again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if reading or snap.get("running") else ""
     return (f"<style>{charts.CSS}{SHARED_CSS}{CSS}</style>"
             + status_section(snap, t, changes, rows, state, "/api/tonight?brief=1", now,
-                             len(parts["new"]) if parts is not None else None)
+                             len(parts["new"]) if parts is not None else None,
+                             figs="" if reading else top_figures(changes, parts, rows))
             + f"<div class='hm' data-home data-first='{e(first_pick(nodes, nights))}'>{flow}"
             + f"<aside class='hm-side' aria-label='選中的步驟或夜晚'>{side}</aside>"
             + problems_section(rows, reading, parts, (base or {}).get("at") or "", base_note)
-            + section(4, "nights", "每晚紀錄", nights_html(nights) + record_note(hist))
+            + section(4, "nights", "每晚紀錄", nights_chart(nights) + (
+                f"<details class='hm-table'><summary>看每步花多久的表</summary>{nights_html(nights)}</details>"
+                if any(r["cells"] or r["runs"] for r in nights) else nights_html(nights)) + record_note(hist))
             + changes_section(changes, t) + "</div>" + when
             + again + f"<script>{TONIGHT_JS}</script><script>{HOME_JS}</script>")

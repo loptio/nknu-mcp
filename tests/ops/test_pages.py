@@ -210,7 +210,7 @@ def test_the_board_api_is_only_for_this_machine_and_only_get(db, tmp_path):
 def test_a_page_without_test_questions_has_no_board(db, tmp_path):
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
-        assert "data-board" not in client.get("/").text.split("<script>")[0]
+        assert "data-board" not in client.get("/tonight").text.split("<script>")[0]
         assert client.get("/api/board").json()["total"] == 0
 
 
@@ -267,7 +267,7 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
                          gold=gold)
     with TestClient(app, base_url=BASE) as client:
-        home = client.get("/").text
+        home = client.get("/tonight").text
         search = client.get("/search")
         page_of_trace = client.get("/trace")
         _settled(client)
@@ -276,6 +276,22 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
     assert "aria-current='page'>測試</a>" in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
     assert "aria-current='page'>文件搜尋</a>" in page_of_trace.text
+
+
+def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_on_to_tonight(db, tmp_path):
+    # 2026-11-22: 總覽 (nknu.ops.panorama) is /, 每晚運行 moved to /tonight; a link kept from before (a night's, or
+    # 現在重讀) still lands on 每晚運行
+    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
+    with TestClient(app, base_url=BASE) as client:
+        front = client.get("/")
+        night = client.get("/?night=2026-11-14", follow_redirects=False)
+        fresh = client.get("/?fresh=1", follow_redirects=False)
+        _settled(client)
+    assert front.status_code == 200 and "<title>總覽 · 檢視台</title>" in front.text
+    assert "aria-current='page'>總覽</a>" in front.text and "href='/tonight'" in front.text
+    assert "網站的統計還在算" in front.text  # 網站's numbers are counted in the background: said, not a failure
+    assert night.status_code == 307 and night.headers["location"] == "/tonight?night=2026-11-14"
+    assert fresh.headers["location"] == "/tonight?fresh=1"
 
 
 # ---------------------------------------------------------------- a document's dates on one line

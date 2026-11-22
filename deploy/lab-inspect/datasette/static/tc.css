@@ -174,7 +174,7 @@ svg.map { display: block; width: 100%; height: auto; }
 .mapkey span { display: inline-flex; align-items: center; gap: 6px; }
 .mapkey i.amt { width: 22px; height: 3px; border-radius: 2px; background: var(--amt); }
 .mapkey i.edge { width: 22px; height: 0; border-top: 1.6px solid var(--line2); }
-.insp { position: sticky; top: 62px; max-height: calc(100vh - 80px); overflow: auto; padding: 0; }
+.insp { position: sticky; top: calc(var(--nk-bar-h, 0px) + 14px); max-height: calc(100vh - var(--nk-bar-h, 0px) - 28px); overflow: auto; padding: 0; }
 @media (max-width: 1080px) { .insp { position: static; max-height: none; } }
 .insp .tbl { display: none; padding: 16px 18px 14px; }
 .insp .tbl.on { display: block; }

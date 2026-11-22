@@ -275,14 +275,16 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
     # since 11-17 every panel shows nknu/ops/theme/bar.py's bar: 檢視台's own pages by path, the others by address
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
-        pages = {path: client.get(path).text for path in ("/", "/try", "/doc", "/trace?ref=d3")}
+        pages = {path: client.get(path).text for path in ("/", "/tonight", "/try", "/doc", "/trace?ref=d3")}
     for path, page in pages.items():
         assert "href='/sites'" in page and "href='http://127.0.0.1:18001/'" in page, path
-        assert "href='/doc'" in page and "href='/'" in page and "class='nk-bar'" in page, path
-        assert ">資料庫<svg" in page and "<summary>工具" in page and "翻庫" not in page, path
+        assert "href='/doc'" in page and "href='/'" in page and "href='/tonight'" in page, path
+        # 11-22: the tools in the same row (資料庫, another panel, with the arrow out), 更多 for a narrow window
+        assert "class='nk-bar'" in page and "class='nk-tool'" in page and "<summary>更多" in page, path
+        assert ">資料庫<svg" in page and "class='nk-mode'" in page and "翻庫" not in page, path
     marked = {path: page.split("aria-current='page'>", 1)[1].split("<", 1)[0] for path, page in pages.items()}
-    assert marked == {"/": "每晚運行", "/try": "測試", "/doc": "文件搜尋", "/trace?ref=d3": "文件搜尋"}
-    assert "data-tip='每個網站收了多少、缺什麼" in pages["/"]  # what each entry is floats over its name
+    assert marked == {"/": "總覽", "/tonight": "每晚運行", "/try": "測試", "/doc": "文件搜尋", "/trace?ref=d3": "文件搜尋"}
+    assert "data-tip='每個網站收了多少、缺什麼" in pages["/tonight"]  # what each entry is floats over its name
 
 
 def test_a_trace_opens_with_the_five_steps_state(site):

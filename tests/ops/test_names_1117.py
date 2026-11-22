@@ -29,7 +29,7 @@ def where(tmp_path) -> Where:
 
 def test_the_bar_names_each_page_for_what_it_answers():
     pages = json.loads((REPO / "src/nknu/ops/theme/panels.json").read_text(encoding="utf-8"))["pages"]
-    assert [p["name"] for p in pages] == ["每晚運行", "網站", "測試", "文件搜尋"]
+    assert [p["name"] for p in pages] == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"]  # 總覽 first since 11-22
     assert all(p["tip"] and "\n" not in p["tip"] and "今晚" not in p["tip"] for p in pages)
     html = bar.bar("tonight", "ops")
     assert "aria-current='page'>每晚運行</a>" in html

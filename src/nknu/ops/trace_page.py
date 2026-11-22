@@ -45,9 +45,9 @@ UNSEEN = "沒有紀錄"  # a step that left nothing of this document
 
 
 def trace_form(ref: str, *, focus: bool = True) -> str:
-    return (f"<form class='ask' action='/trace' method='get'><div class='box'>"
+    return (f"<search><form class='ask' action='/trace' method='get'><div class='box'>"
             f"<input name='ref' value='{e(ref)}' placeholder='標題裡的字、網址或文件編號' aria-label='要找的文件或網頁'"
-            f"{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form>")
+            f" enterkeyhint='search'{' autofocus' if focus else ''}>{go_button('搜尋')}</div></form></search>")
 
 
 def examples_html(found: list[dict]) -> str:

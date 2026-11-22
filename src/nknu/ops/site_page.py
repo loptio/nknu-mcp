@@ -385,12 +385,15 @@ def step_more(key: str, detail: dict | None) -> str:
 
 
 def step_panel(x: dict, detail: dict | None) -> str:
-    """A picked step's detail: what it does, the remarks on it, in and out, one split bar where out + reasons = in
-    (the crawl and the to-text step; the export's reasons are marks, 建庫 has no count of what went in), what the
-    reasons add up to, the reasons, the step's facts."""
+    """A picked step's detail: what it does (behind an info button), in and out, one split bar where out + reasons = in
+    (the crawl and the to-text step; the export's reasons are marks, 建庫 has no count of what went in), the remarks on
+    it, what the reasons add up to, the reasons, the step's facts."""
     stage, tone = x["stage"], x["tone"]
-    head = (f"<header><h3>{e(x['name'])}</h3><span class='pill {TONE_PILL.get(tone, 'none')}'>{e(TONE_WORDS.get(tone, ''))}"
-            "</span></header>")
+    does = DOES.get(stage["key"], "")
+    info = (f"<button type='button' class='hm-info' aria-label='{e(x['name'])}說明' "
+            f"data-tip='{e(does)}'>?</button>") if does else ""
+    head = (f"<header><h3>{e(x['name'])}</h3>{info}"
+            f"<span class='pill {TONE_PILL.get(tone, 'none')}'>{e(TONE_WORDS.get(tone, ''))}</span></header>")
     says = "".join(f"<p class='hm-said'>{e(w)}</p>" for w in x["says"])
     rows = []
     if stage["into"] is not None:
@@ -410,8 +413,8 @@ def step_panel(x: dict, detail: dict | None) -> str:
     reasons = reason_list(stage["lost"], stage["items"])
     reasons = f"<h4>{e(stage['lost_label'])}</h4>{reasons}" if reasons else ""
     empty = "" if rows else "<p class='v3-empty'>讀不到這一步的數字</p>"
-    return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}<p class='hm-does'>{e(DOES[stage['key']])}</p>"
-            f"{says}{io}{bar}{words}{tip}{reasons}{step_more(stage['key'], detail)}{empty}</article>")
+    return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{io}{bar}{says}{words}{tip}"
+            f"{reasons}{step_more(stage['key'], detail)}{empty}</article>")
 
 
 def first_pick(nodes: list[dict]) -> str:
@@ -494,10 +497,12 @@ def nights_html(hist: dict | None) -> str:
             flag = f"<span class='v3-flag'>✕ {unx:,}</span>" if unx else "0" if unx == 0 else "—"
             cells = f"<td class='n'>{n(r.get('new'))}</td><td class='n'>{n(r.get('left'))}</td><td class='n'>{flag}</td>"
         trs.append(f"<tr>{first}{cells}<td class='n'>{n(r.get('docs'))}</td><td class='n'>{n(r.get('undated'))}</td></tr>")
-    head = ("<tr><th>夜</th><th class='n'>新進</th><th class='n'>離開</th><th class='n' data-tip='離開了、建庫和面板都說不出"
-            "原因的文件'>說不出原因</th><th class='n' data-tip='那一晚以後庫裡這個網站的文件'>庫裡文件</th>"
-            "<th class='n' data-tip='公告、網頁、附件裡沒有日期的'>沒日期</th></tr>")
-    return (f"<div class='hm-scroll'><table class='hm-nights st-nights'><thead>{head}</thead>"
+    head = ("<tr><th scope='col'>夜</th><th scope='col' class='n'>新進</th><th scope='col' class='n'>離開</th>"
+            "<th scope='col' class='n' data-tip='離開了、建庫和面板都說不出原因的文件'>說不出原因</th>"
+            "<th scope='col' class='n' data-tip='那一晚以後庫裡這個網站的文件'>庫裡文件</th>"
+            "<th scope='col' class='n' data-tip='公告、網頁、附件裡沒有日期的'>沒日期</th></tr>")
+    return ("<div class='hm-scroll' tabindex='0' role='region' aria-label='每晚紀錄'>"
+            f"<table class='hm-nights st-nights'><thead>{head}</thead>"
             f"<tbody>{''.join(trs)}</tbody></table></div>")
 
 
@@ -513,42 +518,49 @@ def changes_html(changes: dict, key: str, departures: dict | None) -> str:
 CSS = """
 .hm.st{grid-template-areas:"chain side" "problems side" "docs side" "nights side" "changes side"}
 .hm.st>#docs{grid-area:docs}
-.st-name{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 14px}
-.st-name h1{font-size:20px;line-height:1.3;overflow-wrap:anywhere}
-.st-name .st-unit{color:var(--ink2);font-size:13px}
-.st-say{font-size:14px;font-weight:400;margin-top:4px}
-.hm-fresh a{display:inline-flex;align-items:center;gap:4px}
-.st-pad{padding:16px 18px}
-.st-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-.st-links .btn{display:inline-flex;align-items:center;gap:5px;font-weight:400}
-.st-kbar{display:flex;gap:2px;height:16px}
-.st-kbar i{display:block;min-width:3px;border-radius:4px}
-.st-legend{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 22px;font-size:13px}
-.st-legend li{display:inline-flex;align-items:center;gap:6px}
-.st-legend li i{width:10px;height:10px;border-radius:3px;flex:none}
-.st-legend b{font-variant-numeric:tabular-nums}
-.st-undated{display:grid;grid-template-columns:auto minmax(80px,300px) auto;justify-content:start;gap:10px;
-align-items:center;margin-top:14px;font-size:13px}
-.st-track{height:10px;border-radius:5px;background:var(--q0);overflow:hidden}
-.st-track i{display:block;height:100%;border-radius:0 4px 4px 0;background:var(--amt)}
+.st-name{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px}
+.st-name h1{font-size:20px;font-weight:700;line-height:1.3;letter-spacing:-.01em;overflow-wrap:anywhere}
+.st-name .st-unit{padding:1px 8px;border-radius:999px;background:var(--sunk);border:1px solid var(--line);
+color:var(--ink2);font-size:12px}
+.st-say{font-size:13px;font-weight:500;color:var(--ink2);margin-top:4px}
+.hm-fresh a{display:inline-flex;align-items:center;gap:4px;font-weight:600;text-decoration:none}
+.hm-fresh a:hover{text-decoration:underline}
+.st-pad{padding:18px 20px}
+.st-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.st-links .btn{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+.st-kbar{display:flex;gap:2px;height:12px;border-radius:999px;overflow:hidden;background:var(--qx)}
+.st-kbar i{display:block;min-width:3px;border-radius:2px}
+.st-legend{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 8px;font-size:12px}
+.st-legend li{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9px;background:var(--sunk);
+border:1px solid var(--line)}
+.st-legend li i{width:9px;height:9px;border-radius:3px;flex:none}
+.st-legend b{font-variant-numeric:tabular-nums;color:var(--ink)}
+.st-undated{display:grid;grid-template-columns:auto minmax(80px,260px) auto;justify-content:start;gap:12px;
+align-items:center;margin-top:14px;padding:10px 14px;border-radius:11px;background:var(--sunk);
+border:1px solid var(--line);font-size:13px}
+.st-track{height:7px;border-radius:999px;background:var(--qx);overflow:hidden}
+.st-track i{display:block;height:100%;border-radius:999px;background:var(--amt)}
 .st-undated b{font-variant-numeric:tabular-nums}
-table.st-nights{width:auto;min-width:min(100%,600px)}
+table.st-nights{width:100%;min-width:min(100%,540px)}
 .st-nights th,.st-nights td{padding-left:18px;padding-right:18px}
 .st-nights tbody tr{cursor:default}
 .st-night{font-weight:650}
 .st-first{border-top:0}
-.st-q .tn-chg{margin:0;border:0;border-radius:0;padding:16px 18px;box-shadow:none;background:none}
-.st-q .v3-panel{margin:16px 18px 0}
+.st-q .tn-chg{margin:0;border:0;border-radius:0;padding:18px 20px;box-shadow:none;background:none}
+.st-q .tn-figs{gap:10px}
+.st-q .tn-fig{padding:10px 14px;border-radius:12px;background:var(--sunk);border:1px solid var(--line);min-width:96px}
+.st-q .v3-panel{margin:16px 20px 0}
 .st-q .tn-fig b{font-size:20px;color:var(--ink)}
-.st-facts{margin:0;display:flex;flex-direction:column;gap:5px;font-size:13px}
+.st-facts{margin:0;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:11px;
+background:var(--sunk);border:1px solid var(--line);font-size:12px}
 .st-facts>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px}
-.st-facts dt{color:var(--ink3);font-size:12px}.st-facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.st-facts dt{color:var(--ink3);font-size:12px}.st-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--ink)}
 .st-fold>summary .faint{font-variant-numeric:tabular-nums}
 .st-fold .pl-reasons{margin-top:6px}
 .st-fold .pl-reasons .pl-eg1{max-width:100%}
 .rsd>li{display:block}
 .rsd .rs-row,.rsd details>summary{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(40px,1fr) 56px;gap:10px;
-align-items:baseline;font-size:13px;padding:3px 4px;border-radius:7px}
+align-items:center;font-size:12px;padding:4px 6px;border-radius:8px}
 .rsd details>summary{cursor:pointer;list-style:none}
 .rsd details>summary::-webkit-details-marker{display:none}
 .rsd details>summary .rs-w{text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}
@@ -559,7 +571,7 @@ align-items:baseline;font-size:13px;padding:3px 4px;border-radius:7px}
 .rs-items a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line2);display:block;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap}
 .rs-none{margin:4px 0 8px 10px}
-.st-check{margin-top:30px}
+.st-check{margin-top:28px}
 @media (max-width:1100px){
 .hm.st{grid-template-areas:"chain" "side" "problems" "docs" "nights" "changes"}
 }

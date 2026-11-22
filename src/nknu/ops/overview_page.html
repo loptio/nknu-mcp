@@ -29,7 +29,7 @@ h2, h3, h4 { margin: 0; }
 .app { max-width: var(--page); margin: 0 auto; padding-block: 0 28px; padding-inline: var(--gutter); }
 
 /* top bar */
-.topbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--bg); display: flex; align-items: center;
+.topbar { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px)); z-index: 20; background: var(--bg); display: flex; align-items: center;
   justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 12px 0 10px; }
 .tb-l { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; min-width: 0; }
 .crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 13px; min-width: 0; color: var(--ink3); }
@@ -65,8 +65,8 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .find-list em { font-style: normal; color: var(--ink3); grid-row: 1 / span 2; grid-column: 2; align-self: center; font-variant-numeric: tabular-nums; }
 
 /* grid */
-.grid { display: grid; grid-template-columns: minmax(0, 1fr) 356px; gap: 16px; align-items: start; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; position: relative; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 368px; gap: 18px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 18px 20px; min-width: 0; position: relative; }
 .card-h { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .card-h h2 { font-size: 14px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
 .card-h h2 span { font-weight: 400; color: var(--ink3); }
@@ -76,7 +76,7 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ctl > span { color: var(--ink3); font-size: 12px; }
 .side { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; }
-.side-in { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--barh)); max-height: calc(100vh - var(--barh) - 16px); overflow: auto; scrollbar-width: thin; }
+.side-in { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px) + var(--barh)); max-height: calc(100vh - var(--nk-bar-h, 0px) - var(--barh) - 16px); overflow: auto; scrollbar-width: thin; }
 .empty { padding: 36px 0; text-align: center; color: var(--ink3); }
 .tog { padding: 4px 9px; border-radius: 8px; font-size: 12px; color: var(--ink2); border: 1px solid var(--line); display: inline-flex; gap: 6px; align-items: center; }
 .tog:hover { color: var(--ink); border-color: var(--line2); }
@@ -169,19 +169,20 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .kl b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
 .tabs button { justify-content: center; padding: 4px 6px; }
-.sec { margin-top: 16px; }
-.sec h3 { font-size: 12px; font-weight: 600; color: var(--ink2); display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.sec { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.sec:first-child { border-top: 0; padding-top: 0; }
+.sec h3 { font-size: 12px; font-weight: 650; color: var(--ink2); display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .sec .sum { margin-left: auto; font-weight: 400; color: var(--ink3); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yr { display: block; width: 100%; height: 54px; }
-.yr rect.b { fill: var(--yc, var(--amt)); opacity: .6; }
+.yr rect.b { fill: var(--yc, var(--amt)); opacity: .65; }
 .yr rect.h { fill: transparent; }
 .yr g:hover rect.b { opacity: 1; }
 .yr-x { display: flex; justify-content: space-between; color: var(--ink3); font-size: 11px; margin-top: 2px; }
 /* one row form for everything below the donut: a name, a bar, a figure (meters and ranked lists alike) */
 .rk { display: grid; grid-template-columns: minmax(0, 46%) minmax(0, 1fr) 52px; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
 .rk > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rk .bar { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
-.rk .bar i { display: block; height: 100%; border-radius: 3px; background: var(--amt); opacity: .6; }
+.rk .bar { height: 6px; border-radius: 999px; background: var(--qx); overflow: hidden; }
+.rk .bar i { display: block; height: 100%; border-radius: 999px; background: var(--amt); opacity: .72; }
 .rk b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .rk.rest { color: var(--ink3); }
 .rk.rest b { font-weight: 400; }
@@ -190,14 +191,15 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .rk.m.hot .bar i { background: var(--q5); }
 .got { color: var(--ink2); font-size: 12px; }
 .got b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-.stack { display: flex; gap: 2px; height: 10px; border-radius: 5px; overflow: hidden; margin: 8px 0 6px; }
-.stack i { display: block; flex: 0 1 0; min-width: 0; }
-.o-got { background: var(--ink2); } .o-next { background: var(--q4); } .o-todo { background: var(--q2); }
+.stack { display: flex; gap: 2px; height: 11px; border-radius: 999px; overflow: hidden; margin: 8px 0 8px; background: var(--qx); }
+.stack i { display: block; flex: 0 1 0; min-width: 3px; border-radius: 2px; }
+.o-got { background: var(--good-s); } .o-next { background: var(--q4); } .o-todo { background: var(--q2); }
 .o-fail { background: var(--bad); } .o-login { background: var(--ink3); } .o-gone { background: var(--line2); }
 .rw { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-size: 12px; }
-.rw i { width: 10px; height: 10px; border-radius: 2px; }
+.rw i { width: 10px; height: 10px; border-radius: 3px; }
 .rw b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .note { color: var(--ink3); font-size: 12px; margin-top: 8px; }
+#tNote:not(:empty) { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 8px; background: var(--sunk); color: var(--ink2); margin-top: 10px; }
 /* a reminder of the build's checks: a name and its figure, what it means floating over the row */
 .ck { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
 .ck b { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -227,9 +229,10 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 .cross line { stroke: var(--ink2); shape-rendering: crispEdges; }
 .cross circle { stroke: var(--surface); stroke-width: 2; }
 .ov { fill: transparent; cursor: crosshair; touch-action: pan-y; }
-.nav-area { fill: var(--navc, var(--amt)); opacity: .3; }
-.brush .selection { fill: var(--ink); fill-opacity: .08; stroke: var(--ink3); shape-rendering: crispEdges; }
-.brush .handle { fill: var(--ink2); rx: 2px; }
+.nav-area { fill: var(--navc, var(--amt)); opacity: .28; }
+.nx { transition: opacity .15s; }
+.brush .selection { fill: var(--amt3); fill-opacity: 1; stroke: var(--amt); stroke-opacity: .55; shape-rendering: crispEdges; }
+.brush .handle { fill: var(--amt); rx: 2px; }
 .cal-h { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }
 .cal-h b { font-size: 16px; font-weight: 650; min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
 .cal-h button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); text-align: center; color: var(--ink2); }
@@ -256,11 +259,11 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 /* list */
 .seg button b { font-weight: 600; margin-left: 5px; font-variant-numeric: tabular-nums; }
 table { border-collapse: collapse; width: 100%; }
-th { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--barh)); z-index: 3; background: var(--surface); text-align: left; font-size: 12px; font-weight: 600;
-  color: var(--ink3); padding: 7px 8px; white-space: nowrap; box-shadow: inset 0 -1px 0 var(--line2); cursor: pointer; user-select: none; }
+th { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px) + var(--barh)); z-index: 3; background: var(--surface); text-align: left; font-size: 12px; font-weight: 650;
+  color: var(--ink3); padding: 8px 10px; white-space: nowrap; box-shadow: inset 0 -1px 0 var(--line2); cursor: pointer; user-select: none; }
 th:hover, th[aria-sort] { color: var(--ink); }
 th.r, td.r { text-align: right; }
-td { padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
 tbody tr { cursor: pointer; }
 tbody tr:hover td { background: var(--hover); }
 tbody tr[aria-selected="true"] td { background: var(--press); }
@@ -268,7 +271,7 @@ tbody tr[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 0 var(--
 /* Three levels, told apart by weight, ground and indent (owner 11-15: 「文学院这种大分类和他下面的网站区分太不明显」):
    a unit is a bold row on the page's ground with a chevron and folds its sites; a site is indented under it; a 品保 site
    is indented once more. Numbers sit right-aligned under right-aligned column names, no bars beside them. */
-tr.grow td { padding-top: 10px; padding-bottom: 10px; background: var(--bg); border-top: 1px solid var(--line2); border-bottom: 1px solid var(--line2);
+tr.grow td { padding-top: 10px; padding-bottom: 10px; background: var(--sunk); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
   font-weight: 650; color: var(--ink); }
 tr.grow:hover td { background: var(--press); }
 tr.grow td:first-child { font-size: 14px; }
@@ -347,7 +350,7 @@ tr.grow .pc { color: var(--ink); }
 @media (prefers-reduced-motion: reduce) { .tile, .ghead, .dn path { transition: none !important; } }
 </style>
 
-<div class="app">
+<main class="app">
   <header class="topbar" id="bar">
     <div class="tb-l"><nav class="crumbs" id="crumbs" aria-label="目前範圍"></nav><span class="live" id="live" role="status" hidden></span></div>
     <div class="top-r">
@@ -388,7 +391,7 @@ tr.grow .pc { color: var(--ink); }
         </svg>
         <ul class="kl" id="kl"></ul>
       </div>
-      <div class="seg tabs" id="segTab" role="group" aria-label="詳情分頁"><button data-v="sum" data-tip="各年的量和資料品質">概況</button><button data-v="what" data-tip="附件格式、網頁欄目、學校分類、發佈組別">內容</button><button data-v="crawl" data-tip="抓下來了多少、日期從哪來、抓到但沒收進庫的">收錄</button></div>
+      <div class="seg tabs" id="segTab" role="group" aria-label="詳情分頁"><button data-v="sum">概況</button><button data-v="what">內容</button><button data-v="crawl">收錄</button></div>
       <div id="iSecs"></div>
     </div></aside>
 
@@ -421,12 +424,12 @@ tr.grow .pc { color: var(--ink); }
 
     <section class="card" aria-labelledby="hList">
       <div class="card-h cm"><h2 id="hList">網站列表</h2><div class="seg" id="segList" role="group" aria-label="已抓或待抓的網站"><button data-v="got" data-tip="第一輪已經抓下來的網站">已抓<b id="nGot"></b></button><button data-v="later" data-tip="留到第二輪再抓的網站">待抓<b id="nLater"></b></button></div></div>
-      <div class="tw" id="tw" tabindex="0" aria-label="網站列表，上下方向鍵切換"><table id="tbl"></table></div>
+      <div class="tw" id="tw" tabindex="0" role="region" aria-label="網站列表，上下方向鍵切換"><table id="tbl"></table></div>
       <div class="tw later" id="later" hidden><table id="tblLater"></table></div>
     </section>
   </div>
-  <div class="foot" id="foot"></div>
-</div>
+  <footer class="foot" id="foot"></footer>
+</main>
 <div class="tip" id="tip" hidden></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
@@ -823,7 +826,7 @@ function renderInsp() {
   const within = S.link ? ' · 所選時間內' : '';
   if (byChars()) { tweenNum($('#dnV'), total, v => charsParts(v)[0]); $('#dnL').textContent = charsParts(total)[1] + (within || (share ? ' · ' + share : '')); }
   else { tweenNum($('#dnV'), total, fmt); $('#dnL').textContent = within ? '份' + within : share || '份文件'; }
-  $('#kl').innerHTML = parts.map((v, i) => '<li data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" style="--c:var(--k' + i + ')" role="button" tabindex="0" aria-pressed="' + S.kinds[i] + '" data-tip="' + esc(KTIP[i]) + '"><i></i><span>' + KN[i] + '</span><b>' + (byChars() ? shortChars(v) : fmt(v)) + '</b></li>').join('');
+  $('#kl').innerHTML = parts.map((v, i) => v > 0 || !S.kinds[i] ? '<li data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" style="--c:var(--k' + i + ')" role="button" tabindex="0" aria-pressed="' + S.kinds[i] + '" data-tip="' + esc(KTIP[i]) + '"><i></i><span>' + KN[i] + '</span><b>' + (byChars() ? shortChars(v) : fmt(v)) + '</b></li>' : '').join('');
   syncSeg('segTab', S.tab);
 
   const h = [];
@@ -1017,6 +1020,7 @@ function drawLine() {
   for (let i = 0; i < gm.n; i++) { for (const k of ks) tot[i] += sm[k][i]; nmax = Math.max(nmax, tot[i]); }
   const yn = d3.scaleLinear().domain([0, nmax]).range([tc.NH - 16, 3]);
   tc.navArea.style('--navc', col).attr('d', d3.area().x((d, i) => tc.xn((gm.start(i) + 15) * DAY)).y0(tc.NH - 16).y1(d => yn(d)).curve(d3.curveMonotoneX)(tot));
+  tc.nx.style('opacity', span >= (AX1 - AX0) * 0.85 ? 0 : 1);
   drawCross();
 }
 function drawCross() {
@@ -1235,7 +1239,7 @@ function renderList() {
   top.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || b.v - a.v; });
   const head = '<thead><tr>' + COLS.map(c => {
     const on = S.sort === c.k && c.k !== 'group', t = c.k === 'v' ? unitWord() : c.t;
-    return '<th data-s="' + c.k + '" class="c-' + c.k + (c.r ? ' r' : '') + (c.k === hl ? ' hl' : '') + '"' + (on ? ' aria-sort="' + (S.dir > 0 ? 'ascending' : 'descending') + '"' : '') + (c.tip ? ' data-tip="' + esc(c.tip) + '"' : '') + '>' + t + (on ? (S.dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
+    return '<th scope="col" data-s="' + c.k + '" class="c-' + c.k + (c.r ? ' r' : '') + (c.k === hl ? ' hl' : '') + '"' + (on ? ' aria-sort="' + (S.dir > 0 ? 'ascending' : 'descending') + '"' : '') + (c.tip ? ' data-tip="' + esc(c.tip) + '"' : '') + '>' + t + (on ? (S.dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
   }).join('') + '</tr></thead>';
   const siteRow = (r, kid) => {
     const s = r.s, ks = kidsOf.get(s.k) || [], open = S.unfold.has(s.k);
@@ -1260,7 +1264,7 @@ const LATER_ORDER = ['整站靠 JavaScript', '校外的本校單位網站', '其
 const laterOpen = new Set();
 function renderLater() {
   const reasons = Array.from(new Set(D.later.map(s => s.w))).sort((a, b) => (LATER_ORDER.indexOf(a) + 1 || 9) - (LATER_ORDER.indexOf(b) + 1 || 9));
-  $('#tblLater').innerHTML = '<thead><tr><th>網站</th><th class="c-m" data-tip="網站名單裡給它標的重要性">重要性</th><th class="c-p">平台</th></tr></thead><tbody>' +
+  $('#tblLater').innerHTML = '<thead><tr><th scope="col">網站</th><th scope="col" class="c-m" data-tip="網站名單裡給它標的重要性">重要性</th><th scope="col" class="c-p">平台</th></tr></thead><tbody>' +
     reasons.map(w => {
       const open = laterOpen.has(w), rows = D.later.map((s, i) => [s, i]).filter(r => r[0].w === w);
       return '<tr class="grow" data-w="' + esc(w) + '" aria-expanded="' + open + '"><td colspan="3"><span class="gn">' + esc(w) + '<span>' + rows.length + '</span></span></td></tr>' +

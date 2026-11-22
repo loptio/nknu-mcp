@@ -31,7 +31,7 @@
   --good-ink: #1d6b3e; --warn-ink: #8a5a00; --bad-ink: #a83a1f;
   --good-bg: rgba(52,135,87,.12); --warn-bg: rgba(196,141,37,.16); --bad-bg: rgba(164,45,21,.1); --cut: rgba(164,45,21,.22);
   --act: #161615; --on-act: #ffffff;
-  --page: 1440px; --gutter: max(16px, env(safe-area-inset-left, 0px));
+  --page: 1440px; --gutter: max(16px, env(safe-area-inset-left, 0px)); --nk-bar-h: 49px;
   --font: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang TC", "Microsoft JhengHei", monospace;
 }
@@ -71,29 +71,40 @@ html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font); -webkit-font-smoothing: antialiased; }
 :focus-visible { outline: 2px solid var(--act); outline-offset: 2px; border-radius: 4px; }
 
-/* the top bar: every page of every panel, the same row (nknu/ops/theme/bar.py writes it): the four entries on the left,
-   at the right end 資料截至 and the 工具 menu (a <details>; its list floats under its button, so the bar never clips:
-   Datasette's app.css gives every header overflow: hidden) */
-.nk-bar { position: relative; z-index: 40; overflow: visible; display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap;
-  padding: 8px max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter)));
+/* the top bar: every page of every panel, one row that stays on top as the page scrolls (nknu/ops/theme/bar.py writes
+   it, 2026-11-22): 總覽 and the pages, a thin line, the tools a shade lighter in the same row; at the right end only
+   when the library was built and the light/dark switch. On a narrow window the tools fold into 更多 (a <details>; its
+   list floats under its button, so the bar never clips: Datasette's app.css gives every header overflow: hidden).
+   --nk-bar-h is its height: a part of a page that stays on top as it scrolls starts under it. */
+html { scroll-padding-top: calc(var(--nk-bar-h) + 8px); }
+.nk-bar { position: sticky; top: 0; z-index: 40; overflow: visible; display: flex; align-items: center; gap: 6px 16px;
+  min-height: var(--nk-bar-h); padding: 6px max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter)));
   background: var(--bg); border-bottom: 1px solid var(--line); font: 13px/1.4 var(--font); }
-.nk-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; }
+.nk-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
 /* :link / :visited and the bar's class in front: Datasette's app.css colours every `header a:link` */
-.nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link, .nk-bar .nk-tabs a:visited { display: inline-flex; align-items: center; gap: 4px;
-  padding: 5px 12px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap; font-size: 14px; }
-.nk-bar .nk-tabs a:hover { background: var(--hover); color: var(--ink); }
-.nk-bar .nk-tabs a[aria-current], .nk-bar .nk-tabs a[aria-current]:link, .nk-bar .nk-tabs a[aria-current]:visited {
+.nk-bar .nk-tabs > a, .nk-bar .nk-tabs > a:link, .nk-bar .nk-tabs > a:visited { display: inline-flex; align-items: center;
+  gap: 4px; padding: 5px 11px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap;
+  font-size: 14px; }
+.nk-bar .nk-tabs > a.nk-tool, .nk-bar .nk-tabs > a.nk-tool:link, .nk-bar .nk-tabs > a.nk-tool:visited {
+  padding: 5px 9px; color: var(--ink3); font-size: 13px; }
+.nk-bar .nk-tabs > a:hover { background: var(--hover); color: var(--ink); }
+.nk-bar .nk-tabs > a[aria-current], .nk-bar .nk-tabs > a[aria-current]:link, .nk-bar .nk-tabs > a[aria-current]:visited {
   background: var(--act); color: var(--on-act); font-weight: 650; }
-.nk-end { margin-left: auto; display: flex; align-items: center; gap: 4px 14px; min-width: 0; }
+.nk-bar .nk-tabs > a svg { opacity: .6; }
+.nk-sep { flex: none; width: 1px; height: 18px; margin: 0 8px; background: var(--line2); }
+.nk-end { margin-left: auto; display: flex; align-items: center; gap: 4px 12px; min-width: 0; }
 .nk-meta { color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.nk-tools { position: relative; }
-.nk-tools > summary { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 8px;
-  border: 1px solid var(--line2); color: var(--ink2); cursor: pointer; list-style: none; white-space: nowrap; user-select: none; }
-.nk-tools > summary::-webkit-details-marker { display: none; }
-.nk-tools > summary:hover, .nk-tools[open] > summary { background: var(--hover); color: var(--ink); }
-.nk-tools > summary svg { transition: transform .15s; }
-.nk-tools[open] > summary svg { transform: rotate(180deg); }
-.nk-tools.nk-on > summary { background: var(--act); border-color: var(--act); color: var(--on-act); font-weight: 650; }
+.nk-mode { flex: none; display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border-radius: 8px;
+  border: 1px solid var(--line2); background: none; color: var(--ink2); cursor: pointer; }
+.nk-mode:hover { background: var(--hover); color: var(--ink); }
+.nk-more { position: relative; display: none; }
+.nk-more > summary { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 8px;
+  color: var(--ink2); font-size: 14px; cursor: pointer; list-style: none; white-space: nowrap; user-select: none; }
+.nk-more > summary::-webkit-details-marker { display: none; }
+.nk-more > summary:hover, .nk-more[open] > summary { background: var(--hover); color: var(--ink); }
+.nk-more > summary svg { transition: transform .15s; }
+.nk-more[open] > summary svg { transform: rotate(180deg); }
+.nk-more.nk-on > summary { background: var(--act); color: var(--on-act); font-weight: 650; }
 .nk-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 168px; padding: 5px; display: flex;
   flex-direction: column; gap: 2px; background: var(--surface); border: 1px solid var(--line2); border-radius: 10px;
   box-shadow: var(--pop); }
@@ -102,5 +113,12 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(
 .nk-bar .nk-menu a:hover, .nk-bar .nk-menu a:focus-visible { background: var(--hover); }
 .nk-bar .nk-menu a[aria-current] { font-weight: 650; box-shadow: inset 2px 0 0 var(--act); }
 .nk-menu svg { flex: none; margin-left: auto; opacity: .6; }
-@media (prefers-reduced-motion: reduce) { .nk-tools > summary svg { transition: none; } }
-@media (max-width: 640px) { .nk-bar .nk-tabs a, .nk-bar .nk-tabs a:link { padding: 5px 9px; } }
+@media (prefers-reduced-motion: reduce) { .nk-more > summary svg { transition: none; } }
+@media (max-width: 860px) {
+  .nk-bar .nk-tabs > a.nk-tool, .nk-sep, .nk-meta { display: none; }
+  .nk-more { display: block; }
+}
+@media (max-width: 480px) {
+  .nk-bar { gap: 6px 8px; }
+  .nk-bar .nk-tabs > a, .nk-bar .nk-tabs > a:link, .nk-more > summary { padding: 5px 7px; }
+}

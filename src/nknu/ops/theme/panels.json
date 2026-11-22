@@ -9,8 +9,10 @@
     "ops": "http://127.0.0.1:8878",
     "tables": "http://127.0.0.1:8001"
   },
+  "pages_": "2026-11-22: 總覽 is the front page (/): the whole project on one page, mostly charts (the owner picked 「项目全景」); 每晚運行 moved to /tonight (an old /?night= or /?fresh= link is sent on there).",
   "pages": [
-    {"key": "tonight", "name": "每晚運行", "host": "ops", "path": "/", "tip": "每晚從爬取到換庫跑得正不正常、各步花多久、要你處理什麼"},
+    {"key": "home", "name": "總覽", "host": "ops", "path": "/", "tip": "整個專案一頁看完：收了多少、文件從哪來、有多新、搜得準不準、每晚跑得怎樣、爬蟲"},
+    {"key": "tonight", "name": "每晚運行", "host": "ops", "path": "/tonight", "tip": "每晚從爬取到換庫跑得正不正常、各步花多久、要你處理什麼"},
     {"key": "sites", "name": "網站", "host": "ops", "path": "/sites", "tip": "每個網站收了多少、缺什麼；點網站名看它從抓取到進庫的每一步"},
     {"key": "try", "name": "測試", "host": "ops", "path": "/try", "tip": "像學生的 AI 一樣搜尋：它收到什麼、為什麼這樣排、33 題的成績"},
     {"key": "doc", "name": "文件搜尋", "host": "ops", "path": "/doc", "tip": "一份文件或網頁從抓取到搜尋的每一步、存檔裡的樣子"}

@@ -322,9 +322,9 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     guide = _plugin("guide")
     ds = _Datasette(empty)
     table = _vars(guide, "table.html", ds, "aca", "docs")
-    # since 11-17 the bar is the panels' one (nknu/ops/theme): four entries by their tunnel addresses, and 資料庫, a
-    # tool, marked in the 工具 menu (structure design 2026-11-17 section 二)
-    assert "aria-current='page'>資料庫<svg" in table["nk_bar"] and "<details class='nk-tools nk-on'>" in table["nk_bar"]
+    # since 11-17 the bar is the panels' one (nknu/ops/theme): the entries by their tunnel addresses, and 資料庫, a
+    # tool, marked in the row and in 更多 (structure design 2026-11-17 section 二; one row since 11-22)
+    assert "aria-current='page'>資料庫</a>" in table["nk_bar"] and "<details class='nk-more nk-on'>" in table["nk_bar"]
     assert "href='http://127.0.0.1:18878/try'" in table["nk_bar"] and "href='http://127.0.0.1:18878/doc'" in table["nk_bar"]
     assert "data-tip='每個網站收了多少、缺什麼" in table["nk_bar"]  # what each entry is floats over its name
     # a site's name on the home's list opens its page in 檢視台; a document's trace too

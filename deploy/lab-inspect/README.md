@@ -2,11 +2,12 @@
 
 三样东西都在实验室电脑的 Docker 里跑，只读，只有那台电脑自己连得到。从 Mac 看要先开隧道。
 
-## 现况（2026-11-21 晚）
+## 现况（2026-11-22 傍晚）
 
-- **装在实验室上的**：`INSTALLED` 2026-11-21T23:25:43 e3d17893，上一版在 `/work/inspect-code.prev`。面板只剩两个容器：检视台（`nknu-inspect-ops-1`，8878）和资料库（`nknu-inspect-datasette-1`，8001）。同一个 compose 里还有内部 MCP（8766）和模型服务（`nknu-inspect-models-1`，8780：两个打分模型这台电脑只载这一份，见下面「经过」11-21 23:25）。
+- **装在实验室上的**：`INSTALLED` 2026-11-22T17:09:55 8f6fcd3b（只重启了 ops 和 datasette，models、mcp 没动），上一版（11-21 23:25 e3d17893）在 `/work/inspect-code.prev`。面板只剩两个容器：检视台（`nknu-inspect-ops-1`，8878）和资料库（`nknu-inspect-datasette-1`，8001）。同一个 compose 里还有内部 MCP（8766）和模型服务（`nknu-inspect-models-1`，8780：两个打分模型这台电脑只载这一份，见下面「经过」11-21 23:25）。
 - **提交到哪**：11-21 晚用户说「提交」：`f9d4ac5`（每一步对帐）、`525ca93`（模型服务）、`3129ee0`（面板其余：合成一套、问题分新旧、纪录、这台电脑、对外服务）、`fd57652`（一个测试的假号码改成遮过的样子）。都没推送。测试 `uv run --no-sync pytest tests/ops tests/overview -q -p no:cacheprovider` 855 个过（11-21 22:39 内容拿掉检索的两个计分选项，`tests/ops/library.py` 少了两组设定，按设定各跑一遍的测试跟着少了 64 个，是它那边有意的）。
-- **各页**：每晚運行（首页）11-21 加了每一步和上一步对帐、爬取里另外跑的三件事、每一步的纪录最后 50 行（品質檢查看建库那一份）、「這台電腦」（C 槽、D 槽、Docker 的内存、显卡内存）、「對外服務最近 24 小時」（8770）、「問題」分新出現／之前就有／好了的（第一次真的比是 11-22 早上）。網站（原来的资料总览）11-21 并进来。測試、文件搜尋、文件追踪、网页核查 11-18 到 11-21 都整页看过、改过。
+- **11-22 的样子**：首页是「總覽」（`/`，`src/nknu/ops/panorama.py`）：收了多少、文件从哪来、有多新、对外查询（最近 7 天每天几次）、搜得准不准、这台电脑、每晚运行的时间条、爬虫。每晚運行搬到 `/tonight`（旧的 `/?night=`、`/?fresh=` 会转过去），每晚纪录画成时间条，表折在下面，页首一排关键数字。所有面板（含资料库）一条固定在顶上的顶栏：入口和工具同一排，窄窗口工具收进「更多」，右边只有库建于和深浅色切换。
+- **各页**：每晚運行 11-21 加了每一步和上一步对帐、爬取里另外跑的三件事、每一步的纪录最后 50 行（品質檢查看建库那一份）、「這台電腦」（C 槽、D 槽、Docker 的内存、显卡内存）、「對外服務最近 24 小時」（8770）、「問題」分新出現／之前就有／好了的（第一次真的比是 11-22 早上）。網站（原来的资料总览）11-21 并进来。測試、文件搜尋、文件追踪、网页核查 11-18 到 11-21 都整页看过、改过。
 - **没核对到的**：首页 11-21 新加的几块在浅色模式和手机宽度下没看过；文件追踪页 PDF 原档那一格（浏览器自带的 PDF 检视器，无头浏览器画不出来）。
 - **还没做的**：194 题的成绩要手动更新（做法在下面「11-21 19:40 装的一版」）；学生的 AI 实际查了什么、要不要记，等用户定。
 - **还没清的**：旧页面留下、现在没人用的零件（`tonight_page.funnel_html`、`nightbars_table`，`pipeline_page.site_steps`、`stage_html`，`charts.py` 的 ECharts），提交整理时一起删。
@@ -17,13 +18,21 @@
 
 ## 经过（新的在前）
 
+- **总览当首页、一条顶栏、每晚运行画成时间条（11-22 17:09 装，用户先挑「项目全景」、再说「可以，这样做」「全部做」）**：
+  - **总览**的数字都读数字，不从句子里读：流水线每一步多了 `nums`（`pipeline.Step.nums`：查询服务的 `usage`，含最近 7 天每天几次 `days`，纪录开始以前那几天是空，不算 0；`machine` 各槽和内存的用量；品质检查的 33 题名次和真资料检查几项过）。对外查询分不出是学生还是我们自己在测（跑题库、AI 实测都走 8770），卡片上有说明。
+  - **AI 实测的成绩**：总览读 `/ops/aitest.json`（只有题数）。更新：`uv run --no-sync python deploy/lab-inspect/aitest_summary.py --report research/eval_2026-11-18/runs/<报告>.md --out aitest.json`，`scp` 到 `C:/nknu-transfer/inspect/`，再 `docker run --rm --network none -v nknu-ops:/ops -v C:\nknu-transfer\inspect:/in:ro nknu-pipeline cp /in/aitest.json /ops/aitest.json`（不用重启）。现在放的是 11-22 凌晨那次（83 题对 81）。
+  - **顶栏固定在上方**：高度是 `theme.css` 的 `--nk-bar-h`（49px）；页面里原本固定在顶上的部分（网站页的搜索列和侧栏、每晚運行和测试的侧栏、网页核查的侧栏、资料库的 `.insp`）都改成从顶栏下面开始。
+  - **装法**：用了 `FORCE=1`。`/work/src` 比 git 旧（`server.py`、`admin/cli.py` 不是打包时当基础的那一版），`install.sh` 会停。装前在 Mac 上把实验室 `/work/src` 拷下来、盖上这一包，`tests/ops tests/overview` 873 个过 872 个（没过的是找隧道脚本，实验室上没有它）。`retrieval/hybrid.py`、`search.py`、`ops/explain.py` 这一包和 11-21 装的那份一模一样（内容那边没提交的版本，没变）。
+  - **models 没重启**：内容 2 在实验室显卡上测别的模型（到 21:00），models 一重启 8770 会自己再载一份。以后只重启面板就用 `restart ops datasette`，不要整个 compose `restart`。
+  - **下次装时一起带上的**：总览刚重启、各步骤还没读到时，顶上那一格原本写「全站正常」，已改成「正在讀各步驟」并几秒后自己重读（只在重启后约一分钟内看得到）。
+
 - **两个打分模型只载一份（11-21 23:25 装、23:28 换；用户问「可以只加载在一个容器里面吗？实现现在同样的功能」，23:17 说「现在做」）**：
   - **以前**：检视台、内部 MCP（8766）、对外服务（8770）各自在显卡里载一份 bge-m3 和重排模型，那晚显卡用了 7.1 到 7.4 GB。
   - **现在**：同一个 compose 多一个 `models` 服务（`python -m nknu.core.model_service`，只发布在本机 127.0.0.1:8780），开起来就载好两个模型。mcp 和 ops 有环境变量 `NKNU_MODELS_URL=http://models:8780`，`nknu.core.models.shared_embedder` / `shared_reranker` 就回问它的替身（`RemoteEmbedder`、`RemoteReranker`，方法和属性相同；数字是服务那边算的 float32 原样传回，不经十进位）。两边都送钉住的版本号，模型不同就拒绝。只认本机的名字（models、127.0.0.1、localhost、host.docker.internal）。
   - **核对**：实验室 33 题，同一份模型在本进程算和问服务算，`hybrid_search` 的整份结果逐项一样（33/33，每题都用上两个模型）；向量逐位相等，重排分数相等。本进程 69 秒，问服务 61 秒。换过去以后经 8766 真搜一次正常，mcp 和 ops 自己都不再载模型。
   - **一份占多少**：停掉模型服务时显卡 3.4 GB（剩下的是 8770 那一份和 Windows 自己用的），重开、只有权重时 5.8 GB，一份约 2.3 GB；用久了每个进程还有缓存（8766 跑三天约多 1.4 GB）。
   - **它停了会怎样**：mcp 和 ops 那一次不用那个模型排序（和模型不在时一样，`hybrid.py` 本来就这样退），照常回答，「查詢服務」的「模型服務」那一行亮红。设了 `NKNU_MODELS_FALLBACK=local` 的进程会当场自己载一份接着答；这是给 8770 的（接口那条线的条件：给学生的不能跟着内部工具一起停）。
-  - **还没换的：对外服务 8770**。它跑自己那份已提交的程序（`C:\nknu-transfer\public\src`），要等 `src/nknu/core/models.py`、`model_service.py` 提交、接口那条线重打包，再加 `NKNU_MODELS_URL=http://host.docker.internal:8780` 和 `NKNU_MODELS_FALLBACK=local`。换完显卡上只剩一份。
+  - **对外服务 8770 也换过去了（11-21 23:36）**：容器设了 `NKNU_MODELS_URL=http://host.docker.internal:8780` 和 `NKNU_MODELS_FALLBACK=local`，平常问这一份，这一份没回应时才自己载一份（约 3 GB，到下次重启为止）。所以显卡上平常只有一份：11-22 13:55 载 Strata 前整张卡用 3.8 GB（这一份约 2.3 GB，其余是 Windows 和桌面上开着的程序），8766、8770 自己都不占显卡。
   - **每晚建库不受影响**：它跑 `/work/src`，没设这个变量，照旧自己载一份（一次算几万段，经网络传反而慢）。打包把 `core/models.py` 列进会替换的档，内容那边改它以后，装检视台前要重打包（安装时的基准检查会拦）。
 - **对外服务（8770）接进「查詢服務」（11-21 23:02 起装，最后一次 23:12:07 96d6ae16；compose 改了，第一次是 `up -d --no-deps ops` 重建）**：用户先说「先不加」，23 点前说「8770那个可以动了」。
   - **活不活着**：`--watch "對外服務（8770）=public:http://host.docker.internal:8770/health"`。只问 `/health`（活着没有、读的库几点建的、几份），**不搜**：搜会进它的查询纪录，也会让它载入模型。`/health` 说库太旧（`stale`）亮「留意」；连不上或回 503 亮「出錯」，归接口那条线。
@@ -57,6 +66,18 @@
 - **11-19 14:04 再装一次**（`INSTALLED` 2026-11-19T14:04:29 b49a639b，`.prev` 是 12:41 那一版）：跟上内容把关下午的新认法——导出那一行「类型＝图片」、有档、却不再单独成文件的（字并进了显示它的网页），也查字在不在同站新库里，门槛照建库的 `PICTURE_MOVED_MIN`（10 个字；`changes.moved_least`）。装前真页面上 13:22 那次换库有 20 张这样的图标成红色「查不出原因」（台湾学 11、停车场 8、论坛 1），装后 20 张都是「字都還在庫裡」，查不出原因 0、留意 0。测试 886 个过。14:08 又装一次（`INSTALLED` 2026-11-19T14:08:47 3034f8b8）：跟内容把关一致，图片的字只在导出「链到它的网页」那几页里找（`build._linked_from`），图片不走指纹那条捷径。装完内容 14:02 起的重试进库正在跑，两份库是同一份，14:22 换库后在真页面上看过：离开 202 份，字都還在庫裡 167、换了编号 33、并成副本 1、查不出原因 1（辅导中心一张 unnamed.png），和内容把关的 `aca.swap.json` 一份不差（moved 167、renumbered 33、merged 1、row_not_read 1）。14:59 再装一次（`INSTALLED` 2026-11-19T14:59:43 01ef993e）：抄进内容定稿的建库程序——图片 20 个字以上照全站认，10～19 个字的只在「链到它的网页」里认（判断在 `build._moved_words` 里，面板只把网页集合传过去，不另写一套）。装后同一次换库：字都還在庫裡 168、换了编号 33、并成副本 1，查不出原因 0（辅导中心那张 20 个字以上，全站找到了）。测试 886 个过。
 - **11-19 12:41 又装了一次**（`INSTALLED` 2026-11-19T12:41:50 a2eade0b，`.prev` 是 09:22 那一版；在内容 12:18 换库以后）：`deferred` 和它的 `lanes_timeout` 说的是同一句，各晚的原因里只说一次（`nightly.run_reason`）。小毛病。同一批：每晚运行读进库 11-19 09:43 新加的 `sites_set_back`（把关退回、这一晚留在旧导出的网站，带原因和份数）和 `sites_refused`（最新导出还是上次被退回那一份、没再试的网站），写在「換庫」那一格和各晚的原因里（`nightly.set_back_words`），在真页面上还没看过；「定了不收」多教材下载区（`out:skip_path:teaching_materials`）。爬虫 11-19 每晚多一步「看课程查询页的学期」（存档 `reports/schedule-term.json`，学期变了有 `schedule_term` 警告事件），每晚運行还没显示，等那一页再动时一起考虑。库的 meta 新加的 `volumes_json`（十万字以上的附件算背景）面板没有显示，没改。11-19 中午爬虫改了导出：Google 协作平台的图每读一次网页就换网址，导出现在写网页里的那个网址，几页共用的一张图是几行同一个档。为此：「昨晚變了什麼」多一个原因「字都還在庫裡」（离开的文件，字全都还在新库同一个网站里，算有原因；同一段字靠指纹认，字被并进网页的借建库的 `_moved_words` 认，和建库的把关一样，不到 20 个字的不算），不然这些站每晚都会把换了网址的图标成「留意」；单站页导出的「檔」和资料总览的抓取结果，几行同一个档只算一个。测试 886 个过。装完在真页面上看过：「昨晚變了什麼」离开 256 份全有原因（定了不收 248＝教师著作 241＋教材下载区 7，只有选单的页 1，并成副本 7），留意 0；11-18 那晚 deferred 的原因只说一次「兩小時內沒轉完」。`sites_set_back`、`sites_refused` 还没碰上真的例子，没在真页面上看过。
 - **11-19 装进去的（08:29、09:22 两次）**：爬虫 11-19 新原因代码的白话（`out:skip_path:teacher_fulltext`、`out:skip_path:proceedings`、`out:cap_image`、`out:wix_size`，在 `pagecheck.REASON_WORDS`）；面板自己的新旧库比对多两个原因：「定了不收」（`decided_out`，照建库的 `DECIDED_OUT`；新种类没有自己的白话时用建库 `LEFT_WORDS` 的说法）和「只有選單的頁」（`menu_only`，照 `corpus.IN_BUTTONS`）；每晚運行读进库新加的 `sites_waiting`（到点还没转完、这一晚留在旧导出的网站），写在各晚的原因里，也会写在「轉文字」那一格（`nightly.waiting_words`）。各晚原因那一处在真页面上核对过；「轉文字」那一格要等有一晚是带 `sites_waiting` 换库的才看得到。校外网站每周轮一次新增的栏位（`revisit_tonight`、`revisit_idle`、`put_back.revisit`、`seen.tsv` 的「没轮到」）面板目前都没读。
+
+## 在 Mac 上预览页面（11-22 加；实验室在跑、不能重启检视台时改设计用）
+
+```bash
+uv run --no-sync python deploy/lab-inspect/preview.py capture
+```
+
+```bash
+uv run --no-sync python deploy/lab-inspect/preview.py serve
+```
+
+`capture` 经隧道（18878）和 ssh 只读地抓一份快照到 `research/dashboard_preview/<时间>/`：各步骤的读数、各晚和换库比对、網站的资料、七份纪录的最后 50 行、`ops.db` 的副本（在一次性的容器里用 sqlite backup 抄，`nknu-ops` 只读挂）。`serve` 开 http://127.0.0.1:18990/ ：**每晚運行和網站**用这台 Mac 上的程序画快照里的资料，改 `src/nknu/ops` 会自己重载；**其余页面**（測試、文件搜尋、单站页、网页核查）原样转给实验室的检视台（只 GET），所以那些页还是实验室上装的版本。每一页最上面有一行黄字写「預覽」和快照的时间。Desktop app 里也可以用 `.claude/launch.json` 的 `ops-preview` 开。
 
 ## 两台电脑上的网址不一样
 
@@ -121,7 +142,7 @@ compose 档放在 `C:\nknu-transfer\inspect\compose.yaml`。
 |---|---|
 | 三个都开 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d` |
 | 看有没有在跑 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml ps` |
-| 换程序以后 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml restart` |
+| 换程序以后 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml restart ops datasette`（只重启面板；models 重启时 8770 会自己再载一份模型） |
 | 换库以后 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml restart datasette` |
 | 看检视台的纪录 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml logs --tail 50 ops` |
 | 全关 | `docker compose -f C:\nknu-transfer\inspect\compose.yaml down` |
@@ -166,8 +187,10 @@ http://127.0.0.1:18878/try 像学生的 AI 一样搜索：最上面是一个大�
    ```
    docker run --rm --network none -v nknu-work:/work -v C:\nknu-transfer\inspect:/in:ro nknu-pipeline bash /in/install.sh
    docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d
-   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart
+   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart ops datasette
    ```
+
+   只重启面板的两个容器：models 一重启，mcp 和 8770 那段时间问不到它，8770 会当场自己再载一份模型（约 3 GB 显卡）。
 
 `install.sh` 会先核对两件事：包没坏；检视工具改过的那四个档，实验室电脑上的是打包时当作基础的那一版。对不上它会停下来，不会装坏。上一版留在 `/work/inspect-code.prev`。
 

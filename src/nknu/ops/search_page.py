@@ -172,9 +172,14 @@ def newset_html(summary: object, built_at: str | None) -> str:
         if not g or not g.get("n"):
             continue
         cells = "".join(
-            "".join(f"<td class='num' data-tip='{e(f'{n} / {g['n']} 題（{n / g['n']:.0%}）')}'>{n}</td>"
-                    for n in (int(x) for x in (g.get(way) or [])[:len(tops)])) for way, _w, _t in NEWSET_WAYS)
-        body.append(f"<tr{' class=main' if key == 'B' else ''}><th data-tip='{e(tip)}'>{e(name)}</th>"
+            "".join(
+                f"<td class='num ns-cell ns-{way}' data-tip='{e(f'{n} / {g['n']} 題（{n / g['n']:.0%}）')}'>"
+                f"<span class='ns-bar' aria-hidden='true'><i style='width:{n / g['n'] * 100:.0f}%'></i></span>{n}</td>"
+                for n in (int(x) for x in (g.get(way) or [])[:len(tops)])
+            )
+            for way, _w, _t in NEWSET_WAYS
+        )
+        body.append(f"<tr{' class=main' if key == 'B' else ''}><th scope='row' data-tip='{e(tip)}'>{e(name)}</th>"
                     f"<td class='num'>{int(g['n'])}</td>{cells}</tr>")
     if not body:
         return ""

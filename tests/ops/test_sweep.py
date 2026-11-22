@@ -367,7 +367,7 @@ def test_the_schools_page_check_is_its_own_page_and_the_doc_search_opens_on_what
     # takes and does not start the sweep
     page = client.get("/check")
     assert page.status_code == 200 and str(page.url).endswith("/check") and "<title>全校網頁核查" in page.text
-    assert "aria-current='page'>網頁核查<svg" in page.text and "<details class='nk-tools nk-on'>" in page.text
+    assert "aria-current='page'>網頁核查</a>" in page.text and "<details class='nk-more nk-on'>" in page.text
     tree = LexborHTMLParser(page.text)
     assert not tree.css("a.srow") and tree.css_first("form#chk-ask input[name=url]") is not None
     empty = LexborHTMLParser(client.get("/doc").text)

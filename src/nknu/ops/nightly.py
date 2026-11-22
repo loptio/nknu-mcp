@@ -41,6 +41,7 @@ WAIT, RUN, DONE, STOP = "wait", "run", "done", "stop"  # the four states a part 
 CELLS = (("crawl", "爬取"), ("export", "導出"), ("totext", "轉文字"), ("build", "建庫"), ("swap", "換庫"))
 NIGHTS = 7
 PICKABLE = 60  # ?night= further back than this many days, or after tomorrow, is ignored (review 2026-11-17) 【Claude】
+TONIGHT = "/tonight"  # 每晚運行's address since 2026-11-22 (總覽 is the front page, /) 【Claude】
 START = dtime(1, 0)  # the Windows task's hour (nightly_update.cmd, scheduled 01:00)
 MISSED = dtime(2, 0)  # nothing started by then: 沒跑 (the lead's brief, 11-17)
 QUIET = 30 * 60  # update.log silent this long while the latest night has not ended: it may be stuck 【Claude】
@@ -1021,7 +1022,7 @@ def tonight(where: Where, *, night: str | None = None, changes: dict | None = No
     if base not in nights:
         nights[base] = one_night(r, base)
     for d, n in nights.items():
-        n["href"] = "/" if d == base else f"/?night={d.isoformat()}"
+        n["href"] = TONIGHT if d == base else f"{TONIGHT}?night={d.isoformat()}"
     sentence = first_sentence(nights[base], changes)
     # what the last swap's comparison found (查不出原因, ours to look at) marks that night too, not only the sentence
     rank = {OK: 0, WARN: 1, BAD: 2}

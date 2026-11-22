@@ -65,7 +65,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
-from nknu.ops import history, nightly, pagecheck, units_page
+from nknu.ops import history, nightly, pagecheck, panorama, units_page
 from nknu.ops import overview as overview_mod
 from nknu.ops.board import Board
 from nknu.ops.changes import Changes
@@ -99,6 +99,9 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 DEFAULT_PORT = 8878
 MAX_LIMIT = 50  # the most results a page or the API explains at once 【Claude】
 NEWSET_FILE = "eval194.json"  # the new question set's totals, beside the nights' record (ops' own volume)
+# the real-AI test's verdicts ({right, partly, wrong, none, n, date, source}), beside it: 總覽's tile, put there by
+# hand after a run (research/eval_2026-11-18/tools/strata_agent.py); none, no tile
+AITEST_FILE = "aitest.json"
 # what an archived page is shown under: it loads nothing and runs nothing (the archive viewer's PREVIEW_CSP)
 ARCHIVED_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; "
                 "frame-src 'none'; form-action 'none'; sandbox")
@@ -397,6 +400,35 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             return shell("每晚運行 · 檢視台", body, db_info(conn), tab="tonight")
         finally:
             conn.close()
+
+    def kept(name: str) -> object:
+        """A file kept beside the nights' record (NEWSET_FILE, AITEST_FILE) as data; None without it."""
+        if ops_db is None:
+            return None
+        try:
+            return json.loads(ops_db.with_name(name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def front(request: Request) -> Response:
+        """總覽 (nknu.ops.panorama), the front page since 2026-11-22: the whole project on one page, mostly charts.
+        每晚運行 was here until then: an old link to a night (?night=) or to read again (?fresh=) is sent on to it."""
+        if {"night", "fresh"} & set(request.query_params):
+            return RedirectResponse(f"{nightly.TONIGHT}?{request.url.query}", status_code=307,
+                                    headers={"Cache-Control": "no-store"})
+        sites_state.start()
+        with sites_state.lock:
+            data = sites_state.data
+        night, changes = tonight_now(request)
+        hist = history.home_history(store, tonight_night(night))
+        conn = connect(db_path)
+        try:
+            built = db_info(conn).get("built_at") or ""
+        finally:
+            conn.close()
+        page = panorama.page(flow.snapshot(), {**night, "changes": changes}, data or {}, hist,
+                             newset=kept(NEWSET_FILE), aitest=kept(AITEST_FILE), built=built)
+        return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     def history_api(request: Request) -> Response:
         """The nights' record as data: the fourteen nights 今晚 draws, or one site's (?site=)."""
@@ -882,7 +914,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
         return run
 
-    routes = [Route("/", guarded(home, False), methods=["GET"]),
+    routes = [Route("/", guarded(front, False), methods=["GET"]),
+              Route(nightly.TONIGHT, guarded(home, False), methods=["GET"]),
               Route("/site", guarded(site_view, False), methods=["GET"]),
               Route(overview_mod.PATH, guarded(sites_page, False), methods=["GET"]),
               Route(f"{overview_mod.PATH}/stamp", guarded(sites_stamp, True), methods=["GET"]),
@@ -921,12 +954,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     def newset() -> object:
         """The new question set's totals (deploy/lab-inspect/eval_summary.py), kept beside the nights' record; None
         without the record's folder or the file."""
-        if ops_db is None:
-            return None
-        try:
-            return json.loads(ops_db.with_name(NEWSET_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
+        return kept(NEWSET_FILE)
 
     def try_view(request: Request) -> Response:
         """搜尋: the service called as an agent calls it; its second tab, 搜尋測試's explanation (why_of); with nothing

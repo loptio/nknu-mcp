@@ -82,6 +82,38 @@ def test_once_the_log_keeps_time_and_failures_they_are_said_and_a_failure_of_our
     assert rows_of(path)["多慢"] == (OK, "答完的 2 次各花 1.3、16.7 秒")
 
 
+def test_the_same_use_is_kept_as_numbers_with_a_count_for_each_of_the_last_seven_days(tmp_path):
+    """總覽 draws these (2026-11-22): it read them back out of the sentences until then."""
+    path = log(tmp_path / "queries.jsonl",
+               line(60 * 24 * 8),  # eight days back: in no day
+               line(60 * 24 * 2, via="web"), line(60 * 24 * 2 + 5, tool="fetch", query=None, id="d1"),
+               *(line(100 - i, ms=1000 + 100 * i) for i in range(6)),
+               line(30, via="api", found=False, ids=[], ms=900), line(20, ms=5, error="bad_args", found=False, ids=[]),
+               line(10, ms=20_100, error="busy", found=False, ids=[]))
+    nums: dict = {}
+    pipeline.public_usage(path, NOW, nums)
+    assert nums["calls"] == 9 and nums["tools"] == {"search": 7, "fetch": 0} and nums["searches"] == 7
+    assert nums["via"] == {"mcp": 8, "web": 0, "api": 1} and nums["missed"] == 1
+    assert (nums["failed"], nums["failed_ours"], nums["errors"]) == (2, 1, {"bad_args": 1, "busy": 1})
+    assert nums["timed"] == 7 and nums["mid_ms"] == 1200 and nums["slow_ms"] == 1500 and nums["over_ms"] == 0
+    assert nums["days"][-1] == ["2026-11-22", 9, 7] and nums["days"][-3] == ["2026-11-20", 2, 1]
+    assert len(nums["days"]) == pipeline.PUBLIC_DAYS and nums["days"][0][0] == "2026-11-16"
+    quiet: dict = {}
+    pipeline.public_usage(log(tmp_path / "q2.jsonl", line(60 * 30)), NOW, quiet)
+    assert quiet["calls"] == 0 and quiet["days"][-2] == ["2026-11-21", 1, 1] and quiet["days"][-1] == ["2026-11-22", 0, 0]
+    assert quiet["days"][0] == ["2026-11-16", None, None]  # before the log began: no record, not a quiet day
+
+
+def test_the_machine_keeps_its_numbers_beside_its_words(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "memory", lambda: (64 * 2**30, 48 * 2**30, 2 * 2**30))
+    monkeypatch.setattr(pipeline, "gpu_memory", lambda: (3686, 20475))
+    got = {m["name"]: m for m in pipeline.machine_read(Where(root=tmp_path, db=tmp_path / "x.db"))}
+    assert (got["記憶體"]["used"], got["記憶體"]["total"], got["記憶體"]["swap"]) == (16.0, 64.0, 2.0)
+    assert (got["顯示卡記憶體"]["used"], got["顯示卡記憶體"]["total"]) == (3.6, 20.0)
+    assert [r[2] for r in pipeline.machine(Where(root=tmp_path, db=tmp_path / "x.db"))] == [
+        m["words"] for m in got.values()]
+
+
 def test_a_quiet_day_says_when_the_last_query_was_and_a_missing_log_says_so(tmp_path):
     path = log(tmp_path / "queries.jsonl", line(60 * 30))
     assert rows_of(path) == {"查詢": (NONE, "沒有人查（最後一次 11-21 03:00）")}

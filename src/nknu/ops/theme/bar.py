@@ -1,6 +1,10 @@
 """The top bar every panel shows (redesign 2026-11-17, research/dashboard_redesign_2026-11-17/diagnosis.md: 資料總覽 had
 no way to the others, 檢視台 had tabs plus three links, 資料庫 links only). 【Claude】
 
+Since 2026-11-22 one row that stays on top as a page scrolls: 總覽 first (the front page, /), then the pages, then the
+tools in the same row (no more 工具 menu at the right end), folded into 更多 on a narrow window; bar() below. The
+history that follows is of the entries' names.
+
 Since the structure design of 2026-11-17 (docs/superpowers/specs/2026-11-17-panels-structure-design.md section 二; owner:
 「可以按你的建议走吧，不用问我了」) the bar holds four entries, 每晚運行 | 網站 | 搜尋 | 找文件 (panels.json "pages"; 今晚 | 網站 | 試用 | 文件 until the owner's
 「一个页面叫"今晚"你觉得合理吗」, 11-17), and at its
@@ -25,14 +29,26 @@ _OUT = ("<svg viewBox='0 0 16 16' width='11' height='11' fill='none' stroke='cur
         "</svg>")
 _DOWN = ("<svg viewBox='0 0 16 16' width='11' height='11' fill='none' stroke='currentColor' stroke-width='1.6' "
          "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='m4 6.2 4 4 4-4'/></svg>")
-# The menu closes as a menu does: a click outside it, Escape (back to its button), or the focus leaving it. Without
-# the script the menu still opens and closes by its button.
-_MENU_JS = ("<script>(()=>{const t=document.querySelector('.nk-bar details.nk-tools');if(!t)return;"
+_MODE = ("<svg viewBox='0 0 16 16' width='14' height='14' fill='none' aria-hidden='true'><circle cx='8' cy='8' r='5.5' "
+         "stroke='currentColor' stroke-width='1.5'/><path d='M8 2.5a5.5 5.5 0 0 1 0 11z' fill='currentColor'/></svg>")
+# 更多 (the tools, folded on a narrow window) closes as a menu does: a click outside it, Escape (back to its button),
+# or the focus leaving it. Without the script it still opens and closes by its button.
+_MENU_JS = ("<script>(()=>{const t=document.querySelector('.nk-bar details.nk-more');if(!t)return;"
             "const s=t.querySelector('summary');"
             "document.addEventListener('click',e=>{if(t.open&&!t.contains(e.target))t.open=false});"
             "document.addEventListener('keydown',e=>{if(e.key==='Escape'&&t.open){t.open=false;s.focus()}});"
             "t.addEventListener('focusout',e=>{if(t.open&&e.relatedTarget&&!t.contains(e.relatedTarget))t.open=false})"
             "})();</script>")
+# light or dark: the system's until the switch is used, then the one picked (kept in this browser; theme.css reads
+# :root[data-theme]); a page drawn by a script repaints on the attribute's change (charts.py watches it)
+_MODE_JS = ("<script>(()=>{const r=document.documentElement,k='nknu-theme';let s=null;"
+            "try{s=localStorage.getItem(k)}catch(e){}if(s==='light'||s==='dark')r.setAttribute('data-theme',s);"
+            "const b=document.querySelector('.nk-bar .nk-mode');if(!b)return;"
+            "const dark=()=>r.hasAttribute('data-theme')?r.getAttribute('data-theme')==='dark'"
+            ":matchMedia('(prefers-color-scheme: dark)').matches;"
+            "const say=()=>{const w=dark()?'換成淺色':'換成深色';b.setAttribute('aria-label',w);b.setAttribute('data-tip',w)};"
+            "b.addEventListener('click',()=>{const n=dark()?'light':'dark';r.setAttribute('data-theme',n);"
+            "try{localStorage.setItem(k,n)}catch(e){}say()});say()})();</script>")
 # Every link from one panel to another is written with the ports of the owner's Mac (panels.json "hosts": 18878…; so are
 # 資料庫's queries and 資料總覽's script). Opened on the machine that serves the panels (the lab PC: 127.0.0.1:8878),
 # nothing listens on those ports, and every jump failed (2026-11-18). A page opened on one of the serving machine's own
@@ -104,26 +120,33 @@ def site_prefix(here: str, folder: Path = HERE) -> str:
     return _href(conf["site"], here, conf)
 
 
+def _link(item: dict, current: str, here: str, conf: dict, cls: str = "") -> str:
+    """One entry or tool as a link: marked when it is this page; another panel's (資料庫) with the arrow out."""
+    mark = " aria-current='page'" if item["key"] == current else ""
+    away = " target='_blank' rel='noopener'" if item.get("away") else ""
+    out = _OUT if item["host"] != here else ""
+    return (f"<a{cls} href='{html.escape(_href(item, here, conf))}' data-tip='{html.escape(item['tip'])}'{mark}{away}>"
+            f"{html.escape(item['name'])}{out}</a>")
+
+
 def bar(current: str, here: str, meta: str = "", folder: Path = HERE) -> str:
-    """The bar as markup: current is the page's key (an entry's is marked; a tool's marks the 工具 button and its line
-    in the menu), here the host this page is served by (its own pages are linked by path, so they work on any port),
-    meta an already-escaped bit of markup for the right end, before the menu."""
+    """The bar as markup, one row on top of every page (2026-11-22; owner: the pages at the top left and the tools at
+    the top right were two places to look, and 總覽 had a column of its own): the entries, a thin line, the tools a
+    shade lighter in the same row; at the right end only meta (an already-escaped bit of markup: when the library was
+    built) and the light/dark switch. On a narrow window the tools fold into 更多 (theme.css). current is the page's
+    key (its entry or tool is marked; a tool's also marks 更多), here the host this page is served by (its own pages are
+    linked by path, so they work on any port)."""
     conf = panels(folder)
-    links = []
-    for page in conf["pages"]:
-        mark = " aria-current='page'" if page["key"] == current else ""
-        links.append(f"<a href='{html.escape(_href(page, here, conf))}' data-tip='{html.escape(page['tip'])}'{mark}>"
-                     f"{html.escape(page['name'])}</a>")
+    links = [_link(p, current, here, conf) for p in conf["pages"]]
     tools = conf.get("tools", [])
-    items = []
-    for tool in tools:
-        mark = " aria-current='page'" if tool["key"] == current else ""
-        away = " target='_blank' rel='noopener'" if tool.get("away") else ""
-        items.append(f"<a href='{html.escape(_href(tool, here, conf))}' data-tip='{html.escape(tool['tip'])}'"
-                     f"{mark}{away}>{html.escape(tool['name'])}{_OUT}</a>")
+    inline = [_link(t, current, here, conf, " class='nk-tool'") for t in tools]
+    items = [_link(t, current, here, conf) for t in tools]
     on = any(t["key"] == current for t in tools)
-    menu = (f"<details class='nk-tools{' nk-on' if on else ''}'><summary>工具{_DOWN}</summary>"
-            f"<div class='nk-menu'>{''.join(items)}</div></details>" if items else "")
+    more = (f"<span class='nk-sep' aria-hidden='true'></span>{''.join(inline)}"
+            f"<details class='nk-more{' nk-on' if on else ''}'><summary>更多{_DOWN}</summary>"
+            f"<div class='nk-menu'>{''.join(items)}</div></details>" if tools else "")
     tail = f"<span class='nk-meta'>{meta}</span>" if meta else ""
-    return (f"<header class='nk-bar'><nav class='nk-tabs' aria-label='面板'>{''.join(links)}</nav>"
-            f"<div class='nk-end'>{tail}{menu}</div></header>" + (_MENU_JS if items else "") + port_js(conf))
+    mode = f"<button type='button' class='nk-mode' aria-label='換成深色'>{_MODE}</button>"
+    return (f"<header class='nk-bar'><nav class='nk-tabs' aria-label='面板'>{''.join(links)}{more}</nav>"
+            f"<div class='nk-end'>{tail}{mode}</div></header>" + (_MENU_JS if tools else "") + _MODE_JS
+            + port_js(conf))

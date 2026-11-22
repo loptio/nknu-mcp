@@ -385,7 +385,7 @@ def test_the_bar_has_the_page_right_after_tonight():
     from nknu.ops.theme import bar
 
     keys = [p["key"] for p in bar.panels()["pages"]]
-    assert keys == ["tonight", "sites", "try", "doc"]  # structure design 2026-11-17 section 二
+    assert keys == ["home", "tonight", "sites", "try", "doc"]  # structure design 2026-11-17 section 二; 總覽 11-22
 
 
 def test_the_lab_compose_passes_the_address():
