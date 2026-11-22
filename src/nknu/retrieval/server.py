@@ -95,7 +95,8 @@ DETAIL_DESCRIPTION = ("每筆給多少原文。passage（預設）：每筆約 5
 LIMIT_DESCRIPTION = "要幾筆，1～50，預設 10。"
 UNIT_DESCRIPTION = ("只看某個單位的資料：填單位名稱，全稱或簡稱都可以（例如「教務處」「軟體工程與管理學系」）。"
                     "填系所時也包含全校適用的文件。不確定是哪個單位就不要填。")
-SORT_DESCRIPTION = "relevance（預設）：最相關的在前。date：在相關的結果裡由新到舊，適合問「最新」「最近」的公告。"
+SORT_DESCRIPTION = ("relevance（預設）：最相關的在前。date：在相關的結果裡，有日期的由新到舊；沒有日期的（例如行事曆事項）"
+                    "留在原來的位置。適合問「最新」「最近」的公告。")
 ID_DESCRIPTION = "search 回傳的 id；也可以填收錄的網頁或檔案的網址。"
 PART_DESCRIPTION = "留空讀全文（太長給目錄和開頭）；填節號讀某一節；填 toc 只看目錄。"
 # sent at the MCP handshake, before any call (fix round 2, 11-01; plan 2026-11-02 T9 wording; plan 2026-11-08 T4: no
@@ -272,13 +273,15 @@ def texts_for(db_path: Path) -> Texts:
 
 def by_date(conn: sqlite3.Connection, hits: list[DocHit]) -> list[DocHit]:
     """sort=date (design §二): the hits with a date (docs.ident_date; not a calendar event, whose date is when it
-    happens) newest first, ties in relevance order; then the others in relevance order."""
+    happens) newest first, in the places the dated hits held, ties in relevance order; a hit without a date keeps its
+    place. Putting the undated last pushed the most relevant hit past the limit (11-22: a calendar event that was
+    first by relevance fell to 19th, and the agent had asked for 8)."""
     ids = [h.doc_id for h in hits]
     rows = dict(conn.execute(f"SELECT doc_id, CASE WHEN kind_class = 'event' THEN NULL ELSE ident_date END"
                              f" FROM docs WHERE doc_id IN ({','.join('?' * len(ids))})", ids)) if ids else {}
-    dated = [h for h in hits if rows.get(h.doc_id)]
-    dated.sort(key=lambda h: rows[h.doc_id], reverse=True)  # stable: ties keep their relevance order
-    return dated + [h for h in hits if not rows.get(h.doc_id)]
+    # sorted is stable, reverse included: ties keep their relevance order
+    newest = iter(sorted((h for h in hits if rows.get(h.doc_id)), key=lambda h: rows[h.doc_id], reverse=True))
+    return [next(newest) if rows.get(h.doc_id) else h for h in hits]
 
 
 def applied_of(detail: str, limit: int, unit: dict | None, sort: str) -> dict | None:

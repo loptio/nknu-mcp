@@ -35,6 +35,9 @@ def db_path(tmp_path):
     for i, day in enumerate(["2026-09-01", None, "2026-10-15", "2026-03-01"]):
         t.doc(f"d{i}", prose(300), title=f"公告{i}", ident=(day, "published") if day else None,
               url=f"https://c.nknu.edu.tw/aca/news/{i}")
+    # a calendar event: its date is when it happens, so sort=date takes it as undated
+    t.doc("e4", prose(300), title="網路加退選課", kind_class="event", kind_raw="行事曆",
+          ident=("2027-02-22", "event_start"))
     t.conn.commit()
     t.conn.close()
     return tmp_path / "aca.db"
@@ -96,12 +99,21 @@ async def test_an_unknown_unit_searches_everything_and_says_so(db_path):
     assert body["applied"]["unit"]["applied"] is False and body["results"]
 
 
-async def test_sort_by_date_puts_the_newest_first_and_the_undated_last(db_path):
+async def test_sort_by_date_orders_the_dated_and_leaves_the_undated_in_place(db_path):
     rec = Recorder(*(hit(f"d{i}", [i + 1]) for i in range(4)))
     body = json.loads((await call(db_path, rec, "search", {"query": "公告", "sort": "date", "limit": 3}))
                       .content[0].text)
     assert rec.calls[-1]["limit"] == 20  # reorders at least the 20 most relevant
-    assert [r["id"] for r in body["results"]] == ["d2", "d0", "d3"]  # d1 has no date
+    # d1 has no date and keeps the second place; the dated fill the other places newest first
+    assert [r["id"] for r in body["results"]] == ["d2", "d1", "d0"]
+
+
+async def test_sort_by_date_keeps_a_calendar_event_where_relevance_put_it(db_path):
+    # 11-22: the add/drop event, first by relevance, was moved behind every dated hit and fell past the limit
+    rec = Recorder(hit("e4", [1]), hit("d0", [2]), hit("d3", [3]), hit("d2", [4]))
+    body = json.loads((await call(db_path, rec, "search", {"query": "加退選", "sort": "date", "limit": 2}))
+                      .content[0].text)
+    assert [r["id"] for r in body["results"]] == ["e4", "d2"]
 
 
 async def test_fetch_reads_by_id_or_by_url(db_path):
