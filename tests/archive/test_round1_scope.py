@@ -15,6 +15,7 @@ import json
 import re
 
 import pytest
+from opencc import OpenCC
 
 from nknu.archive import round1, scope
 from nknu.settings import REPO_ROOT
@@ -132,6 +133,39 @@ def test_the_committed_list_is_what_the_script_makes_from_the_site_map():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.build(rows, rules) == json.loads(CONFIG.read_text(encoding="utf-8"))
+
+
+def _script():
+    spec = importlib.util.spec_from_file_location("build_archive_round1", REPO_ROOT / "scripts" / "build_archive_round1.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_names_and_notes_of_the_list_are_in_traditional_characters():
+    # 2026-11-23: the list is shown as it is on the panels, whose text is Traditional Chinese in Taiwan's usage; the
+    # site map's rows and the names typed in the script came in both scripts (313 of 395 names held simplified
+    # characters). Every name and note goes through the script's tw_name on its way out; imp and platform are values
+    # the programs compare and stay as they are.
+    tw = _script().tw_name
+    plan = json.loads(CONFIG.read_text(encoding="utf-8"))
+    words = ([s["name"] for s in plan["sites"]] + [e["name"] for e in plan["extra"]] + [e["why"] for e in plan["extra"]]
+             + [s["why"] for s in plan["sites"] if re.search("[\u4e00-\u9fff]", s.get("why") or "")] + [plan["about"]])
+    assert [w for w in words if tw(w) != w] == []
+    one = OpenCC("s2tw")  # and by a count of its own: no character the converter would rewrite is left (台 is kept)
+    assert sorted({ch for w in words for ch in w if ch != "台" and one.convert(ch) != ch}) == []
+    name = {s["site"]: s["name"] for s in plan["sites"]}
+    assert name["lis.nknu.edu.tw"] == "圖書資訊處（圖書館＋計網）" and name["c.nknu.edu.tw/aca"] == "教務處"
+    # 台 stays as it was written (平台, 台灣): common in Taiwan, and what the school's own pages mostly write
+    assert name["ai.nknu.edu.tw"] == "人工智慧研發產學中心（雲端平台）" and name["school.bot.com.tw"] == "台灣銀行學雜費入口網"
+    # and the mainland terms the site map used are Taiwan's
+    assert name["sso.nknu.edu.tw/software"] == "校園授權軟體與免費軟體總覽"
+    assert name["sso.nknu.edu.tw/webservices"] == "SSO 附件介面（各單位網站掛的附件）"
+    assert name["140.127.40.173"] == "SSO 伺服器的 IP 網址" and name["sso.nknu.edu.tw/web/633"] == "高教深耕計畫"
+    assert name["sso.nknu.edu.tw/passwordstation"] == "帳號密碼服務站（PasswordStation）"
+    # what the programs compare is not rewritten
+    assert {s.get("imp") for s in plan["sites"]} >= {"全校重要", "本系重要", "基本没用", "偶尔有用"}
+    assert tw("软件工程与管理学系高中生专区") == "軟體工程與管理學系高中生專區" and tw("教育學院（短网址）") == "教育學院（短網址）"
 
 
 def test_the_list_is_read_from_the_configuration_directory(tmp_path, monkeypatch):

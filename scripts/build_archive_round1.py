@@ -28,10 +28,13 @@ of each is written; 附表一's column is checked against it (tests/archive/test
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import sys
 from pathlib import Path
+
+from opencc import OpenCC
 
 from nknu.archive import round1, scope
 
@@ -117,7 +120,17 @@ ABOUT = ("第一轮爬虫唯一的网站名单（第一轮设计 §4.1、§4.2�
          "params：参数值相同才算；leaf 1：只抓那一页；seeds：第二轮的起点；round2_pages：第二轮只抓那一页的校外网页；"
          "now：第二轮这次就抓的批次（当成第一轮的网站抓），caps：这一站自己的上限（网页、附件、图片）。"
          "cap_out：这一站超过自己上限就按规则不抓的种类。revisit：抓完以后每周（weekly）或每月（monthly）再看一次首页和首页"
-         "链到的页。")
+         "链到的页。站名和说明在产生时一律转成繁体、台湾用语（tw_name）；imp、platform 是程式拿来比对的值，照原样。")
+# The list is shown as it is on the panels, whose text is Traditional Chinese in Taiwan's usage, and the site map's
+# rows and the names typed in this file came in both scripts (2026-11-23: 313 of the 395 names held simplified
+# characters; the owner: 「请爬虫统一成繁体」). Every name and note goes through tw_name on its way out: OpenCC's s2tw,
+# one character for one; 台 stays as it was written (平台, 台灣: common in Taiwan, and what the school's own pages
+# mostly write; s2tw would make them 平臺, 臺灣); then the mainland terms the site map used become Taiwan's. imp
+# and platform are values the programs compare (round1.TIER_OF_IMP, the panels' IMP_ORDER, progress.GSITES_NAME):
+# they are not rewritten here.
+_S2TW = OpenCC("s2tw")
+TW_TERMS = (("軟件", "軟體"), ("服務器", "伺服器"), ("接口", "介面"), ("模塊", "模組"), ("鏈接", "連結"), ("鏈到", "連到"),
+            ("賬號", "帳號"), ("計劃", "計畫"), ("以 IP 訪問", "以 IP 連線"), ("登錄頁", "登入頁"))
 # 附表一 (record 三·2): the 8 the site map already has, by their key
 UNITS_IN_SITE_MAP = ("sites.google.com/iec-nknu.page/iec", "sites.google.com/view/taiwanology",
                      "pairnknu.wixstudio.io/pair-center", "www.nknu-vd.com", "sites.google.com/view/nknu-edu-teach1",
@@ -169,6 +182,27 @@ ROUND2_PAGES = (  # (url, batch)
 )
 
 
+@functools.cache
+def _simplified(ch: str) -> bool:
+    """The character alone is one the converter rewrites (台 is not counted: it stays as written)."""
+    return ch != "台" and _S2TW.convert(ch) != ch
+
+
+def tw_name(text: str) -> str:
+    """A name or a note in Traditional Chinese, Taiwan's usage (see TW_TERMS); what is already so comes back as it is:
+    the converter reads phrases, and on text with no simplified character in it it can still take one word for
+    another (數學系系學會 came back as 數學繫系學會), so such text is not given to it."""
+    out = text
+    if any(_simplified(ch) for ch in text):
+        out = _S2TW.convert(text)
+        if len(out) != len(text):
+            raise ValueError(f"{text}: the conversion is not one character for one")
+        out = "".join("台" if was == "台" else now for was, now in zip(text, out, strict=True))
+    for mainland, taiwan in TW_TERMS:
+        out = out.replace(mainland, taiwan)
+    return out
+
+
 def build(rows_path: Path = ROWS, rules_path: Path = RULES) -> dict:
     rows = json.loads(rows_path.read_text(encoding="utf-8"))
     by_key: dict[str, list[dict]] = {}
@@ -202,6 +236,10 @@ def build(rows_path: Path = ROWS, rules_path: Path = RULES) -> dict:
         if s["site"] in SKIP_GOOGLE:
             s["skip_google"] = dict(SKIP_GOOGLE[s["site"]])
     sites = sorted(sites, key=_order)
+    for s in sites:
+        s["name"] = tw_name(s["name"])
+        if not (s.get("why") or "").isascii():  # a note in words (the attachment service's), not one of the codes
+            s["why"] = tw_name(s["why"])
     if len({s["site"] for s in sites}) != len(sites):
         raise ValueError("a key is written twice: merge its entries into one")
     extra = tuple(scope.canonical(u) for u, *_ in EXTRA)
@@ -210,11 +248,12 @@ def build(rows_path: Path = ROWS, rules_path: Path = RULES) -> dict:
     checks = sorted({u for r in a1 if (u := scope.canonical(r["key"])) and not any(s in u for s in OWNER_SHUT)
                      and round1.verdict(plan, u).verdict == "r1"})
     return {
-        "about": ABOUT,
+        "about": tw_name(ABOUT),
         "made_from": {"site_map_rows": str(rows_path.relative_to(REPO)), "site_map_sha256": _sha(rows_path),
                       "rule_lists": str(rules_path.relative_to(REPO)), "rule_lists_sha256": _sha(rules_path)},
         "sites": sites,
-        "extra": [{"url": scope.canonical(u), "name": n, "why": f"用户实测进得去（记录{rec}）"} for u, n, rec in EXTRA],
+        "extra": [{"url": scope.canonical(u), "name": tw_name(n), "why": tw_name(f"用户实测进得去（记录{rec}）")}
+                  for u, n, rec in EXTRA],
         "login_check": [{"url": u, "site": round1.verdict(plan, u).owner_site} for u in checks],
         "round2_pages": [{"url": scope.canonical(u), "batch": b} for u, b in ROUND2_PAGES],
     }
