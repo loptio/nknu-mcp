@@ -1,0 +1,46 @@
+# Qwen3.5-9B on llama.cpp's own server: the second model for testing our MCP (11-22). Not a standing service: start it
+# for a test and stop it after. It also stops by itself after LLM_TIMEOUT, which the start command sets so that it ends
+# by 00:40, before the 00:45 unload and the 01:00 nightly update need the card. Start it only while Strata is unloaded
+# (Strata takes all of the card but its reserve). See README.md.
+name: nknu-llm
+services:
+  llm:
+    # pulled 11-22: llama.cpp 1.0.0-dev, build 12627 (225a5345b)
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:f46a7938f84a62f7c2eba2dfc985d921cb54fb3ec7b4e729cec2cee2cbace609
+    entrypoint: ["timeout", "${LLM_TIMEOUT:-3h}", "/app/llama-server"]
+    command:
+      - --model
+      - /models/Qwen3.5-9B-Q8_0.gguf
+      - --alias
+      - qwen3.5-9b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      # the whole model on the card; two conversations at once, 64K tokens each (only 8 of the 32 layers keep a
+      # per-token cache: 32 KiB a token, 4 GiB for the two)
+      - --n-gpu-layers
+      - "99"
+      - --ctx-size
+      - "131072"
+      - --parallel
+      - "2"
+      - --flash-attn
+      - "on"
+      - --jinja
+    ports:
+      - "127.0.0.1:8790:8080"
+    volumes:
+      - models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: "no"
+volumes:
+  models:
+    name: nknu-llm-models
+    external: true
