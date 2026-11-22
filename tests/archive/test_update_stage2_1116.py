@@ -193,9 +193,9 @@ def test_the_nightly_script_runs_the_steps_in_order_and_stops_at_a_failure(tmp_p
            "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock"), "JS_SITES_FILE": str(tmp_path / "no-js-sites.txt")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    want = {None: ["backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"],  # export batch T7
-            "put-back": ["backup", "put-back", "fail"],
-            "run": ["backup", "put-back", "night", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
+    want = {None: ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"],  # export batch T7
+            "put-back": ["warc-there", "backup", "put-back", "fail"],
+            "run": ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "fail"]}[fail_at]  # a failed run is reviewed too
     assert got.returncode == (0 if fail_at is None else 1) and steps == want
 
 
@@ -284,7 +284,7 @@ def test_the_js_sites_get_their_round_after_the_review_and_are_exported_too(tmp_
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
     assert got.returncode == 0, got.stderr
-    assert steps == ["backup", "put-back", "night", "sites", "run", "review", "jsfetch", "js-take", "run", "jsfetch", "js-take",
+    assert steps == ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "jsfetch", "js-take", "run", "jsfetch", "js-take",
                      "export-list", "seen"]
     assert (tmp_path / "exported.txt").read_text().split() == ["ord.nknu.edu.tw", "w3.nknu.edu.tw"]
     log = (tmp_path / "archive" / "update.log").read_text(encoding="utf-8")

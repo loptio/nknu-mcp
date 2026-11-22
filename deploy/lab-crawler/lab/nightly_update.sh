@@ -11,7 +11,7 @@
 # go-live 要在第一晚以前做一次（不在这个脚本里）。11-16 第一次真跑（只跑中文系）以后：排程只用一行固定的命令
 # `docker compose -f C:\nknu-crawl\compose.yaml run --rm nightly`（compose.yaml 的 nightly 服务写死了程序、时区、全机锁、
 # 备份位置和要挂的资料夹；Windows 工作排程器跑 nightly_update.cmd），开跑前先检查环境：时区是台北、设了全机锁、
-# 存网页的资料夹能写，不对就停在 preflight、什么都不动（status 写不成就由这个脚本自己写）。备份叫 nightly-*.db，
+# 存网页的资料夹能写、而且是账本记的那一个，不对就停在 preflight、什么都不动（status 写不成就由这个脚本自己写）。备份叫 nightly-*.db，
 # 只清这种名字的（同一个资料夹里手动做的备份不会被删）。定期更新的网站 archive run 不再做不连网的对账（crawler
 # 的 _reconciled_here：全校一晚要多 1.5–3 小时，wf_9c6e1448-2cc）。
 # 测试用假的 python 跑（tests/archive/test_update_stage2_1116.py、test_update_fixes_1116.py、
@@ -64,6 +64,19 @@ bad=""
 [ "$(date +%z)" = "+0800" ] || bad="${bad} 时区不是台北（TZ=Asia/Taipei）；"
 [ -n "${NKNU_SCHOOL_LOCK:-}" ] || bad="${bad} 没设全机锁 NKNU_SCHOOL_LOCK；"
 { [ -d "$ROOT/warc" ] && [ -w "$ROOT/warc" ]; } || bad="${bad} ${ROOT}/warc 不在或不能写；"
+# 存网页的资料夹是不是账本记的那一个（11-23 原档搬到别的硬盘）：挂载的路径写错时 Docker 会自己建一个空资料夹，上面那条
+# 「在、能写」照样过，这一晚就会把新抓的存进空资料夹、旧的一笔都读不回来。update warc-there 只读账本和档名：最新的档
+# 不在（退出码 1，或程序跑不起来）就停在这里；只少旧的档（退出码 2）记一行、照常跑
+if [ -z "$bad" ]; then
+  there="$(update warc-there 2>&1)"
+  rc=$?
+  there="$(echo "$there" | tail -1)"
+  if [ "$rc" -eq 2 ]; then
+    note "$there"
+  elif [ "$rc" -ne 0 ]; then
+    bad=" ${there}；"
+  fi
+fi
 if [ -n "$bad" ]; then
   note "环境不对：${bad}这一晚什么都没动（排程用 compose.yaml 的 nightly 服务）"
   stop_at preflight

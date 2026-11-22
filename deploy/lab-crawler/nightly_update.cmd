@@ -20,4 +20,12 @@ echo %date% %time% ingest start>> "%TASKLOG%"
 call C:\nknu-transfer\build\nightly_ingest.cmd >> "%TASKLOG%" 2>&1
 set "IRC=%errorlevel%"
 >> "%TASKLOG%" echo %date% %time% ingest end, exit code %IRC%
+rem 2026-11-23: last, the raw crawl files (E:\nknu\warc) are copied to the backup disk (D:\nknu-backup\crawler-warc):
+rem files the backup lacks, each read back and checked by SHA-256; nothing is deleted there and the source is mounted
+rem read-only. It runs after the ingest so that nothing it does can hold the ingest up, and it does not change the
+rem task's exit code. Its result is /crawl/archive/reports/warc-backup.json (and warc-backup.log beside it).
+echo %date% %time% warc backup start>> "%TASKLOG%"
+docker compose -f C:\nknu-crawl\compose.yaml run --rm warc-backup --quiet >> "%TASKLOG%" 2>&1
+set "BRC=%errorlevel%"
+>> "%TASKLOG%" echo %date% %time% warc backup end, exit code %BRC%
 exit /b %RC%

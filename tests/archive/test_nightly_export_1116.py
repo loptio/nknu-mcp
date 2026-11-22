@@ -107,7 +107,7 @@ def _run(tmp_path: Path, sites: str):
 def test_the_night_exports_the_changed_sites_after_its_review_then_writes_seen(tmp_path):
     got, steps, calls = _run(tmp_path, "a.nknu.edu.tw\\n")
     assert got.returncode == 0, (tmp_path / "archive" / "update.log").read_text(encoding="utf-8")
-    assert steps == ["backup", "put-back", "night", "sites", "run", "review", "export-list", "export", "seen"]
+    assert steps == ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "export-list", "export", "seen"]
     assert "NIGHTLY=1" in next(c for c in calls if c.startswith("export "))
     seen = next(c for c in calls if c.startswith("seen "))
     assert str(tmp_path / "sites" / "seen.tsv") in seen
@@ -116,7 +116,7 @@ def test_the_night_exports_the_changed_sites_after_its_review_then_writes_seen(t
 @needs_script
 def test_a_night_with_nothing_to_export_still_writes_seen(tmp_path):
     got, steps, _calls = _run(tmp_path, "")
-    assert got.returncode == 0 and steps == ["backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"]
+    assert got.returncode == 0 and steps == ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "export-list", "seen"]
 
 
 # ---------------------------------------------------------------- the export service at night

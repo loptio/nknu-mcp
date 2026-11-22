@@ -382,4 +382,4 @@ def test_a_stop_before_the_run_starts_no_run(tmp_path):
     py.write_text(py.read_text().replace('exit 0\n', '[ "$step" = "$STOP_AFTER" ] && kill -TERM $PPID\nexit 0\n'))
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    assert got.returncode == 1 and steps == ["backup", "put-back", "fail"]  # stopped right after put-back
+    assert got.returncode == 1 and steps == ["warc-there", "backup", "put-back", "fail"]  # stopped right after put-back

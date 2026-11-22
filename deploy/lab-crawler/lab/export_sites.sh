@@ -32,7 +32,7 @@
 # 网站键里的 / 在资料夹名里换成 _（c.nknu.edu.tw/aca → c.nknu.edu.tw_aca-20261108-204012，导出开始的时间）。
 # 用法（实验室电脑，cmd 前面加 set "DOCKER_CONFIG=%USERPROFILE%\.docker-ssh" &）：
 #   docker run -d --name nknu-export --network none -e TZ=Asia/Taipei -e PYTHONPATH=/crawl/code/src
-#     -e PYTHONDONTWRITEBYTECODE=1 -w /crawl/code -v nknu-crawl:/crawl -v D:/nknu-crawl/warc:/crawl/archive/warc:ro
+#     -e PYTHONDONTWRITEBYTECODE=1 -w /crawl/code -v nknu-crawl:/crawl -v E:/nknu/warc:/crawl/archive/warc:ro
 #     -v nknu-work:/work -v C:/nknu-crawl/tools:/tools:ro nknu-pipeline bash /tools/export_sites.sh /tools/<清单>.txt
 #   全部重导加 -e FORCE=1；副本资料夹不在默认的地方就加 -e OLD_COPIES=<副本资料夹在容器里的路径>（例如传到 nknu-crawl 磁碟区的
 #   /crawl/old-copies-1024）。副本资料夹有学生全名和学号，只用 SSH 或随身硬盘传。

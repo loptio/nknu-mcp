@@ -2,8 +2,9 @@
 # 在实验室电脑上，用每晚那个服务空跑一遍，证明排程跑的那条路还通；不抓任何网页、不导出、不改账本里的网址。
 #   docker compose -f C:\nknu-crawl\compose.yaml run --rm -v C:/nknu-crawl/in/deploy:/in:ro nightly bash /in/proof_night.sh
 # 做这几样，哪一样不对就说、最后退出码 1：
-#   1. 环境和每晚脚本开工前自己查的一样：台北时间、全机锁设了、存网页的资料夹能写、备份的资料夹能写、金钥档读得到
-#      （只看在不在，绝不印出）、内容那边的导出资料夹挂着。
+#   1. 环境和每晚脚本开工前自己查的一样：台北时间、全机锁设了、存网页的资料夹能写、账本记的存档档都在这个资料夹里
+#      （挂载的路径写错时 Docker 会给一个空资料夹，「能写」照样过）、备份的资料夹能写、金钥档读得到（只看在不在，
+#      绝不印出）、内容那边的导出资料夹挂着。
 #   2. 放一个 update.pause，照排程那样跑 /crawl/code-update/lab/nightly_update.sh：它应该写一行「这一晚不更新」就结束，
 #      退出码 0；跑完把 update.pause 拿掉（原来就有的话不动它，也不跑这一步）。这一行写在临时档里，不进 update.log
 #      （白天多一行，面板会当成上一晚的）。
@@ -15,11 +16,13 @@ LAB="${LAB:-/crawl/code-update/lab}"
 bad=0
 ok() { echo "  好：$1"; }
 no() { echo "  不对：$1"; bad=1; }
+update() { python -m nknu.archive.update --dir "$ROOT" "$@"; }
 
 echo "== 环境"
 [ "$(date +%z)" = "+0800" ] && ok "台北时间" || no "时区不是台北"
 [ -n "${NKNU_SCHOOL_LOCK:-}" ] && ok "全机锁 ${NKNU_SCHOOL_LOCK}" || no "没设全机锁 NKNU_SCHOOL_LOCK"
 { [ -d "$ROOT/warc" ] && [ -w "$ROOT/warc" ]; } && ok "存网页的资料夹能写" || no "$ROOT/warc 不在或不能写"
+out="$(update warc-there 2>&1 | tail -1)" && ok "$out" || no "$out"
 { [ -n "${BACKUPS:-}" ] && [ -d "$BACKUPS" ] && [ -w "$BACKUPS" ]; } && ok "备份的资料夹能写（$(ls "$BACKUPS" | grep -c '^nightly-.*\.db$') 份）" \
   || no "备份的资料夹 ${BACKUPS:-（没设）} 不在或不能写"
 [ -r /run/secrets/google.env ] && ok "金钥档读得到（没有打开看）" || no "读不到金钥档"
@@ -52,7 +55,6 @@ else
 fi
 
 echo "== 照每晚的程序各问一次（只读账本）"
-update() { python -m nknu.archive.update --dir "$ROOT" "$@"; }
 out="$(update plan 2>&1)" && ok "今晚会看：$(echo "$out" | tail -1 | cut -c1-160)" || no "update plan：$(echo "$out" | tail -1 | cut -c1-200)"
 out="$(update sites 2>&1)" && ok "定期更新的网站键 $(echo "$out" | tr ',' '\n' | grep -c .) 个" || no "update sites：$(echo "$out" | tail -1 | cut -c1-200)"
 out="$(python -m nknu.archive.schedules --dir "$ROOT" night --gap 1-2 2>&1)" && ok "课表学期那一步：$(echo "$out" | tail -1 | cut -c1-120)" \

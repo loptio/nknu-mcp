@@ -390,7 +390,7 @@ def test_the_script_reviews_a_night_whose_run_failed(tmp_path):
            "TZ": "Asia/Taipei", "NKNU_SCHOOL_LOCK": str(tmp_path / "locks" / "school.lock"), "JS_SITES_FILE": str(tmp_path / "no-js-sites.txt")}
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     steps = [line.split()[0] for line in (tmp_path / "calls.log").read_text().splitlines()]
-    assert got.returncode == 1 and steps == ["backup", "put-back", "night", "sites", "run", "review", "fail"]
+    assert got.returncode == 1 and steps == ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "fail"]
 
 
 def test_a_paused_night_touches_nothing(tmp_path):

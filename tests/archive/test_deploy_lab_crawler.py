@@ -1,8 +1,9 @@
 """The crawler's lab kit (deploy/lab-crawler; 11-19: what runs every night was only on two disks, research/ being out
 of git): the files the lab PC runs are in the repository and name each other rightly; the package holds the crawler's
-own files and nothing of another session's; install.sh puts it over the lab's three copies of the program keeping
+own files and nothing of another session's; install.sh puts it over the lab's two copies of the program keeping
 what it replaces, and refuses a broken package and a ledger a run holds; check_lab.sh tells whether the lab's files
-are the repository's. Made-up trees under tmp_path; nothing here connects anywhere."""
+are the repository's; nothing in the kit starts the old viewer or installs a copy for it (closed 11-21: the panels
+read the archive themselves). Made-up trees under tmp_path; nothing here connects anywhere."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 KIT = REPO / "deploy" / "lab-crawler"
 SCRIPTS = ("pack.sh", "install.sh", "check_lab.sh", "proof_night.sh", "export_and_compare.sh", "lab/nightly_update.sh",
            "lab/export_sites.sh")
-COPIES = ("code-update", "export-code", "viewer-code")
+COPIES = ("code-update", "export-code")
 linux_tools = pytest.mark.skipif(shutil.which("sha256sum") is None, reason="no sha256sum here (the lab's image has it)")
 
 
@@ -33,7 +34,11 @@ def test_every_script_parses_and_the_two_windows_files_are_plain_ascii():
         got = subprocess.run(["bash", "-n", str(KIT / name)], capture_output=True, text=True, check=False)
         assert got.returncode == 0, (name, got.stderr)
     for name in ("nightly_update.cmd", "nightly_hidden.vbs"):  # cmd reads them in the console's code page
-        (KIT / name).read_bytes().decode("ascii")
+        raw = (KIT / name).read_bytes()
+        raw.decode("ascii")
+        # and every line ends as Windows ends it (2026-11-23: an edit that read the file as text wrote it back
+        # with bare line feeds, and that copy was installed)
+        assert raw.count(b"\n") == raw.count(b"\r\n") > 0, name
 
 
 def test_the_schedule_s_chain_names_files_the_kit_holds():
@@ -54,19 +59,46 @@ def test_the_schedule_s_chain_names_files_the_kit_holds():
 
 def test_the_night_has_what_it_needs_and_nothing_else_holds_the_key():
     services = compose()["services"]
-    assert sorted(services) == ["nightly", "rejudge", "status", "stop", "viewer"]
+    assert sorted(services) == ["nightly", "rejudge", "status", "stop", "warc-backup"]
     night = services["nightly"]
     assert night["image"] == "nknu-browser" and night["environment"]["PYTHONPATH"] == "/crawl/code-update/src"
     assert night["environment"]["TZ"] == "Asia/Taipei" and night["environment"]["NKNU_SCHOOL_LOCK"]
     mounts = night["volumes"]
-    assert "nknu-crawl:/crawl" in mounts and "nknu-work:/work" in mounts and "D:/nknu-crawl/warc:/crawl/archive/warc" in mounts
+    assert "nknu-crawl:/crawl" in mounts and "nknu-work:/work" in mounts and "E:/nknu/warc:/crawl/archive/warc" in mounts
+    # the ledger's nightly backups go to the backup disk's one folder for this project (11-23), where the script looks
+    assert "D:/nknu-backup/crawler-nightly:/backup-nightly" in mounts and night["environment"]["BACKUPS"] == "/backup-nightly"
     assert any(m.endswith("google.env:/run/secrets/google.env:ro") for m in mounts)
-    for name in ("viewer", "stop", "status", "rejudge"):
+    for name in ("stop", "status", "rejudge"):  # a person's tools: the night's own program, no network, no key
         assert not any("secrets" in str(m) for m in services[name].get("volumes", [])), name
-    for name in ("stop", "status", "rejudge"):  # a person's tools: the night's own program, no network
         assert services[name]["network_mode"] == "none" and services[name]["working_dir"] == "/crawl/code-update"
-    assert services["viewer"]["ports"] == ["127.0.0.1:8877:8877"]
-    assert "D:/nknu-crawl/warc:/crawl/archive/warc:ro" in services["viewer"]["volumes"]
+        assert not services[name].get("ports"), name
+    assert not night.get("ports")  # nothing of the crawler's listens: the panels are deploy/lab-inspect's
+
+
+def test_the_raw_files_backup_cannot_write_the_source_and_runs_after_the_ingest():
+    # 2026-11-23: the raw crawl files are copied to the backup disk each night. Its service gets the source read-only
+    # (so no fault of the program can write there), no network and no key; the schedule runs it last, so nothing it
+    # does holds up the ingest, and the task still ends with the crawler's code.
+    svc = compose()["services"]["warc-backup"]
+    assert "E:/nknu/warc:/crawl/archive/warc:ro" in svc["volumes"]
+    assert "D:/nknu-backup/crawler-warc:/backup-warc" in svc["volumes"] and "nknu-crawl:/crawl" in svc["volumes"]
+    assert svc["network_mode"] == "none" and not any("secrets" in v for v in svc["volumes"])
+    run = svc["entrypoint"]
+    assert run[0] == "timeout" and "nknu.archive.warcbackup" in run and run[-2:] == ["--to", "/backup-warc"]
+    cmd = (KIT / "nightly_update.cmd").read_text(encoding="ascii")
+    ingest, backup = cmd.index("nightly_ingest.cmd >>"), cmd.index("run --rm warc-backup --quiet")
+    assert ingest < backup and cmd.rstrip().endswith("exit /b %RC%")
+    assert "nknu.archive import crawler, export, monitor, round1, schedules, update, viewer, warcbackup" in (
+        KIT / "install.sh").read_text(encoding="utf-8")  # an install says so when the new program does not load
+
+
+def test_nothing_in_the_kit_starts_the_old_viewer_or_installs_a_copy_for_it():
+    """11-21: the old viewer was closed and its copy of the program deleted on the lab. A line that starts the service
+    or names its copy would bring the container back, or make the install and the check ask for a folder that is
+    gone."""
+    for name in ("compose.yaml", "install.sh", "check_lab.sh", "proof_night.sh", "README.md"):
+        text = (KIT / name).read_text(encoding="utf-8")
+        assert "up -d viewer" not in text and "viewer-code" not in text, name
 
 
 def test_the_readme_names_only_files_the_kit_holds():
@@ -102,7 +134,7 @@ def test_the_small_package_holds_the_crawler_s_own_files_only(packed):
 
 
 def lab(tmp_path: Path) -> Path:
-    """A made-up /crawl: the three copies of the program as they are in the repository, with one file of the archive
+    """A made-up /crawl: the two copies of the program as they are in the repository, with one file of the archive
     an older version, one the repository no longer has, and the nightly script an older one."""
     crawl = tmp_path / "crawl"
     for c in COPIES:
@@ -124,7 +156,7 @@ def run(script: str, crawl: Path, packed: Path, **env) -> subprocess.CompletedPr
 
 
 @linux_tools
-def test_install_puts_the_package_over_the_three_copies_and_keeps_what_it_replaces(tmp_path, packed):
+def test_install_puts_the_package_over_the_two_copies_and_keeps_what_it_replaces(tmp_path, packed):
     crawl = lab(tmp_path)
     assert run("check_lab.sh", crawl, packed).returncode == 1  # not the repository's yet
     got = run("install.sh", crawl, packed)
@@ -143,6 +175,7 @@ def test_install_puts_the_package_over_the_three_copies_and_keeps_what_it_replac
     assert (lab_dir / "export_sites.sh").is_file() and (lab_dir / "js_sites.txt").is_file()
     same = run("check_lab.sh", crawl, packed)
     assert same.returncode == 0 and "不一样的 0 个" in same.stdout, same.stdout
+    assert not (crawl / "viewer-code").exists()  # two copies: nothing is made for the old viewer
 
 
 @linux_tools
@@ -150,10 +183,30 @@ def test_check_lab_names_each_file_that_is_not_the_repository_s(tmp_path, packed
     crawl = lab(tmp_path)
     assert run("install.sh", crawl, packed).returncode == 0
     (crawl / "export-code/src/nknu/archive/export.py").write_text("# changed on the lab by hand\n", encoding="utf-8")
-    (crawl / "viewer-code/src/nknu/archive/left_over.py").write_text("# not the repository's\n", encoding="utf-8")
+    (crawl / "code-update/src/nknu/archive/left_over.py").write_text("# not the repository's\n", encoding="utf-8")
     got = run("check_lab.sh", crawl, packed)
     assert got.returncode == 1 and "不一样的 2 个" in got.stdout
     assert "export-code/src/nknu/archive/export.py" in got.stdout and "left_over.py" in got.stdout
+
+
+@linux_tools
+def test_check_lab_says_whether_the_content_side_s_list_is_this_one(tmp_path, packed):
+    # 2026-11-23: the site list has a third copy on the lab, the content side's (/work/config): its text and library
+    # steps read from it which sites are round one, the panels the names. It is not the crawler's to replace, so it
+    # is said and never counted: a difference in the crawler's own fields (caps, revisit) is no fault.
+    crawl = lab(tmp_path)
+    assert run("install.sh", crawl, packed).returncode == 0
+    theirs = tmp_path / "work/config/archive_round1.json"
+    theirs.parent.mkdir(parents=True)
+    shutil.copy(REPO / "config/archive_round1.json", theirs)
+    same = run("check_lab.sh", crawl, packed, CONTENT_LIST=str(theirs))
+    assert same.returncode == 0 and "内容那边读的名单" in same.stdout and "和这一包的一样" in same.stdout
+    theirs.write_text("{}", encoding="utf-8")
+    other = run("check_lab.sh", crawl, packed, CONTENT_LIST=str(theirs))
+    assert other.returncode == 0 and "和这一包的不一样" in other.stdout and "不一样的 0 个" in other.stdout
+    assert "不一样：" not in other.stdout  # that wording is for the files that are counted
+    unmounted = run("check_lab.sh", crawl, packed, CONTENT_LIST=str(tmp_path / "nowhere.json"))
+    assert unmounted.returncode == 0 and "没挂进来" in unmounted.stdout
 
 
 @linux_tools
@@ -179,9 +232,10 @@ def test_install_refuses_while_a_run_holds_the_ledger_and_a_package_that_is_not_
 @linux_tools
 def test_install_says_when_a_copy_no_longer_loads(tmp_path, packed):
     crawl = lab(tmp_path)
-    shutil.rmtree(crawl / "viewer-code/src/nknu/core")  # a copy missing what the crawler's files need
+    shutil.rmtree(crawl / "export-code/src/nknu/core")  # a copy missing what the crawler's files need
     got = run("install.sh", crawl, packed)
-    assert got.returncode == 1 and "viewer-code" in got.stderr and "程序载不进来" in got.stderr
+    assert got.returncode == 1 and "export-code" in got.stderr and "程序载不进来" in got.stderr
+    assert not (crawl / "viewer-code").exists()  # and no third copy is made
     assert "code-update：换了 1 个档" in got.stdout  # the others were installed and say so
 
 

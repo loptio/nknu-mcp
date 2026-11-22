@@ -230,7 +230,7 @@ def test_the_nightly_script_asks_between_its_put_back_and_its_run_and_goes_on_wh
     got = subprocess.run(["bash", str(SCRIPT)], check=False, env=env, capture_output=True, text=True)
     calls = (tmp_path / "calls.log").read_text().splitlines()
     assert got.returncode == 0
-    assert [c.split()[0] for c in calls] == ["backup", "put-back", "night", "sites", "run", "review", "export-list",
+    assert [c.split()[0] for c in calls] == ["warc-there", "backup", "put-back", "night", "sites", "run", "review", "export-list",
                                              "seen"]
     asked = next(c for c in calls if c.startswith("night "))
     assert "nknu.archive.schedules" in asked and "--gap 1-2" in asked

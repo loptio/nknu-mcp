@@ -915,12 +915,50 @@ def _no_area(marked: dict[str, int], out: Path | None, dry: bool) -> int:
     return 0
 
 
+# every column that points at a stored answer: the pages' own, the button presses' (and the page a press was made
+# from), and the answers a later night replaced
+_WARC_COLS = (("url", "warc"), ("action", "warc"), ("action", "form_src_warc"), ("url_version", "warc"))
+
+
+def warcs_named(conn: sqlite3.Connection) -> list[str]:
+    """The WARC files the ledger's stored answers are in, as it names them (under the archive: warc/<year>/<month>/
+    <day>/<file>, so the last by name is the newest). A table an older ledger does not have is passed over."""
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    named: set[str] = set()
+    for table, col in _WARC_COLS:
+        if table in have:
+            named.update(r[0] for r in conn.execute(f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL"))
+    return sorted(named)
+
+
+def warc_there(root: Path) -> tuple[int, str]:
+    """Whether the WARC folder under root is the one the ledger's answers were stored in (11-23, the folder moved to
+    another disk: Docker makes an empty folder for a mount whose path is wrong, and a folder that is there and can be
+    written is all the night's own check asked). 0: every file the ledger names is there. 1: the newest is not, which
+    is an empty or a half-copied folder, or one a later night did not write in: the night must not run on it. 2: the
+    newest is there and an older one is not, a hole in the right folder. With what to say."""
+    conn = sqlite3.connect(f"file:{root / 'frontier.db'}?mode=ro", uri=True)
+    try:
+        named = warcs_named(conn)
+    finally:
+        conn.close()
+    if not named:
+        return 0, "账本里还没有存下来的网页：存档资料夹不用查"
+    gone = [w for w in named if not (root / w).is_file()]
+    if not gone:
+        return 0, f"账本记的存档档 {len(named)} 个都在（最旧 {named[0]}，最新 {named[-1]}）"
+    if named[-1] in gone:
+        return 1, (f"账本记的存档档 {len(named)} 个，{root / 'warc'} 里少了 {len(gone)} 个，最新的 {named[-1]} 也不在："
+                   "这不是爬虫存档的那个资料夹（挂载的路径不对，或搬的时候没搬齐）")
+    return 2, f"账本记的存档档 {len(named)} 个，少了 {len(gone)} 个旧的（例：{gone[0]}）；最新的 {named[-1]} 在"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m nknu.archive.update",
                                  description="定期更新：挑今晚要看的列表和网页、放回待抓（不连网；抓取照旧用 nknu archive run）")
     ap.add_argument("--dir", required=True, type=Path, help="存档目录（frontier.db 所在）")
     ap.add_argument("action", choices=("plan", "put-back", "go-live", "review", "sites", "fail", "export-list", "seen",
-                                       "thin-back", "round2", "no-area", "js-take", "revisit-back"),
+                                       "thin-back", "round2", "no-area", "js-take", "revisit-back", "warc-there"),
                     help="plan 只读、只算数；put-back 放回今晚要看的；go-live 第一晚以前做一次；review 算这一晚的变动清单；"
                          "sites 印出定期更新的网站键（逗号分隔）；fail --step 记下这一晚停在哪一步；export-list 印出今晚要导出的"
                          "网站（一行一个：有变动的，警报压着的不算）；seen --results --out 写 seen.tsv（每站最后一次看过）；"
@@ -930,7 +968,9 @@ def main(argv: list[str] | None = None) -> int:
                          "js-take --sites 把浏览器（python -m nknu.archive.jsfetch run）开过、显示出东西的网页，照它的显示版找链接、"
                          "排进待抓（之后再 archive run）；"
                          "revisit-back 手动把每周／每月再看一次的校外单位网站的首页和首页链到的页放回（不看星期几；"
-                         "--sites 只放这些，--dry-run 只数；不算一晚，之后 archive run --sites 同样这些）")
+                         "--sites 只放这些，--dry-run 只数；不算一晚，之后 archive run --sites 同样这些）；"
+                         "warc-there 只读：账本记的存档档（WARC）是不是都在这个存档目录里（退出码 0 都在；1 最新的不在，"
+                         "这不是爬虫存档的那个资料夹；2 只少旧的）")
     ap.add_argument("--results", type=Path, default=None,
                     help="seen 用：今晚导出的结果（网站键<TAB>ok/failed/…，export_sites.sh 的 EXPORT_RESULTS）")
     ap.add_argument("--out", type=Path, default=None, help="seen 用：写到哪里（例如 /work/archive-export/sites/seen.tsv）；"
@@ -950,6 +990,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{root} 里没有 frontier.db（--dir 打错了？）：什么都没做", file=sys.stderr)
         return 1
     sites = _sites(a.sites)
+    if a.action == "warc-there":
+        code, said = warc_there(root)
+        print(said)
+        return code
     if a.action in ("export-list", "seen"):
         try:
             status = json.loads((root / "reports" / STATUS).read_text(encoding="utf-8"))

@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# 在实验室电脑的容器里跑：把 crawler-code.tar 装进爬虫的三份程序和每晚脚本的位置。账本不动。
+# 在实验室电脑的容器里跑：把 crawler-code.tar 装进爬虫的两份程序和每晚脚本的位置。账本不动。
 #   docker run --rm --network none -e TZ=Asia/Taipei -v nknu-crawl:/crawl -v C:/nknu-crawl/in/deploy:/in:ro
 #     nknu-pipeline bash /in/install.sh
-# 装之前先停旧看板（docker compose -f C:\nknu-crawl\compose.yaml stop viewer），装完再 up -d viewer：开着换，它之后才载入
-# 的模组会是新的，新旧混用。主机上的三个档（compose.yaml、nightly_update.cmd、nightly_hidden.vbs）不归这支管，照
-# README「换程序」那一节用 copy 换。
+# 主机上的三个档（compose.yaml、nightly_update.cmd、nightly_hidden.vbs）不归这支管，照 README「换程序」那一节用
+# copy 换。
 # 做法：
 #   1. 只在 04:00～23:00 做（01:00 起每晚的定期更新在跑）；包要完整；没有抓取拿着 run.lock。少一样就停，什么都不动。
-#   2. 三份程序（/crawl/code-update、/crawl/export-code、/crawl/viewer-code）各自：包里有、内容不同的档先留成
+#   2. 两份程序（/crawl/code-update、/crawl/export-code）各自：包里有、内容不同的档先留成
 #      <档名>.prev-<时间>，再换上；src/nknu/archive 里包里没有的 .py（仓库里已经删掉的）也改名成 .prev-<时间>。
 #      换完用那一份程序载入一次（载不进来就说，退出码 1；旧档都还在）。
 #   3. 包里的 lab/ 放到 /crawl/code-update/lab（每晚脚本、导出脚本、网站清单），旧的留 .prev-<时间>。
 # 退回：把 .prev-<时间> 的档改回原名（同一个时间戳就是同一次安装）。
-# CRAWL、IN、COPIES、ANY_HOUR 四个变数只给测试和空机器重建用（默认 /crawl、/in、三份都装、要看钟点）。
+# CRAWL、IN、COPIES、ANY_HOUR 四个变数只给测试和空机器重建用（默认 /crawl、/in、两份都装、要看钟点）。
 set -euo pipefail
 
 CRAWL="${CRAWL:-/crawl}"
 IN="${IN:-/in}"
-COPIES="${COPIES:-code-update export-code viewer-code}"
+COPIES="${COPIES:-code-update export-code}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 hour="$(date +%H)"
 if [ "${ANY_HOUR:-0}" != 1 ] && { [ "$hour" -lt 4 ] || [ "$hour" -ge 23 ]; }; then
@@ -75,7 +74,7 @@ for c in $COPIES; do
   done
   find "$d/src" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
   if (cd "$d" && PYTHONPATH="$d/src" PYTHONDONTWRITEBYTECODE=1 python3 -c "
-from nknu.archive import crawler, export, monitor, round1, schedules, update, viewer
+from nknu.archive import crawler, export, monitor, round1, schedules, update, viewer, warcbackup
 from nknu.admin.cli import app
 round1.load()" 2>"$T/load.err"); then
     echo "  ${d}：换了 ${changed} 个档、新放 ${added} 个、拿掉 ${gone} 个；程序载得进来"
@@ -96,7 +95,7 @@ chmod 755 "$L"/*.sh
 bash -n "$L/nightly_update.sh" && bash -n "$L/export_sites.sh" && echo "  ${L}：每晚脚本、导出脚本、网站清单放好了"
 
 if [ "$bad" = 1 ]; then
-  echo "有一份程序载不进来：先别开看板、别让今晚自己跑，把 .prev-$stamp 的档改回去或重新打包。" >&2
+  echo "有一份程序载不进来：别让今晚自己跑，把 .prev-$stamp 的档改回去或重新打包。" >&2
   exit 1
 fi
-echo "装好了（旧档留成 .prev-${stamp}）。接着开旧看板：docker compose -f C:\\nknu-crawl\\compose.yaml up -d viewer"
+echo "装好了（旧档留成 .prev-${stamp}）。接着照 README「换程序」第 4 步核对和空跑。"
