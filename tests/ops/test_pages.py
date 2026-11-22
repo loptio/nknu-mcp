@@ -5,7 +5,6 @@ are days; a step that left nothing has no card."""
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
 
@@ -157,21 +156,15 @@ def test_the_questions_words_say_which_a_candidate_must_hold(db):
 def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
     # owner 11-16: the home says whether every step of the pipeline is normal; since the structure design of 11-17
     # (section 二) it is 今晚, 搜尋測試 is 試用's second tab (the scoreboard on 試用's empty page) and the empty trace is
-    # 文件's box. 2026-11-22 evening: 每晚運行 is reached from 總覽, the scoreboard is the student questions' and
-    # 文件搜尋 the bar's box
-    student = tmp_path / web.STUDENT_FILE
-    student.parent.mkdir(parents=True)
-    student.write_text(json.dumps({"n": 2, "measured": "2026-11-22T04:10:00", "prev": None,
-                                   "totals": {"raw": {"top1": 1, "top3": 1, "top10": 2}, "agent": {}},
-                                   "questions": [{"id": "O01", "q": "停修", "raw": 1, "agent": None}]}),
-                       encoding="utf-8")
+    # 文件's box. 2026-11-22: 每晚運行 is reached from 總覽, 文件搜尋 is the bar's box and 搜尋's empty page lists
+    # the 33 test questions to try by hand
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
         home = client.get("/tonight").text
         search = client.get("/search")
         page_of_trace = client.get("/trace")
     assert "aria-current='true'>總覽</a>" in home and "action='/search'" not in home
-    assert str(search.url).endswith("/try#students") and "id='students'" in search.text  # lands on the board
+    assert str(search.url).endswith("/try#tests")  # lands on the 33 test questions to try by hand
     assert "aria-current='page'>搜尋</a>" in search.text and "data-board='" not in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
     assert "<form class='nk-find nk-on'" in page_of_trace.text
@@ -351,47 +344,9 @@ def test_the_stored_page_is_drawn_in_plain_flow_after_its_own_scraps_of_style():
 
 # ---------------------------------------------------------------- the new question set on 測試 (11-21)
 
-NEWSET = {"set": "2026-11-18", "run": "final", "questions": 194, "tops": [1, 3, 10],
-          "library": "aca.db 2026-11-21T04:03:26+08:00（88966 份文件）", "measured_at": "2026-11-21T10:00:00+08:00",
-          "groups": [{"key": "B", "n": 83, "q": [29, 48, 69], "a1": [37, 53, 72], "a": [44, 65, 77]},
-                     {"key": "B/open", "n": 41, "q": [15, 24, 35], "a1": [1, 2, 3], "a": [22, 33, 39]},
-                     {"key": "B/sealed", "n": 42, "q": [14, 24, 34], "a1": [1, 2, 3], "a": [22, 32, 38]},
-                     {"key": "A", "n": 100, "q": [75, 82, 91], "a1": [1, 2, 3], "a": [72, 93, 97]}],
-          "b_asked": {"all": 94, "answered": 83, "related_only": 9, "absent": 2}}
-
-
-def test_the_new_question_sets_totals_say_which_library_they_measured():
-    page = search_page.newset_html(NEWSET, "2026-11-21T04:03:26+08:00")
-    assert "新題庫成績" in page and "現在這份庫的成績" in page and "不是現在這份庫的成績" not in page
-    row = re.search(r"<tr class=main>.*?</tr>", page, re.DOTALL).group(0)
-    assert re.findall(r">(\d+)</td>", row) == ["83", "29", "48", "69", "44", "65", "77"]  # as written, then the agent's
-    assert "77 / 83 題（93%）" in row and "共出了 94 題，其中 83 題庫裡有答案" in page and "9 題庫裡只有相關的資料" in page
-    # measured on another library than the one in use: said on top, never left to be read as today's score
-    old = search_page.newset_html(NEWSET, "2026-11-22T04:01:00+08:00")
-    assert "不是現在這份庫的成績" in old and "2026-11-22 04:01" in old
-    assert search_page.newset_html(None, "x") == "" and search_page.newset_html({"groups": []}, "x") == ""
-    late = search_page.newset_html({**NEWSET, "b_asked": {**NEWSET["b_asked"], "expired": 2}}, "x")
-    assert "其中 2 題有時效、量的時候已經過期，沒算" in late and "過期" not in page and "不加在一起" in page
-
-
-def test_the_test_page_shows_the_new_sets_totals_when_the_file_is_beside_the_record(tmp_path, tmp_path_factory,
-                                                                                    monkeypatch):
-    monkeypatch.setattr(vectors, "_CACHE", {})
-    w = world.build(tmp_path)
-    ops = tmp_path_factory.mktemp("ops") / "ops.db"
-    app = web.create_app(w.db, tmp_path, models=models(), today_fn=lambda: TODAY, ops_db=ops, record=False)
-    with TestClient(app, base_url="http://127.0.0.1:8878") as client:
-        assert "新題庫成績" not in client.get("/try").text
-        ops.with_name(web.NEWSET_FILE).write_text(json.dumps(NEWSET, ensure_ascii=False), encoding="utf-8")
-        page = client.get("/try").text
-        assert "新題庫成績" in page and "不是現在這份庫的成績" in page
-        ops.with_name(web.NEWSET_FILE).write_text("{broken", encoding="utf-8")
-        assert "新題庫成績" not in client.get("/try").text
-
-
 def test_the_panel_no_longer_runs_the_33_questions(db, tmp_path):
-    """2026-11-22 night (owner: the 33 questions are not needed): no board module, no /api/board, and the
-    explanation tab offers the nightly sample's questions instead."""
+    """2026-11-22 night: nothing runs the 33 questions on its own (no board module, no /api/board); they are tried
+    by hand on 搜尋 (owner: 「以后如果要的话再从dashboard那边手动测试那33题就好了」)."""
     import importlib.util
 
     assert importlib.util.find_spec("nknu.ops.board") is None

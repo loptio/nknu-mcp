@@ -12,7 +12,6 @@ floats over it (owner 11-15: 「很多名字看着不直觉 然后感觉是想�
 from __future__ import annotations
 
 import math
-import re
 from urllib.parse import urlencode
 
 from nknu.ops.explain import IN_TOP, NO_CANDIDATE, NOT_FOUND, NOT_IN_HEAD, RANKED, background_words, order_words
@@ -108,70 +107,22 @@ def why_head(questions: list[dict], question: dict | None, query: str, docs: lis
 
 # ---------------------------------------------------------------- the scoreboard
 
-NEWSET_ROWS = (("B", "從學生的角度出的題（主指標）", "學生會怎麼問就怎麼出題，再到庫裡找答案；這一組的數字是主指標"),
-               ("B/open", "　其中平時看的一半", "調搜尋時可以一題一題看的那一半"),
-               ("B/sealed", "　其中封存的一半", "只在最後驗收時看、只看總數的那一半：不拿它來調搜尋"),
-               ("A", "從文件出的題（只看涵蓋）", "拿庫裡的文件出題：只用來看有沒有退步，不當成績"))
-NEWSET_WAYS = (("q", "照學生原話搜", "把題目原文直接拿去搜"),
-               ("a", "AI 改寫後搜", "學生的 AI 會先把問題改寫成關鍵詞再搜：每題模擬兩種改寫，算較好的那一次"))
-_ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?")
-
-
-def newset_html(summary: object, built_at: str | None) -> str:
-    """The new question set's last measured totals: how many answered questions have their source in the first 1, 3
-    and 10 results, the question as written and as an agent rewrites it; which library was measured and when, said
-    plainly when it is not the one in use. '' without a summary."""
-    if not isinstance(summary, dict) or not isinstance(summary.get("groups"), list):
+def tests_html(questions: list[dict]) -> str:
+    """The 33 test questions to try by hand (owner 2026-11-22 night: 「以后如果要的话再从dashboard那边手动测试那33题就好
+    了」): each opens 搜尋's second tab on it, which says where its gold answer stands and why. Nothing is graded here
+    or run on its own. '' without questions."""
+    if not questions:
         return ""
-    groups = {g.get("key"): g for g in summary["groups"] if isinstance(g, dict)}
-    tops = [int(t) for t in summary.get("tops") or (1, 3, 10)]
-    head = "".join(f"<th colspan='{len(tops)}' class='grp' data-tip='{e(tip)}'>{e(words)}</th>"
-                   for _k, words, tip in NEWSET_WAYS)
-    sub = "".join("".join(f"<th class='num'>{'第 1 名' if t == 1 else f'前 {t} 名'}</th>" for t in tops)
-                  for _ in NEWSET_WAYS)
-    body = []
-    for key, name, tip in NEWSET_ROWS:
-        g = groups.get(key)
-        if not g or not g.get("n"):
-            continue
-        cells = "".join(
-            "".join(
-                f"<td class='num ns-cell ns-{way}' data-tip='{e(f'{n} / {g['n']} 題（{n / g['n']:.0%}）')}'>"
-                f"<span class='ns-bar' aria-hidden='true'><i style='width:{n / g['n'] * 100:.0f}%'></i></span>{n}</td>"
-                for n in (int(x) for x in (g.get(way) or [])[:len(tops)])
-            )
-            for way, _w, _t in NEWSET_WAYS
-        )
-        body.append(f"<tr{' class=main' if key == 'B' else ''}><th scope='row' data-tip='{e(tip)}'>{e(name)}</th>"
-                    f"<td class='num'>{int(g['n'])}</td>{cells}</tr>")
-    if not body:
-        return ""
-    library = tw(str(summary.get("library") or ""))
-    measured = _ISO.search(str(summary.get("library") or ""))
-    if measured:  # 「sites_1118c.db 2026-11-18T20:57:07+08:00（…）」 as people say it: when it was built, and its note
-        aside = library[library.index("（"):] if "（" in library else ""
-        library = f"{measured.group(0)[5:16].replace('T', ' ')} 建的那份庫{aside}"
-    stale = bool(built_at) and (measured is None or measured.group(0)[:19] != str(built_at)[:19])
-    note = (f"<span class='pill warn' data-tip='新題庫要人在 Mac 上手動量，量一次才更新；現在用的庫是 {e(str(built_at)[:16].replace('T', ' '))} "
-            "建的'>不是現在這份庫的成績</span>" if stale else "<span class='pill good'>現在這份庫的成績</span>")
-    asked = summary.get("b_asked") if isinstance(summary.get("b_asked"), dict) else {}
-    foot = ""
-    if asked.get("all"):
-        gone = int(asked.get("expired") or 0)  # time-limited questions past their date when measured: not scored
-        late = f"（其中 {gone} 題有時效、量的時候已經過期，沒算）" if gone else ""
-        foot = (f"<p class='soft small'>從學生角度共出了 {int(asked['all'])} 題，其中 {int(asked.get('answered') or 0)} 題庫裡有答案"
-                f"{late}、算進上面的成績；{int(asked.get('related_only') or 0)} 題庫裡只有相關的資料、"
-                f"{int(asked.get('absent') or 0)} 題庫裡沒有，不算在內。數字是「標準出處排進前幾名的題數」；"
-                "兩組題各算各的，不加在一起。</p>")
-    when = str(summary.get("measured_at") or "")[:16].replace("T", " ")
-    return (f"<h2 class='sec' id='newset' data-tip='11-18 做的新題庫：{int(summary.get('questions') or 194)} 題'>新題庫成績</h2>"
-            f"<section class='card pad newset'><p class='newset-of'>{note}<span class='soft'>量的是 {e(library)}；"
-            f"{e(when)} 量的</span></p><div class='newset-box'><table class='grid newset-t'><thead><tr><th rowspan='2'></th>"
-            f"<th rowspan='2' class='num'>題數</th>{head}</tr><tr>{sub}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
-            f"{foot}</section>")
+    lis = "".join(f"<li><a href='{e(why_url(qid=q['id']))}'><span class='tq-id'>{e(q['id'])}</span>"
+                  f"{e(tw(q['question']))}</a></li>" for q in questions)
+    return ("<style>.tq{list-style:none;margin:0;padding:0;columns:2 320px;column-gap:24px}"
+            ".tq li{break-inside:avoid;padding:5px 0;border-top:1px solid var(--line);font-size:13px}"
+            ".tq a{color:var(--ink);text-decoration:none}.tq a:hover{text-decoration:underline;text-underline-offset:3px}"
+            ".tq-id{display:inline-block;min-width:44px;color:var(--ink3);font-variant-numeric:tabular-nums}</style>"
+            f"<h2 class='sec' id='tests'>測試題<span class='faint small'>　{len(questions)} 題，點一題看它的標準答案排第幾、"
+            "為什麼這樣排（手動測，不會自己跑）</span></h2>"
+            f"<section class='card pad'><ul class='tq'>{lis}</ul></section>")
 
-
-# ---------------------------------------------------------------- one score as its parts
 
 def parts(row: dict, weights: dict) -> dict:
     """One result's score as the search added it up (nknu.ops.explain's docstring): {'base', 'base_name', 'adds':

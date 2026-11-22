@@ -94,30 +94,14 @@ def test_the_page_escapes_what_it_prints(lib, db):
     assert "<script>alert" not in page.text and "&lt;script&gt;alert(1)" in page.text
 
 
-STUDENT = {"version": 1, "measured": "2026-11-22T04:10:00", "library": {"built": "2026-11-22T03:01:46+08:00"},
-           "n": 83, "totals": {"raw": {"top1": 30, "top3": 50, "top10": 70}, "agent": {"top1": 40, "top3": 60, "top10": 75}},
-           "halves": {"open": {"n": 41}, "sealed": {"n": 42, "raw": {"top1": 14, "top10": 33}, "agent": {}}},
-           "questions": [{"id": "O01", "q": "怎麼申請停修", "raw": 1, "agent": 2, "prev_raw": None, "prev_agent": None}],
-           "prev": None}
-
-
 def test_an_empty_search_page_is_try_with_its_board(lib, tmp_path):
     # structure design 2026-11-17 section 二: 搜尋測試 moved into 試用; asked nothing, 試用 itself. Since 2026-11-22
-    # evening its board is the student questions' nightly measurement (student_board), the 33 questions' left
+    # night its empty page lists the 33 test questions to try by hand (#tests); nothing is measured on its own
     page = lib.get("/search", follow_redirects=False)
-    assert page.status_code == 307 and page.headers["location"] == "/try#students"
+    assert page.status_code == 307 and page.headers["location"] == "/try#tests"
     page = lib.get("/search")
-    assert page.status_code == 200 and "aria-current='page'>搜尋</a>" in page.text and "id='students'" not in page.text
-    measured = tmp_path / web.STUDENT_FILE  # under the root the library's relative paths start from
-    measured.parent.mkdir(parents=True)
-    measured.write_text(json.dumps(STUDENT, ensure_ascii=False), encoding="utf-8")
-    page = lib.get("/try").text
-    assert "<h2 class='sec' id='students'>學生題的名次" in page and "封存的 42 題只看總數" in page
-    assert "data-board='" not in page and "測試題成績" not in page and "新題庫成績" not in page
-    asked = lib.get("/try", params={"tab": "why", "q": "停修"}).text
-    assert "id='students'" not in asked  # a question asked: its answer, not the board
-    measured.write_text("{", encoding="utf-8")  # a file being written: the board waits, the page is still a page
-    assert lib.get("/try").status_code == 200 and "id='students'" not in lib.get("/try").text
+    assert page.status_code == 200 and "aria-current='page'>搜尋</a>" in page.text
+    assert "id='students'" not in page.text and "新題庫成績" not in page.text and "data-board='" not in page.text
 
 
 def test_the_old_addresses_go_where_their_pages_went(lib):
@@ -145,22 +129,25 @@ def test_the_second_tab_of_try_explains_the_search_on_the_library(lib):
     assert "<title>停修 · 搜尋</title>" in page
 
 
-def _sample(root, questions: list[tuple[str, str, list[str]]]) -> None:
-    """The nightly sample of the student questions (student_eval.json under root): what the explanation tab offers
-    since 2026-11-22 night, in place of the 33 questions' files."""
-    path = root / web.STUDENT_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"version": 2, "n": len(questions), "measured": "2026-11-22T22:40:00", "prev": None,
-                                "totals": {"raw": {}, "agent": {}},
-                                "questions": [{"id": i, "group": "B", "q": q, "raw": None, "agent": None, "gold": g}
-                                              for i, q, g in questions]}), encoding="utf-8")
+def _tests(root, questions: list[tuple[str, str, list[str]]]) -> tuple:
+    """The 33 test questions' files (core20.json, noanswer22.json, gold_docs.json) with these questions: what 搜尋
+    offers to try by hand (2026-11-22 night)."""
+    folder = root / "eval"
+    folder.mkdir(exist_ok=True)
+    (folder / "core20.json").write_text(json.dumps([{"id": i, "question": q} for i, q, _ in questions]),
+                                        encoding="utf-8")
+    (folder / "noanswer22.json").write_text("[]", encoding="utf-8")
+    gold = root / "gold.json"
+    gold.write_text(json.dumps({i: {"docs": g} for i, _, g in questions}), encoding="utf-8")
+    return folder, gold
 
 
 def test_the_questions_are_offered_and_their_gold_is_followed(db, tmp_path):
-    _sample(tmp_path, [("Q01", "停修", ["dx", "d3"]), ("N01", "退選", ["dq"])])
-    with _client(tmp_path / "t.db", tmp_path) as client:
-        # the nightly sample's questions are offered by the picker of the second tab, each with its right documents
-        # followed (the 33 questions and their files were dropped on 2026-11-22 night)
+    questions, gold = _tests(tmp_path, [("Q01", "停修", ["dx", "d3"]), ("N01", "退選", ["dq"])])
+    with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
+        # the 33 test questions are offered by the picker of the second tab, each with its gold documents followed,
+        # and listed on 搜尋 to try by hand (2026-11-22 night)
+        assert "qid=Q01" in client.get("/try").text
         page = client.get("/try", params={"tab": "why", "qid": "Q01"}).text
         assert "<option value='Q01' selected>" in page and "<option value='N01'>" in page
         assert "標準答案" in page and "學生選課應行注意事項" in page
@@ -272,8 +259,8 @@ def test_a_result_is_a_bar_of_its_scores_parts_and_names_only_what_moved_it(lib)
 
 
 def test_a_test_question_says_first_where_its_gold_answer_stands(db, tmp_path):
-    _sample(tmp_path, [("Q01", "停修", ["dx"])])
-    with _client(tmp_path / "t.db", tmp_path) as client:
+    questions, gold = _tests(tmp_path, [("Q01", "停修", ["dx"])])
+    with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
         page = client.get("/search", params={"qid": "Q01"}).text
     assert "標準答案在第" in page or "沒有標準答案" in page
     assert "<select name='qid'" in page and "<option value='Q01' selected>" in page
@@ -469,8 +456,8 @@ def test_what_the_crawl_and_the_export_wrote_is_shown_in_traditional_chinese(sit
 def test_a_test_question_is_shown_in_traditional_chinese_and_searched_as_written(db, tmp_path):
     """The picker shows a question in Traditional characters; the search box keeps, and the search runs, the question
     as the student wrote it."""
-    _sample(tmp_path, [("Q01", "怎么申请停修", ["dx"])])
-    with _client(tmp_path / "t.db", tmp_path) as client:
+    questions, gold = _tests(tmp_path, [("Q01", "怎么申请停修", ["dx"])])
+    with _client(tmp_path / "t.db", tmp_path, questions=questions, gold=gold) as client:
         page = client.get("/try", params={"tab": "why", "qid": "Q01"}).text
         report = client.get("/api/search", params={"qid": "Q01"}).json()
     picker = page.split("<select name='qid'", 1)[1].split("</select>", 1)[0]

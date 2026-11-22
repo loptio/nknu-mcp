@@ -7,7 +7,7 @@
   "pages": [
     {"key": "home", "name": "總覽", "host": "ops", "path": "/", "tip": "現在正不正常、要處理什麼；往下是整個專案的全景"},
     {"key": "sites", "name": "內容", "host": "ops", "path": "/sites", "tip": "收了什麼、缺什麼：每個網站和單位的文件、沒抓到的、資料品質"},
-    {"key": "try", "name": "搜尋", "host": "ops", "path": "/try", "tip": "搜得準不準：學生題每晚的名次；像學生的 AI 一樣試一個問題"}
+    {"key": "try", "name": "搜尋", "host": "ops", "path": "/try", "tip": "像學生的 AI 一樣搜尋；33 題手動測：標準答案排第幾、為什麼"}
   ],
   "within_": "A page that is no entry of its own marks the entry it is reached from (aria-current='true'): a night from 總覽, 單位 and one site's page from 內容.",
   "within": {"tonight": "home", "units": "sites", "site": "sites"},

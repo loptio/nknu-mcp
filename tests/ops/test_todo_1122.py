@@ -18,9 +18,9 @@ def row(where: str, sev: str, *keys: str, href: str = "", reason: str = "", **mo
             "issues": [{"key": k, "sev": sev, "what": reason} for k in keys]}
 
 
-def card(rows: list[dict], parts: dict | None = None, *, meters=(), student=None, known=None) -> LexborHTMLParser:
+def card(rows: list[dict], parts: dict | None = None, *, meters=(), known=None) -> LexborHTMLParser:
     """總覽's 要處理 card of these rows, as the front page draws it once the steps are read."""
-    got = todo.collect(parts, rows, list(meters), student, known or {})
+    got = todo.collect(parts, rows, list(meters), known or {})
     return LexborHTMLParser(panorama.todo_card(got, False))
 
 
@@ -39,7 +39,7 @@ def test_the_new_come_first_and_the_standing_say_how_long():
     base = {"night": "2026-11-15", "rows": {r["key"]: r for r in standing.records([A_CRAWL, BUILD])},
             "runs": {"site:a.example:crawl": (2, False), "part:build:held": (1, True)}}
     parts = standing.split(rows, base)
-    got = todo.collect(parts, rows, [], None, {})
+    got = todo.collect(parts, rows, [], {})
     assert [x["where"] for x in got["open"]] == ["乙處", "查詢服務", "甲處", "建庫"]  # new, worse first; then standing
     assert [x["tag"] for x in got["open"]] == ["新出現", "新出現", "第 3 晚", "至少 2 晚"]
     assert got["night"] == "2026-11-15" and got["known"] == []
@@ -49,14 +49,14 @@ def test_the_new_come_first_and_the_standing_say_how_long():
     assert [li.css_first(".pn-tnew, .pn-tage").text() for li in tree.css(".pn-tlist li")] == [
         "新出現", "新出現", "第 3 晚", "至少 2 晚"]
     # no night before kept: every row as it is, the worse first as problems() sorted them, and no 新出現 said
-    plain = todo.collect(None, tonight_page.problems({}, {"steps": []}, []) + rows, [], None, {})
+    plain = todo.collect(None, tonight_page.problems({}, {"steps": []}, []) + rows, [], {})
     assert [x["tag"] for x in plain["open"]] == ["", "", "", ""] and plain["night"] == ""
     assert "新出現" not in panorama.todo_card(plain, False)
 
 
 def test_a_part_or_a_step_links_into_tonight_and_a_site_to_its_page():
     # tonight_page.problems' links were 每晚運行's own anchors (#nights, #step-serve): on 總覽 they lead there
-    got = todo.collect(None, [SERVE, BUILD, A_CRAWL], [], None, {})
+    got = todo.collect(None, [SERVE, BUILD, A_CRAWL], [], {})
     assert {x["where"]: x["href"] for x in got["open"]} == {
         "查詢服務": "/tonight#step-serve", "建庫": "/tonight#nights", "甲處": "/site?site=a.example"}
     links = {a.text(): a.attributes["href"] for a in card([SERVE, BUILD, A_CRAWL]).css(".pn-twhat a")}
@@ -65,7 +65,7 @@ def test_a_part_or_a_step_links_into_tonight_and_a_site_to_its_page():
 
 def test_a_known_row_is_folded_with_its_note_and_not_counted():
     known = {"site:b.example:export": "學校網站改版中", "step:serve": ""}
-    got = todo.collect(None, [B_EXPORT, SERVE, A_CRAWL], [], None, known)
+    got = todo.collect(None, [B_EXPORT, SERVE, A_CRAWL], [], known)
     assert [x["where"] for x in got["open"]] == ["甲處"]
     assert [(x["where"], x["note"]) for x in got["known"]] == [("乙處", "學校網站改版中"), ("查詢服務", "")]
     tree = card([B_EXPORT, SERVE, A_CRAWL], known=known)
@@ -82,13 +82,13 @@ def test_a_known_row_is_folded_with_its_note_and_not_counted():
 def test_a_sites_key_covers_all_its_issues_and_one_issue_known_is_not_enough():
     both = row("甲處", WARN, "site:a.example:crawl", "site:a.example:docs", href="/site?site=a.example",
                reason="有 3 個網址抓不到（還有 1 件）")
-    assert todo.collect(None, [both], [], None, {"site:a.example": "改版中"})["known"][0]["note"] == "改版中"
-    half = todo.collect(None, [both], [], None, {"site:a.example:crawl": "改版中"})
+    assert todo.collect(None, [both], [], {"site:a.example": "改版中"})["known"][0]["note"] == "改版中"
+    half = todo.collect(None, [both], [], {"site:a.example:crawl": "改版中"})
     assert [x["where"] for x in half["open"]] == ["甲處"] and half["known"] == []  # its docs issue still counts
     # a site's key is the site's own: neither another site's issues nor a step or a part of the night
-    other = todo.collect(None, [B_EXPORT, SERVE, BUILD], [], None, {"site:a.example": "改版中"})
+    other = todo.collect(None, [B_EXPORT, SERVE, BUILD], [], {"site:a.example": "改版中"})
     assert len(other["open"]) == 3 and other["known"] == []
-    prefix = todo.collect(None, [row("甲處二", WARN, "site:a.example2:docs")], [], None, {"site:a.example": "x"})
+    prefix = todo.collect(None, [row("甲處二", WARN, "site:a.example2:docs")], [], {"site:a.example": "x"})
     assert prefix["known"] == []  # the key is the site's, not a prefix of another site's name
 
 
@@ -102,9 +102,9 @@ def test_this_machine_is_a_row_only_past_its_warning_line():
         ("D 槽", WARN, "用了 91%：還剩 52 GB，共 580"), ("記憶體", BAD, "用了 97%")]
     assert {x["kind"] for x in rows} == {"這台電腦"} and [x["issues"][0]["key"] for x in rows] == [
         "machine:D 槽", "machine:記憶體"]
-    got = todo.collect(None, [], meters, None, {})
+    got = todo.collect(None, [], meters, {})
     assert [x["where"] for x in got["open"]] == ["記憶體", "D 槽"]  # 出錯 before 留意
-    assert todo.collect(None, [], meters, None, {"machine:記憶體": "在跑實驗"})["known"][0]["where"] == "記憶體"
+    assert todo.collect(None, [], meters, {"machine:記憶體": "在跑實驗"})["known"][0]["where"] == "記憶體"
 
 
 STUDENT = {"n": 3, "prev": {"measured": "2026-11-21T04:00:00", "totals": {}},
@@ -113,30 +113,6 @@ STUDENT = {"n": 3, "prev": {"measured": "2026-11-21T04:00:00", "totals": {}},
                {"id": "S02", "q": "宿舍什麼時候開放", "raw": None, "agent": None, "prev_raw": 1, "prev_agent": 12},
                {"id": "S03", "q": "畢業門檻", "raw": 4, "agent": 30, "prev_raw": 5, "prev_agent": 10},
                {"id": "S04", "q": "抵免學分", "raw": 11, "agent": 1, "prev_raw": 11, "prev_agent": None}]}
-
-
-def test_the_student_questions_that_dropped_out_of_the_top_ten_are_one_row():
-    drops = todo.drops(STUDENT)
-    # in the top 10 the night before and not now, as typed or as the agent searched; the one first before first
-    assert [(x["id"], x["way"], x["before"], x["now"]) for x in drops] == [
-        ("S02", "raw", 1, None), ("S01", "raw", 3, 15), ("S03", "agent", 10, 30)]
-    rows = todo.search_rows(STUDENT)
-    assert len(rows) == 1 and rows[0]["where"] == "3 題掉出前 10" and rows[0]["href"] == "/try#drops"
-    assert rows[0]["reason"] == ("S02（學生原話 第 1 → 沒搜到）、S01（學生原話 第 3 → 第 15）、"
-                                 "S03（AI 換說法 第 10 → 第 30）")
-    assert rows[0]["kind"] == "搜尋" and rows[0]["issues"] == [{"key": "search:drops:S01,S02,S03"}]
-    four = {**STUDENT, "questions": [*STUDENT["questions"], {**STUDENT["questions"][0], "id": "S05"}]}
-    assert todo.search_rows(four)[0]["reason"].endswith("…")  # three named, the rest on 搜尋
-    tree = card([], student=STUDENT)
-    assert texts(tree)[0].startswith("搜尋3 題掉出前 10") and tree.css_first(".pn-twhat a").attributes["href"] == "/try#drops"
-
-
-def test_no_drop_without_a_night_before_to_compare_with():
-    first = {"n": 2, "prev": None, "questions": [{"id": "S01", "q": "停修", "raw": 40, "agent": None,
-                                                  "prev_raw": None, "prev_agent": None}]}
-    assert todo.drops(first) == [] and todo.search_rows(first) == []
-    assert todo.drops(None) == [] and todo.search_rows({}) == []
-    assert todo.collect(None, [], [], first, {}) == {"open": [], "known": [], "night": ""}
 
 
 def test_an_unknown_code_is_shown_as_it_is_on_the_card():
@@ -157,9 +133,9 @@ def test_the_card_folds_past_eight_and_waits_while_the_steps_are_read():
     assert len(texts(tree)) == panorama.TODO_SHOWN and tree.css_first("h2 .pn-tcount").text() == str(len(many))
     rest = tree.css_first("details.pn-tmore:not(.pn-tknown)")
     assert rest.css_first("summary").text() == "還有 3 件" and len(rest.css("li")) == 3  # folded, never dropped
-    waiting = panorama.todo_card(todo.collect(None, many, [], None, {}), True)
+    waiting = panorama.todo_card(todo.collect(None, many, [], {}), True)
     assert "正在讀各步驟的紀錄" in waiting and "站0" not in waiting
-    assert "&lt;b&gt;" in panorama.todo_card(todo.collect(None, [row("<b>壞</b>", WARN, "step:x")], [], None, {}), False)
+    assert "&lt;b&gt;" in panorama.todo_card(todo.collect(None, [row("<b>壞</b>", WARN, "step:x")], [], {}), False)
 
 
 def test_the_header_counts_what_is_to_handle():
@@ -167,10 +143,10 @@ def test_the_header_counts_what_is_to_handle():
         return LexborHTMLParser(panorama.header_bar(snap, {}, {}, got)).css_first(".pn-status").text()
 
     read = {"steps": [{"key": "crawl"}]}
-    assert pill(read, todo.collect(None, [A_CRAWL, B_EXPORT], [], None, {})) == "要處理 2 件"
-    assert pill(read, todo.collect(None, [], [], None, {})) == "沒有要處理的"
+    assert pill(read, todo.collect(None, [A_CRAWL, B_EXPORT], [], {})) == "要處理 2 件"
+    assert pill(read, todo.collect(None, [], [], {})) == "沒有要處理的"
     assert pill({"steps": []}, None) == "正在讀各步驟"  # just restarted: nothing known, nothing called normal
-    lit = panorama.header_bar(read, {}, {}, todo.collect(None, [B_EXPORT], [], None, {}))
+    lit = panorama.header_bar(read, {}, {}, todo.collect(None, [B_EXPORT], [], {}))
     assert "pn-pill-bad" in lit and "href='#todo'" in lit
 
 
@@ -204,24 +180,10 @@ def test_the_owner_marks_a_row_known_on_the_page_and_takes_it_off_again(tmp_path
 
 
 def test_a_row_carries_its_buttons():
-    open_ = todo.collect(None, [B_EXPORT], [], None, {})
+    open_ = todo.collect(None, [B_EXPORT], [], {})
     html = panorama.todo_card(open_, False)
     assert "action='/todo/known'" in html and "<summary>標成已知</summary>" in html
     assert "<button>取消已知</button>" not in html
-    known = todo.collect(None, [B_EXPORT], [], None, {k["key"]: "已知的" for k in B_EXPORT["issues"]})
+    known = todo.collect(None, [B_EXPORT], [], {k["key"]: "已知的" for k in B_EXPORT["issues"]})
     html = panorama.todo_card(known, False)
     assert "<button>取消已知</button>" in html and "name='off' value='1'" in html and "已知：已知的" in html
-
-
-def test_a_night_whose_measurement_failed_or_did_not_run_is_a_row():
-    """build.sh 5b recorded by nightly_ingest.py (2026-11-22 night): no silent gap when the student questions were not
-    measured after a swap; runs from before the field say nothing."""
-    ok = {"outcome": "swapped", "night": "2026-11-23", "student_eval": {"outcome": "ok", "exit": 0}}
-    failed = {"outcome": "swapped", "night": "2026-11-24", "student_eval": {"outcome": "timeout", "exit": 124}}
-    missing = {"outcome": "swapped", "night": "2026-11-25", "student_eval": None}
-    older = {"outcome": "swapped", "night": "2026-11-21"}
-    assert todo.measure_rows([older]) == [] and todo.measure_rows([older, ok]) == []
-    row = todo.measure_rows([ok, failed])[0]
-    assert "11-24 夜換庫後量學生題超過時間被停掉" in row["reason"] and "124" in row["reason"]
-    assert "卻沒有量學生題" in todo.measure_rows([ok, missing])[0]["reason"]
-    assert todo.measure_rows([failed, {"outcome": "held", "night": "2026-11-25", "student_eval": None}])  # the last swap

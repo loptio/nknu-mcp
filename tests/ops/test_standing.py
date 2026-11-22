@@ -237,7 +237,7 @@ def front(snap: dict, t: dict, base: dict | None) -> LexborHTMLParser:
     2026-11-22 evening; 每晚運行 keeps the counts in its sentence)."""
     rows = rows_of(snap, t=t)
     parts = standing.split(rows, base)
-    return LexborHTMLParser(panorama.todo_card(todo.collect(parts, rows, [], None, {}), False))
+    return LexborHTMLParser(panorama.todo_card(todo.collect(parts, rows, [], {}), False))
 
 
 def test_the_home_lists_what_is_new_first_and_says_so_on_top():

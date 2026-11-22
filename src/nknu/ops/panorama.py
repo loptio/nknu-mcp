@@ -3,12 +3,14 @@
 2026-11-22 the owner picked 「项目全景」 (scale, where the documents come from, how students use it, how right the search
 is, the nights and the crawler, as charts with few words). The same evening, after the review that the panels showed one
 thing in several places and lit standing problems like new ones (owner: 「你先全部做」), the page answers two questions
-in turn: the first screen 「現在正不正常？要處理什麼？」 (one sentence, four figures, 要處理 from nknu.ops.todo, the last
-seven nights, each opening its night), and below 全景 (the documents by year and by source, the public service's use,
-this machine, the AI test). How right the search is lives on 搜尋 (one figure here) and the crawler on 內容.
+in turn: the first screen 「現在正不正常？要處理什麼？」 (one sentence, three figures, 要處理 from nknu.ops.todo, the
+last seven nights, each opening its night), and below 全景 (the documents by year and by source, the public service's
+use, this machine, the AI test). The crawler lives on 內容. How right the search is has no figure here: the question
+bank checks the whole project now and then, never the night (owner, 2026-11-22 night: 「拿这些题目和答案做质量检查其实
+没什么意义……删了这个流程吧」); the 33 test questions are tried by hand on 搜尋.
 
 Every number is read as a number: the pipeline's steps carry them (Step.nums: the services' use and the machine), the
-sites' data, the nights' record and the student questions' measurement are numbers already. Nothing is read back out of
+sites' data and the nights' record are numbers already. Nothing is read back out of
 a sentence.
 """
 
@@ -369,30 +371,10 @@ def header_bar(snap: dict, tonight: dict, history: dict, todo: dict | None) -> s
     )
 
 
-def search_figure(student: dict | None, newset: dict | None) -> dict | None:
-    """The student questions as typed, at first place and in the top 10: {top1, top10, n, when, delta, tip} from the
-    nightly measurement (student_eval.json), else from the one measurement by hand (eval194.json, said as such)."""
-    if student and student.get("n"):
-        tot = (student.get("totals") or {}).get("raw") or {}
-        prev = (((student.get("prev") or {}).get("totals") or {}).get("raw") or {}).get("top1")
-        delta = "" if prev is None else f"{tot.get('top1', 0) - prev:+d} 題"
-        return {"top1": tot.get("top1", 0), "top10": tot.get("top10", 0), "n": student["n"],
-                "when": (student.get("measured") or "")[5:16].replace("T", " ")
-                + ("（上一份庫的）" if student.get("stale") else ""), "delta": delta,
-                "tip": f"每晚換庫後，學生角度、庫裡有答案的 {student['n']} 題原樣送進搜尋，標準答案排第幾"}
-    b = next((g for g in (newset or {}).get("groups") or [] if g.get("key") == "B"), None)
-    if b and b.get("n"):
-        return {"top1": b["q"][0], "top10": b["q"][2], "n": b["n"],
-                "when": (newset.get("measured_at") or "")[5:10] + " 手動量", "delta": "",
-                "tip": "學生角度的題，原樣送進搜尋；這是手動量的一次，每晚量的結果還沒有"}
-    return None
-
-
 def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
-              usage: dict | None, aitest: dict | None, student: dict | None = None,
-              newset: dict | None = None) -> str:
-    """The four figures of the first screen: the library students get, how right the search is, the public service's
-    last day, how much of what should be crawled was got."""
+              usage: dict | None, aitest: dict | None) -> str:
+    """The three figures of the first screen: the library students get, the public service's last day, how much of
+    what should be crawled was got."""
     st = steps(snap)
     changes = tonight.get("changes") or {}
     docs = ((changes.get("new") or {}).get("docs")) or next(
@@ -408,16 +390,6 @@ def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
 
     cards = [("學生搜到的庫", n(docs), f"<span class='pn-delta'>{e(delta)}</span>" if delta else "", moved, spark,
               spark_tip, TONIGHT)]
-
-    fig = search_figure(student, newset)
-    if fig:
-        pct = fig["top1"] / fig["n"] * 100
-        bars = (f"<span class='pn-mini10'><i style='width:{fig['top10'] / fig['n'] * 100:.1f}%'></i>"
-                f"<i class='pn-mini1' style='width:{pct:.1f}%'></i></span>")
-        cards.append(("搜尋排第 1", f"{pct:.0f}%",
-                      f"<span class='pn-delta'>{e(fig['delta'])}</span>" if fig["delta"] else "",
-                      f"{fig['n']} 題學生題 · 前 10 {fig['top10'] / fig['n'] * 100:.0f}% · {fig['when']}", bars,
-                      f"{fig['tip']}\n排第 1：{fig['top1']} 題\n前 10：{fig['top10']} 題", "/try"))
 
     if usage:
         days = usage.get("days") or []
@@ -437,7 +409,7 @@ def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
                       f"{n(got[0])} / {n(got[1])} 個網址 · 沒抓到 {n(got[1] - got[0])}", "",
                       "這一輪該抓的網址抓到幾成；沒抓到的是什麼、為什麼，在「內容」最上面", "/sites#crawl"))
 
-    return tiles(cards, "第一眼")
+    return tiles(cards, "第一眼", three=len(cards) == 3)
 
 
 def scale_kpis(sites: dict, aitest: dict | None) -> str:
@@ -460,7 +432,7 @@ def scale_kpis(sites: dict, aitest: dict | None) -> str:
     return tiles(cards, "規模") if cards else ""
 
 
-def tiles(cards: list[tuple], label: str) -> str:
+def tiles(cards: list[tuple], label: str, three: bool = False) -> str:
     """A row of figures: (title, big, suffix markup, sub, drawing markup, floating card, link)."""
     html = []
     for title, big, suffix, sub, viz, tip, href in cards:
@@ -474,7 +446,8 @@ def tiles(cards: list[tuple], label: str) -> str:
                         f"data-tip='{e(tip)}'>{inner}</a>")
         else:
             html.append(f"<div class='pn-kpi' tabindex='0' data-tip='{e(tip)}'>{inner}</div>")
-    return f"<section class='pn-kpis' aria-label='{e(label)}'>{''.join(html)}</section>"
+    k3 = " pn-k3" if three else ""
+    return f"<section class='pn-kpis{k3}' aria-label='{e(label)}'>{''.join(html)}</section>"
 
 
 def freshness_card(sites: dict) -> str:
@@ -1058,6 +1031,8 @@ font-weight:600}
 overflow:hidden}
 .pn-mini10 i{position:absolute;inset:0 auto 0 0;border-radius:999px;background:var(--q2)}
 .pn-mini10 i.pn-mini1{background:var(--q5)}
+.pn-kpis.pn-k3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:1040px){.pn-kpis.pn-k3{grid-template-columns:minmax(0,1fr)}}
 .pn-divider{display:flex;align-items:center;gap:12px;margin:34px 0 14px;font-size:15px;font-weight:700;color:var(--ink2)}
 .pn-divider::after{content:"";flex:1;height:1px;background:var(--line)}
 .pn-tcount{margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn-ink);
@@ -1136,11 +1111,11 @@ PAGE_JS = r"""
 """
 
 
-def page(snap: dict, tonight: dict, sites: dict, history: dict, *, newset: dict | None = None,
-         aitest: dict | None = None, built: str = "", todo: dict | None = None, student: dict | None = None) -> str:
+def page(snap: dict, tonight: dict, sites: dict, history: dict, *, aitest: dict | None = None, built: str = "",
+         todo: dict | None = None) -> str:
     """總覽 as a whole page: the bar every page has; the first screen (the night in one sentence, four figures, 要處理,
     the last nights); then 全景. built: when the library in use was built (the bar's right end, as on every page);
-    todo: nknu.ops.todo.collect; student: the nightly measurement of the student questions (student_eval.json)."""
+    todo: nknu.ops.todo.collect."""
     usage = nums_of(snap, "serve").get("usage")
     reading = not snap.get("steps")
     # read again in a few seconds while the steps are being read (as 每晚運行 does after a restart)
@@ -1152,7 +1127,7 @@ def page(snap: dict, tonight: dict, sites: dict, history: dict, *, newset: dict 
 
     content = (
         f"{header_bar(snap, tonight, history, todo)}"
-        f"{hero_kpis(snap, tonight, sites, history, usage, aitest, student, newset)}"
+        f"{hero_kpis(snap, tonight, sites, history, usage, aitest)}"
         f"<div class='pn-bento'>{todo_card(todo, reading)}{nights_card(tonight, history)}</div>"
         f"<h2 class='pn-divider' id='whole'>全景</h2>{waiting}"
         f"{scale_kpis(sites, aitest)}"

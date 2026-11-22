@@ -197,7 +197,7 @@ def front_todo(s: dict, t: dict | None = None) -> LexborHTMLParser:
     """總覽's 要處理 of a reading (the problems' list moved there from 每晚運行 on 2026-11-22 evening)."""
     t = t or tonight()
     rows = tonight_page.problems(t, s, [] if not s.get("steps") else tonight_page.handle_rows(s, None))
-    return LexborHTMLParser(panorama.todo_card(todo.collect(None, rows, [], None, {}), not s.get("steps")))
+    return LexborHTMLParser(panorama.todo_card(todo.collect(None, rows, [], {}), not s.get("steps")))
 
 
 def test_every_problem_is_listed_once_where_it_is():

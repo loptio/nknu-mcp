@@ -6,8 +6,9 @@ Its rows come from what the panels already know, each kept where it is computed:
   the night and the steps   tonight_page.problems (a part that stopped, a run that failed, a step not normal, a site
                             to look at), split by standing.split into new since the night before and standing
   this machine              a drive or a memory past its warning line (pipeline's machine numbers)
-  the search                the student questions whose answer dropped out of the top 10 since the night before
-                            (the nightly measurement, deploy/lab-pipeline/eval/student_eval.py)
+
+(The student questions' nightly measurement gave rows too for an evening; the owner dropped that measurement the same
+night, 2026-11-22: the question bank checks the whole project, never the night.)
 
 A problem the owner has said is known is not counted: it is listed folded, with the note, so it can be found and
 taken off again. He marks it on 總覽 itself (a button on the row, a note if he likes; 取消 takes it off), kept in the
@@ -27,7 +28,6 @@ from nknu.ops.nightly import TONIGHT
 from nknu.ops.pipeline import BAD, WARN
 
 RANK = {BAD: 0, WARN: 1}
-TOP = 10  # a question whose answer leaves the first ten results is a drop worth a row
 
 
 class Known:
@@ -104,55 +104,6 @@ def machine_rows(meters: list[dict]) -> list[dict]:
     return out
 
 
-def drops(student: dict | None) -> list[dict]:
-    """The open half's questions whose answer was in the top 10 the night before and is not now (as typed, or as the
-    agent searched), the worst first; [] when there is no night before to compare with."""
-    out = []
-    for q in (student or {}).get("questions") or []:
-        for way, word in (("raw", "學生原話"), ("agent", "AI 換說法")):
-            before, now = q.get(f"prev_{way}"), q.get(way)
-            if before is not None and before <= TOP and (now is None or now > TOP):
-                out.append({**q, "way": way, "way_word": word, "before": before, "now": now})
-    return sorted(out, key=lambda x: (x["before"], x["id"]))
-
-
-def search_rows(student: dict | None) -> list[dict]:
-    """One row for the questions that dropped out of the top 10 since the night before (they are listed on 搜尋)."""
-    got = drops(student)
-    if not got:
-        return []
-    ids = sorted({x["id"] for x in got})
-    said = [f"{x['id']}（{x['way_word']} 第 {x['before']} → {rank_words(x['now'])}）" for x in got[:3]]
-    return [{"sev": WARN, "kind": "搜尋", "where": f"{len(ids)} 題掉出前 10", "href": "/try#drops",
-             "reason": "、".join(said) + ("…" if len(got) > 3 else ""),
-             "tag": "", "issues": [{"key": "search:drops:" + ",".join(ids)}]}]
-
-
-def rank_words(rank: int | None) -> str:
-    """A rank as the rows say it; None: not among the results the measurement reads."""
-    return "沒搜到" if rank is None else f"第 {rank}"
-
-
-MEASURE_WORDS = {"failed": "沒量成", "timeout": "超過時間被停掉", "unreadable": "結果讀不出來"}
-
-
-def measure_rows(runs: list[dict]) -> list[dict]:
-    """The student questions' measurement after the last swap (build.sh 5b, recorded by nightly_ingest.py in the
-    run's student_eval since 2026-11-22 night), as a row when it did not end well, or did not run in a build that
-    swapped (the run has the field, left empty). Runs from before the field existed say nothing."""
-    run = next((r for r in reversed(runs) if r.get("outcome") == "swapped" and "student_eval" in r), None)
-    if run is None:
-        return []
-    got, night = run.get("student_eval"), str(run.get("night") or run.get("_night") or "")
-    if isinstance(got, dict) and got.get("outcome") == "ok":
-        return []
-    if isinstance(got, dict):
-        said = MEASURE_WORDS.get(str(got.get("outcome")), str(got.get("outcome") or "沒量成"))
-        reason = f"{night[5:]} 夜換庫後量學生題{said}" + (f"（退出碼 {got['exit']}）" if got.get("exit") else "")
-    else:
-        reason = f"{night[5:]} 夜換了庫，卻沒有量學生題（題庫檔或量測程序不在）"
-    return [{"sev": WARN, "kind": "搜尋", "where": "學生題的量測", "href": "/try#students", "reason": reason,
-             "tag": "", "issues": [{"key": f"measure:{night}"}]}]
 
 
 KIND_OF = (("part:", "每晚流程"), ("run:", "每晚流程"), ("step:", "每晚流程"), ("site:", "網站"))
@@ -163,8 +114,7 @@ def kind_of(row: dict) -> str:
     return next((w for p, w in KIND_OF if key.startswith(p)), "每晚流程")
 
 
-def collect(parts: dict | None, rows: list[dict], meters: list[dict], student: dict | None,
-            known: dict[str, str], runs: list[dict] | None = None) -> dict:
+def collect(parts: dict | None, rows: list[dict], meters: list[dict], known: dict[str, str]) -> dict:
     """{'open': rows to handle, the new first; 'known': rows the owner said are known, each with its note; 'night':
     the night compared with ('' when none)}. parts: standing.split of rows (None: no night before kept, every row is
     listed as it is)."""
@@ -174,7 +124,7 @@ def collect(parts: dict | None, rows: list[dict], meters: list[dict], student: d
         listed += [{**x, "tag": x.get("age") or "", "kind": kind_of(x)} for x in parts["old"]]
     else:
         listed += [{**x, "tag": "", "kind": kind_of(x)} for x in rows]
-    listed += machine_rows(meters) + search_rows(student) + measure_rows(runs or [])
+    listed += machine_rows(meters)
     open_, kept = [], []
     for x in listed:
         note = _known_note(x, known)

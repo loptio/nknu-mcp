@@ -78,19 +78,10 @@ def test_a_held_library_newer_than_the_one_in_use_is_for_the_content_session(whe
 BUILT = "2026-11-16T14:56:00+08:00"  # the made-up library's built_at
 
 
-def _checks(folder: Path, *, top10: int = 27, fails: tuple[str, ...] = ("7", "13"), built: str = BUILT,
-            prev_top10: int | None = None) -> None:
-    """The build's real-data checks (checks.md) and, since 2026-11-22, the nightly student sample (student_eval.json:
-    the 33 questions and their offline_new_r3.json are gone, owner)."""
+def _checks(folder: Path, *, fails: tuple[str, ...] = ("7", "13"), built: str = BUILT) -> None:
+    """The build's real-data checks (checks.md): what 品質檢查 reads since 2026-11-22 night (the 33 questions are tried
+    by hand on 搜尋, the question bank never in the night)."""
     folder.mkdir(parents=True, exist_ok=True)
-    raw = {"top1": 12, "top3": 20, "top10": top10}
-    prev = None if prev_top10 is None else {"totals": {"raw": {"top1": 12, "top3": 20, "top10": prev_top10}}}
-    (folder / "student_eval.json").write_text(json.dumps(
-        {"version": 2, "n": 43, "measured": "2026-11-16T15:20:00", "library": {"built": built},
-         "sample": {"version": "s1-test", "groups": {"B": 43, "A": 15, "C": 15}},
-         "totals": {"raw": raw, "agent": {"top1": 20, "top3": 31, "top10": 39}},
-         "groups": {"B": {"n": 43, "raw": raw}, "A": {"n": 15, "raw": {"top1": 9, "top3": 12, "top10": 14}}},
-         "questions": [], "prev": prev}), encoding="utf-8")
     rows = "\n".join(f"| {k} | 第 {k} 項的名字 | FAIL | 0 |" for k in fails)
     (folder / "checks.md").write_text(
         f"# 真资料检查\n- 资料库：`aca.db`（3727 MB，建于 {built}，资料截至 2026-11-15）\n"
@@ -101,7 +92,7 @@ def _checks(folder: Path, *, top10: int = 27, fails: tuple[str, ...] = ("7", "13
 def test_the_checks_are_the_builds_own_results(where):
     _checks(where.pipe)
     step = pipeline.check_step(where)
-    assert step.state == OK and ("題答案排進前 10", 27) in step.out and "真資料檢查 22 項過了 20 項" in step.say
+    assert step.state == OK and ("項過了", 20) in step.out and "真資料檢查 22 項過了 20 項" in step.say
     assert ("真資料檢查第 7 項：第 7 項的名字", 1) in step.lost
 
 
@@ -111,15 +102,14 @@ def test_checks_of_the_library_before_are_no_verdict(where):
     assert step.state == NONE and "上一份庫的結果" in step.say
 
 
-def test_doing_worse_than_the_night_before_is_for_the_content_session(where):
-    _checks(where.pipe / "lab_pc" / "previous" / "20261116-144845", top10=28, fails=("7",))
-    _checks(where.pipe / "lab_pc" / "previous" / "20261116-150000-trial", top10=10)  # a trial's: never the baseline
-    _checks(where.pipe, top10=27, fails=("7", "13"), prev_top10=28)  # the sample carries the night before itself
+def test_doing_worse_than_the_build_before_is_for_the_content_session(where):
+    _checks(where.pipe / "lab_pc" / "previous" / "20261116-144845", fails=("7",))
+    _checks(where.pipe / "lab_pc" / "previous" / "20261116-150000-trial", fails=())  # a trial's: never the baseline
+    _checks(where.pipe, fails=("7", "13"))
     step = pipeline.check_step(where)
     assert step.state == WARN and step.fix == CONTENT
-    assert "從 28 題掉到 27 題" in step.say and "第 13 項" in step.say and "第 7 項" not in step.say
-    assert "學生題" in step.say and "33" not in step.say + " ".join(step.notes)  # no 33 anywhere since 11-22
-    assert any("從文件出的題 15 題" in x for x in step.notes)
+    assert "第 13 項" in step.say and "第 7 項" not in step.say
+    assert "33" not in step.say + " ".join(step.notes) and "學生題" not in step.say  # neither runs in the night
 
 
 def test_no_check_results_yet(where):
@@ -307,7 +297,7 @@ def test_the_page_draws_every_step_and_escapes_what_it_prints(where):
     assert "交給" not in page and "http://127.0.0.1:18879" in page  # nobody named to fix it (spec 八.2)
     assert "data-state='warn'" in page and "data-tone='warn'" in page  # the top and the step's node are amber
     # a step not normal is a problem: a row of 總覽's 要處理 (since 2026-11-22 evening), opening its node's panel here
-    front = panorama.todo_card(todo.collect(None, tonight_page.problems(TONIGHT, snap, []), [], None, {}), False)
+    front = panorama.todo_card(todo.collect(None, tonight_page.problems(TONIGHT, snap, []), [], {}), False)
     assert "href='/tonight#step-x'>某一步</a>" in front and "&lt;b&gt;壞&lt;/b&gt;" in front and "<b>壞</b>" not in front
     # a step the page has no node for is still a node with its panel (nothing a probe reports is left out)
     assert "data-pick='step-x'" in page and "data-panel='step-x'" in page and "repeat(8,minmax(0,1fr))" in page

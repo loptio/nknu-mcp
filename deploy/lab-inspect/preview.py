@@ -221,7 +221,6 @@ def make_app():
         overview,
         panorama,
         pipeline_page,
-        search_page,
         site_page,
         standing,
         todo,
@@ -309,12 +308,6 @@ def make_app():
                 post = _upgrade_check_figs(post)
             elif path == "/try":
                 post = re.sub(r"<style>.*?</style>", lambda _m: f"<style>{try_page.CSS}</style>", post, count=1, flags=re.DOTALL)
-                if "id='newset'" in post and (snap_dir / "eval194.json").exists():
-                    t = read("tonight.json")
-                    built = ((t.get("changes") or {}).get("new") or {}).get("built_at") or ""
-                    fresh_ns = search_page.newset_html(read("eval194.json"), built)
-                    if fresh_ns:
-                        post = re.sub(r"<h2 class='sec' id='newset'.*?</section>", lambda _m: fresh_ns, post, count=1, flags=re.DOTALL)
             elif path == "/doc":
                 doc_css = f"{check_page.CHECK_CSS}{check_sites.SITES_CSS}{doc_page.CSS}"
                 post = re.sub(r"<style>.*?</style>", lambda _m: f"<style>{doc_css}</style>", post, count=1, flags=re.DOTALL)
@@ -341,7 +334,7 @@ def make_app():
         if base is None and store.enabled:
             note = ("問題清單從這一晚開始記；下一晚跑完，這裡會分成新出現的、之前就有的、好了的"
                     if store.problems_kept(t["default"]) else "這一晚的問題清單還沒記下（這一晚跑完、各步驟讀過一次以後才記）")
-        panels = {"overview": "/sites", "board": "/try#students", "check": "/check", "tables": "http://127.0.0.1:18001"}
+        panels = {"overview": "/sites", "board": "/try#tests", "check": "/check", "tables": "http://127.0.0.1:18001"}
         body = home_body(snap, t, changes, hist, panels, "/sites", base=base, base_note=note,
                          now=datetime.fromisoformat(t["now"]))
         built = ((changes or {}).get("new") or {}).get("built_at") or ""
@@ -349,22 +342,18 @@ def make_app():
 
     def overview_home(request: Request) -> Response:
         """總覽, the front page (nknu.ops.panorama), as web.py's front() draws it, from the snapshot."""
-        newset = read("eval194.json") if (snap_dir / "eval194.json").exists() else None
         days = read("usage-days.json") if (snap_dir / "usage-days.json").exists() else None
         snap = fill_nums(read("pipeline.json"), days, snap_dir.name[:4] + "-" + snap_dir.name[4:6] + "-" + snap_dir.name[6:8])
         t = read("tonight.json")
         built = ((t.get("changes") or {}).get("new") or {}).get("built_at") or ""
-        student = next((json.loads(f.read_text(encoding="utf-8")) for f in (
-            snap_dir / "student_eval.json", REPO / "research/eval_2026-11-18/runs/student_eval_1122.json") if f.exists()),
-            None)
         changes = t.get("changes")
         store = history.Store(snap_dir / "ops.db") if (snap_dir / "ops.db").exists() else history.Store(None)
         rows = tonight_page.problems(t, snap, tonight_page.handle_rows(snap, changes))
         parts = standing.split(rows, store.problem_base(t["default"]),
                                swap_known=(changes or {}).get("state") != "computing")
-        todo_rows = todo.collect(parts, rows, panorama.machine_meters(snap), student, {})
-        page = panorama.page(snap, t, read("sites.json"), read("history.json"), newset=newset, aitest=ai_test(),
-                             built=built, todo=todo_rows, student=student)
+        todo_rows = todo.collect(parts, rows, panorama.machine_meters(snap), {})
+        page = panorama.page(snap, t, read("sites.json"), read("history.json"), aitest=ai_test(), built=built,
+                             todo=todo_rows)
         return HTMLResponse(with_banner(page, "home"))
 
     def sites(request: Request) -> Response:

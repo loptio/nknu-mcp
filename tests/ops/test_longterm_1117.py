@@ -79,7 +79,7 @@ def where(tmp_path) -> Where:
 
 def todo_rows(t: dict) -> list:
     """總覽's 要處理 rows of the night once the steps are read (the problems' list moved there from 每晚運行)."""
-    got = todo.collect(None, tonight_page.problems(t, {"steps": []}, []), [], None, {})
+    got = todo.collect(None, tonight_page.problems(t, {"steps": []}, []), [], {})
     return LexborHTMLParser(panorama.todo_card(got, False)).css(".pn-tlist li")
 
 
@@ -97,7 +97,7 @@ def test_no_page_says_who_should_fix_anything(where, mcp):
     _title, search = TryPage(mcp).page(QueryParams(""))
     # 總覽's 要處理, where the problems are listed since 2026-11-22 evening (snap's reasons name a fixer)
     rows = tonight_page.problems(t, snap(), tonight_page.handle_rows(snap(), None))
-    front = panorama.todo_card(todo.collect(None, rows, [], None, {}), False)
+    front = panorama.todo_card(todo.collect(None, rows, [], {}), False)
     assert "甲處" in front and "導出" in front
     for page in (home, site, search, front):
         assert "交給" not in page and "session" not in page.lower()

@@ -1716,71 +1716,39 @@ def previous_reports(kit: Path) -> Path | None:
 
 
 def check_step(where: Where) -> Step:
-    """品質檢查: the student questions measured each night after the swap (deploy/lab-pipeline/eval/student_eval.py:
-    a sample of the open half since 2026-11-22, the owner: the 33 questions and their steps are not needed any more)
-    and the build's real-data checks. A warning when the sample's first place or top 10 dropped since the night
-    before, or a real-data check failed that passed before."""
-    step = Step("check", "品質檢查", "換庫後的檢查：每晚抽樣量的學生題（標準答案排第幾）和 22 項真資料檢查")
-    step.more = [("看學生題", "board")]
+    """品質檢查: the build's own real-data checks (checks.md, build.sh step 8). The 33 questions run only by hand since
+    2026-11-22 (build.sh --q33), and the question bank checks the whole project now and then, never the night (owner,
+    2026-11-22 night: 「拿这些题目和答案做质量检查其实没什么意义……删了这个流程吧」): the 33 are tried on 搜尋. A
+    warning when a check failed that passed in the build before."""
+    step = Step("check", "品質檢查", "建庫最後跑的 22 項真資料檢查；33 題在「搜尋」頁手動測")
+    step.more = [("手動測 33 題", "board")]
     built_at = library_facts(where.library)["built_at"]
     real = realdata(where.pipe / "checks.md")
-    student = read_json(where.pipe / "student_eval.json")
-    if real is None and not student:
+    if real is None:
         step.say = "還沒有建庫的檢查結果"
         return step
-    parts: list[str] = []
-    stale: list[str] = []
-    worse: list[str] = []
-    if student and student.get("n"):
-        totals = student.get("totals") or {}
-        n_q, raw, agent = int(student["n"]), totals.get("raw") or {}, totals.get("agent") or {}
-        lib = ((student.get("library") or {}).get("built") or "")[:16]
-        if built_at and lib and lib != str(built_at)[:16]:
-            stale.append("學生題")
-        sample = (student.get("sample") or {}).get("version") or ""
-        step.into = [("題學生題", n_q)]
-        step.out = [("題答案排進前 10", int(raw.get("top10") or 0)), ("題排第 1", int(raw.get("top1") or 0))]
-        step.figure, step.unit = f"{int(raw.get('top10') or 0)}/{n_q}", "題答案排進前 10"
-        step.bar = [int(raw.get("top10") or 0), n_q]
-        parts.append(f"學生題 {n_q} 題（{(student.get('measured') or '')[5:16].replace('T', ' ')} 量"
-                     + (f"，抽樣 {sample}" if sample else "") + f"）：排第 1 的 {raw.get('top1')} 題、前 3 的 "
-                     f"{raw.get('top3')} 題、前 10 的 {raw.get('top10')} 題")
-        step.nums.update(student_n=n_q, student_raw=raw, student_agent=agent, student_sample=sample)
-        if agent:
-            step.notes.append(f"AI 換說法再搜：第 1 {agent.get('top1')}、前 3 {agent.get('top3')}、前 10 {agent.get('top10')} 題")
-        for key, word in (("A", "從文件出的題"), ("C", "新進庫的內容")):
-            g = (student.get("groups") or {}).get(key) or {}
-            if g.get("n"):
-                r = g.get("raw") or {}
-                step.notes.append(f"{word} {g['n']} 題：第 1 {r.get('top1')}、前 10 {r.get('top10')} 題")
-        prev = ((student.get("prev") or {}).get("totals") or {}).get("raw") or {}
-        for k, name in (("top10", "前 10 名"), ("top1", "第 1 名")):
-            now_n, then_n = raw.get(k), prev.get(k)
-            if isinstance(now_n, int) and isinstance(then_n, int) and now_n < then_n:
-                worse.append(f"學生題排{name}的從 {then_n} 題掉到 {now_n} 題")
-    if real is not None:
-        if real["built_at"] and real["built_at"] != built_at:
-            stale.append("真資料檢查")
-        if real["passed"] is not None:
-            parts.append(f"真資料檢查 {real['passed'] + real['failed']} 項過了 {real['passed']} 項")
-            step.nums.update(real_passed=real["passed"], real_total=real["passed"] + real["failed"])
-        step.lost = [(f"真資料檢查第 {k} 項：{tw(v)}", 1) for k, v in real["fails"].items()]
-        step.lost_label = "沒通過的檢查"
-        before = previous_reports(where.pipe / "lab_pc")
-        old_real = realdata(before / "checks.md") if before is not None else None
-        if old_real is not None:
-            newly = sorted(set(real["fails"]) - set(old_real["fails"]), key=int)
-            if newly:
-                worse.append("真資料檢查新冒出沒過的：" + "、".join(f"第 {k} 項" for k in newly))
-    say = "；".join(parts)
-    state, fix = OK, ""
-    if worse and not stale:
-        state, fix = WARN, CONTENT
-        say = "比前一晚退步了：" + "；".join(worse)
-    step.nums["stale"] = bool(stale)
+    say, state, fix = "", OK, ""
+    stale = bool(real["built_at"] and real["built_at"] != built_at)
+    if real["passed"] is not None:
+        total = real["passed"] + real["failed"]
+        say = f"真資料檢查 {total} 項過了 {real['passed']} 項"
+        step.into, step.out = [("項檢查", total)], [("項過了", real["passed"])]
+        step.figure, step.unit, step.bar = f"{real['passed']}/{total}", "項過了", [real["passed"], total]
+        step.nums.update(real_passed=real["passed"], real_total=total)
+    step.lost = [(f"真資料檢查第 {k} 項：{tw(v)}", 1) for k, v in real["fails"].items()]
+    step.lost_label = "沒通過的檢查"
+    before = previous_reports(where.pipe / "lab_pc")
+    old_real = realdata(before / "checks.md") if before is not None else None
+    if old_real is not None and not stale:
+        newly = sorted(set(real["fails"]) - set(old_real["fails"]), key=int)
+        if newly:
+            state, fix = WARN, CONTENT
+            say = "比上一次建庫退步了：真資料檢查新冒出沒過的：" + "、".join(f"第 {k} 項" for k in newly)
+        step.notes.append(f"和上一次建庫比（{before.name}）" + ("：沒有退步" if not newly else ""))
+    step.nums["stale"] = stale
     if stale:
         state = NONE
-        say = "、".join(stale) + " 是上一份庫的結果（學生搜到的庫換過了，新庫的還沒量）"
+        say = "真資料檢查是上一份庫的結果（新庫的檢查還在跑）"
     step.at = built_at or ""
     step.state, step.say, step.fix = state, say, fix
     return step
