@@ -22,7 +22,7 @@ import logging
 import re
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -224,6 +224,92 @@ def res_bucket(need: str | None, why: str | None) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- whose move a listed miss is (owner 11-22)
+
+# The merged lists of 網頁核查 count each address once and split what is missing into three classes, so that a button or
+# a template link on thousands of pages never buries a real gap (owner 11-22). (key, name, what it means), in the
+# order of the lists' tabs. 【Claude】 the words
+CLASSES = (
+    ("fix", "爬蟲能補", ("帳本沒有紀錄的連結和圖，或我們這邊抓失敗的（該是檔案卻回來網頁、等太久、加密連線失敗、"
+                        "查不到主機、學校不收我們的請求……）：改爬蟲或重抓就拿得到")),
+    ("check", "要確認", "內容可疑、爬蟲還沒決定怎麼處理的，和每一個按鈕（按了有沒有內容，要人決定）"),
+    ("school", "學校那邊", ("要登入或被拒絕（401、403）、學校刪掉了或連結壞了、學校的錯誤頁、學校伺服器出錯或一直連不上、"
+                          "Google 沒公開或不給下載：我們這邊沒得補")),
+)
+CLASS_NAME = {key: name for key, name, _ in CLASSES}
+CLASS_TIP = {key: tip for key, _, tip in CLASSES}
+# A miss's class, decided in this order (miss_class): a button is always 要確認; else its ledger result (RESULT_CLASS);
+# else its result with the reason code that splits that result (REASON_CLASS, the first prefix that matches); else its
+# bucket (BUCKET_CLASS). Where the school's side ends and ours begins follows outcome.markable (what a person may mark
+# as the school's, so the crawler's lists and this one agree), with the owner's 11-22 calls on top: 401 / 403 refused
+# and Google's not public / no download are the school's, a page that came back where a file was expected is ours.
+RESULT_CLASS = {
+    # the school deleted it, broke the link, its short link died, a person marked it the school's (outcome.SCHOOL),
+    # or the link leads to its error page or to this machine (outcome.BROKEN_OUT)
+    "gone": "school", "gone_home": "school", "bad_link": "school", "short_dead": "school", outcome.SCHOOL_SIDE: "school",
+    outcome.ERROR_OUT: "school", "error_page": "school", outcome.LOOPBACK_OUT: "school",
+    # it wants a sign-in, or refuses us (401, 403, 451)
+    "login": "school", "out:login": "school", "refused": "school",
+    # its server answered with an error page or a 5xx, or a redirect loop (outcome.markable: the school's to mend)
+    "server_error": "school",
+    # ours to ask again: a request the school did not take (400, 405, 429…: outcome says it may be ours), a directory
+    # the crawler stopped asking (parked: retry denied_dir), Google's download quota for the day. A host this machine
+    # could not reach (lab) is ours unless no name server knows it (REASON_CLASS)
+    "http_4xx": "fix", "parked": "fix", "api_quota": "fix",
+}
+REASON_CLASS = {
+    # a host that refused every connection, one down for hours, a server that kept answering 5xx: the school's
+    # (outcome.FAILED_SCHOOL_REASONS, FAILED_SCHOOL_PREFIX); a timeout, a TLS failure, a crash stay ours
+    # 11-22 evening, seen on the whole sweep: a certificate the site got wrong is the site's too (the crawler never
+    # turns verification off: CLAUDE.md), and a host no name server knows (lab: dns) is a dead link on the school's
+    # page (ebcl.eu.com, "https://http/spe…"), not something a retry mends
+    "failed": (*outcome.FAILED_SCHOOL_REASONS, outcome.FAILED_SCHOOL_PREFIX, "tls_cert"),
+    "lab": ("dns",),
+    # where a file was expected the school's page says it is gone or the link is broken, or the link leads to its
+    # error page; any other page that came back is ours (the crawler took a page for a file)
+    "not_file": ("not_file:saying:", *outcome.BROKEN_OUT),
+    # a Google file that is not public or may not be downloaded; Google's other refusals are to be looked at
+    "api_error": ("api:notFound", "api:cannotDownloadFile"),
+}
+# the bucket decides the rest: not in the ledger is the crawler's to find, a failure is ours, doubtful content and a
+# writing nobody decided are to be looked at
+BUCKET_CLASS = {"missing": "fix", "failed": "fix", "look": "check", "review": "check"}
+
+
+def miss_class(bucket: str, what: str = "link", result: str | None = "", code: str | None = "") -> str:
+    """A listed miss's class (CLASSES' key) by its bucket (one of PROBLEMS), what it is, the ledger's result code
+    (Item.result) and the reason code behind it (Item.code); '' for a bucket that is no miss."""
+    if bucket not in BUCKET_CLASS:
+        return ""
+    if what == "button":  # pressing a button is a decision, never something the crawler just fetches
+        return "check"
+    result, code = result or "", code or ""
+    if result in RESULT_CLASS:
+        return RESULT_CLASS[result]
+    if code and code.startswith(REASON_CLASS.get(result, ())):
+        return "school"
+    return BUCKET_CLASS[bucket]
+
+
+# what a listed miss is, in the lists' order: a link to a file, a link to a page, an image, a button 【Claude】
+KINDS = (("file", "檔案"), ("page", "網頁"), ("image", "圖片"), ("button", "按鈕"))
+KIND_NAME = dict(KINDS)
+_GOOGLE_FILE = re.compile(r"(?i)^(?:/a/[^/]+)?/(?:file/|open\b|uc\b|document/|spreadsheets/|presentation/|drawings/)")
+
+
+def miss_kind(what: str, target: str) -> str:
+    """KINDS' key of a listed miss: a button, an image; a link by its address alone (scope.kind_of: an attachment's
+    extension or download path is a file, a picture's an image) or a Google Drive or Docs file, else a page."""
+    if what in ("button", "image"):
+        return what
+    kind = scope.kind_of(target) if target else "page"
+    if kind == "page" and target:
+        parts = urlsplit(target)
+        if (parts.hostname or "").lower() in ("drive.google.com", "docs.google.com") and _GOOGLE_FILE.match(parts.path):
+            kind = "file"
+    return kind
+
+
 # ---------------------------------------------------------------- the ledger
 
 class Snapshot(sqlite3.Connection):
@@ -347,12 +433,15 @@ class Landing:
 
 
 class Ledger:
-    """The rows one check asks of the ledger, each asked once."""
+    """The rows one check asks of the ledger, each asked once. shared: url rows kept across the checks of a few pages
+    read one after another (the sweep's chunk of one site: their menus link the same addresses, so about three in four
+    of their lookups repeat; measured 2026-11-22 on an old ledger), {} of the caller's."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, shared: dict | None = None) -> None:
         self.conn = conn
-        self._url: dict[str, sqlite3.Row | None] = {}
-        self._id: dict[int, sqlite3.Row | None] = {}
+        shared = shared if shared is not None else {}
+        self._url: dict[str, sqlite3.Row | None] = shared.setdefault("url", {})
+        self._id: dict[int, sqlite3.Row | None] = shared.setdefault("id", {})
 
     def by_id(self, row_id: int | None) -> sqlite3.Row | None:
         if row_id is None:
@@ -541,6 +630,7 @@ class Item:
     zone: str  # in (the library's content area) | files (the attachment area) | out
     result: str = ""  # the ledger's result, or the verdict that kept it out
     reason: str = ""  # in words
+    code: str = ""  # the reason's code when the result alone does not hold it (miss_class reads it)
     fetched_at: str = ""
     status: int | None = None
     landing: str = ""  # where a redirect chain ended
@@ -576,7 +666,8 @@ class Item:
         return {"n": self.n, "what": self.what, "bucket": self.bucket, "href": self.href, "target": self.target,
                 "text": self.text, "zone": self.zone, "result": self.result, "reason": self.reason,
                 "fetched_at": self.fetched_at, "status": self.status, "landing": self.landing, "hops": self.hops,
-                "kind": self.kind, "who": WHO.get(self.bucket, ""), "tip": self.tip()}
+                "kind": self.kind, "who": WHO.get(self.bucket, ""), "tip": self.tip(), "code": self.code,
+                "cls": miss_class(self.bucket, self.what, self.result, self.code)}
 
 
 ZONE_WORDS = {"in": "在正文區（進庫）", "files": "在附件區（進庫）", "out": "在選單、頁首、頁尾等不進庫的地方"}
@@ -600,8 +691,8 @@ def _kept_out(item: Item, verdict: str | None) -> None:
         item.result, item.reason = v, reason_words(v)
 
 
-def _set(item: Item, bucket: str, result: str, reason: str) -> None:
-    item.bucket, item.result, item.reason = bucket, result, reason
+def _set(item: Item, bucket: str, result: str, reason: str, code: str = "") -> None:
+    item.bucket, item.result, item.reason, item.code = bucket, result, reason, code
 
 
 def _apply(item: Item, row: sqlite3.Row | None, ledger: Ledger, *, file_like: bool = False) -> None:
@@ -629,7 +720,7 @@ def _apply(item: Item, row: sqlite3.Row | None, ledger: Ledger, *, file_like: bo
         if home and _off_file(verdict):
             return _set(item, "gone", "gone_home", "")
         if file_like and _off_file(verdict):
-            return _set(item, "failed", "not_file", "應該是檔案，卻轉到" + reason_words(verdict))
+            return _set(item, "failed", "not_file", "應該是檔案，卻轉到" + reason_words(verdict), verdict)
         return _kept_out(item, verdict)
     result, reason = own_result(land), land["reason"] or ""
     item.status = land["status"]
@@ -641,7 +732,7 @@ def _apply(item: Item, row: sqlite3.Row | None, ledger: Ledger, *, file_like: bo
         return _set(item, "gone", "gone_home", "")
     if file_like and came_back:
         return _set(item, "failed", "not_file", "應該是檔案，回來是網頁")
-    _set(item, bucket_of(result, reason), result, "" if result == NO_AREA else reason_words(reason))
+    _set(item, bucket_of(result, reason), result, "" if result == NO_AREA else reason_words(reason), reason)
 
 
 def _file_like_role(res: sqlite3.Row | None) -> bool:
@@ -748,11 +839,11 @@ def _button(item: Item, page: dict, target: str, argument: str, ledger: Ledger,
                 found = ledger.link(page["id"], loc) or ledger.link(page["id"], act["location"])
                 verdict = found["verdict"] if found is not None else ""
                 if file_like and _off_file(verdict):
-                    _set(item, "failed", "not_file", "應該是檔案，卻轉到" + reason_words(verdict))
+                    _set(item, "failed", "not_file", "應該是檔案，卻轉到" + reason_words(verdict), verdict)
                 else:
                     _kept_out(item, verdict)
         else:
-            item.bucket = bucket_of(act["result"], act["reason"])
+            item.bucket, item.code = bucket_of(act["result"], act["reason"]), act["reason"] or ""
         return
     res = ledger.res(page["id"], postback.button_key(target, argument))
     if res is not None:
@@ -921,15 +1012,25 @@ def home_spelling(ledger: Ledger, canon: str) -> sqlite3.Row | None:
     return None
 
 
+def _landed(ledger: Ledger, canon: str) -> tuple[sqlite3.Row | None, Landing | None, str]:
+    """(the url row of an address, else of its home's other spelling (home_spelling); where its redirects land; that
+    other spelling, '' when none); (None, None, '') when the ledger has neither."""
+    asked, spelled = ledger.by_url(canon), ""
+    if asked is None and (alt := home_spelling(ledger, canon)) is not None:
+        asked, spelled = alt, alt["url"]
+    if asked is None:
+        return None, None, ""
+    return asked, (ledger.land(asked) if asked["result"] == "redirect" else Landing(asked, [])), spelled
+
+
 def _check(archive: Path, ledger: Ledger, summary: dict, said, library: sqlite3.Connection | None, url: str,
            canon: str, from_doc: str, label: str) -> Check:
-    asked = ledger.by_url(canon)
-    if asked is None and (alt := home_spelling(ledger, canon)):
-        asked, summary["spelled"] = alt, alt["url"]
-    if asked is None:
+    asked, ln, spelled = _landed(ledger, canon)
+    if spelled:
+        summary["spelled"] = spelled
+    if asked is None or ln is None:
         summary["doc"] = library_doc(library, from_doc, url, canon)
         return said("not_in_ledger")
-    ln = ledger.land(asked) if asked["result"] == "redirect" else Landing(asked, [])
     row = ln.row
     if row is None:
         summary["page"] = _page_facts(asked, ln.hops)
@@ -968,6 +1069,159 @@ def _check(archive: Path, ledger: Ledger, summary: dict, said, library: sqlite3.
     summary["caveats"] = caveats(summary, made, ledger)
     summary["state_words"] = ""
     return Check(summary, made.html(), made.items)
+
+
+# ---------------------------------------------------------------- a stored page read once, looked up again (the sweep)
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One item of a stored page as read without the ledger (Marked._find): what it is, its href as written, the
+    address it leads to, its words and its zone (Item's), and the lookup that decides its bucket (look_up): link
+    (_link), image (_image by key, its page_res key), button (_button by key and argument, the postback's target and
+    argument, and press, the (kind, row_key) of the press the platform plans for it), or '' (no address: 不是連結)."""
+
+    what: str
+    href: str
+    target: str
+    text: str
+    zone: str
+    look: str
+    key: str = ""
+    argument: str = ""
+    press: tuple[str, str] | None = None
+
+
+def look_up(steps: Iterable[Step], row: dict, ledger: Ledger) -> list[Item]:
+    """The items of a stored page read (steps, numbered from 1 in their order) with what the ledger says of each now:
+    the one lookup a check makes, so a page read once and looked up again says what a whole check says. row: the url
+    row of the record shown, as a dict (its id, warc and warc_offset)."""
+    items = []
+    for n, s in enumerate(steps, 1):
+        item = Item(n, s.what, "missing", s.href, s.target, s.text, s.zone)
+        if s.look == "link":
+            _link(item, row["id"], ledger)
+        elif s.look == "image":
+            _image(item, row["id"], s.key, ledger)
+        elif s.look == "button":  # the press is matched by its kind and row_key only (Ledger.action)
+            press = postback.Press(s.press[0], s.key, s.argument, s.press[1], "", 0) if s.press else None
+            _button(item, row, s.key, s.argument, ledger, press)
+        else:
+            item.bucket = "notlink"
+        items.append(item)
+    return items
+
+
+def tally(items: Iterable[Item]) -> dict:
+    """A page's items counted: per kind and bucket (counts), the listed misses in check's order (problems: the
+    content area first, then by bucket, then by number) and who acts on how many (verdict)."""
+    items = list(items)
+    counts: dict[str, dict[str, int]] = {w: {} for w, _ in WHATS}
+    for i in items:
+        counts[i.what][i.bucket] = counts[i.what].get(i.bucket, 0) + 1
+    problems = sorted((i for i in items if i.bucket in PROBLEMS),
+                      key=lambda i: (ZONE_ORDER.index(i.zone), PROBLEMS.index(i.bucket), i.n))
+    verdict = {"fix": {z: 0 for z in ZONE_ORDER}, "check": 0, "next": 0}
+    for i in items:
+        if WHO.get(i.bucket) == "fix":
+            verdict["fix"][i.zone] += 1
+        elif WHO.get(i.bucket) == "check":
+            verdict["check"] += 1
+        elif i.bucket == "next":
+            verdict["next"] += 1
+    return {"counts": counts, "problems": [i.as_dict() for i in problems], "verdict": verdict}
+
+
+@dataclass(frozen=True, slots=True)
+class Read:
+    """A stored record read without the ledger (read_record): ok with its steps, or not_html; unreadable is said and
+    never kept (a disk that failed for a moment is read again). What the sweep keeps of a page between two changes of
+    the ledger (nknu.ops.sweep)."""
+
+    state: str
+    steps: tuple[Step, ...] = ()
+
+
+READ_KEYS = ("id", "url", "warc", "warc_offset", "kind", "ctype", "owner_site")
+
+
+def record_key(row: dict) -> str:
+    """What a read depends on beside the code (sweep.RULES): the row shown (its id: the Google Sites pictures' keys;
+    its address: the profile; its site: the platform's presses; its kind and type: whether it is a page) and its
+    record."""
+    return "|".join("" if row.get(k) is None else str(row[k]) for k in READ_KEYS)
+
+
+def read_record(archive: Path, row: dict) -> Read:
+    """The record a url row shows (row as a dict) read and marked, the ledger not looked at: what _check does with it
+    before its lookups."""
+    try:
+        _url, _status, headers, body = postback.read_response(archive, row["warc"], row["warc_offset"])
+    except (ValueError, OSError) as exc:
+        log.warning("存档读不出来：%s@%s（%s）", row["warc"], row["warc_offset"], exc)
+        return Read("unreadable")
+    ctype = headers.get("content-type") or row["ctype"] or ""
+    if not _is_html(ctype, row["kind"], body):
+        return Read("not_html")
+    return Read("ok", tuple(Marked(decode(body, ctype), row, None).steps))
+
+
+def check_verdict(archive: Path | None, url: str, *, ledgers: LedgerCache | None = None,
+                  reads: dict[str, tuple[str, Read]] | None = None, shared: dict | None = None) -> Check:
+    """check(archive, url) as the sweep keeps it (nknu.ops.sweep.compact): the same state, verdict and problems, made by
+    the same lookups (look_up), without what only the opened page draws (the safe page, its caveats and regions, the
+    page's facts, every item's card). reads: the stored pages read before, by address, each (record_key, Read): an
+    address whose row still shows the same record is looked up again and not read again; one read here is put in it;
+    shared: the url rows looked up for the pages checked just before (Ledger's).
+    Measured 2026-11-22 on the 1,855 stored pages of an old ledger (archive/, 2026-11-02) and their WARCs: reading the
+    stored page and marking it was about 84% of a check, the ledger's lookups 16%. A document id, or an export's
+    address of a press (#第N页, #按钮=…), is the whole check."""
+    url = (url or "").strip()
+    base_url, label = press_label(url)
+    if label or not url.startswith(("http://", "https://")):
+        return check(archive, url, ledgers=ledgers)
+    summary: dict = {"ref": url, "url": url, "state": "ok", "problems": [], "snapshot": False}
+
+    def said(state: str) -> Check:
+        summary["state"] = state
+        summary["state_words"] = STATES[state]
+        return Check(summary)
+
+    canon = scope.canonical(base_url) or base_url
+    summary["url"] = canon
+    if archive is None or not (Path(archive) / LEDGER).exists():
+        return said("no_archive")
+    try:
+        with _ledger(Path(archive), ledgers) as conn:
+            summary["snapshot"] = isinstance(conn, Snapshot)
+            ledger = Ledger(conn, shared)
+            _asked, ln, _spelled = _landed(ledger, canon)
+            if ln is None:
+                return said("not_in_ledger")
+            if ln.row is None:
+                return said("not_fetched")
+            shown = dict(zip(ln.row.keys(), ln.row, strict=True))
+            if not shown["warc"] or shown["warc_offset"] is None:
+                return said("not_fetched")
+            key = record_key(shown)
+            kept = reads.get(url) if reads is not None else None
+            if kept is not None and kept[0] == key:
+                read = kept[1]
+            else:
+                read = read_record(Path(archive), shown)
+                if reads is not None and read.state != "unreadable":
+                    reads[url] = (key, read)
+            if read.state != "ok":
+                return said(read.state)
+            items = look_up(read.steps, shown, ledger)
+    except sqlite3.OperationalError as exc:
+        if not _BUSY.search(str(exc)):
+            raise
+        log.warning("账本读不了：%s", exc)
+        summary["read_error"] = str(exc)
+        return said("busy")
+    summary.update(tally(items))
+    summary["state_words"] = ""
+    return Check(summary, "", items)
 
 
 _MARKER = re.compile(r"\[[a-z_-]+\]")  # a link row's text the crawler writes for what is no <a>: [refresh], [click]…
@@ -1176,9 +1430,10 @@ def _background_src(node: LexborNode) -> str:
 class Marked:
     """One stored page parsed, its regions and items found and looked up (the work of check, kept to draw).
 
-    row: the list's (or page's) url row as a dict, its warc and warc_offset those of the record shown."""
+    row: the list's (or page's) url row as a dict, its warc and warc_offset those of the record shown. ledger None:
+    the page is only read (steps), nothing looked up (items stays empty: what the sweep keeps, read_record)."""
 
-    def __init__(self, text: str, row: dict, ledger: Ledger) -> None:
+    def __init__(self, text: str, row: dict, ledger: Ledger | None) -> None:
         self.url = row["url"]
         self.row = row
         self.profile = profiles.profile_for(self.url)
@@ -1207,9 +1462,11 @@ class Marked:
             log.warning("爬虫的读法读不了这一页：%s（%s）", self.url, exc)
             self.read = None
         self.presses = self._presses(text)
-        self.items: list[Item] = []
-        self.marks: dict[int, Item] = {}
-        self._find(ledger)
+        self.steps: list[Step] = []
+        self._nodes: list[int] = []  # each step's element (mem_id)
+        self._find()
+        self.items: list[Item] = look_up(self.steps, row, ledger) if ledger is not None else []
+        self.marks: dict[int, Item] = dict(zip(self._nodes, self.items, strict=False))
 
     def _presses(self, text: str) -> dict[tuple[str, str], postback.Press]:
         """What the platform plans for each button of this page (postback.read_page, pure: nothing pressed), by
@@ -1260,22 +1517,22 @@ class Marked:
             up = up.parent
         return False
 
-    def _add(self, node: LexborNode, what: str, href: str, target: str, text: str) -> Item:
-        item = Item(len(self.items) + 1, what, "missing", href, target, " ".join(text.split())[:120], self._zone(node))
-        self.items.append(item)
-        self.marks[node.mem_id] = item
-        return item
+    def _add(self, node: LexborNode, what: str, href: str, target: str, text: str, look: str, key: str = "",
+             argument: str = "", press: postback.Press | None = None) -> None:
+        self.steps.append(Step(what, href, target, " ".join(text.split())[:120], self._zone(node), look, key, argument,
+                               (press.kind, press.row_key) if press is not None else None))
+        self._nodes.append(node.mem_id)
 
-    def _find(self, ledger: Ledger) -> None:
+    def _find(self) -> None:
         """Each element the crawler reads a link, a picture, a frame or a button from (links.extract's readings, one
         item per element, the first that applies): a postback, an <a>/<area> href (a javascript: one by the address
         its script opens), a frame, an embed or object, a picture (its lazy source first, else src, else the largest
-        of a srcset), an address in an on* handler or a data-href, a background picture."""
-        page_id = self.row["id"]
+        of a srcset), an address in an on* handler or a data-href, a background picture. Each is a step: what it is
+        and the lookup that decides it (look_up), the ledger not read here."""
         buttons: dict[int, tuple[str, str]] = {}
         for node, target, argument in postback._postbacks(self.tree, self.profile):
             buttons.setdefault(node.mem_id, (target, argument))
-        gs_keys = links.google_sites_keys(self.read, page_id) if self.read is not None else {}
+        gs_keys = links.google_sites_keys(self.read, self.row["id"]) if self.read is not None else {}
         for node in self.tree.root.traverse(include_text=False):
             tag = node.tag or ""
             if not tag[:1].isalpha() or tag in _NEVER_ITEM:
@@ -1286,44 +1543,39 @@ class Marked:
                     continue
                 target, argument = buttons[node.mem_id]
                 label = node.text(deep=True) or attrs.get("value") or attrs.get("alt") or target
-                item = self._add(node, "button", "", "", label or "")
-                _button(item, self.row, target, argument, ledger, self.presses.get((target, argument)))
+                self._add(node, "button", "", "", label or "", "button", target, argument,
+                          self.presses.get((target, argument)))
             elif tag in ("a", "area") and "href" in attrs:
                 if not self._dropped(node):
-                    self._href(node, attrs.get("href") or "", "link",
-                               node.text(deep=True) or attrs.get("alt") or "", page_id, ledger)
+                    self._href(node, attrs.get("href") or "", "link", node.text(deep=True) or attrs.get("alt") or "")
             elif tag in FRAMES or tag in EMBEDS:
                 src = links._frame_src(node)
                 if src and not self._dropped(node):
-                    self._href(node, src, "link", f"[{tag}]", page_id, ledger)
+                    self._href(node, src, "link", f"[{tag}]")
             elif tag == "img" or (tag == "input" and (attrs.get("type") or "").lower() == "image"):
                 src = _picture_src(attrs)
                 if src and not self._dropped(node):
-                    self._picture(node, src, attrs.get("alt") or "", page_id, gs_keys, ledger)
+                    self._picture(node, src, attrs.get("alt") or "", gs_keys)
             elif (said := _script_address(node)) and not self._dropped(node):
-                self._href(node, said, "link", links._label(node) or said, page_id, ledger)
+                self._href(node, said, "link", links._label(node) or said)
             elif (bg := _background_src(node)) and not self._dropped(node):
                 if scope.extension(bg) in scope.ATTACHMENT_EXT:  # links._background: a document is a link
-                    self._href(node, bg, "link", "[background]", page_id, ledger)
+                    self._href(node, bg, "link", "[background]")
                 else:
-                    self._picture(node, bg, "", page_id, gs_keys, ledger)
+                    self._picture(node, bg, "", gs_keys)
 
-    def _picture(self, node: LexborNode, src: str, alt: str, page_id: int, gs_keys: dict[str, str],
-                 ledger: Ledger) -> None:
+    def _picture(self, node: LexborNode, src: str, alt: str, gs_keys: dict[str, str]) -> None:
         if src.lower().startswith("data:"):
-            item = self._add(node, "image", src[:60], "", alt)
-            _image(item, page_id, src[:links.DATA_SRC_MAX], ledger)
+            self._add(node, "image", src[:60], "", alt, "image", src[:links.DATA_SRC_MAX])
             return
         target = scope.canonical(src, self.base)
         if target is None:
-            item = self._add(node, "image", src, "", alt)
-            item.bucket = "notlink"
+            self._add(node, "image", src, "", alt, "")
             return
-        item = self._add(node, "image", src, target, alt)
         # a Google Sites runtime picture is written by where it sits, not its address (links.google_sites_keys)
-        _image(item, page_id, gs_keys.get(src, target), ledger)
+        self._add(node, "image", src, target, alt, "image", gs_keys.get(src, target))
 
-    def _href(self, node: LexborNode, href: str, what: str, text: str, page_id: int, ledger: Ledger) -> None:
+    def _href(self, node: LexborNode, href: str, what: str, text: str) -> None:
         """A link's item. A javascript: href is a link to the address its script opens (window.open, location…:
         links._calls, as links._anchor reads it), and no link when it opens none."""
         low = href.strip().lower()
@@ -1334,30 +1586,12 @@ class Marked:
             target = None
         else:
             target = scope.canonical(href, self.base)
-        item = self._add(node, what, href, target or "", text)
-        if target is None:
-            item.bucket = "notlink"
-            return
-        _link(item, page_id, ledger)
+        self._add(node, what, href, target or "", text, "link" if target is not None else "")
 
     # ------------------------------------------------ what check returns
 
     def summary(self) -> dict:
-        counts: dict[str, dict[str, int]] = {w: {} for w, _ in WHATS}
-        for i in self.items:
-            counts[i.what][i.bucket] = counts[i.what].get(i.bucket, 0) + 1
-        problems = sorted((i for i in self.items if i.bucket in PROBLEMS),
-                          key=lambda i: (ZONE_ORDER.index(i.zone), PROBLEMS.index(i.bucket), i.n))
-        verdict = {"fix": {z: 0 for z in ZONE_ORDER}, "check": 0, "next": 0}
-        for i in self.items:
-            if WHO.get(i.bucket) == "fix":
-                verdict["fix"][i.zone] += 1
-            elif WHO.get(i.bucket) == "check":
-                verdict["check"] += 1
-            elif i.bucket == "next":
-                verdict["next"] += 1
-        return {"counts": counts, "problems": [i.as_dict() for i in problems], "verdict": verdict,
-                "items": [i.as_dict() for i in self.items],
+        return {**tally(self.items), "items": [i.as_dict() for i in self.items],
                 "regions": {"how": self.how, "in": len(self.in_ids), "files": len(self.file_boxes) or len(self.file_links),
                             "area_chars": self.area_chars, "body_chars": self.body_chars},
                 "title": " ".join((t.text() or "").split()) if (t := self.tree.css_first("title")) else ""}

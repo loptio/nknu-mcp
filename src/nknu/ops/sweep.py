@@ -1,8 +1,24 @@
 """網頁核查's whole sweep (design docs/superpowers/specs/2026-11-16-page-check-design.md section 六): every page of the
 crawler's ledger checked once by the very function the panel uses for one page (nknu.ops.pagecheck.check), so the
 list of sites, a site's list of pages and the page opened from them never disagree. Of each check only what the lists
-need is kept (its state, how many it missed where, the misses themselves), in memory: every mount of the panel's
-container is read-only, so nothing is written anywhere.
+need is kept (its state, how many it missed where, the misses themselves).
+
+Kept on disk since 2026-11-22 (owner: 「改」; until then in memory only, so every restart of the panel checked the
+whole archive again, about 17 minutes of 「正在讀帳本」, and every change of the ledger did the same): in the panel's
+own writable file (ops.db, nknu.ops.sweep_store), the results, the listing they were drawn with, each stored page as
+read (pagecheck.Read: its links, images and buttons and the lookup each needs) and one record a night of the school's
+totals. A restart draws the kept results at once, said with when they were checked, and checks again only if the
+ledger or the rules changed. A changed ledger is looked up again page by page and only the pages whose record changed
+are read again: a page's verdict is its own stored copy (the read, keyed by the record: pagecheck.record_key) and the
+ledger's rows of the addresses it links (looked up every time, by the same code a whole check uses: pagecheck.look_up),
+so the result is what a whole check gives. Measured on the Mac on the 1,855 stored pages of an old ledger (archive/,
+2026-11-02) and their real WARCs: a whole check 4.3 ms a page, the sweep's check reading the page 3.3 ms (no safe page,
+no caveats), looked up from its kept read 0.7 ms (the ledger's lookups are about 16% of a check), 0.44 ms with the url
+rows shared by the pages of a chunk (their menus link the same addresses: 27% of the lookups are distinct); the same
+results on every page, also after 8% of the rows and 5% of the records were changed (92 pages read again). So on the
+lab (about 17 ms a page, 58,707 pages) a night's update is the ledger read again (a minute or two) plus about two
+minutes of lookups plus the pages the crawl fetched again; a restart over an unchanged ledger is nothing. Without the
+file (no --ops-db) everything stays in memory, as before. 【Claude】 the design.
 
 Owner 11-16, on the first version's one address box: 「为什么要我输入网址或文件编号？我怎么会记得网址或者文件编号呀？」.
 Every way of doing it below is 【Claude】's (design section 六 says so).
@@ -12,33 +28,54 @@ pages' names, then checks the pages a few at a time with its own read-only ledge
 last first. One thread is enough: a check takes about 14 ms (the lab's ledger, 11-16), so the 48,000 pages take about
 eleven minutes and a site opened is done within a minute or two (the design's three worker processes were dropped
 11-16, with the owner's 「你太夸张了」 about the machinery around this change: a pool, its crashes and its hangs cost far
-more code than the minutes they save 【Claude】). It starts with the first request of 網頁核查 and sweeps again when the
-ledger has changed; the older results stay on the pages, said to be older, until each is replaced. A request never
-waits on it: it copies what is there under a short lock and draws from the copy."""
+more code than the minutes they save 【Claude】). The first sweep starts with the first request of 網頁核查; with the
+file, a watcher then keeps it current by itself. It sweeps again when the ledger has changed and has been quiet for
+QUIET_SECONDS (or at most RESWEEP_SECONDS after the last began, while it keeps changing), never while the nightly
+update fetches or exports (the hold), and pauses between its chunks while the ledger is being written, so the crawler
+keeps the disk; the older results stay on the pages, said to be older, until each is replaced. A request never waits
+on it: it copies what is there under a short lock and draws from the copy."""
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import json
 import logging
 import re
 import sqlite3
 import threading
 import time
+import zlib
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlsplit
 
+import nknu.archive
+import nknu.settings
 from nknu.archive import scope
 from nknu.ops import pagecheck
+from nknu.ops.history import window
 from nknu.ops.look import t2s, tw
+from nknu.ops.nightly import night_of
+from nknu.ops.sweep_store import SweepStore
+from nknu.totext import pagetext
 
 log = logging.getLogger(__name__)
 
 CHUNK = 20  # pages checked between two looks at which site was asked for: well under a second 【Claude】
-RESWEEP_SECONDS = 600.0  # a ledger that keeps changing (the crawler writing) is swept again at most this often 【Claude】
+# a changed ledger is checked again once it has been quiet this long (its files' last change, so a restart knows it
+# too), or at most this long after the last sweep began while it keeps changing (a crawl run by hand in the day);
+# a re-check over kept reads takes minutes, so once in half an hour leaves the disk to the crawler 【Claude】
+QUIET_SECONDS = 300.0
+RESWEEP_SECONDS = 1800.0
+WATCH_SECONDS = 60.0  # the watcher's look at the ledger and the night 【Claude】
+FLUSH = 200  # results and reads written to the file together, at most this many pages apart 【Claude】
 RETRY_SECONDS = 30.0  # a sweep that could not read the ledger is tried again after this 【Claude】
+NIGHTS_SHOWN = 14  # the school's trend: as many nights as the other panels draw (history.SHOWN)
 KEEP = 300  # misses kept per page, as many as the page's own lists show (check_page.PROBLEMS_SHOWN) 【Claude】
 ROUND_ONE = "1"  # site_plan.round of the first round's sites
 NOFETCH = ("failed", "gone")  # a page's own bucket that says the page itself is not there
@@ -48,11 +85,17 @@ NOFETCH = ("failed", "gone")  # a page's own bucket that says the page itself is
 UNSTORED_LISTED = ("failed", "gone", "look", "review")
 NOT_LISTED = ("rule", "album")
 PASSING = ("busy", "error")  # a check's states that say nothing of the page itself: an older result outlives them
-# the entry's two lists of the school's misses (11-16 evening: 1,361 of the 1,406 pages whose content area misses
-# something miss one and the same link, which the sites' numbers alone never said): the content and attachment areas
-# only (a menu's miss is on every page of its site and would bury them), merged across sites, the most pages first 【Claude】
-TOP = 8
+# the entry's list of the school's misses (11-16 evening: 1,361 of the 1,406 pages whose content area misses something
+# miss one and the same link, which the sites' numbers alone never said): the content and attachment areas only (a
+# menu's miss is on every page of its site and would bury them), merged across sites, each address once and a button
+# once per site, in three classes (pagecheck.CLASSES, owner 11-22); per class the first TOP rows are kept, as many as
+# the page draws (check_sites.MERGED_SHOWN) 【Claude】
+# 100 since 11-22 evening: the entry is sent again every few seconds while the sweep runs, through a tunnel, and
+# each site's page holds its whole list 【Claude】
+TOP = 100
 TOP_ZONES = ("in", "files")
+CLASS_KEYS = tuple(k for k, _n, _t in pagecheck.CLASSES)
+KIND_KEYS = tuple(k for k, _n in pagecheck.KINDS)
 # the entry's site list sorts by one of its numbers (a header pressed), 正文區有漏 when none is asked for 【Claude】
 SORTS = ("gap", "pages", "menu_links", "check", "nofetch")
 
@@ -99,6 +142,7 @@ class Problem(NamedTuple):
     what: str  # link | image | button
     n: int  # its number on the page: the page opened from a list flashes it
     tip: str
+    cls: str = ""  # whose move it is (pagecheck.CLASSES' key)
 
 
 @dataclass(slots=True)
@@ -114,6 +158,7 @@ class Found:
     more: int = 0  # misses beyond KEEP
     error: str = ""
     gen: int = 0  # the sweep that made it
+    at: float = 0.0  # when, seconds since 1970
 
 
 def compact(url: str, summary: dict) -> Found:
@@ -122,10 +167,22 @@ def compact(url: str, summary: dict) -> Found:
     fix = v.get("fix") or {}
     found = summary.get("problems") or []
     kept = tuple(Problem(p.get("target") or "", p.get("text") or "", p.get("zone") or "out", p["bucket"],
-                         p.get("reason") or "", p.get("what") or "link", int(p.get("n") or 0), p.get("tip") or "")
+                         p.get("reason") or result_words(p.get("result")), p.get("what") or "link",
+                         int(p.get("n") or 0), p.get("tip") or "",
+                         p.get("cls") or pagecheck.miss_class(p["bucket"], p.get("what") or "link", p.get("result"),
+                                                              p.get("code")))
                  for p in found[:KEEP])
     return Found(url, summary.get("state") or "error", (fix.get("in", 0), fix.get("files", 0), fix.get("out", 0)),
                  int(v.get("check", 0)), int(v.get("next", 0)), kept, max(0, len(found) - KEEP))
+
+
+def result_words(result: str | None) -> str:
+    """A ledger result in words for a miss whose reason says nothing (the school's homepage taken for a file: 應該是
+    檔案，回來不是, not the bucket's 失敗); '' for none."""
+    if not result:
+        return ""
+    said = pagecheck.RESULT_WORDS.get(result) or pagecheck.reason_words(result)
+    return "" if said == result else said
 
 
 def errored(url: str, words: str) -> Found:
@@ -133,19 +190,122 @@ def errored(url: str, words: str) -> Found:
 
 
 def check_pages(urls: Iterable[str], archive: Path, cache: pagecheck.LedgerCache | None,
-                checker: Callable = pagecheck.check, stop: threading.Event | None = None) -> list[Found]:
-    """Each page checked as the panel checks it (no library: a check of an address needs none), a failure kept as
-    that page's error instead of ending the rest."""
+                checker: Callable = pagecheck.check_verdict, stop: threading.Event | None = None,
+                reads: dict[str, tuple[str, pagecheck.Read]] | None = None) -> list[Found]:
+    """Each page checked as the panel checks it (pagecheck.check_verdict: the same verdict, without the safe page;
+    reads: the pages read before, by address, and where the pages read now are put; the url rows looked up shared by
+    these pages, a few of one site), a failure kept as that page's error instead of ending the rest."""
     out = []
+    shared: dict = {}
     for url in urls:
         if stop is not None and stop.is_set():
             break
         try:
-            out.append(compact(url, checker(archive, url, library=None, ledgers=cache).summary))
+            out.append(compact(url, checker(archive, url, ledgers=cache, reads=reads, shared=shared).summary))
         except Exception as exc:  # one odd page never stops the sweep: it is listed under 要查
             log.exception("核查出错：%s", url)
             out.append(errored(url, f"{type(exc).__name__}: {exc}"[:300]))
     return out
+
+
+# ---------------------------------------------------------------- what is kept on disk (nknu.ops.sweep_store)
+
+def _source(*paths: Path) -> str:
+    """A digest of these files' bytes, by their folder and name (the same code reads the same wherever it is)."""
+    h = hashlib.sha256()
+    for path in sorted(set(paths), key=lambda p: (p.parent.name, p.name)):
+        h.update(f"{path.parent.name}/{path.name}\0".encode())
+        try:
+            h.update(path.read_bytes())
+        except OSError:
+            h.update(b"\0missing")
+    return h.hexdigest()[:16]
+
+
+@functools.cache
+def read_rules() -> str:
+    """What reads a stored page (pagecheck.read_record): the page check, the crawler's own readers it calls
+    (nknu.archive: links, profiles, postback, scope…), the library's reading of the content area (pagetext) and the
+    config files that reading loads. A kept read made by other rules is read again. 【Claude】: every module of
+    nknu.archive, not only those imported today, so a reader added there counts too."""
+    files = [Path(pagecheck.__file__), Path(pagetext.__file__), Path(nknu.settings.__file__),
+             *Path(nknu.archive.__file__).parent.glob("*.py")]
+    try:
+        config = nknu.settings.load_settings().config_dir
+        files += [config / pagetext.ROUND1_LIST, config / pagetext.SITE_TABLE]
+    except Exception:  # noqa: BLE001 - no settings: the files are left out, the code still counts
+        log.warning("网页核查：读不到设定档的位置，规则只看程序")
+    return _source(*files)
+
+
+@functools.cache
+def rules() -> str:
+    """What checks a page and keeps its result: read_rules and this module (KEEP, compact…). Results kept by other
+    rules are drawn, said to be older, and checked again."""
+    return f"{read_rules()}-{_source(Path(__file__))}"
+
+
+def _pack(data: object) -> bytes:
+    return zlib.compress(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 6)
+
+
+def _unpack(blob: bytes) -> object:
+    return json.loads(zlib.decompress(blob).decode("utf-8"))
+
+
+def pack_found(f: Found) -> bytes:
+    return _pack([f.state, list(f.fix), f.check, f.next, [list(p) for p in f.problems], f.more, f.error])
+
+
+def unpack_found(url: str, blob: bytes, gen: int, at: float) -> Found:
+    state, fix, check, nxt, problems, more, error = _unpack(blob)  # type: ignore[misc]
+    return Found(url, state, tuple(fix), check, nxt, tuple(Problem(*p) for p in problems), more, error, gen, at)
+
+
+def pack_steps(read: pagecheck.Read) -> bytes:
+    """A read: its state and its steps, each without its href as written (a check's verdict never reads it)."""
+    return _pack([read.state, [[s.what, s.target, s.text, s.zone, s.look, s.key, s.argument,
+                                list(s.press) if s.press else None] for s in read.steps]])
+
+
+def unpack_steps(blob: bytes) -> pagecheck.Read:
+    state, steps = _unpack(blob)  # type: ignore[misc]
+    return pagecheck.Read(state, tuple(pagecheck.Step(what, "", target, text, zone, look, key, argument,
+                                                      tuple(press) if press else None)
+                                       for what, target, text, zone, look, key, argument, press in steps))
+
+
+def pack_listing(listing: Listing) -> bytes:
+    return _pack({"pages": [[p.url, p.site, p.own, p.stored, p.path, listing.names.get(p.url, ""),
+                             *listing.keys.get(p.url, ("", ""))] for p in listing.pages.values()],
+                  "sites": [[s.key, s.name, s.home, s.round1, list(s.keys)] for s in listing.sites.values()],
+                  "order": listing.order})
+
+
+def unpack_listing(blob: bytes) -> Listing:
+    data = _unpack(blob)
+    out = Listing()
+    for url, site, own, stored, path, name, key_name, key_url in data["pages"]:  # type: ignore[index]
+        out.pages[url] = Page(url, site, own, stored, path)
+        out.site_pages.setdefault(site, []).append(url)
+        out.names[url] = name
+        out.keys[url] = (key_name, key_url)
+    for key, name, home, round1, keys in data["sites"]:  # type: ignore[index]
+        out.sites[key] = Site(key, name, home, round1, tuple(keys))
+    out.order = list(data["order"])  # type: ignore[index]
+    return out
+
+
+def _stamp_of(text: str | None) -> tuple | None:
+    """A kept LedgerCache.stamped (JSON) as stamped returns it, None for none."""
+    if not text:
+        return None
+    return tuple(tuple(x) if x is not None else None for x in json.loads(text))
+
+
+def when(at: float | None) -> str:
+    """A time of the sweep for the pages: MM-DD HH:MM, Taipei ('' for none)."""
+    return datetime.fromtimestamp(at, pagecheck.TAIPEI).strftime("%m-%d %H:%M") if at else ""
 
 
 # ---------------------------------------------------------------- the pages, the sites and their names
@@ -416,7 +576,7 @@ def row_of(listing: Listing, found: dict[str, Found], gen: int, url: str) -> dic
         tip = f.error or pagecheck.STATES.get(f.state, f.state)
     older = f is not None and f.gen < gen
     if older:
-        tip = (tip + "\n" if tip else "") + "帳本改過，這是改之前的結果"
+        tip = (tip + "\n" if tip else "") + "帳本改過，這是改之前的結果" + (f"（{when(f.at)} 核查的）" if f.at else "")
     return {"url": url, "name": listing.names.get(url) or page.path, "path": page.path, "state": state,
             "pill": words, "tone": tone, "rank": rank, "chips": chips_of(page, f, state), "tip": tip, "older": older,
             "lost": (f.fix[0] + f.fix[1]) if f is not None else 0, "site": page.site}
@@ -435,12 +595,14 @@ class SiteData:
     current: int = 0  # pages checked by the sweep now running (or the last)
     older: int = 0
     gap: int = 0
-    menu_links: int = 0
+    menu_links: int = 0  # the menus' addresses and buttons not got (爬蟲可補 in the menus), each once
     check: int = 0  # 要查 pages
     nofetch: int = 0
     chips: dict[str, int] = field(default_factory=dict)
-    fix: list[dict] = field(default_factory=list)
-    look: list[dict] = field(default_factory=list)
+    misses: list[dict] = field(default_factory=list)  # the content and attachment areas' merged misses, list_order
+    menu: list[dict] = field(default_factory=list)  # the menus' misses not got (menu_links of them), list_order
+    cls: dict[str, int] = field(default_factory=dict)  # misses per class (pagecheck.CLASSES)
+    cls_pages: dict[str, int] = field(default_factory=dict)  # per class: on how many of its pages they are
     errors: int = 0
     more: int = 0  # misses beyond KEEP on its pages: not in the merged lists, said under them
     rows: list[dict] = field(default_factory=list)
@@ -453,37 +615,47 @@ def problem_key(url: str, p: Problem) -> str:
     return p.target or (f"{p.what}|{p.text}" if p.text else f"{p.what}|{url}#{p.n}")
 
 
-def merge_problems(listing: Listing, found: dict[str, Found], urls: Iterable[str]) -> tuple[list[dict], list[dict]]:
+def list_order(row: dict) -> tuple:
+    """A merged list's order inside a class (owner 11-22): links to files first, then links to pages, images, and
+    buttons last; within each, on more sites first, then on more pages (a template link on every page of one site
+    never goes before a file missed on three sites)."""
+    return (KIND_KEYS.index(row["kind"]), -row.get("sites", 1), -row["pages"], row["text"], row["key"])
+
+
+def merge_problems(listing: Listing, found: dict[str, Found], urls: Iterable[str]) -> tuple[list[dict], dict[str, int]]:
     """A site's misses merged across its pages (design section 六 2): one row per target, in the best zone any page
-    has it in (the content area first), the first page that has it there and its number on that page, and on how many
-    pages it is; (爬蟲可補, 要查), each in the content area first, then by how many pages. A page that is itself not
-    there (failed, deleted) and one not checked as a page add none."""
+    has it in (the content area first), the first page that has it there and its number on that page, its class and
+    what it is, and on how many pages it is; (the rows in list_order, per class on how many pages a row of the content
+    or attachment area is). A page that is itself not there (failed, deleted) and one not checked as a page add none."""
     acc: dict[str, dict] = {}
+    merged: list[tuple[str, Found]] = []
     for url in urls:
         page, f = listing.pages[url], found.get(url)
         if f is None or f.state != "ok" or page.own in NOFETCH:
             continue
+        merged.append((url, f))
         for p in f.problems:
             key = problem_key(url, p)
             row = acc.get(key)
             if row is None:
                 acc[key] = row = {"key": key, "target": p.target, "text": p.text, "zone": p.zone, "bucket": p.bucket,
                                   "reason": p.reason, "what": p.what, "tip": p.tip, "page": url, "n": p.n, "pages": 0,
-                                  "last": ""}
+                                  "last": "", "cls": p.cls or pagecheck.miss_class(p.bucket, p.what)}
             elif pagecheck.ZONE_ORDER.index(p.zone) < pagecheck.ZONE_ORDER.index(row["zone"]):
-                row.update(zone=p.zone, bucket=p.bucket, reason=p.reason, tip=p.tip, page=url, n=p.n)
+                row.update(zone=p.zone, bucket=p.bucket, reason=p.reason, what=p.what, tip=p.tip, page=url, n=p.n,
+                           cls=p.cls or pagecheck.miss_class(p.bucket, p.what))
             if not row["text"] and p.text:
                 row["text"] = p.text
             if row["last"] != url:
                 row["pages"] += 1
                 row["last"] = url
-
-    def order(r: dict) -> tuple:
-        return (pagecheck.ZONE_ORDER.index(r["zone"]), pagecheck.PROBLEMS.index(r["bucket"]), -r["pages"], r["text"])
-
-    fix = sorted((r for r in acc.values() if pagecheck.WHO.get(r["bucket"]) == "fix"), key=order)
-    look = sorted((r for r in acc.values() if pagecheck.WHO.get(r["bucket"]) == "check"), key=order)
-    return fix, look
+    for row in acc.values():
+        row["kind"] = pagecheck.miss_kind(row["what"], row["target"])
+    pages: Counter = Counter()  # a page counts once per class whose row in the content or attachment area it has
+    for url, f in merged:
+        pages.update({row["cls"] for p in f.problems
+                      if (row := acc[problem_key(url, p)])["zone"] in TOP_ZONES})
+    return sorted(acc.values(), key=list_order), {k: pages[k] for k in CLASS_KEYS}
 
 
 def site_data(listing: Listing, found: dict[str, Found], gen: int, key: str) -> SiteData:
@@ -502,36 +674,44 @@ def site_data(listing: Listing, found: dict[str, Found], gen: int, key: str) -> 
         for chip in row["chips"]:
             out.chips[chip] += 1
     out.gap, out.check, out.nofetch = out.chips["gap"], out.chips["check"], out.chips["nofetch"]
-    out.fix, out.look = merge_problems(listing, found, urls)
-    out.menu_links = sum(r["zone"] == "out" for r in out.fix)
+    merged, out.cls_pages = merge_problems(listing, found, urls)
+    out.misses = [r for r in merged if r["zone"] in TOP_ZONES]
+    out.menu = [r for r in merged if r["zone"] not in TOP_ZONES and pagecheck.WHO.get(r["bucket"]) == "fix"]
+    out.menu_links = len(out.menu)
+    out.cls = {k: sum(r["cls"] == k for r in out.misses) for k in CLASS_KEYS}
     return out
 
 
 def school_problems(sites: Iterable[tuple[Site, SiteData]], limit: int = TOP) -> dict:
-    """The school's misses in the content and attachment areas merged across its sites (the entry's two lists): one
-    row per target with on how many pages and sites it is, opening a page of the site that has it most; the most
-    pages first, the first limit of them, and how many there are in all (n_fix, n_look)."""
-    out: dict = {}
-    for who in ("fix", "look"):
-        acc: dict[str, dict] = {}
-        for site, data in sites:
-            for r in getattr(data, who):
-                if r["zone"] not in TOP_ZONES:
-                    continue
-                key = r["target"] or f"{site.key}|{r['key']}"  # the same words on two sites are two buttons
-                row = acc.get(key)
-                if row is None:
-                    acc[key] = row = {**r, "pages": 0, "sites": 0, "most": 0}
-                row["pages"] += r["pages"]
-                row["sites"] += 1
-                if r["pages"] > row["most"]:
-                    row.update(page=r["page"], n=r["n"], zone=r["zone"], bucket=r["bucket"], reason=r["reason"],
-                               tip=r["tip"], site=site.key, site_name=site.name, most=r["pages"])
-                if not row["text"] and r["text"]:
-                    row["text"] = r["text"]
-        rows = sorted(acc.values(), key=lambda r: (-r["pages"], pagecheck.ZONE_ORDER.index(r["zone"]), r["text"]))
-        out[who], out["n_" + who] = rows[:limit], len(rows)
-    return out
+    """The school's misses in the content and attachment areas merged across its sites (the entry's list, owner
+    11-22): one row per address school-wide and per button on its site, with on how many pages and sites it is,
+    opening a page of the site that has it most; per class (pagecheck.CLASSES) the first limit rows in list_order
+    (rows), how many there are (n) and on how many pages (pages: each page once per class); and how many of the menus'
+    addresses and buttons are not got, each once (menu)."""
+    acc: dict[str, dict] = {}
+    pages: Counter = Counter()
+    menu: set[str] = set()
+    for site, data in sites:
+        pages.update(data.cls_pages)
+        menu.update(r["target"] or f"{site.key}|{r['key']}" for r in data.menu)
+        for r in data.misses:
+            key = r["target"] or f"{site.key}|{r['key']}"  # the same words on two sites are two buttons
+            row = acc.get(key)
+            if row is None:
+                acc[key] = row = {**r, "pages": 0, "sites": 0, "most": 0}
+            row["pages"] += r["pages"]
+            row["sites"] += 1
+            if r["pages"] > row["most"]:
+                row.update(page=r["page"], n=r["n"], zone=r["zone"], bucket=r["bucket"], reason=r["reason"],
+                           what=r["what"], kind=r["kind"], cls=r["cls"], tip=r["tip"], site=site.key,
+                           site_name=site.name, most=r["pages"])
+            if not row["text"] and r["text"]:
+                row["text"] = r["text"]
+    by: dict[str, list[dict]] = {k: [] for k in CLASS_KEYS}
+    for row in sorted(acc.values(), key=list_order):
+        by[row["cls"] if row["cls"] in by else "check"].append(row)
+    return {"rows": {k: v[:limit] for k, v in by.items()}, "n": {k: len(v) for k, v in by.items()},
+            "pages": {k: pages[k] for k in CLASS_KEYS}, "menu": len(menu)}
 
 
 def query_forms(q: str) -> list[str]:
@@ -564,12 +744,27 @@ class Sweep:
     pages' and the sites' names only (None: none); checker stands in for pagecheck.check in tests."""
 
     def __init__(self, archive: Path, library: Path | None = None, *, checker: Callable | None = None,
-                 resweep_seconds: float = RESWEEP_SECONDS, clock: Callable[[], float] = time.monotonic) -> None:
+                 ops_db: Path | None = None, hold: Callable[[], bool] | None = None,
+                 resweep_seconds: float = RESWEEP_SECONDS, quiet_seconds: float = QUIET_SECONDS,
+                 watch_seconds: float = WATCH_SECONDS, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time) -> None:
+        """ops_db: the panel's writable file (nknu.ops.sweep_store; None: everything in memory, nothing kept across a
+        restart); hold: whether the nightly update is fetching or exporting now (the watcher starts nothing then);
+        wall: the time of day (the nights, when a page was checked)."""
         self.archive = Path(archive)
         self.library = Path(library) if library is not None else None
-        self.checker = checker or pagecheck.check
+        self.checker = checker or pagecheck.check_verdict
         self.resweep_seconds = resweep_seconds
+        self.quiet_seconds = quiet_seconds
+        self.watch_seconds = watch_seconds
         self.clock = clock
+        self.wall = wall
+        self.hold = hold
+        self.store = SweepStore(ops_db, forbidden=(self.archive,)) if ops_db is not None else None
+        self.finished_at: float | None = None  # when the last sweep that checked every page ended (wall)
+        self.watcher: threading.Thread | None = None
+        self._buf_pages: list[tuple[str, int, float, bytes]] = []  # results not yet written (the sweep's thread's)
+        self._buf_reads: list[tuple[str, str, str, bytes]] = []
         self.lock = threading.Lock()
         self.cache = pagecheck.LedgerCache(self.archive)  # the sweep's own, never the requests'
         self.listing: Listing | None = None
@@ -590,16 +785,79 @@ class Sweep:
         self.stopping = threading.Event()
         self.finished = threading.Event()
         self.held = False  # asked for while the nightly update was fetching: not started, the last results stay
+        self.again = False  # the sweep running began with results to replace (a check again, not the first)
+        self._load()
+
+    @property
+    def kept(self) -> SweepStore | None:
+        """The file the sweep is kept in, None when there is none (or it cannot be written)."""
+        return self.store if self.store is not None and self.store.enabled else None
+
+    def _load(self) -> None:
+        """What the file kept: the last sweep's listing and results, drawn at once (said to be older when that sweep
+        did not end, or ended over another ledger or other rules, until ensure has them checked again). A file that
+        cannot be read is said in the log and left: the sweep starts from nothing, as without one."""
+        store = self.kept
+        if store is None:
+            return
+        try:
+            run, got = store.last_run(), store.listing()
+            if run is None:
+                return
+            if got is None:  # the runs' numbers go on
+                self.gen = int(run["run"])
+                return
+            dropped = store.forget_reads(read_rules())
+            if dropped:
+                log.info("网页核查：核查的程序改过，%d 页的读法作废，重读", dropped)
+            listing = unpack_listing(got[1])
+            found = {url: unpack_found(url, blob, gen, at) for url, gen, at, blob in store.pages()
+                     if url in listing.pages}
+            whole = store.last_finished()
+        except Exception:  # a kept file that does not read never stops the panel
+            log.exception("网页核查：纪录档读不了，从头核查")
+            return
+        with self.lock:
+            self.listing, self.order, self.found, self.gen = listing, listing.order, found, int(run["run"])
+            self.ver.update(listing.sites.keys() | listing.site_pages.keys())
+            self.started = self.clock()
+            self.finished_at = whole["finished"] if whole is not None else None
+            if run["finished"] is not None:
+                self.phase = "done"
+                if run["rules"] == rules():  # else checked again (stamp None)
+                    self.stamp = _stamp_of(run["stamp"])
+            self.carried = sum(1 for f in found.values() if f.gen < self.gen)
+        self.finished.set()
+        log.info("网页核查：从纪录档读回 %d 页的结果（第 %d 次核查）", len(found), self.gen)
+        self._watch()
 
     # ------------------------------------------------ running
 
+    def _quiet(self, stamp: tuple) -> bool:
+        """Whether the ledger's files have not changed for quiet_seconds (their own times: a restart knows it too)."""
+        last = max((s[1] for s in stamp if s is not None), default=0) / 1e9
+        return self.wall() - last >= self.quiet_seconds
+
+    def _due_locked(self, now: float) -> bool:
+        """Whether a sweep is to start now: the first ever at once; after one that could not read the ledger, a while
+        later; after one over a ledger that has changed since (or by other rules: stamp None), once the ledger has
+        been quiet for quiet_seconds, or resweep_seconds after the last began while it keeps changing."""
+        if self.phase == "failed":
+            return now - self.started >= RETRY_SECONDS
+        if self.listing is None:
+            return True
+        stamp = self.cache.stamped()
+        if self.phase == "done" and stamp == self.stamp:
+            return False
+        return self._quiet(stamp) or now - self.started >= self.resweep_seconds
+
     def ensure(self, hold: bool = False) -> None:
         """Start the sweep the first time 網頁核查 is asked for; sweep again when the ledger has changed since the
-        last one started (at most every resweep_seconds, never while one runs); try again a while after a sweep
-        that could not read the ledger. hold: the nightly update is fetching or exporting, so no sweep is started
-        now (a sweep reads the whole archive for about 17 minutes on the disk the crawler writes: opening a page at
-        night must not start that; 2026-11-18, found when a look at 找文件 at 03:32 began one); one already running
-        goes on, the results of the last one stay, and the pages say so (progress['held'])."""
+        last one read it, as _due_locked says (never while one runs); try again a while after a sweep that could not
+        read the ledger. hold: the nightly update is fetching or exporting, so no sweep is started now (a sweep read
+        the whole archive for about 17 minutes on the disk the crawler writes: opening a page at night must not start
+        that; 2026-11-18, found when a look at 找文件 at 03:32 began one); one already running goes on, the results of
+        the last one stay, and the pages say so (progress['held'])."""
         with self.lock:
             if self.phase in ("reading", "checking", "closed"):
                 self.held = False
@@ -608,10 +866,7 @@ class Sweep:
             if hold:
                 return
             now = self.clock()
-            if self.phase == "failed" and now - self.started < RETRY_SECONDS:
-                return
-            if self.phase == "done" and (now - self.started < self.resweep_seconds
-                                         or self.cache.stamped() == self.stamp):
+            if not self._due_locked(now):
                 return
             self.gen += 1
             self.phase, self.started, self.failure = "reading", now, ""
@@ -630,14 +885,95 @@ class Sweep:
             del self.first[8:]
 
     def close(self, timeout: float = 30.0) -> None:
-        """Stop sweeping (the app stopping): the thread ends after the page it is on."""
+        """Stop sweeping (the app stopping): the thread ends after the page it is on, writing what it checked."""
         with self.lock:
             self.phase = "closed"
         self.stopping.set()
-        thread = self.thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout)
+        for thread in (self.thread, self.watcher):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout)
         self.cache.close_now()
+
+    # ------------------------------------------------ the watcher (with a file only)
+
+    def _watch(self) -> None:
+        """Start the watcher once there is something to keep current (a listing) and a file to keep it in."""
+        if self.kept is None or self.watch_seconds <= 0:
+            return
+        with self.lock:
+            if self.watcher is not None or self.phase == "closed":
+                return
+            self.watcher = threading.Thread(target=self._watching, name="nknu-page-sweep-watch", daemon=True)
+            self.watcher.start()
+
+    def _watching(self) -> None:
+        while not self.stopping.wait(self.watch_seconds):
+            try:
+                self.tick()
+            except Exception:  # the watcher looks again next time
+                log.exception("网页核查：看账本变了没有时出错")
+
+    def tick(self) -> None:
+        """One look of the watcher (every watch_seconds): a sweep started when it is due and the nightly update is not
+        fetching (hold); tonight's totals kept when the results are whole and current and tonight has none yet (a
+        night the ledger did not change keeps its record too). Never the first sweep: that waits for 網頁核查."""
+        if self.listing is None or not (self.archive / pagecheck.LEDGER).exists():
+            return  # nothing kept yet, or no ledger mounted: nothing to keep current (the pages say so)
+        hold = False
+        if self.hold is not None:
+            try:
+                hold = bool(self.hold())
+            except Exception:  # the night cannot be read: as if not fetching (web.nightly_fetching)
+                log.exception("网页核查：读不了每晚更新在不在跑")
+        self.ensure(hold=hold)
+        store = self.kept
+        with self.lock:
+            current = self.phase == "done" and self.stamp is not None and self.stamp == self.cache.stamped()
+            finished_at = self.finished_at
+        if store is not None and current and finished_at is not None and store.night(self.night()) is None:
+            self._record_night(finished_at)
+
+    # ------------------------------------------------ the nights
+
+    def night(self) -> str:
+        """The night it is now (nightly.night_of: the Taipei day twelve hours before), YYYY-MM-DD."""
+        return night_of(datetime.fromtimestamp(self.wall(), pagecheck.TAIPEI)).isoformat()
+
+    def _record_night(self, finished_at: float) -> bool:
+        """Tonight's record of the school's totals (overview's: the three classes counted per address, on how many
+        pages, the menus', the pages not got), from a sweep that checked every page; the night's last one stays."""
+        store = self.kept
+        if store is None:
+            return False
+        totals = self.overview()["totals"]
+        if not totals or totals["checked"] < totals["pages"]:
+            return False
+        cls, pages = totals["cls"], totals["cls_pages"]
+        rec = {"night": self.night(), "run": self.gen, "pages": totals["pages"], "checked": totals["checked"],
+               "at": datetime.fromtimestamp(finished_at, pagecheck.TAIPEI).isoformat(timespec="seconds"),
+               **{f"cls_{k}": cls.get(k, 0) for k in CLASS_KEYS}, **{f"pages_{k}": pages.get(k, 0) for k in CLASS_KEYS},
+               "menu": totals["menu"], "nofetch": totals["nofetch"]}
+        try:
+            store.put_night(rec)
+        except (OSError, sqlite3.Error):
+            log.exception("网页核查：今晚的总数写不进纪录档")
+            return False
+        return True
+
+    def history(self, days: int = NIGHTS_SHOWN) -> dict:
+        """The school's totals of the last nights, for the entry's trend: {enabled, why, days (YYYY-MM-DD, oldest
+        first), nights: one a day, None where none is kept}."""
+        span = window(datetime.fromisoformat(self.night()).date(), days)
+        store = self.kept
+        if store is None:
+            why = self.store.error if self.store is not None else "沒有設定紀錄檔（--ops-db）"
+            return {"enabled": False, "why": why, "days": span, "nights": []}
+        try:
+            got = {r["night"]: r for r in store.nights(span[0], span[-1])}
+        except (OSError, sqlite3.Error):
+            log.exception("网页核查：读不了纪录档里的每晚总数")
+            got = {}
+        return {"enabled": True, "why": "", "days": span, "nights": [got.get(d) for d in span]}
 
     def wait(self, timeout: float | None = None) -> bool:
         """Until the sweep running ends (tests)."""
@@ -675,26 +1011,82 @@ class Sweep:
             self.pending = {k: deque(urls) for k, urls in listing.site_pages.items() if urls}
             self.done = Counter()
             self.carried = sum(1 for u in listing.pages if u in self.found)
+            self.again = self.carried > 0
             self.ver.update(listing.sites.keys() | listing.site_pages.keys())
             self.cached.clear()
             self.phase = "checking"
+        store = self.kept
+        if store is not None:
+            try:
+                store.begin(gen, self.wall(), json.dumps(stamp), rules(), len(listing.pages), pack_listing(listing))
+            except (OSError, sqlite3.Error):
+                log.exception("网页核查：纪录档写不进去，这一次的结果只留在内存")
+                store = None
+        self._watch()
         try:
             while not self.stopping.is_set() and (chunk := self._next_chunk()):
-                self._merge(gen, check_pages(chunk, self.archive, self.cache, self.checker, self.stopping))
+                began = time.monotonic()
+                reads = self._reads(store, chunk)
+                before = {u: key for u, (key, _read) in reads.items()}
+                kept = self._merge(gen, check_pages(chunk, self.archive, self.cache, self.checker, self.stopping,
+                                                    reads))
+                if store is not None:
+                    self._keep(store, gen, kept, {u: kr for u, kr in reads.items() if before.get(u) != kr[0]})
+                if self.cache.stamped() != stamp:  # the crawler is writing: it gets the disk half the time
+                    self.stopping.wait(time.monotonic() - began)
         except Exception as exc:  # what was checked stays; said on the page
             log.exception("网页核查的整站核查停了")
             with self.lock:
                 if self.phase != "closed":
                     self.phase, self.failure = "failed", f"{type(exc).__name__}: {exc}"[:300]
+            self._flush(store)
             self.finished.set()
             return
+        self._flush(store)
         with self.lock:
-            if self.phase != "closed" and not self.stopping.is_set():
+            whole = self.phase != "closed" and not self.stopping.is_set()
+            if whole:
                 self.found = {u: f for u, f in self.found.items() if u in listing.pages}
                 self.carried = 0
                 self.phase = "done"
                 self.cached.clear()
+                self.finished_at = self.wall()
+            finished_at = self.finished_at
+        if whole and store is not None and finished_at is not None:
+            try:
+                store.finish(gen, finished_at, set(listing.pages))
+            except (OSError, sqlite3.Error):
+                log.exception("网页核查：纪录档写不进这一次的结束")
+            self._record_night(finished_at)
         self.finished.set()
+
+    def _reads(self, store: SweepStore | None, urls: list[str]) -> dict[str, tuple[str, pagecheck.Read]]:
+        """The kept reads of these pages ({} without a file: every page is read)."""
+        if store is None:
+            return {}
+        try:
+            return {u: (key, unpack_steps(blob)) for u, (key, blob) in store.reads(urls, read_rules()).items()}
+        except Exception:  # a kept read that does not unpack: the pages are read again
+            log.exception("网页核查：纪录档里的读法读不回来，这几页重读")
+            return {}
+
+    def _keep(self, store: SweepStore, gen: int, found: list[Found],
+              reads: dict[str, tuple[str, pagecheck.Read]]) -> None:
+        """Results and new reads to write, written FLUSH pages at a time (the sweep's thread only)."""
+        self._buf_pages += [(f.url, gen, f.at, pack_found(f)) for f in found]
+        self._buf_reads += [(u, key, read_rules(), pack_steps(read)) for u, (key, read) in reads.items()]
+        if len(self._buf_pages) + len(self._buf_reads) >= FLUSH:
+            self._flush(store)
+
+    def _flush(self, store: SweepStore | None) -> None:
+        pages, reads = self._buf_pages, self._buf_reads
+        self._buf_pages, self._buf_reads = [], []
+        if store is None:
+            return
+        try:
+            store.put(pages, reads)
+        except (OSError, sqlite3.Error):
+            log.exception("网页核查：%d 页的结果写不进纪录档", len(pages))
 
     def _next_chunk(self) -> list[str]:
         """The next pages to check: of the site asked for last that has pages left, else in the sweep's order."""
@@ -708,12 +1100,15 @@ class Sweep:
                     return chunk
         return []
 
-    def _merge(self, gen: int, results: list[Found]) -> None:
+    def _merge(self, gen: int, results: list[Found]) -> list[Found]:
+        """The results of a chunk in place of the older ones; the ones taken (to be written)."""
+        taken = []
+        at = self.wall()
         with self.lock:
             if gen != self.gen or self.listing is None:
-                return
+                return taken
             for f in results:
-                f.gen = gen
+                f.gen, f.at = gen, at
                 old = self.found.get(f.url)
                 if old is not None and old.gen < gen and old.state not in PASSING and f.state in PASSING:
                     pass  # a ledger busy for a moment (the crawler writing) never hides an older real result
@@ -721,10 +1116,12 @@ class Sweep:
                     if old is not None and old.gen < gen:
                         self.carried -= 1
                     self.found[f.url] = f
+                    taken.append(f)
                 page = self.listing.pages.get(f.url)
                 if page is not None:
                     self.done[page.site] += 1
                     self.ver[page.site] += 1
+        return taken
 
     # ------------------------------------------------ what the pages draw
 
@@ -741,9 +1138,13 @@ class Sweep:
         total = len(listing.pages) if listing is not None else 0
         running = self.phase in ("reading", "checking")
         whole = self.phase == "done"  # a sweep that ended: every page has its result
+        # stale: the results shown are of a ledger (or rules) that has changed since, and no sweep runs yet
+        stale = (not running and listing is not None and self.phase in ("done", "idle")
+                 and (self.stamp is None or self.stamp != self.cache.stamped()))
         out = {"phase": self.phase, "running": running, "done": total if whole else sum(self.done.values()),
                "total": total, "older": self.carried, "failure": self.failure, "ready": listing is not None,
-               "held": self.held}
+               "held": self.held, "at": when(self.finished_at), "again": self.again and running,
+               "kept": self.kept is not None, "stale": stale}
         if site:
             pages = len(listing.site_pages.get(site, [])) if listing is not None else 0
             out["site_total"] = pages
@@ -771,24 +1172,31 @@ class Sweep:
 
     @staticmethod
     def _sum(site: Site, data: SiteData) -> dict:
+        """A site's numbers: its pages', and its misses' per class (cls, cls_pages, menu: what the tiles draw)."""
         return {"key": site.key, "name": site.name, "round1": site.round1, "pages": data.pages,
                 "checked": data.checked, "current": data.current, "older": data.older, "gap": data.gap,
-                "menu_links": data.menu_links, "check": data.check, "nofetch": data.nofetch}
+                "menu_links": data.menu_links, "check": data.check, "nofetch": data.nofetch, "cls": dict(data.cls),
+                "cls_pages": dict(data.cls_pages), "menu": data.menu_links}
 
     def overview(self, sort: str = "") -> dict:
         """The entry's view (design section 六 1): the progress, the totals, the school's misses merged (TOP), every
         site with its deciding numbers, by sort (one of SORTS; else the content area's misses first), then the
-        larger sites."""
+        larger sites. The totals keep the pages' sums the other panels read (gap, check, nofetch…) and the school's
+        misses counted once each (cls, cls_pages, menu: school_problems')."""
         listing, found, gen, progress = self._snap()
         sort = sort if sort in SORTS else "gap"
         if listing is None:
-            return {"progress": progress, "totals": None, "sites": [], "top": None, "sort": sort}
+            return {"progress": progress, "totals": None, "sites": [], "top": None, "sort": sort,
+                    "history": self.history()}
         ver = progress.pop("ver")
         pairs = [(s, self._site(listing, found, gen, k, ver)) for k, s in listing.sites.items()]
         sites = [self._sum(s, d) for s, d in pairs]
         sites.sort(key=lambda s: (-s[sort], -s["gap"], -s["pages"], s["name"]))
         totals = {k: sum(s[k] for s in sites) for k in ("pages", "checked", "gap", "menu_links", "check", "nofetch")}
-        return {"progress": progress, "totals": totals, "sites": sites, "top": school_problems(pairs), "sort": sort}
+        top = school_problems(pairs)
+        totals.update(cls=top["n"], cls_pages=top["pages"], menu=top["menu"])
+        return {"progress": progress, "totals": totals, "sites": sites, "top": top, "sort": sort,
+                "history": self.history()}
 
     def find(self, q: str, limit: int = 30) -> dict:
         """Sites and pages for what is typed in the entry's box: a site by its names, its unit's short names, its
@@ -838,7 +1246,7 @@ class Sweep:
         if forms:
             rows = [r for r in rows if any(f in k for f in forms for k in listing.keys.get(r["url"], ()))]
         return {"site": {"key": site.key, "name": site.name, "home": site.home, "round1": site.round1},
-                "sum": self._sum(site, data), "fix": data.fix, "look": data.look, "errors": data.errors,
+                "sum": self._sum(site, data), "misses": data.misses, "menu": data.menu, "errors": data.errors,
                 "more": data.more,
                 "chips": data.chips, "rows": rows[:limit], "matched": len(rows), "q": q,
                 "only": only if only in dict(CHIPS) else "", "progress": progress, "ready": True}
@@ -870,7 +1278,9 @@ class Sweep:
             return None
         pages.sort(key=lambda r: (pagecheck.ZONE_ORDER.index(r["zone"]), r["site_name"], r["path"]))
         item = {"key": key, "target": best.target, "text": best.text, "zone": best.zone, "bucket": best.bucket,
-                "reason": best.reason, "what": best.what, "tip": best.tip}
+                "reason": best.reason, "what": best.what, "tip": best.tip,
+                "cls": best.cls or pagecheck.miss_class(best.bucket, best.what),
+                "kind": pagecheck.miss_kind(best.what, best.target)}
         return {"item": item, "pages": pages[:limit], "total": len(pages), "sites": len({r["site"] for r in pages}),
                 "site": site}
 

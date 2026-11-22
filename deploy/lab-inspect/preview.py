@@ -212,6 +212,7 @@ def make_app():
         charts,
         check_page,
         check_sites,
+        content_band,
         doc_page,
         history,
         home_page,
@@ -222,6 +223,8 @@ def make_app():
         pipeline_page,
         search_page,
         site_page,
+        standing,
+        todo,
         tonight_page,
         try_page,
     )
@@ -338,7 +341,7 @@ def make_app():
         if base is None and store.enabled:
             note = ("問題清單從這一晚開始記；下一晚跑完，這裡會分成新出現的、之前就有的、好了的"
                     if store.problems_kept(t["default"]) else "這一晚的問題清單還沒記下（這一晚跑完、各步驟讀過一次以後才記）")
-        panels = {"overview": "/sites", "board": "/try#board", "check": "/check", "tables": "http://127.0.0.1:18001"}
+        panels = {"overview": "/sites", "board": "/try#students", "check": "/check", "tables": "http://127.0.0.1:18001"}
         body = home_body(snap, t, changes, hist, panels, "/sites", base=base, base_note=note,
                          now=datetime.fromisoformat(t["now"]))
         built = ((changes or {}).get("new") or {}).get("built_at") or ""
@@ -351,13 +354,25 @@ def make_app():
         snap = fill_nums(read("pipeline.json"), days, snap_dir.name[:4] + "-" + snap_dir.name[4:6] + "-" + snap_dir.name[6:8])
         t = read("tonight.json")
         built = ((t.get("changes") or {}).get("new") or {}).get("built_at") or ""
+        student = next((json.loads(f.read_text(encoding="utf-8")) for f in (
+            snap_dir / "student_eval.json", REPO / "research/eval_2026-11-18/runs/student_eval_1122.json") if f.exists()),
+            None)
+        changes = t.get("changes")
+        store = history.Store(snap_dir / "ops.db") if (snap_dir / "ops.db").exists() else history.Store(None)
+        rows = tonight_page.problems(t, snap, tonight_page.handle_rows(snap, changes))
+        parts = standing.split(rows, store.problem_base(t["default"]),
+                               swap_known=(changes or {}).get("state") != "computing")
+        todo_rows = todo.collect(parts, rows, panorama.machine_meters(snap), student, {})
         page = panorama.page(snap, t, read("sites.json"), read("history.json"), newset=newset, aitest=ai_test(),
-                             built=built)
+                             built=built, todo=todo_rows, student=student)
         return HTMLResponse(with_banner(page, "home"))
 
     def sites(request: Request) -> Response:
         template = Path(overview.__file__).with_name("overview_page.html").read_text(encoding="utf-8")
         page = overview.render(template, read("sites.json")).decode("utf-8")
+        # the band web.sites_page draws on top (the unit tree needs the library: the lab's /units has it)
+        band = content_band.band(read("sites.json"), read("pipeline.json"), read("tonight.json"), None)
+        page = page.replace('<main class="app">', '<main class="app">' + band, 1)
         return HTMLResponse(with_banner(page, "sites"))
 
     def doc_local(request: Request) -> Response:

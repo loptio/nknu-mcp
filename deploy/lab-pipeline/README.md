@@ -468,7 +468,7 @@ docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nkn
 4. 资料：`/work/archive-export/sites/`（爬虫的导出和 `current.tsv`）；`/work/research/pipeline_2026-11-02/exports.txt`（一行一个导出资料夹；可从 `current.tsv` 生成）；`/work/research/eval_2026-11-01/`（题库 `core20.json`、`noanswer22.json`、`gold_docs.json`、`runs/`）和 `/work/research/skeleton_2026-11-01/aca.db`（离线检查的基准库）来自备份；没有它们，建库加 `--from 3` 只做到第 5 步也能出库（第 6 步以后的检查会跳过或失败，不影响换库）。
 5. `... run --rm check` 看缺什么；`... up -d lane-a lane-b lane-c` 转文字；转完 `... run --rm build` 建第一份库。
 6. 每晚：Windows 工作排程器跑爬虫的每晚脚本，它最后叫 `C:\nknu-transfer\build\nightly_ingest.cmd`。
-7. 面板：`deploy/lab-inspect/README.md`、`deploy/lab-overview/README.md`。
+7. 面板：`deploy/lab-inspect/README.md`（资料总览 11-21 起是检视台的一页，没有自己的容器了；11-22 起叫「內容」，在 /sites）。
 
 
 ## 14. 手动操作的脚本（`hand/`，Claude 在 Mac 上用）

@@ -1,5 +1,5 @@
 """搜尋測試's pages (nknu.ops.web serves them; the page was 搜尋試驗台 until 11-15): the scoreboard of the test questions, and one search explained. They
-draw what nknu.ops.explain.explain_search and nknu.ops.board return and score nothing themselves (tests/ops/
+draw what nknu.ops.explain.explain_search returns and score nothing themselves (tests/ops/
 test_search_page.py pins that a bar's parts add up to the search's own score).
 
 The layout is 【Claude】's (owner 11-15: 「信息太雜…沒有用一些視覺化方法點綴」; the reasons are in nknu.ops.look):
@@ -15,14 +15,16 @@ import math
 import re
 from urllib.parse import urlencode
 
-from nknu.ops import board as grades
 from nknu.ops.explain import IN_TOP, NO_CANDIDATE, NOT_FOUND, NOT_IN_HEAD, RANKED, background_words, order_words
 from nknu.ops.look import e, icon, kind_tag, tw
 from nknu.ops.trace import KINDS
 
 SHOWN_ADD = 0.05  # a part that moved a score by less is drawn in the bar's tip but not named under it 【Claude】
 DRAWN_ADD = 0.02  # and one smaller than this share of the longest bar is not drawn as a segment of its own 【Claude】
-GRADE_WORDS = {grades.FIRST: "第 1 名", grades.TOP3: "第 2–3 名", grades.TOP: "第 4–10 名", grades.OUT: "10 名以外"}
+# where a followed document stands (the grades nknu.ops.board gave the 33 questions until 2026-11-22, kept for one
+# explained search)
+FIRST, TOP3, TOP, OUT = "first", "top3", "top", "out"
+GRADE_WORDS = {FIRST: "第 1 名", TOP3: "第 2–3 名", TOP: "第 4–10 名", OUT: "10 名以外"}
 STOPPED = {NOT_IN_HEAD: ("warn", "沒進重排"), NO_CANDIDATE: ("bad", "沒進候選"), NOT_FOUND: ("none", "庫裡沒有")}
 # what each part of a score is, floating over its name wherever it is named (the sum, the notes under a bar, the 「?」)
 PART_TIPS = {
@@ -94,7 +96,7 @@ def question_nav(questions: list[dict], current: dict | None) -> str:
               + step("right", 0 if at is None else at + 1, "下一題"))
     return (f"<form class='qnav' action='/try' method='get'><input type='hidden' name='tab' value='why'>{arrows}"
             f"<select name='qid' aria-label='測試題' onchange='this.form.submit()'>{first}{opts}</select>"
-            "<a class='back' href='/try#board'>全部測試題</a></form>")
+            "<a class='back' href='/try#students'>學生題的名次</a></form>")
 
 
 def why_head(questions: list[dict], question: dict | None, query: str, docs: list[str]) -> str:
@@ -106,45 +108,6 @@ def why_head(questions: list[dict], question: dict | None, query: str, docs: lis
 
 # ---------------------------------------------------------------- the scoreboard
 
-def board_html(snapshot: dict | None) -> str:
-    """The test questions as one bar of how many stand where and one tile each (its place, its code, its words). The
-    page's script fills in what is still being searched (data-board names the JSON). '' without questions, or
-    without a snapshot."""
-    if not snapshot or not snapshot["total"]:
-        return ""
-    counts, total = snapshot["counts"], snapshot["total"]
-    waiting = total - sum(counts.values())
-    segs = "".join(f"<span class='seg g-{g}' data-n='{counts[g]}' style='flex-grow:{counts[g]}' "
-                   f"data-tip='{e(GRADE_WORDS.get(g, '沒搜成'))}：{counts[g]} 題'>{counts[g]}</span>"
-                   for g in grades.GRADES)
-    # While questions wait (after a library swap, each is searched again) the bar's rest is a calm striped part and the
-    # legend's row ends in how far the run has come, 正在重算 7 / 33; a waiting tile is an empty pending box. Before
-    # it said 還在算 26 題 on grey 「…」 squares, which read as broken. 【Claude】 redesign 2026-11-17
-    # (research/dashboard_redesign_2026-11-17/diagnosis.md, 搜尋測試 ①); the page's script (look.JS) keeps both current.
-    segs += (f"<span class='seg g-wait' data-n='{waiting}' style='flex-grow:{waiting}' "
-             f"data-tip='還在算：{waiting} 題'></span>")
-    legend = "".join(f"<span><i class='g-{g}'></i>{e(GRADE_WORDS[g])}</span>" for g in GRADE_WORDS)
-    legend += (f"<span class='prog' data-prog data-tip='換庫或換日以後，{total} 道測試題各重搜一次；算好的題先顯示'"
-               f"{'' if waiting else ' hidden'}>正在重算 {total - waiting} / {total}</span>")
-    tiles = []
-    for item in snapshot["items"]:
-        mark = ("" if item["grade"] == grades.WAIT else "!" if item["grade"] == grades.FAILED
-                else str(item["rank"]) if item["rank"] else "—")
-        said = (f"標準答案第 {item['rank']} 名" if item["rank"] else "還在算" if item["grade"] == grades.WAIT
-                else "這一題沒搜成" if item["grade"] == grades.FAILED else "標準答案沒排上")
-        tiles.append(f"<a class='tile' href='{e(why_url(qid=item['id'], anchor='result'))}' data-q='{e(item['id'])}' "
-                     f"data-grade='{e(item['grade'])}'><span class='g g-{e(item['grade'])}' data-tip='{e(said)}'>"
-                     f"{e(mark)}</span>"
-                     f"<span class='q'><b>{e(item['id'])}</b>{e(tw(item['question']))}</span></a>")
-    running = " data-running" if snapshot["done"] < total else ""
-    return (f"<h2 class='sec' id='board' data-tip='{total} 道測試題各搜一次，看標準答案排第幾名；點一題看那次搜尋'>測試題成績</h2>"
-            f"<section class='card pad' data-board='/api/board'{running}><div class='tally' role='img' "
-            f"aria-label='標準答案的名次分布'>{segs}</div><div class='legend'>{legend}</div>"
-            f"<div class='tiles'>{''.join(tiles)}</div></section>")
-
-
-# the new question set (research/eval_2026-11-18), as the totals deploy/lab-inspect/eval_summary.py writes: no
-# question is on the lab PC, and the sealed half is looked at as totals only (the set's own rule)
 NEWSET_ROWS = (("B", "從學生的角度出的題（主指標）", "學生會怎麼問就怎麼出題，再到庫裡找答案；這一組的數字是主指標"),
                ("B/open", "　其中平時看的一半", "調搜尋時可以一題一題看的那一半"),
                ("B/sealed", "　其中封存的一半", "只在最後驗收時看、只看總數的那一半：不拿它來調搜尋"),
@@ -446,10 +409,10 @@ def place_on_ruler(rank: float, last: int) -> float:
 
 def _grade(rank: int | None, limit: int) -> str:
     if rank == 1:
-        return grades.FIRST
+        return FIRST
     if rank is not None and rank <= 3:
-        return grades.TOP3
-    return grades.TOP if rank is not None and rank <= limit else grades.OUT
+        return TOP3
+    return TOP if rank is not None and rank <= limit else OUT
 
 
 def verdict_html(report: dict, question: dict | None) -> str:

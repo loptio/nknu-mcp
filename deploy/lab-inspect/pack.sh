@@ -18,7 +18,7 @@ PACKED=(inspect-code.tar inspect-code.tar.sha256 inspect-code.base.sha256 instal
 # (fetch, warc, schoollock, tls, webforms, target) lives there instead of src/nknu/crawl (v1, removed)
 NEW=(src/nknu/ops deploy/lab-inspect src/nknu/core/model_service.py src/nknu/archive)
 CHANGED=(src/nknu/retrieval/hybrid.py src/nknu/retrieval/search.py src/nknu/retrieval/server.py src/nknu/admin/cli.py
-         src/nknu/core/models.py)
+         src/nknu/core/models.py src/nknu/retrieval/respond.py)  # respond.py: server.py passes others= to it (11-22)
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store' \
   -cf "$OUT/inspect-code.tar" "${NEW[@]}" "${CHANGED[@]}"

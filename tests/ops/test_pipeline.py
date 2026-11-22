@@ -15,7 +15,7 @@ from typing import ClassVar
 
 import pytest
 
-from nknu.ops import home_page, pipeline, pipeline_page, tonight_page
+from nknu.ops import home_page, panorama, pipeline, pipeline_page, todo, tonight_page
 from nknu.ops.pipeline import BAD, CONTENT, INTERFACE, NONE, OK, PANEL, WARN, Pipeline, Step, Where
 
 TODAY = date(2026, 11, 16)
@@ -78,12 +78,19 @@ def test_a_held_library_newer_than_the_one_in_use_is_for_the_content_session(whe
 BUILT = "2026-11-16T14:56:00+08:00"  # the made-up library's built_at
 
 
-def _checks(folder: Path, *, top10: int = 27, fails: tuple[str, ...] = ("7", "13"), built: str = BUILT) -> None:
+def _checks(folder: Path, *, top10: int = 27, fails: tuple[str, ...] = ("7", "13"), built: str = BUILT,
+            prev_top10: int | None = None) -> None:
+    """The build's real-data checks (checks.md) and, since 2026-11-22, the nightly student sample (student_eval.json:
+    the 33 questions and their offline_new_r3.json are gone, owner)."""
     folder.mkdir(parents=True, exist_ok=True)
-    metrics = {"question_copies": {"all": {"n": 33, "top1": 12, "top3": 20, "top10": top10, "mrr": 0.499}},
-               "agent_copies": {"all": {"n": 33, "top1": 12, "top3": 24, "top10": 30, "mrr": 0.56}}}
-    (folder / "offline_new_r3.json").write_text(json.dumps({"db_built_at": built, "metrics": metrics}),
-                                                encoding="utf-8")
+    raw = {"top1": 12, "top3": 20, "top10": top10}
+    prev = None if prev_top10 is None else {"totals": {"raw": {"top1": 12, "top3": 20, "top10": prev_top10}}}
+    (folder / "student_eval.json").write_text(json.dumps(
+        {"version": 2, "n": 43, "measured": "2026-11-16T15:20:00", "library": {"built": built},
+         "sample": {"version": "s1-test", "groups": {"B": 43, "A": 15, "C": 15}},
+         "totals": {"raw": raw, "agent": {"top1": 20, "top3": 31, "top10": 39}},
+         "groups": {"B": {"n": 43, "raw": raw}, "A": {"n": 15, "raw": {"top1": 9, "top3": 12, "top10": 14}}},
+         "questions": [], "prev": prev}), encoding="utf-8")
     rows = "\n".join(f"| {k} | 第 {k} 項的名字 | FAIL | 0 |" for k in fails)
     (folder / "checks.md").write_text(
         f"# 真资料检查\n- 资料库：`aca.db`（3727 MB，建于 {built}，资料截至 2026-11-15）\n"
@@ -104,13 +111,15 @@ def test_checks_of_the_library_before_are_no_verdict(where):
     assert step.state == NONE and "上一份庫的結果" in step.say
 
 
-def test_doing_worse_than_the_build_before_is_for_the_content_session(where):
+def test_doing_worse_than_the_night_before_is_for_the_content_session(where):
     _checks(where.pipe / "lab_pc" / "previous" / "20261116-144845", top10=28, fails=("7",))
     _checks(where.pipe / "lab_pc" / "previous" / "20261116-150000-trial", top10=10)  # a trial's: never the baseline
-    _checks(where.pipe, top10=27, fails=("7", "13"))
+    _checks(where.pipe, top10=27, fails=("7", "13"), prev_top10=28)  # the sample carries the night before itself
     step = pipeline.check_step(where)
     assert step.state == WARN and step.fix == CONTENT
     assert "從 28 題掉到 27 題" in step.say and "第 13 項" in step.say and "第 7 項" not in step.say
+    assert "學生題" in step.say and "33" not in step.say + " ".join(step.notes)  # no 33 anywhere since 11-22
+    assert any("從文件出的題 15 題" in x for x in step.notes)
 
 
 def test_no_check_results_yet(where):
@@ -296,7 +305,10 @@ def test_the_page_draws_every_step_and_escapes_what_it_prints(where):
     page = home_page.home_body(snap, TONIGHT, None, {"enabled": False, "why": ""}, {"overview": "http://127.0.0.1:18879"})
     assert "&lt;b&gt;壞&lt;/b&gt;" in page and "<b>壞</b>" not in page and "理由&lt;i&gt;" in page
     assert "交給" not in page and "http://127.0.0.1:18879" in page  # nobody named to fix it (spec 八.2)
-    assert "data-state='warn'" in page and "#step-x'>某一步</a>" in page  # a step not normal is a problem
+    assert "data-state='warn'" in page and "data-tone='warn'" in page  # the top and the step's node are amber
+    # a step not normal is a problem: a row of 總覽's 要處理 (since 2026-11-22 evening), opening its node's panel here
+    front = panorama.todo_card(todo.collect(None, tonight_page.problems(TONIGHT, snap, []), [], None, {}), False)
+    assert "href='/tonight#step-x'>某一步</a>" in front and "&lt;b&gt;壞&lt;/b&gt;" in front and "<b>壞</b>" not in front
     # a step the page has no node for is still a node with its panel (nothing a probe reports is left out)
     assert "data-pick='step-x'" in page and "data-panel='step-x'" in page and "repeat(8,minmax(0,1fr))" in page
     reading = home_page.home_body({"steps": [], "running": True}, TONIGHT, None, {"enabled": False}, {})
@@ -346,17 +358,20 @@ def test_times_and_spans_read_as_people_say_them():
 
 
 def test_the_page_checks_numbers_go_to_each_sites_row_without_an_alarm(where):
+    # 2026-11-22 night: addresses counted once, in 網頁核查's three classes; a site's cell is what the crawler can
+    # fetch plus the pages it could not get itself (the content area's page count left: one link on every page)
+    cls = {"fix": 4, "check": 3, "school": 6}
     view = {"progress": {"phase": "done", "done": 30, "total": 30},
-            "totals": {"pages": 30, "checked": 30, "gap": 4, "menu_links": 1, "check": 2, "nofetch": 1},
-            "sites": [{"key": "school.example", "name": "範例處", "pages": 30, "gap": 4, "nofetch": 1, "check": 2,
-                       "menu_links": 1}]}
+            "totals": {"pages": 30, "checked": 30, "gap": 9, "menu_links": 1, "check": 2, "nofetch": 1, "cls": cls},
+            "sites": [{"key": "school.example", "name": "範例處", "pages": 30, "gap": 9, "nofetch": 1, "check": 2,
+                       "menu_links": 1, "cls": cls}]}
     where.sweep = lambda: view
     step = Step("crawl", "爬取", "")
     pipeline.page_check_cells(where, step)
     row = where.sites["school.example"]
     assert row["cells"]["check"]["n"] == 5 and row["worst"] == OK
     assert pipeline.site_table(where)[0]["href"] == "/site?site=school.example"
-    assert any("正文區有漏 4 頁" in n for n in step.notes)
+    assert any("爬蟲能補 4 個網址、要確認 3 個、學校那邊 6 個" in n for n in step.notes)
     where.sites = {}
     where.sweep = lambda: {"progress": {"phase": "idle"}, "totals": None, "sites": []}
     step = Step("crawl", "爬取", "")
@@ -623,7 +638,7 @@ def test_the_home_draws_the_steps_as_nodes_and_shows_first_the_one_to_look_at():
         assert f"data-pick='step-{key}'" in page and f"<article class='hm-panel' data-panel='step-{key}'" in page
         assert f"id='step-{key}'" not in page  # no id of the address's name: the browser must not jump to a panel
     assert "data-first='step-build'" in page  # 留意 before what is normal
-    assert page.index("data-q='2'") < page.index("data-q='3'") < page.index("data-q='4'")
+    assert page.index("data-q='2'") < page.index("data-q='4'")  # 問題 (3) is 總覽's 要處理 since 2026-11-22 evening
 
 
 def test_a_step_bar_is_drawn_only_for_one_unit_and_the_rest_of_the_reasons_float():

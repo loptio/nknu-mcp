@@ -95,14 +95,16 @@ def _tools(html: str) -> list[str]:
 
 def test_the_bar_is_one_row_of_entries_and_tools_and_links_its_own_host_by_path():
     # structure design 2026-11-17 section 二: the entries; 2026-11-22 (owner: the pages top left and the tools top right
-    # were two places to look): 總覽 first, the tools in the same row after a thin line, folded into 更多 when narrow
+    # were two places to look): 總覽 first, the tools in the same row after a thin line, folded into 更多 when narrow;
+    # 2026-11-22 evening: three entries by the question each answers, 每晚運行 reached from 總覽, 單位 from 內容
     html = bar.bar("try", "ops", "資料截至 x")
-    assert _entries(html) == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"]
-    assert _tools(html) == ["網頁核查", "單位", "資料庫"]
-    assert "aria-current='page'>測試</a>" in html and html.count("aria-current") == 1
-    assert "href='/'" in html and "href='/tonight'" in html and "href='/try'" in html  # its own host's: by path
-    assert "href='/sites'" in html and "18879" not in html  # 網站 (資料總覽) is 檢視台's own page since 2026-11-21
-    assert html.count("class='nk-tool'") == 3 and ">網頁核查</a>" in html  # the same panel's tool: no arrow out
+    assert _entries(html) == ["總覽", "內容", "搜尋"]
+    assert _tools(html) == ["網頁核查", "資料庫"]
+    assert "aria-current='page'>搜尋</a>" in html and html.count("aria-current") == 1
+    assert "href='/'" in html and "href='/sites'" in html and "href='/try'" in html  # its own host's: by path
+    assert "href='/tonight'" not in html and "href='/units'" not in html  # no entry of their own any more
+    assert "18879" not in html  # 內容 (資料總覽) is 檢視台's own page since 2026-11-21
+    assert html.count("class='nk-tool'") == 2 and ">網頁核查</a>" in html  # the same panel's tool: no arrow out
     more = html.split("<details class='nk-more'>", 1)[1].split("</details>", 1)[0]
     assert more.startswith("<summary>更多") and ">資料庫<svg" in more and "網頁核查" in more
     assert "href='http://127.0.0.1:18001/'" in more
@@ -111,6 +113,45 @@ def test_the_bar_is_one_row_of_entries_and_tools_and_links_its_own_host_by_path(
     assert end.startswith("<span class='nk-meta'>資料截至 x</span><button type='button' class='nk-mode'")
     assert "e.key==='Escape'" in html  # 更多 closes by Escape, a click outside, or the focus leaving it
     assert "localStorage.getItem(k)" in html and "r.setAttribute('data-theme',n)" in html  # the light/dark switch
+
+
+def _find(html: str) -> str:
+    """The bar's search box (bar.find_box), between the row of entries and the end."""
+    return html.split("</nav>", 1)[1].split("<div class='nk-end'>", 1)[0]
+
+
+def test_one_box_in_the_bar_finds_a_document_an_address_or_a_site_on_every_page():
+    # 2026-11-22 evening: 文件搜尋 was an entry whose page was only this box; it is a box in the bar of every page
+    conf = bar.panels()
+    assert "doc" not in [p["key"] for p in conf["pages"]] and conf["find"]["path"] == "/doc"
+    for current in ("home", "tonight", "try", "check", "units", "site"):
+        box = _find(bar.bar(current, "ops"))
+        assert box.startswith("<form class='nk-find' role='search' action='/doc' method='get'>"), current
+        assert "<input type='search' name='q' " in box and "value=" not in box  # it starts empty
+        assert f"placeholder='{conf['find']['placeholder']}'" in box and "aria-label=" in box
+    # another panel's (資料庫's) box sends to 檢視台's /doc by its address, righted on the lab PC's own ports as the
+    # links are (without it the box on 資料庫 opened there sent to the Mac's tunnel port, where nothing listens)
+    tables = bar.bar("tables", "tables")
+    away = _find(tables)
+    assert "action='http://127.0.0.1:18878/doc'" in away and "class='nk-find'" in away
+    assert "querySelectorAll('a[href],form[action]')" in tables and "a.tagName==='FORM'?'action':'href'" in tables
+    # the document's own page marks the box, and no entry
+    doc = bar.bar("doc", "ops")
+    assert "<form class='nk-find nk-on'" in doc and "aria-current" not in doc.split("<span class='nk-sep'", 1)[0]
+    assert bar.find_box("home", "ops", {"hosts": {}}) == ""  # panels.json without a box: none drawn
+    assert ".nk-find.nk-on" in THEME and ".nk-find {" in THEME
+
+
+def test_a_page_that_is_no_entry_marks_the_entry_it_is_reached_from():
+    # panels.json "within": a night from 總覽, 單位 and one site's page from 內容 (aria-current='true', not 'page')
+    within = bar.panels()["within"]
+    assert within == {"tonight": "home", "units": "sites", "site": "sites"}
+    for current, entry in (("tonight", "總覽"), ("units", "內容"), ("site", "內容")):
+        html = bar.bar(current, "ops")
+        assert f"aria-current='true'>{entry}</a>" in html and html.count("aria-current") == 1, current
+        assert "aria-current='page'" not in html, current
+    assert "aria-current='true'" not in bar.bar("check", "ops")  # a tool marks itself, as before
+    assert "aria-current='page'>網頁核查</a>" in bar.bar("check", "ops")
 
 
 def test_the_bar_stays_on_top_and_the_tools_fold_into_more_on_a_narrow_window():
@@ -167,8 +208,9 @@ def test_the_sites_page_carries_the_theme_and_the_bar_as_every_page_of_the_panel
     from nknu.ops import overview
 
     page = overview.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
-    assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>網站</a>" in page
-    assert _entries(page) == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"] and "<details class='nk-more'>" in page
+    assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>內容</a>" in page
+    assert _entries(page) == ["總覽", "內容", "搜尋"] and "<details class='nk-more'>" in page
+    assert "<form class='nk-find' role='search' action='/doc'" in page  # the bar's box, as on every page
     # its links to a site's page and to 資料庫 come from panels.json, as the bar's do: a site's page by path (the same
     # service now), 資料庫 by its address, righted on the lab PC's own ports as the bar's are
     assert '"site": "/site?site="' in page and '"tables": "http://127.0.0.1:18001"' in page

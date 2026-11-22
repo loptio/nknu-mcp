@@ -1,8 +1,15 @@
-"""總覽 (/home), the draft of 檢視台's front page (2026-11-22; the owner picked 「项目全景」: scale, where the documents
-come from, how students use it, how right the search is, the nights and the crawler, as charts with few words).
+"""總覽 (/), 檢視台's front page: first what needs a look, then the whole project.
 
-Every number is read as a number: the pipeline's steps carry them (Step.nums: the services' use and the machine, the 33
-questions), the sites' data and the nights' record are numbers already. Nothing is read back out of a sentence.
+2026-11-22 the owner picked 「项目全景」 (scale, where the documents come from, how students use it, how right the search
+is, the nights and the crawler, as charts with few words). The same evening, after the review that the panels showed one
+thing in several places and lit standing problems like new ones (owner: 「你先全部做」), the page answers two questions
+in turn: the first screen 「現在正不正常？要處理什麼？」 (one sentence, four figures, 要處理 from nknu.ops.todo, the last
+seven nights, each opening its night), and below 全景 (the documents by year and by source, the public service's use,
+this machine, the AI test). How right the search is lives on 搜尋 (one figure here) and the crawler on 內容.
+
+Every number is read as a number: the pipeline's steps carry them (Step.nums: the services' use and the machine), the
+sites' data, the nights' record and the student questions' measurement are numbers already. Nothing is read back out of
+a sentence.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from nknu.ops.look import TIP_JS, e, icon
 from nknu.ops.nightly import TONIGHT
 from nknu.ops.pipeline_page import AGAIN
 from nknu.ops.theme import bar as themebar
+from nknu.ops.tonight_page import night_word
 
 TIP_CSS = LOOK_CSS[LOOK_CSS.index(".tip{") :]
 
@@ -44,7 +52,8 @@ MARK = {"ok": "ok", "done": "ok", "warn": "warn", "stop": "warn", "bad": "no", "
 SEV = {"done": "ok", "stop": "warn", "wait": "none"}
 FIRST_YEAR = 2004
 NIGHT_FROM, NIGHT_HOURS = 1, 9
-NIGHTS = 6
+NIGHTS = 7
+TODO_SHOWN = 8  # rows of 要處理 in sight; the rest folded, never dropped 【Claude】
 
 
 def n(value: float) -> str:
@@ -326,48 +335,64 @@ def toggletip(tip_id: str, aria_label: str, body_html: str) -> str:
 # -------------------------------------------------------------------------------------------- page sections
 
 
-def header_bar(snap: dict, tonight: dict) -> str:
-    st = steps(snap)
-    sent = tonight.get("sentence") or {}
-    serve = st.get("serve") or {}
-    ws = warn_sites(snap)
-    night_state = sent.get("state") or "none"
-    night_short = (sent.get("text") or "尚無紀錄").split("：", 1)[0]
-    srv_state = serve.get("state") or "none"
-    srv_fig = serve.get("figure") or "—"
-    srv_tip = serve.get("say") or ""
+def night_sentence(tonight: dict, history: dict) -> tuple[str, str]:
+    """(the state of the night shown, one sentence about it and the library students get): 「11-21 夜正常，03:09 換上
+    新庫」, 「11-17 夜停了（建庫），沒換庫：學生搜到的還是前一晚的庫」."""
+    night = next((x for x in tonight.get("nights") or [] if x.get("night") == tonight.get("default")), None) or {}
+    if not night:
+        return "none", "還沒有每晚的紀錄"
+    word, at = night_word(night)
+    row = next((r for r in night_rows(tonight, history) if r["night"] == night.get("night")), None) or {}
+    head = (night.get("label") or night.get("night") or "") + ("正常" if word == "完成" else word) + (f"（{at}）" if at else "")
+    if row.get("swapped") and row.get("swap_at"):
+        return night.get("state") or "ok", f"{head}，{row['swap_at']} 換上新庫"
+    if word in ("停了", "出錯", "沒見過", "沒跑"):
+        return night.get("state") or "warn", f"{head}，沒換庫：學生搜到的還是前一晚的庫"
+    return night.get("state") or "none", head
 
-    warn_ctrl = ""
-    if ws:
-        items = "".join(
-            f"<li><a href='{e(x['href'])}'><b>{e(x['name'])}</b><span>{e(x['why'])}</span></a></li>" for x in ws
-        )
-        warn_ctrl = (
-            f"<button type='button' class='pn-pill pn-pill-warn' popovertarget='pn-warn-pop' aria-expanded='false'>"
-            f"{icon('warn', 13)}<span>{len(ws)} 站待留意</span></button>"
-            f"<div id='pn-warn-pop' popover='auto' class='pn-pop pn-warnlist'>"
-            f"<div class='pn-pophd'>待留意網站（{len(ws)}）</div><ul>{items}</ul>"
-            f"<a class='pn-popfoot' href='{TONIGHT}'>前往每晚運行處理 →</a></div>"
-        )
-    elif not snap.get("steps"):  # just restarted: nothing read of the steps yet, so nothing to call normal
-        warn_ctrl = f"<span class='pn-pill'>{icon('dash', 13)}正在讀各步驟</span>"
+
+def header_bar(snap: dict, tonight: dict, history: dict, todo: dict | None) -> str:
+    state, sentence = night_sentence(tonight, history)
+    if not snap.get("steps"):  # just restarted: nothing read of the steps yet, so nothing to call normal
+        count = f"<span class='pn-pill'>{icon('dash', 13)}正在讀各步驟</span>"
     else:
-        warn_ctrl = f"<span class='pn-pill pn-pill-ok'>{icon('ok', 13)}網站都正常</span>"
-
+        open_ = (todo or {}).get("open") or []
+        tone = "bad" if any(x.get("sev") == "bad" for x in open_) else "warn" if open_ else "ok"
+        words = f"要處理 {len(open_)} 件" if open_ else "沒有要處理的"
+        count = (f"<a class='pn-pill pn-pill-{tone}' href='#todo'>{icon(MARK.get(tone, 'dash'), 13)}"
+                 f"<span>{e(words)}</span></a>")
     return (
         f"<header class='pn-top'>"
-        f"<div class='pn-title'><h1 id='main-title' tabindex='-1'>總覽</h1></div>"
-        f"<div class='pn-status'>"
-        f"<a class='pn-pill pn-pill-{e(SEV.get(night_state, night_state))}' href='{TONIGHT}' "
-        f"data-tip='{e(sent.get('text') or '')}'>{icon(MARK.get(night_state, 'dash'), 13)}<span>{e(night_short)}</span></a>"
-        f"<span class='pn-pill pn-pill-{e(SEV.get(srv_state, srv_state))}' tabindex='0' "
-        f"data-tip='{e(srv_tip)}'>{icon(MARK.get(srv_state, 'dash'), 13)}<span>服務 {e(srv_fig)}</span></span>"
-        f"{warn_ctrl}</div></header>"
+        f"<div class='pn-title'><h1 id='main-title' tabindex='-1'>總覽</h1>"
+        f"<a class='pn-say' href='{TONIGHT}'>{mark(state)}<span>{e(sentence)}</span></a></div>"
+        f"<div class='pn-status'>{count}</div></header>"
     )
 
 
+def search_figure(student: dict | None, newset: dict | None) -> dict | None:
+    """The student questions as typed, at first place and in the top 10: {top1, top10, n, when, delta, tip} from the
+    nightly measurement (student_eval.json), else from the one measurement by hand (eval194.json, said as such)."""
+    if student and student.get("n"):
+        tot = (student.get("totals") or {}).get("raw") or {}
+        prev = (((student.get("prev") or {}).get("totals") or {}).get("raw") or {}).get("top1")
+        delta = "" if prev is None else f"{tot.get('top1', 0) - prev:+d} 題"
+        return {"top1": tot.get("top1", 0), "top10": tot.get("top10", 0), "n": student["n"],
+                "when": (student.get("measured") or "")[5:16].replace("T", " ")
+                + ("（上一份庫的）" if student.get("stale") else ""), "delta": delta,
+                "tip": f"每晚換庫後，學生角度、庫裡有答案的 {student['n']} 題原樣送進搜尋，標準答案排第幾"}
+    b = next((g for g in (newset or {}).get("groups") or [] if g.get("key") == "B"), None)
+    if b and b.get("n"):
+        return {"top1": b["q"][0], "top10": b["q"][2], "n": b["n"],
+                "when": (newset.get("measured_at") or "")[5:10] + " 手動量", "delta": "",
+                "tip": "學生角度的題，原樣送進搜尋；這是手動量的一次，每晚量的結果還沒有"}
+    return None
+
+
 def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
-              usage: dict | None, aitest: dict | None) -> str:
+              usage: dict | None, aitest: dict | None, student: dict | None = None,
+              newset: dict | None = None) -> str:
+    """The four figures of the first screen: the library students get, how right the search is, the public service's
+    last day, how much of what should be crawled was got."""
     st = steps(snap)
     changes = tonight.get("changes") or {}
     docs = ((changes.get("new") or {}).get("docs")) or next(
@@ -376,48 +401,67 @@ def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
     before = (changes.get("prev") or {}).get("docs")
     delta = f"{docs - before:+,}" if before else ""
     rec = last_swap(history)
-    moved = f"昨晚新進 {n(rec['new'])} · 離開 {n(rec.get('left') or 0)}" if rec.get("new") is not None else ""
+    moved = f"新進 {n(rec['new'])} · 離開 {n(rec.get('left') or 0)}" if rec.get("new") is not None else ""
     hist_pts = [(r["night"][5:], int(r["docs"])) for r in history.get("nights") or [] if r and r.get("docs")]
     spark = svg_sparkline(hist_pts[-7:], label="近幾晚庫裡的文件數")
     spark_tip = "近幾晚庫裡的文件數：\n" + "\n".join(f"{d} 夜 {n(v)}" for d, v in hist_pts[-7:])
 
-    site_n = len(sites.get("sites") or [])
-    units = len({s.get("u") for s in sites.get("sites") or []})
+    cards = [("學生搜到的庫", n(docs), f"<span class='pn-delta'>{e(delta)}</span>" if delta else "", moved, spark,
+              spark_tip, TONIGHT)]
 
-    cards = [
-        ("收錄文件", n(docs), f"<span class='pn-delta'>{e(delta)}</span>" if delta else "", moved, spark,
-         spark_tip, "/sites"),
-        ("收錄網站", n(site_n), "<span class='pn-unit'>站</span>", f"分屬 {units} 個單位", "",
-         "學校和校外單位的網站，每晚更新", "/sites"),
-    ]
+    fig = search_figure(student, newset)
+    if fig:
+        pct = fig["top1"] / fig["n"] * 100
+        bars = (f"<span class='pn-mini10'><i style='width:{fig['top10'] / fig['n'] * 100:.1f}%'></i>"
+                f"<i class='pn-mini1' style='width:{pct:.1f}%'></i></span>")
+        cards.append(("搜尋排第 1", f"{pct:.0f}%",
+                      f"<span class='pn-delta'>{e(fig['delta'])}</span>" if fig["delta"] else "",
+                      f"{fig['n']} 題學生題 · 前 10 {fig['top10'] / fig['n'] * 100:.0f}% · {fig['when']}", bars,
+                      f"{fig['tip']}\n排第 1：{fig['top1']} 題\n前 10：{fig['top10']} 題", "/try"))
 
     if usage:
-        tools = usage.get("tools") or {}
         days = usage.get("days") or []
+        ours = usage.get("failed_ours") or 0
         cards.append((
-            "對外查詢 · 24 小時",
-            n(usage.get("calls") or 0),
-            "<span class='pn-unit'>次</span>",
-            f"搜尋 {n(tools.get('search', 0))} · 讀全文 {n(tools.get('fetch', 0))}",
+            "對外查詢 · 24 小時", n(usage.get("calls") or 0), "<span class='pn-unit'>次</span>",
+            f"我們沒答成 {n(ours)} 次 · 搜了沒找到 {n(usage.get('missed') or 0)} 次",
             day_columns(days, width=84, height=36, labels=False) if days else "",
             "最近 7 天：\n" + "\n".join(f"{d} {'沒紀錄' if c is None else f'{n(c)} 次'}" for d, c, _ in days)
-            if days else "",
-            "",
+            if days else "", "#usage",
         ))
 
+    crawl = st.get("crawl") or {}
+    got = crawl.get("bar") or []
+    if len(got) == 2 and got[1]:
+        cards.append(("該抓的抓到", f"{got[0] / got[1] * 100:.1f}%", "",
+                      f"{n(got[0])} / {n(got[1])} 個網址 · 沒抓到 {n(got[1] - got[0])}", "",
+                      "這一輪該抓的網址抓到幾成；沒抓到的是什麼、為什麼，在「內容」最上面", "/sites#crawl"))
+
+    return tiles(cards, "第一眼")
+
+
+def scale_kpis(sites: dict, aitest: dict | None) -> str:
+    """全景's figures: how many sites the library holds and whose, and the last real-AI test."""
+    site_n = len(sites.get("sites") or [])
+    units = len({s.get("u") for s in sites.get("sites") or []})
+    cards = []
+    if site_n:
+        cards.append(("收錄網站", n(site_n), "<span class='pn-unit'>站</span>", f"分屬 {units} 個單位", "",
+                      "學校和校外單位的網站，每晚更新", "/sites"))
     if aitest and aitest.get("n"):
         verdicts = [(w, aitest.get(k) or 0, c) for k, w, c in VERDICTS]
         cards.append((
-            "AI 實測答對",
-            f"{aitest['right']}/{aitest['n']}",
-            "<span class='pn-unit'>題</span>",
+            "AI 實測答對", f"{aitest['right']}/{aitest['n']}", "<span class='pn-unit'>題</span>",
             " · ".join(f"{w} {v}" for w, v, _ in verdicts[1:]) + f" · {(aitest.get('date') or '')[-5:]}",
             split_bar(verdicts, "題", "pn-split pn-tsplit"),
             (f"{aitest.get('date', '')} 實驗室的 AI 只用我們的 search 和 fetch，答學生角度的 {aitest['n']} 題\n"
-             f"出處 {aitest.get('source', '')}"),
-            "",
+             f"出處 {aitest.get('source', '')}"), "",
         ))
+    return tiles(cards, "規模") if cards else ""
 
+
+def tiles(cards: list[tuple], label: str) -> str:
+    """A row of figures: (title, big, suffix markup, sub, drawing markup, floating card, link)."""
     html = []
     for title, big, suffix, sub, viz, tip, href in cards:
         inner = (
@@ -430,7 +474,7 @@ def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
                         f"data-tip='{e(tip)}'>{inner}</a>")
         else:
             html.append(f"<div class='pn-kpi' tabindex='0' data-tip='{e(tip)}'>{inner}</div>")
-    return f"<section class='pn-kpis' aria-label='核心指標'>{''.join(html)}</section>"
+    return f"<section class='pn-kpis' aria-label='{e(label)}'>{''.join(html)}</section>"
 
 
 def freshness_card(sites: dict) -> str:
@@ -536,58 +580,6 @@ def sources_card(sites: dict) -> str:
     )
 
 
-def quality_card(snap: dict, newset: dict | None) -> str:
-    """Where the right document comes in a search, as nested bars (first, top 3, top 10, out of the questions): the
-    students' own words first (the yardstick), then an AI's rewording, then the nightly 33. The number said is the
-    share at first place: a student's AI that reads only the top few sees that one (the top 10 hid how few were
-    first: 83% in the top 10, 35% first, for the students' words on 11-19)."""
-    ladders = []
-    b = next((g for g in (newset or {}).get("groups") or [] if g.get("key") == "B"), None)
-    if b and b.get("n"):
-        when = (newset.get("measured_at") or "")[5:10]
-        ladders.append(("學生原話", f"{b['n']} 題 · {when}", b["q"], b["n"],
-                        "學生問的那句話原樣送進搜尋，標準答案的文件排第幾"))
-        ladders.append(("AI 換說法", f"{b['n']} 題 · {when}", b["a"], b["n"],
-                        "錄下來的 AI 自己改寫、多搜幾次，最好的一次排第幾"))
-    c = nums_of(snap, "check")
-    if c.get("n") and c.get("top1") is not None:
-        ladders.append(("每晚 33 題", "每次建庫後量" + ("（上一份庫的）" if c.get("stale") else ""),
-                        [c["top1"], c["top3"], c["top10"]], c["n"], "只當別退步的底線：比上一次少了才亮"))
-
-    rows_html = []
-    for label, sub, tops, of, tip in ladders:
-        p1, p3, p10 = [t / of * 100 for t in tops]
-        rows_html.append(
-            f"<div class='pn-lrow' tabindex='0' data-tip-h='{e(label)}（{e(sub)}）' "
-            f"data-tip='排第 1：{tops[0]} 題（{p1:.0f}%）\n前 3：{tops[1]} 題（{p3:.0f}%）\n"
-            f"前 10：{tops[2]} 題（{p10:.0f}%）\n{e(tip)}'>"
-            f"<div class='pn-llbl'><b>{e(label)}</b><span>{e(sub)}</span></div>"
-            f"<div class='pn-ltrack'>"
-            f"<i class='pn-l10' style='width:{p10:.1f}%'></i>"
-            f"<i class='pn-l3' style='width:{p3:.1f}%'></i>"
-            f"<i class='pn-l1' style='width:{p1:.1f}%'></i></div>"
-            f"<div class='pn-lnum'><b>{p1:.0f}%</b><span>排第 1</span></div></div>"
-        )
-
-    real_chip = ""
-    if c.get("real_total"):
-        real_chip = f"<span class='pn-mchip'>真資料檢查過了 <b>{c['real_passed']}/{c['real_total']}</b> 項</span>"
-
-    leg = (
-        "<div class='pn-leg pn-leg-sm'>"
-        "<span><i style='background:var(--q5)'></i>排第 1</span>"
-        "<span><i style='background:var(--q3)'></i>前 3</span>"
-        "<span><i style='background:var(--q1)'></i>前 10</span></div>"
-    )
-    body = (f"<div class='pn-lhead'><span>標準答案的文件排第幾</span>{leg}</div>"
-            f"<div class='pn-ladders'>{''.join(rows_html)}</div>") if rows_html else "<p class='pn-empty'>還沒有量過</p>"
-    return (
-        f"<section class='pn-card'>"
-        f"<div class='pn-chd'><h2>搜尋排得準不準</h2><a class='pn-link' href='/try'>測試頁 →</a></div>"
-        f"{body}<div class='pn-mchips'>{real_chip}</div></section>"
-    )
-
-
 def usage_card(snap: dict, usage: dict | None) -> str:
     """The public service: its calls a day over the last week, where the last day's came from and how they went."""
     if usage and usage.get("calls") is not None:
@@ -625,7 +617,7 @@ def usage_card(snap: dict, usage: dict | None) -> str:
                     "紀錄分不出是學生還是我們自己在測試（跑題庫、AI 實測都走同一個服務），"
                     "有測試的那幾天會特別高。")
     return (
-        f"<section class='pn-card pn-span6'>"
+        f"<section class='pn-card pn-span6' id='usage'>"
         f"<div class='pn-chd'><h2>對外查詢</h2>{who}</div>"
         f"{usage_html}</section>"
     )
@@ -648,6 +640,62 @@ def machine_card(snap: dict) -> str:
         return ""
     return (f"<section class='pn-card'><div class='pn-chd'><h2>這台電腦</h2></div>"
             f"<div class='pn-mgrid'>{''.join(m_html)}</div></section>")
+
+
+def todo_card(todo: dict | None, reading: bool) -> str:
+    """要處理 (nknu.ops.todo.collect): what to look at, the new first, each with what it is, where and since when; the
+    known ones folded with the owner's note; nothing to handle said in one line."""
+    if reading:
+        return ("<section class='pn-card pn-span5' id='todo'><div class='pn-chd'><h2>要處理</h2></div>"
+                "<p class='pn-empty'>正在讀各步驟的紀錄</p></section>")
+    todo = todo or {}
+    open_, known = todo.get("open") or [], todo.get("known") or []
+
+    def row(x: dict) -> str:
+        where = (f"<a href='{e(x['href'])}'>{e(x['where'])}</a>" if x.get("href") else f"<b>{e(x['where'])}</b>")
+        tag = x.get("tag") or ""
+        chip = (f"<span class='pn-tnew'>{e(tag)}</span>" if tag == "新出現"
+                else f"<span class='pn-tage' data-tip='{e(x.get('age_tip') or '')}'>{e(tag)}</span>" if tag else "")
+        note = f"<span class='pn-tnote'>已知：{e(x['note'])}</span>" if x.get("note") else ""
+        # the source's own code as it is, and 沒見過 for a code no dictionary knows (spec 2026-11-17-panels-v3 八: never
+        # read as normal), as 每晚運行's list said them: such a row's reason may be empty
+        code = f"<span class='pn-tcode'>{e(x['code'])}</span>" if x.get("code") else ""
+        seen = ("<span class='pn-tnote' data-tip='這個代碼面板沒見過：照原樣列出，不當成正常'>沒見過</span>"
+                if x.get("unknown") else "")
+        keys = " ".join(it.get("key") or "" for it in x.get("issues") or [] if it.get("key"))
+        # marked known on the row itself (POST /todo/known, ops.db: nknu.ops.todo.Known), or taken off again
+        if not keys:
+            act = ""
+        elif x.get("note") is not None and x in known:
+            act = (f"<form class='pn-tact' method='post' action='/todo/known'><input type='hidden' name='keys' "
+                   f"value='{e(keys)}'><input type='hidden' name='off' value='1'><button>取消已知</button></form>")
+        else:
+            act = (f"<details class='pn-tact'><summary>標成已知</summary><form method='post' action='/todo/known'>"
+                   f"<input type='hidden' name='keys' value='{e(keys)}'><input name='note' maxlength='200' "
+                   f"placeholder='為什麼不用管（可不寫）' aria-label='為什麼不用管'><button>確定</button></form></details>")
+        return (f"<li data-sev='{e(x.get('sev') or '')}'>{mark(x.get('sev') or 'none')}"
+                f"<span class='pn-tkind'>{e(x.get('kind') or '')}</span>"
+                f"<span class='pn-twhat'>{where}<span>{e(x.get('reason') or '')}</span>{code}{seen}{note}{act}</span>"
+                f"{chip}</li>")
+
+    since = f"<span class='pn-tsub'>新出現：和 {e(todo['night'][5:])} 夜比</span>" if todo.get("night") else ""
+    if open_:
+        body = f"<ul class='pn-tlist'>{''.join(row(x) for x in open_[:TODO_SHOWN])}</ul>"
+        if len(open_) > TODO_SHOWN:
+            body += (f"<details class='pn-tmore'><summary>還有 {len(open_) - TODO_SHOWN} 件</summary>"
+                     f"<ul class='pn-tlist'>{''.join(row(x) for x in open_[TODO_SHOWN:])}</ul></details>")
+    else:
+        body = f"<p class='pn-tnone'>{mark('ok')}<span>沒有要處理的</span></p>"
+    if known:
+        body += (f"<details class='pn-tmore pn-tknown'><summary>已知 {len(known)} 件，不算在裡面</summary>"
+                 f"<ul class='pn-tlist'>{''.join(row(x) for x in known)}</ul></details>")
+    count = f"<span class='pn-tcount'>{len(open_)}</span>" if open_ else ""
+    tip = toggletip("pn-tip-known", "什麼算要處理",
+                    "每晚流程停了或出錯、某一步不正常、網站的數字不對、換庫後說不出原因的離開、"
+                    "這台電腦的硬碟或記憶體快滿、學生題掉出前 10。哪一件不用管，按它的「標成已知」（可以寫一句為什麼），"
+                    "之後就不算在這裡，只折在下面；按「取消已知」再算回來。")
+    return (f"<section class='pn-card pn-span5' id='todo'><div class='pn-chd'><h2>要處理{count}</h2>"
+            f"<span class='pn-thead'>{since}{tip}</span></div>{body}</section>")
 
 
 def nights_card(tonight: dict, history: dict) -> str:
@@ -697,13 +745,14 @@ def nights_card(tonight: dict, history: dict) -> str:
                 f"<b class='pn-pos'>+{n(r['new'])}</b> <span class='pn-neg'>−{n(r['left'] or 0)}</span></span>"
             )
         body.append(
-            f"<div class='pn-grow'><span class='pn-glbl' data-tip='{e(r['tip'])}'>{e(r['label'])}</span>"
+            f"<div class='pn-grow'><a class='pn-glbl' href='{TONIGHT}?night={e(r['night'])}' "
+            f"data-tip='{e(r['tip'] or '看這一晚的每一步')}'>{e(r['label'])}</a>"
             f"{mark(r['state'], r['word'])}<span class='pn-gtrack'>{''.join(segs)}</span>{end}{moved}</div>"
         )
 
     return (
         f"<section class='pn-card pn-span7'>"
-        f"<div class='pn-chd'><h2>每晚運行</h2><a class='pn-link' href='{TONIGHT}'>完整時間軸 →</a></div>"
+        f"<div class='pn-chd'><h2>最近 {len(rows)} 晚</h2><a class='pn-link' href='{TONIGHT}'>最近一晚的每一步 →</a></div>"
         f"<div class='pn-leg pn-gleg'>{leg}</div>"
         f"<div class='pn-gantt'>"
         f"<div class='pn-grow pn-ghours'><span></span><span></span>"
@@ -1000,6 +1049,53 @@ font-size:12px;font-weight:600;color:var(--amt);text-decoration:none}
 @media (prefers-reduced-motion:reduce){
   .pn-kpi,.pn-gseg,.pn-col rect,.pn-split i{transition:none}
 }
+
+/* 2026-11-22 evening: the first screen (the night in a sentence, 要處理, the nights) and 全景 under a divider */
+.pn-say{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--ink);text-decoration:none;font-size:15px;
+font-weight:600}
+.pn-say:hover span{text-decoration:underline;text-underline-offset:3px}
+.pn-mini10{display:block;position:relative;width:84px;height:8px;border-radius:999px;background:var(--mark2);
+overflow:hidden}
+.pn-mini10 i{position:absolute;inset:0 auto 0 0;border-radius:999px;background:var(--q2)}
+.pn-mini10 i.pn-mini1{background:var(--q5)}
+.pn-divider{display:flex;align-items:center;gap:12px;margin:34px 0 14px;font-size:15px;font-weight:700;color:var(--ink2)}
+.pn-divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.pn-tcount{margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn-ink);
+font-size:13px;font-variant-numeric:tabular-nums}
+.pn-thead{display:inline-flex;align-items:center;gap:8px}
+.pn-tsub{font-size:12px;color:var(--ink3)}
+.pn-tlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.pn-tlist li{display:grid;grid-template-columns:auto 64px minmax(0,1fr) auto;align-items:start;gap:4px 10px;
+padding:9px 0;border-top:1px solid var(--line)}
+.pn-tlist li:first-child{border-top:0}
+.pn-tkind{font-size:12px;color:var(--ink3);padding-top:2px;white-space:nowrap}
+.pn-twhat{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:13px}
+.pn-twhat a,.pn-twhat b{font-weight:650;color:var(--ink);text-decoration:none}
+.pn-twhat a:hover{text-decoration:underline;text-underline-offset:3px}
+.pn-twhat span{color:var(--ink2);overflow-wrap:anywhere}
+.pn-twhat .pn-tnote{color:var(--ink3);font-size:12px}
+.pn-twhat .pn-tcode{color:var(--ink3);font:12px/1.4 var(--mono)}
+.pn-tnew,.pn-tage{font-size:12px;white-space:nowrap;padding:1px 7px;border-radius:999px}
+.pn-tnew{background:var(--warn-bg);color:var(--warn-ink);font-weight:650}
+.pn-tage{color:var(--ink3);border:1px solid var(--line)}
+.pn-tnone{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px;color:var(--ink2)}
+.pn-tmore{margin-top:6px;font-size:13px;color:var(--ink2)}
+.pn-tmore>summary{cursor:pointer;padding:6px 0;color:var(--ink3)}
+.pn-tknown li{opacity:.75}
+.pn-tact{margin-top:4px;font-size:12px}
+.pn-tact summary{display:inline;cursor:pointer;color:var(--ink3);list-style:none}
+.pn-tact summary::-webkit-details-marker{display:none}
+.pn-tact summary:hover{color:var(--ink2);text-decoration:underline;text-underline-offset:3px}
+.pn-tact form,form.pn-tact{display:flex;gap:6px;align-items:center;margin-top:4px}
+.pn-tact input[name=note]{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
+background:var(--sunk);color:var(--ink);font:12px var(--font)}
+.pn-tact button{height:28px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);
+color:var(--ink2);font:12px var(--font);cursor:pointer}
+.pn-tact button:hover{border-color:var(--line2);color:var(--ink)}
+form.pn-tact{margin-top:2px}
+a.pn-glbl{color:inherit;text-decoration:none}
+a.pn-glbl:hover{text-decoration:underline;text-underline-offset:3px}
+@media (max-width:520px){.pn-tlist li{grid-template-columns:auto minmax(0,1fr) auto}.pn-tkind{display:none}}
 """
 
 PAGE_JS = r"""
@@ -1041,27 +1137,30 @@ PAGE_JS = r"""
 
 
 def page(snap: dict, tonight: dict, sites: dict, history: dict, *, newset: dict | None = None,
-         aitest: dict | None = None, built: str = "") -> str:
-    """總覽 as a whole page: the bar every page has, the state in one line, four figures, then the cards. built: when
-    the library in use was built (the bar's right end, as on every page)."""
+         aitest: dict | None = None, built: str = "", todo: dict | None = None, student: dict | None = None) -> str:
+    """總覽 as a whole page: the bar every page has; the first screen (the night in one sentence, four figures, 要處理,
+    the last nights); then 全景. built: when the library in use was built (the bar's right end, as on every page);
+    todo: nknu.ops.todo.collect; student: the nightly measurement of the student questions (student_eval.json)."""
     usage = nums_of(snap, "serve").get("usage")
+    reading = not snap.get("steps")
     # read again in a few seconds while the steps are being read (as 每晚運行 does after a restart)
-    again = AGAIN.replace("{ms}", "5000") if not snap.get("steps") or snap.get("running") else ""
+    again = AGAIN.replace("{ms}", "5000") if reading or snap.get("running") else ""
     stamp = built[:16].replace("T", " ")
     meta = f"<span data-tip='正式庫 {e(stamp)} 建好'>庫建於 {e(stamp[5:])}</span>" if stamp else ""
     waiting = "" if sites.get("sites") else (
-        "<p class='pn-wait'>網站的統計還在算（檢視台剛重啟時要幾分鐘），文件的兩張圖等它算好再出現。</p>")
+        "<p class='pn-wait'>網站的統計還在算（檢視台剛重啟時要幾分鐘），全景的兩張圖等它算好再出現。</p>")
 
     content = (
-        f"{header_bar(snap, tonight)}{waiting}"
-        f"{hero_kpis(snap, tonight, sites, history, usage, aitest)}"
+        f"{header_bar(snap, tonight, history, todo)}"
+        f"{hero_kpis(snap, tonight, sites, history, usage, aitest, student, newset)}"
+        f"<div class='pn-bento'>{todo_card(todo, reading)}{nights_card(tonight, history)}</div>"
+        f"<h2 class='pn-divider' id='whole'>全景</h2>{waiting}"
+        f"{scale_kpis(sites, aitest)}"
         f"<div class='pn-bento'>"
         f"{freshness_card(sites)}"
         f"{sources_card(sites)}"
-        f"<div class='pn-stack pn-span6'>{quality_card(snap, newset)}{machine_card(snap)}</div>"
         f"{usage_card(snap, usage)}"
-        f"{nights_card(tonight, history)}"
-        f"{crawler_card(snap, tonight)}"
+        f"<div class='pn-stack pn-span6'>{machine_card(snap)}</div>"
         f"</div>"
     )
     return (

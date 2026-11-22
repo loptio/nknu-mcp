@@ -29,17 +29,19 @@ def where(tmp_path) -> Where:
 
 def test_the_bar_names_each_page_for_what_it_answers():
     pages = json.loads((REPO / "src/nknu/ops/theme/panels.json").read_text(encoding="utf-8"))["pages"]
-    assert [p["name"] for p in pages] == ["總覽", "每晚運行", "網站", "測試", "文件搜尋"]  # 總覽 first since 11-22
+    # 總覽 first since 11-22; since that evening three entries by the question each answers (每晚運行 is reached from
+    # 總覽, 單位 from 內容, and 文件搜尋 is the bar's box)
+    assert [p["name"] for p in pages] == ["總覽", "內容", "搜尋"]
     assert all(p["tip"] and "\n" not in p["tip"] and "今晚" not in p["tip"] for p in pages)
     html = bar.bar("tonight", "ops")
-    assert "aria-current='page'>每晚運行</a>" in html
+    assert "aria-current='true'>總覽</a>" in html and "每晚運行" not in html  # a night marks the entry it is reached from
     assert "<title>每晚運行 · 檢視台</title>" in look.shell("每晚運行 · 檢視台", "", {}).body.decode()
 
 
 def test_the_home_sections_have_their_new_titles_and_no_tonight_or_last_night():
     html = home_page.home_body(snap(), tonight(), None, hist(), {})
     titles = [h.text() for h in LexborHTMLParser(html).css("section.v3-q .v3-h h2")]
-    assert titles == ["流程", "問題", "每晚紀錄", "上次換庫的變動"]
+    assert titles == ["流程", "每晚紀錄", "上次換庫的變動"]  # 問題 left for 總覽's 要處理 (2026-11-22 evening)
     assert "今晚" not in html and "昨晚" not in html and "每晚紀錄" in tonight_page.PIPE_TIP
 
 

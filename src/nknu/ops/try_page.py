@@ -908,13 +908,13 @@ class TryPage:
         asker = search_tool(s.tools)
         others = [t for t in s.tools if t is not asker and not reader_key(t)]
         called = (_all(params, CALL) or [""])[-1] if why is None else ""
-        result, values, title, filled = "", {}, "測試", called
+        result, values, title, filled = "", {}, "搜尋", called
         if why is not None:  # the second tab: the question in its tool's box, the explanation under it
             query, inner = why
             result = why_html(query, inner, asker)
             if asker is not None:
                 values, filled = {query_field(asker): query}, str(asker["name"])
-            title = f"{query} · 測試" if query else "測試"
+            title = f"{query} · 搜尋" if query else "搜尋"
         elif called:
             tool = by_name.get(called)
             if tool is None:
@@ -933,7 +933,7 @@ class TryPage:
                         self.busy.release()
                     result = result_html(tool, args, got, s.tools)
                     asked = args.get(query_field(tool)) if query_field(tool) else None
-                    title = f"{asked} · 測試" if isinstance(asked, str) and asked else f"{called} · 測試"
+                    title = f"{asked} · 搜尋" if isinstance(asked, str) and asked else f"{called} · 搜尋"
                 else:
                     result = (f"<section id='result' class='tr-result card pad tr-state'><span class='pill warn'>"
                               f"{icon('warn', 12)}正在查</span><span>另一個查詢還沒查完，查完再送一次</span></section>")
@@ -956,8 +956,8 @@ class TryPage:
                f"<div class='box'><input name='q' value='{e(query)}' "
                f"placeholder='問一個學生會問的問題，看搜尋怎麼排' aria-label='問題'>{go_button('搜尋')}</div></form>")
         if why is not None:
-            return (f"{query} · 測試" if query else "測試"), top + ask + why_html(query, why[1], None)
-        return "測試", top + ask + board
+            return (f"{query} · 搜尋" if query else "搜尋"), top + ask + why_html(query, why[1], None)
+        return "搜尋", top + ask + board
 
 
 def _keys(params: object) -> list[str]:

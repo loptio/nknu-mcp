@@ -447,7 +447,8 @@ class Changes:
     not swap), computing, ready, error; 'words'; when ready the comparison and 'prev', 'new' (built_at,
     swapped_at), 'night' (the night the new library was swapped in), 'took'}."""
 
-    def __init__(self, new_db: Path, root: Path, *, prev_db: Path | None = None, hold: Path | None = None) -> None:
+    def __init__(self, new_db: Path, root: Path, *, prev_db: Path | None = None, hold: Path | None = None,
+                 kept: object | None = None) -> None:
         self.new_db = new_db
         self.prev_db = prev_db or new_db.with_name(f"{new_db.stem}.prev{new_db.suffix}")
         self.root = root
@@ -457,6 +458,7 @@ class Changes:
         self._keys: tuple | None = None
         self._thread: threading.Thread | None = None
         self._libs: dict[tuple, dict] = {}  # file key -> read_library (at most three kept)
+        self.kept = kept  # nknu.ops.keep.Kept: the comparison of the same two files survives a restart (2026-11-22)
 
     def _library(self, path: Path, key: tuple) -> dict:
         with self._lock:
@@ -487,6 +489,8 @@ class Changes:
             result = {"state": "error", "keys": list(map(str, keys)), "words": f"{type(exc).__name__}: {exc}"}
         with self._lock:
             self._done, self._keys = result, keys
+        if self.kept is not None and result.get("state") == "ready":
+            self.kept.put("changes", keys, result)
 
     def snapshot(self) -> dict:
         prev_key, new_key = file_key(self.prev_db), file_key(self.new_db)
@@ -497,6 +501,11 @@ class Changes:
         if prev_key[:2] == new_key[:2]:
             return {"state": "same", "words": "前一份庫和現在用的是同一份（還沒換上新庫：每晚進庫在建庫前先留一份，換上以後才有得比）"}
         keys = (prev_key, new_key)
+        if self._done is None and self.kept is not None:  # after a restart: the same two files, the same comparison
+            got = self.kept.get("changes", keys)
+            if isinstance(got, dict) and got.get("state") == "ready":
+                with self._lock:
+                    self._done, self._keys = got, keys
         with self._lock:
             if self._keys == keys and self._done is not None:
                 return self._done

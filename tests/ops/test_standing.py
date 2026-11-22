@@ -7,8 +7,9 @@ after it, and that it then stays what the night left. Made-up sites and night fi
 from __future__ import annotations
 
 import pytest
+from selectolax.lexbor import LexborHTMLParser
 
-from nknu.ops import history, home_page, standing, tonight_page
+from nknu.ops import history, home_page, panorama, standing, todo, tonight_page
 from nknu.ops.pipeline import BAD, PIPE, WARN, Where
 from tests.ops.test_history import Fixed, two_nights
 from tests.ops.test_nightly import NIGHT, at, crawler_log, library
@@ -231,6 +232,14 @@ def test_no_list_is_kept_while_a_night_runs_or_the_comparison_is_being_made(wher
 # ---------------------------------------------------------------- the page
 
 
+def front(snap: dict, t: dict, base: dict | None) -> LexborHTMLParser:
+    """總覽's 要處理 of a reading against the list kept for the night before (where the home's list went on
+    2026-11-22 evening; 每晚運行 keeps the counts in its sentence)."""
+    rows = rows_of(snap, t=t)
+    parts = standing.split(rows, base)
+    return LexborHTMLParser(panorama.todo_card(todo.collect(parts, rows, [], None, {}), False))
+
+
 def test_the_home_lists_what_is_new_first_and_says_so_on_top():
     before = {"steps": [], "sites": [site("a.example", "甲處", ("crawl", WARN, "有 3 個網址抓不到")),
                                      site("c.example", "丙處", ("docs", WARN, "庫裡一份也沒有"))]}
@@ -238,21 +247,22 @@ def test_the_home_lists_what_is_new_first_and_says_so_on_top():
     base = base_of(rows_of(before, t=quiet), runs={"site:a.example:crawl": (2, False), "site:c.example:docs": (1, True)})
     snap = {"steps": SNAP["steps"], "sites": [site("a.example", "甲處", ("crawl", WARN, "有 3 個網址抓不到")),
                                               SNAP["sites"][1]]}
+    tree = front(snap, quiet, base)
+    items = tree.css("#todo > .pn-tlist li")
+    assert [li.css_first(".pn-twhat a").text() for li in items] == ["查詢服務", "乙處", "甲處"]  # the new first
+    assert [li.css_first(".pn-tnew, .pn-tage").text() for li in items] == ["新出現", "新出現", "第 3 晚"]
+    assert "和 11-15 夜比" in tree.css_first(".pn-tsub").text() and tree.css_first(".pn-tcount").text() == "3"
+    # what the night before listed and is not there now (好了) is nothing to handle: 總覽 does not list it
+    assert "丙處" not in tree.html
     page = home_page.home_body(snap, quiet, None, {"enabled": False}, {}, base=base)
-    box = page.split("id='problems'", 1)[1].split("</section>", 1)[0]
-    assert box.index("新出現") < box.index("之前就有") < box.index("好了的 1 個")
-    new, old = box.split("之前就有", 1)[0], box.split("之前就有", 1)[1].split("好了的", 1)[0]
-    assert "查詢服務" in new and "乙處" in new and "甲處" not in new and "data-new>2</span>" in new
-    assert "和 11-15 夜比" in new and "記下的" in new
-    assert "甲處" in old and "第 3 晚" in old and "<span class='hm-count num'>1</span>" in old
-    assert "丙處" in box.split("好了的", 1)[1] and "上一晚：庫裡一份也沒有" in box
-    assert "；有 3 個問題，其中新出現 2 個" in page
-    # nothing new: said in the list and on top
+    assert "；有 3 個問題，其中新出現 2 個" in page and "id='problems'" not in page
+    # nothing new: no row marked so, and said on top
     fine = [{"key": "serve", "name": "查詢服務", "state": "ok", "say": "", "at": ""}]
-    calm = home_page.home_body({"steps": fine, "sites": snap["sites"][:1]}, quiet, None, {"enabled": False}, {}, base=base)
-    assert "沒有新出現的" in calm and "；有 1 個問題，都是之前就有的" in calm
-    assert " data-new>" not in calm.split("id='problems'", 1)[1]  # the count of the new is not lit when it is 0
-    # no night to compare with: the rows as they were, and why
-    plain = home_page.home_body(snap, quiet, None, {"enabled": False}, {}, base_note="問題清單從這一晚開始記")
-    assert "新出現" not in plain.split("id='problems'", 1)[1] and "問題清單從這一晚開始記" in plain
-    assert "；有 3 個問題" in plain and "其中新出現" not in plain
+    calm = {"steps": fine, "sites": snap["sites"][:1]}
+    assert front(calm, quiet, base).css(".pn-tnew") == [] and len(front(calm, quiet, base).css(".pn-tage")) == 1
+    assert "；有 1 個問題，都是之前就有的" in home_page.home_body(calm, quiet, None, {"enabled": False}, {}, base=base)
+    # no night to compare with: the rows as they were, nothing called new (the note why was 問題's; the section left)
+    plain = front(snap, quiet, None)
+    assert plain.css(".pn-tnew, .pn-tage") == [] and plain.css_first(".pn-tsub") is None
+    said = home_page.home_body(snap, quiet, None, {"enabled": False}, {}, base_note="問題清單從這一晚開始記")
+    assert "；有 3 個問題" in said and "其中新出現" not in said

@@ -178,7 +178,7 @@ def test_tokens_are_estimated_wide_characters_one_each():
 
 def test_on_open_the_page_shows_what_the_agent_reads_first(mcp):
     title, body = TryPage(mcp).page({})
-    assert title == "測試"
+    assert title == "搜尋"
     assert "這是編的開場說明。\n第二行。" in body and "made-up 9.9" in body and "2025-06-18" in body
     assert "<details class='tr-first' id='first'>" in body  # folded: the search box comes first
     assert body.index("form class='sr-form") < body.index("id='first'")
@@ -210,7 +210,7 @@ def test_the_forms_follow_whatever_tools_the_list_names(mcp):
 def test_a_call_shows_the_text_as_received_and_the_same_laid_out(mcp):
     title, body = TryPage(mcp).page(QueryParams("call=lookup&a.term=測試"))
     text = json.dumps(ANSWER, ensure_ascii=False)
-    assert title == "測試 · 測試"
+    assert title == "測試 · 搜尋"
     assert _calls()[-1][1] == {"name": "lookup", "arguments": {"term": "測試"}}
     called = body[body.index("id='result'"):body.index("id='first'")]  # the answer, before the folded first look
     # 2026-11-18: the results lead as the page's main column, the text as received in a narrower box beside them
@@ -244,7 +244,7 @@ def test_the_second_tab_draws_the_explanation_here_and_calls_no_tool(mcp):
     before = len(_calls())
     title, body = TryPage(mcp).page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'>理由</div>"),
                                     board="<div id='made-up-board'></div>")
-    assert len(_calls()) == before and title == "測試 · 測試"
+    assert len(_calls()) == before and title == "測試 · 搜尋"
     assert "<div id='made-up-why'>理由</div>" in body and "made-up-board" not in body
     tabs = re.search(r"<nav class='tr-tabs'.*?</nav>", body).group(0)
     assert "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in tabs
@@ -262,7 +262,7 @@ def test_the_scoreboard_is_under_the_forms_when_nothing_is_asked(mcp):
 def test_the_second_tab_and_the_board_show_while_the_service_is_down():
     page = TryPage("http://127.0.0.1:9/mcp")
     title, body = page.page(QueryParams("tab=why&q=測試"), why=("測試", "<div id='made-up-why'></div>"))
-    assert "連不上" in body and "made-up-why" in body and title == "測試 · 測試"
+    assert "連不上" in body and "made-up-why" in body and title == "測試 · 搜尋"
     assert "aria-disabled='true' data-tip='搜尋服務沒有回應" in body  # no tool to call: the first tab waits
     assert "<form class='ask tr-alone' action='/try'" in body and "name='q' value='測試'" in body  # a box to ask in
     assert "made-up-board" in page.page({}, board="<div id='made-up-board'></div>")[1]
@@ -330,7 +330,7 @@ def test_a_call_that_takes_too_long_says_so_and_frees_the_page(mcp):
 
 def test_not_configured_and_not_answering_are_said(mcp):
     title, body = TryPage("").page({})
-    assert title == "測試" and "沒有設定" in body and "--mcp-url" in body
+    assert title == "搜尋" and "沒有設定" in body and "--mcp-url" in body
     _, body = TryPage("http://127.0.0.1:9/mcp").page({})
     assert "連不上" in body and "沒有設定" not in body
 
@@ -360,7 +360,7 @@ def served(db, tmp_path, mcp):
 
 def test_the_route_serves_the_page_with_its_tab_marked(served):
     got = served.get("/try")
-    assert got.status_code == 200 and "aria-current='page'>測試</a>" in got.text and "data-tool='lookup'" in got.text
+    assert got.status_code == 200 and "aria-current='page'>搜尋</a>" in got.text and "data-tool='lookup'" in got.text
     got = served.get("/try", params={"call": "lookup", "a.term": "測試"})
     assert got.status_code == 200 and "第一則測試公告" in got.text
     assert served.post("/try", data={"call": "lookup"}).status_code == 405
@@ -384,8 +384,10 @@ def test_the_address_is_the_option_else_the_watched_mcp_service():
 def test_the_bar_has_the_page_right_after_tonight():
     from nknu.ops.theme import bar
 
+    # structure design 2026-11-17 section 二; 總覽 11-22; that evening three entries, 搜尋 the last (每晚運行 is
+    # reached from 總覽, 文件搜尋 is the bar's box)
     keys = [p["key"] for p in bar.panels()["pages"]]
-    assert keys == ["home", "tonight", "sites", "try", "doc"]  # structure design 2026-11-17 section 二; 總覽 11-22
+    assert keys == ["home", "sites", "try"]
 
 
 def test_the_lab_compose_passes_the_address():

@@ -2,8 +2,8 @@
 as it did: nknu.ops.explain) and 文件追蹤 (what one page or file became at each step: nknu.ops.trace; the two were
 搜索试验台 and 逐份追踪 until the owner, 11-15: 「很多名字看着不直觉」), and the same two
 as JSON for the commands (nknu.ops.cli's --at). The pages draw what the two modules return and compute nothing; how
-they look is nknu.ops.look, search_page and trace_page (the third round of 11-15), and the scoreboard of the test
-questions is nknu.ops.board.
+they look is nknu.ops.look, search_page and trace_page (the third round of 11-15); the scoreboard is the student
+questions' nightly sample (nknu.ops.student_board; the 33 questions and their board.py left on 2026-11-22).
 
 It reads the library, which holds students' names, so it is read-only (the database is opened read-only on every
 request), every route is GET only, and a request is answered only when its Host names this machine (127.0.0.1,
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gzip
 import json
 import logging
 import re
@@ -65,9 +66,19 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
-from nknu.ops import history, nightly, pagecheck, panorama, units_page
+from nknu.ops import (
+    content_band,
+    history,
+    keep,
+    nightly,
+    pagecheck,
+    panorama,
+    standing,
+    student_board,
+    todo,
+    units_page,
+)
 from nknu.ops import overview as overview_mod
-from nknu.ops.board import Board
 from nknu.ops.changes import Changes
 from nknu.ops.check_page import check_body, check_form, empty_raw
 from nknu.ops.check_sites import entry_list, item_html, site_parts
@@ -78,12 +89,12 @@ from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
 from nknu.ops.pipeline import Pipeline, Where, log_tail, site_detail
 from nknu.ops.pipeline_page import changes_title
-from nknu.ops.search_page import board_html, newset_html, search_body, why_head
+from nknu.ops.search_page import newset_html, search_body, why_head
 from nknu.ops.site_page import Kinds, now_line
 from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
 from nknu.ops.theme import bar as theme
-from nknu.ops.tonight_page import night_departures
+from nknu.ops.tonight_page import handle_rows, night_departures, problems
 from nknu.ops.trace import WITHIN, site_exports, trace
 from nknu.ops.trace_page import FOUND_MAX, MARKUP, trace_body, trace_form
 from nknu.ops.try_page import TryPage
@@ -99,6 +110,9 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 DEFAULT_PORT = 8878
 MAX_LIMIT = 50  # the most results a page or the API explains at once 【Claude】
 NEWSET_FILE = "eval194.json"  # the new question set's totals, beside the nights' record (ops' own volume)
+# the student questions measured each night on the library students got (deploy/lab-pipeline/eval/student_eval.py,
+# 2026-11-22 evening: the 33 questions are no yardstick), under the folder the library's relative paths start from
+STUDENT_FILE = "research/pipeline_2026-11-02/student_eval.json"
 # the real-AI test's verdicts ({right, partly, wrong, none, n, date, source}), beside it: 總覽's tile, put there by
 # hand after a run (research/eval_2026-11-18/tools/strata_agent.py); none, no tile
 AITEST_FILE = "aitest.json"
@@ -186,23 +200,6 @@ def install_state(code_root: Path, pipeline_src: Path) -> dict | None:
     return {"installed": stamp[0] if stamp else "", "pack": stamp[1] if len(stamp) > 1 else "", "drift": drift}
 
 
-def load_questions(folder: Path | None, gold: Path | None) -> list[dict]:
-    """The test questions that have gold documents, [{id, question, gold}], in the files' order: core20.json and
-    noanswer22.json of folder (research/eval_2026-11-01) and the gold file (default: folder's gold_docs.json). [] when
-    a file is missing or unreadable: the pages then offer no question."""
-    if folder is None:
-        return []
-    try:
-        answers = json.loads(Path(gold or Path(folder) / "gold_docs.json").read_text(encoding="utf-8"))
-        asked = [q for name in ("core20.json", "noanswer22.json")
-                 for q in json.loads((Path(folder) / name).read_text(encoding="utf-8"))]
-        return [{"id": q["id"], "question": q["question"], "gold": list(answers[q["id"]].get("docs") or [])}
-                for q in asked if q.get("id") in answers and q.get("question")]
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        log.warning("读不了测试题（%s）：页面上不列题目", folder)
-        return []
-
-
 def asks_a_page(ref: str, library: sqlite3.Connection | None) -> bool:
     """Whether what 網頁核查's box was given names one page to check: an address (with its scheme, or a host as
     HOSTLIKE reads one) or a document id of the library. Anything else is words: the entry finds sites and pages by
@@ -263,7 +260,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                mcp_url: str = "", ops_db: Path | None = None, record: bool = True,
                disks: tuple[tuple[str, str], ...] = (), public_log: Path | None = None) -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
-    browser reaches the archive viewer ('' : no link); questions and gold: load_questions; config: the search's
+    browser reaches the archive viewer ('' : no link); questions and gold: no longer used (the 33 questions, gone
+    2026-11-22; taken so an older compose still starts); config: the search's
     settings (None: the server's); models: embedder and reranker in place of the process's shared ones (tests);
     code_root and pipeline_src: the tree this code runs from (default: the running package's) and the pipeline's
     source (default: root / src), compared by install_state; overview_url and tables_url: where the owner's browser
@@ -290,8 +288,6 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return checked["state"]
 
     models = dict(models or {})
-    asked = load_questions(questions, gold)
-    by_id = {q["id"]: q for q in asked}
     busy = threading.Lock()  # one search at a time: the two models are shared by every request
 
     def run_search(conn: sqlite3.Connection, query: str, *, today: date, aliases: list[list[str]], **kw):
@@ -301,10 +297,18 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         meta = dict(conn.execute("SELECT key, value FROM meta WHERE key IN ('built_at', 'schema_version')"))
         return {"built_at": meta.get("built_at"), "schema": meta.get("schema_version"), "install": installed()}
 
+    def picked() -> list[dict]:
+        """The questions the explanation tab offers ({id, question, gold}): the nightly sample of the student questions
+        (student_eval.json, each with its right documents in the library it measured) since 2026-11-22 (owner: the 33
+        questions are not needed any more; the panel's own daily re-run of them, board.py, was removed the same night)."""
+        got = [{"id": q["id"], "question": q.get("q") or "", "gold": list(q.get("gold") or [])}
+               for q in (student_eval() or {}).get("questions") or [] if q.get("id") and q.get("q")]
+        return got
+
     def asked_for(request: Request) -> tuple[str, list[str], int, dict | None]:
         """(the question, the documents to follow, the limit, the test question when one was picked)."""
         p = request.query_params
-        question = by_id.get(p.get("qid", ""))
+        question = {q["id"]: q for q in picked()}.get(p.get("qid", ""))
         docs = [d for value in p.getlist("doc") for d in value.split()]
         asked_limit = p.get("limit", "")  # 「²」 is a digit to str.isdigit and no number to int
         plain = asked_limit.isascii() and asked_limit.isdigit() and len(asked_limit) <= 4
@@ -326,29 +330,6 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
         return trace(conn, ref, root=root, today=today_fn(), own_title_search=own_title)
 
-    def board_state() -> tuple:
-        """What the scoreboard's grades hold for: this library file as it is now, on this day."""
-        stat = db_path.stat()
-        return (stat.st_mtime_ns, stat.st_size, today_fn().isoformat())
-
-    def explain_question(question: dict) -> dict:
-        conn = connect(db_path)
-        try:
-            return explained(conn, question["question"], question["gold"], TOP_N)
-        finally:
-            conn.close()
-
-    scores = Board(asked, explain_question, board_state)
-
-    def board_now() -> dict | None:
-        """The scoreboard as it stands, or None when the library file cannot be looked at just now (it is being
-        swapped): a page then draws without its board instead of failing."""
-        try:
-            return scores.snapshot()
-        except OSError:
-            log.exception("成绩板：看不到资料库档")
-            return None
-
     # 今晚, the home (流水線 until the structure design of 2026-11-17; owner 11-16: 「让我知道整个项目是否正常运作，出错的话是
     # 哪里错了 能帮助我精准定位」): every step read in the background (nknu.ops.pipeline)
     def sweep_overview() -> dict | None:
@@ -356,17 +337,22 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return sweep.overview() if sweep is not None else None
 
     where = Where(root=root, db=db_path, archive=archive, services=tuple(watch), disks=tuple(disks), public_log=public_log,
-                  board=lambda: scores.snapshot(start=False), sweep=sweep_overview, today=today_fn)
-    flow = Pipeline(where)
+                  sweep=sweep_overview, today=today_fn)
+    # what the background work found, kept beside the nights' record so a restart shows it at once (2026-11-22)
+    found_before = keep.Kept(ops_db)
+    # the problems the owner marked known on 總覽 (nknu.ops.todo.Known), in the same file
+    known = todo.Known(ops_db)
+    flow = Pipeline(where, kept=found_before)
     # where a step's links go by their short names: the scoreboard is on 搜尋, the school's 網頁核查 on 文件
     # the crawler's own board is no panel since 2026-11-21 (the panels became one; viewer_url is taken and not used)
-    panels = {"overview": overview_mod.PATH, "board": "/try#board", "check": "/check", "tables": tables_url}
+    # the scoreboard is the student questions' since 2026-11-22 evening (student_board: #students; #board was the 33's)
+    panels = {"overview": overview_mod.PATH, "board": "/try#students", "check": "/check", "tables": tables_url}
     every_site = theme.entry_href("sites", "ops")  # 網站, the one list of every site (資料總覽)
     tables = (tables_url or theme.panels()["hosts"]["tables"]).rstrip("/")  # 資料庫, its queries of one site
     kinds = Kinds(where.library)  # each site's documents per kind, counted once per library file
     # 今晚 and 昨晚變了什麼 on top of the home (structure design 2026-11-17 三.2-三.4; nknu.ops.nightly, changes): the
     # night read on every request (small files), the two libraries compared in the background
-    night_changes = Changes(where.library, root)
+    night_changes = Changes(where.library, root, kept=found_before)
     # 每晚紀錄 (panels v3 2026-11-17 一): the one file this service writes, never under /work or /crawl
     store = history.Store(ops_db, forbidden=(root, archive))
     recorder = history.Recorder(store, where, changes=night_changes, kinds=kinds, flow=flow)
@@ -410,6 +396,39 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         except (OSError, ValueError):
             return None
 
+    def student_eval() -> dict | None:
+        """The student questions' last nightly measurement (STUDENT_FILE under root), None without it."""
+        try:
+            return json.loads((root / STUDENT_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def todo_now(snap: dict, night: dict, changes: dict | None, student: dict | None) -> dict:
+        """要處理 (nknu.ops.todo): the problems of the night shown against the list kept for the night before, this
+        machine past its lines, the student questions that dropped out of the top 10, less what the owner said is
+        known."""
+        reading = not snap.get("steps")
+        rows = problems(night, snap, [] if reading else handle_rows(snap, changes))
+        parts = standing.split(rows, store.problem_base(night["default"]), reading=reading,
+                               swap_known=(changes or {}).get("state") != "computing")
+        return todo.collect(parts, rows, panorama.machine_meters(snap), student, known.load(),
+                            nightly.ingest_runs(where.pipe))
+
+    async def mark_known(request: Request) -> Response:
+        """要處理's row marked known (or taken off with off=1), from 總覽's own form only: the request's Origin must be
+        this panel (LocalOnly checks the Host; a page of another site cannot post here). Back to 要處理."""
+        origin = request.headers.get("origin") or ""
+        if not origin or urlsplit(origin).netloc != (request.headers.get("host") or ""):
+            return PlainTextResponse("forbidden", status_code=403)
+        form = await request.form()
+        keys = [k for k in str(form.get("keys") or "").split() if k][:50]
+        if keys:
+            if form.get("off") == "1":
+                await run_in_threadpool(known.unmark, keys)
+            else:
+                await run_in_threadpool(known.mark, keys, str(form.get("note") or "").strip())
+        return RedirectResponse("/#todo", status_code=303)
+
     def front(request: Request) -> Response:
         """總覽 (nknu.ops.panorama), the front page since 2026-11-22: the whole project on one page, mostly charts.
         每晚運行 was here until then: an old link to a night (?night=) or to read again (?fresh=) is sent on to it."""
@@ -426,8 +445,13 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             built = db_info(conn).get("built_at") or ""
         finally:
             conn.close()
-        page = panorama.page(flow.snapshot(), {**night, "changes": changes}, data or {}, hist,
-                             newset=kept(NEWSET_FILE), aitest=kept(AITEST_FILE), built=built)
+        snap = flow.snapshot()
+        student = student_eval()
+        page = panorama.page(snap, {**night, "changes": changes}, data or {}, hist,
+                             newset=kept(NEWSET_FILE), aitest=kept(AITEST_FILE), built=built,
+                             todo=todo_now(snap, night, changes, student),
+                             student={**student, "stale": True} if student_board.stale(student, built)
+                             else student)
         return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     def history_api(request: Request) -> Response:
@@ -502,7 +526,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         p = request.query_params
         kept = [(k, v) for k in ("qid", "q", "doc", "limit") for v in p.getlist(k)]
         if not any(v.strip() for k, v in kept if k in ("qid", "q")):
-            return moved("/try", [], "board")
+            return moved("/try", [], "students")
         return moved("/try", [("tab", "why"), *kept], "result")
 
     def why_of(request: Request, conn: sqlite3.Connection) -> tuple[str, str] | None:
@@ -515,11 +539,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             return None
         report = explained(conn, query, docs, limit)
         gold_ids = {f["doc_id"] for f in report["follow"] if f["doc_id"]} if question else set()
-        return query, why_head(asked, question, query, docs) + search_body(report, gold_ids, question)
-
-    def board_api(request: Request) -> Response:
-        """The scoreboard as it stands (the page asks again until every question is graded)."""
-        return JSONResponse(scores.snapshot(), headers={"Cache-Control": "no-store"})
+        return query, why_head(picked(), question, query, docs) + search_body(report, gold_ids, question)
 
     def search_api(request: Request) -> Response:
         query, docs, limit, _ = asked_for(request)
@@ -711,7 +731,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return got
 
     # the sweep of every page (design section 六 4): made here, started by the first request of 網頁核查
-    sweep = Sweep(archive, db_path) if archive is not None else None
+    sweep = Sweep(archive, db_path, ops_db=store.path, hold=lambda: nightly_fetching()) if archive is not None else None
 
     def nightly_fetching() -> bool:
         """Whether the nightly update is in its crawl or export part now (nknu.ops.nightly: small files, read on
@@ -853,27 +873,39 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
     # 網站 (資料總覽, a service of its own until 2026-11-21: nknu.ops.overview): its thread computes, a request only
     # hands out what it last made
-    sites_state = overview_mod.State(root)
+    sites_state = overview_mod.State(root, kept=found_before)
 
     def units_view(_request: Request) -> Response:
         """單位 (nknu.ops.units_page): the unit tree with each unit's documents, sites and newest date."""
         conn = connect(db_path)
         try:
-            return shell("單位 · 檢視台", units_page.body(conn, today_fn()), db_info(conn), tab="units")
+            body = (f"<style>{content_band.CSS}</style><div class='ct-head'><h1>內容</h1>{content_band.switch('units')}"
+                    f"</div>{units_page.body(conn, today_fn())}")
+            return shell("單位 · 內容 · 檢視台", body, db_info(conn), tab="units")
         finally:
             conn.close()
 
     def sites_page(request: Request) -> Response:
+        """內容: the page of every site as computed for this library (overview_mod.State), under the band that is
+        drawn now (content_band: what the crawler missed, what holds no document)."""
         sites_state.start()
         with sites_state.lock:
-            page, page_gz = sites_state.page, sites_state.page_gz
+            page, data = sites_state.page, sites_state.data
         headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
         if page is None:
             return Response(overview_mod.WAITING, media_type="text/html; charset=utf-8", headers=headers)
-        if "gzip" in (request.headers.get("accept-encoding") or ""):
-            return Response(page_gz, media_type="text/html; charset=utf-8",
+        night, _changes = tonight_now(request)
+        conn = connect(db_path)
+        try:
+            tree = units_page.load(conn, today_fn())
+        finally:
+            conn.close()
+        band = content_band.band(data or {}, flow.snapshot(), night, tree)
+        html = page.decode("utf-8").replace('<main class="app">', '<main class="app">' + band, 1).encode("utf-8")
+        if "gzip" in (request.headers.get("accept-encoding") or ""):  # the page carries its data: about 2 MB
+            return Response(gzip.compress(html, 5), media_type="text/html; charset=utf-8",
                             headers={**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
-        return Response(page, media_type="text/html; charset=utf-8", headers=headers)
+        return Response(html, media_type="text/html; charset=utf-8", headers=headers)
 
     def sites_stamp(_request: Request) -> Response:
         sites_state.start()
@@ -915,6 +947,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return run
 
     routes = [Route("/", guarded(front, False), methods=["GET"]),
+              Route("/todo/known", mark_known, methods=["POST"]),
               Route(nightly.TONIGHT, guarded(home, False), methods=["GET"]),
               Route("/site", guarded(site_view, False), methods=["GET"]),
               Route(overview_mod.PATH, guarded(sites_page, False), methods=["GET"]),
@@ -926,7 +959,6 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/trace", guarded(trace_page, False), methods=["GET"]),
               Route("/api/search", guarded(search_api, True), methods=["GET"]),
               Route("/api/trace", guarded(trace_api, True), methods=["GET"]),
-              Route("/api/board", guarded(board_api, True), methods=["GET"]),
               Route("/api/pipeline", guarded(pipeline_api, True), methods=["GET"]),
               Route("/api/tonight", guarded(tonight_api, True), methods=["GET"]),
               Route("/api/history", guarded(history_api, True), methods=["GET"]),
@@ -963,8 +995,11 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         try:
             why = why_of(request, conn)
             asked_something = why is not None or bool(request.query_params.get("call"))
+            # the student questions measured each night; until the first night's measurement, the one by hand of
+            # 11-19. The 33 questions are no yardstick (owner, 2026-11-22) and left this page.
             board = "" if asked_something else (
-                newset_html(newset(), db_info(conn).get("built_at")) + board_html(board_now()))
+                student_board.board(student_eval(), db_info(conn).get("built_at") or "")
+                or newset_html(newset(), db_info(conn).get("built_at")))
             title, body = trying.page(request.query_params, why=why, board=board)
             return shell(title, body, db_info(conn), tab="try")
         finally:
@@ -1013,8 +1048,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--viewer-url", default="", help="不用了：爬虫看板 11-21 起不再是面板（看原样在 /check）；留着只为旧的 compose 还能开")
     ap.add_argument("--overview-url", default="", help="不用了：资料总览 11-21 并进检视台（/sites）；留着只为旧的 compose 还能开")
     ap.add_argument("--tables-url", default="", help="从你的浏览器看 Datasette 的网址（顶栏链过去）")
-    ap.add_argument("--questions", type=Path, default=None, help="测试题的资料夹（research/eval_2026-11-01）")
-    ap.add_argument("--gold", type=Path, default=None, help="标准答案的档（默认是测试题资料夹里的 gold_docs.json）")
+    ap.add_argument("--questions", type=Path, default=None, help="不用了：33 题 11-22 拿掉；留着只为旧的 compose 还能开")
+    ap.add_argument("--gold", type=Path, default=None, help="不用了：33 题 11-22 拿掉；留着只为旧的 compose 还能开")
     ap.add_argument("--archive", default="",
                     help="爬虫存档的资料夹（放 frontier.db 的那个；账本里的 WARC 路径从它算起，实验室是 /crawl/archive）；"
                          "不给就是网页核查那一页说没有挂上存档")

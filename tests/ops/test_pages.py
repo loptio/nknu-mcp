@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from datetime import date
 
 import pytest
 from starlette.testclient import TestClient
 
-from nknu.ops import board, look, search_page, trace_page, web
+from nknu.ops import look, search_page, trace_page, web
 from nknu.ops.explain import explain_search
 from nknu.retrieval import vectors
 from nknu.retrieval.server import aliases_of
@@ -155,127 +154,27 @@ def test_the_questions_words_say_which_a_candidate_must_hold(db):
 
 # ---------------------------------------------------------------- the scoreboard on the pages
 
-def _questions(tmp_path) -> tuple:
-    folder = tmp_path / "eval"
-    folder.mkdir()
-    (folder / "core20.json").write_text(json.dumps([{"id": "Q01", "question": "115-1 停修"},
-                                                    {"id": "Q02", "question": "怎么退选"}]), encoding="utf-8")
-    (folder / "noanswer22.json").write_text(json.dumps([{"id": "N01", "question": "校車"}]), encoding="utf-8")
-    gold = tmp_path / "gold.json"
-    gold.write_text(json.dumps({"Q01": {"docs": ["d3"]}, "Q02": {"docs": ["dx"]}, "N01": {"docs": ["nothere"]}}),
-                    encoding="utf-8")
-    return folder, gold
-
-
-def _settled(client) -> dict:
-    for _ in range(100):
-        got = client.get("/api/board").json()
-        if got["done"] == got["total"]:
-            return got
-        time.sleep(0.05)
-    raise AssertionError("the board never settled")
-
-
-def test_the_board_is_the_explained_search_of_every_test_question(db, tmp_path):
-    folder, gold = _questions(tmp_path)
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
-                         gold=gold)
-    with TestClient(app, base_url=BASE) as client:
-        got = _settled(client)
-        by_id = {i["id"]: i for i in got["items"]}
-        for qid in by_id:
-            report = client.get("/api/search", params={"qid": qid}).json()
-            assert {k: by_id[qid][k] for k in ("rank", "grade", "stop", "gold")} == board.outcome(report), qid
-        assert by_id["Q01"]["grade"] == board.FIRST and by_id["N01"]["grade"] == board.OUT
-        assert got["counts"][board.FIRST] >= 1 and sum(got["counts"].values()) == 3
-        page = client.get("/search").text
-    assert page.count("class='tile'") == 3 and "data-board='/api/board'" in page
-    assert "data-q='Q01' data-grade='first'><span class='g g-first' data-tip='標準答案第 1 名'>1</span>" in page
-    assert "<b>Q02</b>怎麼退選</span>" in page  # shown in Traditional, as every question is
-    assert "data-board='/api/board'>" in page  # no data-running: nothing left to wait for, the page does not ask again
-    assert "class='seg g-first' data-n='" in page
-
-
-def test_the_board_api_is_only_for_this_machine_and_only_get(db, tmp_path):
-    folder, gold = _questions(tmp_path)
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
-                         gold=gold)
-    with TestClient(app, base_url=BASE) as client:
-        assert client.get("/api/board", headers={"host": "evil.example"}).status_code == 403
-        assert client.post("/api/board").status_code == 405
-        assert client.get("/api/board").headers["cache-control"] == "no-store"
-        _settled(client)
-
-
-def test_a_page_without_test_questions_has_no_board(db, tmp_path):
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
-    with TestClient(app, base_url=BASE) as client:
-        assert "data-board" not in client.get("/tonight").text.split("<script>")[0]
-        assert client.get("/api/board").json()["total"] == 0
-
-
-def test_a_page_draws_without_its_board_when_the_library_file_cannot_be_looked_at(db, tmp_path, monkeypatch):
-    """While a build swaps the library the file may be gone for a moment: the page is still a page."""
-    folder, gold = _questions(tmp_path)
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
-                         gold=gold)
-
-    def gone(self, start=True):
-        raise FileNotFoundError("t.db")
-
-    monkeypatch.setattr(board.Board, "snapshot", gone)
-    with TestClient(app, base_url=BASE) as client:
-        page = client.get("/try")
-        assert page.status_code == 200 and "class='tile'" not in page.text and "沒有設定" in page.text
-        assert client.get("/").status_code == 200
-    assert search_page.board_html(None) == ""
-
-
-def test_the_board_draws_what_is_still_waiting():
-    snapshot = {"total": 3, "done": 1, "running": True, "limit": 10,
-                "counts": {board.FIRST: 1, board.TOP3: 0, board.TOP: 0, board.OUT: 0, board.FAILED: 0},
-                "items": [{"id": "Q01", "question": "停修", "rank": 1, "grade": board.FIRST},
-                          {"id": "Q02", "question": "<b>退选</b>", "rank": None, "grade": board.WAIT},
-                          {"id": "Q03", "question": "校車", "rank": None, "grade": board.WAIT}]}
-    page = search_page.board_html(snapshot)
-    assert " data-running" in page and page.count("data-grade='wait'") == 2
-    # redesign 2026-11-17 (diagnosis.md 搜尋測試 ①): how far the re-run has come, and pending boxes, not grey 「…」
-    assert "data-prog" in page and ">正在重算 1 / 3</span>" in page and "還在算 2 題" not in page
-    assert "<span class='g g-wait' data-tip='還在算'></span>" in page and "…" not in page
-    assert "&lt;b&gt;退選&lt;/b&gt;" in page and "<b>退" not in page  # a question's words are text, never markup
-    assert search_page.board_html({**snapshot, "total": 0, "items": []}) == ""
-
-
-def test_a_finished_board_hides_its_progress_and_the_script_keeps_it_current():
-    snapshot = {"total": 1, "done": 1, "running": False, "limit": 10,
-                "counts": {board.FIRST: 1, board.TOP3: 0, board.TOP: 0, board.OUT: 0, board.FAILED: 0},
-                "items": [{"id": "Q01", "question": "停修", "rank": 1, "grade": board.FIRST}]}
-    page = search_page.board_html(snapshot)
-    assert "data-prog" in page and " hidden>正在重算 1 / 1</span>" in page and " data-running" not in page
-    # the poll fills the progress and gives a filled tile its own floating word (it kept 還在算 before)
-    assert "'正在重算 '+(s.total-waiting)+' / '+s.total" in look.JS and "g.setAttribute('data-tip',SAID(it))" in look.JS
-    assert "'…'" not in look.JS
-
-
-# ---------------------------------------------------------------- the home page
-
 def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
     # owner 11-16: the home says whether every step of the pipeline is normal; since the structure design of 11-17
     # (section 二) it is 今晚, 搜尋測試 is 試用's second tab (the scoreboard on 試用's empty page) and the empty trace is
-    # 文件's box
-    folder, gold = _questions(tmp_path)
-    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, questions=folder,
-                         gold=gold)
+    # 文件's box. 2026-11-22 evening: 每晚運行 is reached from 總覽, the scoreboard is the student questions' and
+    # 文件搜尋 the bar's box
+    student = tmp_path / web.STUDENT_FILE
+    student.parent.mkdir(parents=True)
+    student.write_text(json.dumps({"n": 2, "measured": "2026-11-22T04:10:00", "prev": None,
+                                   "totals": {"raw": {"top1": 1, "top3": 1, "top10": 2}, "agent": {}},
+                                   "questions": [{"id": "O01", "q": "停修", "raw": 1, "agent": None}]}),
+                       encoding="utf-8")
+    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
         home = client.get("/tonight").text
         search = client.get("/search")
         page_of_trace = client.get("/trace")
-        _settled(client)
-    assert "aria-current='page'>每晚運行</a>" in home and "action='/search'" not in home
-    assert str(search.url).endswith("/try#board") and "data-board='/api/board'" in search.text
-    assert "aria-current='page'>測試</a>" in search.text
+    assert "aria-current='true'>總覽</a>" in home and "action='/search'" not in home
+    assert str(search.url).endswith("/try#students") and "id='students'" in search.text  # lands on the board
+    assert "aria-current='page'>搜尋</a>" in search.text and "data-board='" not in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
-    assert "aria-current='page'>文件搜尋</a>" in page_of_trace.text
+    assert "<form class='nk-find nk-on'" in page_of_trace.text
 
 
 def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_on_to_tonight(db, tmp_path):
@@ -286,10 +185,15 @@ def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_on_to_to
         front = client.get("/")
         night = client.get("/?night=2026-11-14", follow_redirects=False)
         fresh = client.get("/?fresh=1", follow_redirects=False)
-        _settled(client)
     assert front.status_code == 200 and "<title>總覽 · 檢視台</title>" in front.text
     assert "aria-current='page'>總覽</a>" in front.text and "href='/tonight'" in front.text
     assert "網站的統計還在算" in front.text  # 網站's numbers are counted in the background: said, not a failure
+    # 2026-11-22 evening: first what needs a look (要處理, the last nights), then 全景 under a divider; how right the
+    # search is lives on 搜尋 and the crawler on 內容
+    first, whole = front.text.split("<h2 class='pn-divider' id='whole'>全景</h2>", 1)
+    assert "id='todo'" in first and "<h2>要處理" in first and "id='todo'" not in whole
+    assert "<h2>每晚運行</h2>" in first  # the nights' card (no night recorded yet: its empty state)
+    assert "搜尋排得準不準" not in front.text and "爬蟲狀態" not in front.text
     assert night.status_code == 307 and night.headers["location"] == "/tonight?night=2026-11-14"
     assert fresh.headers["location"] == "/tonight?fresh=1"
 
@@ -483,3 +387,13 @@ def test_the_test_page_shows_the_new_sets_totals_when_the_file_is_beside_the_rec
         assert "新題庫成績" in page and "不是現在這份庫的成績" in page
         ops.with_name(web.NEWSET_FILE).write_text("{broken", encoding="utf-8")
         assert "新題庫成績" not in client.get("/try").text
+
+
+def test_the_panel_no_longer_runs_the_33_questions(db, tmp_path):
+    """2026-11-22 night (owner: the 33 questions are not needed): no board module, no /api/board, and the
+    explanation tab offers the nightly sample's questions instead."""
+    import importlib.util
+
+    assert importlib.util.find_spec("nknu.ops.board") is None
+    app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY, record=False)
+    assert "/api/board" not in {getattr(r, "path", "") for r in app.routes}

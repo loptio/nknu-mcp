@@ -15,7 +15,7 @@ from pathlib import Path
 from selectolax.lexbor import LexborHTMLParser
 from starlette.testclient import TestClient
 
-from nknu.ops import charts, history, home_page, site_page, tonight_page, web
+from nknu.ops import charts, history, home_page, panorama, site_page, todo, tonight_page, web
 from nknu.ops.pipeline import BAD, CRAWLER, OK, WARN, Step
 from nknu.ops.theme import bar
 from tests.ops.library import models
@@ -103,10 +103,12 @@ def test_the_home_answers_the_five_questions_in_order_without_a_chart_library():
     html = page()
     tree = LexborHTMLParser(html)
     secs = tree.css("section.v3-q")
-    assert [s.attributes["data-q"] for s in secs] == ["1", "2", "3", "4", "5"]
-    assert [s.attributes["data-question"] for s in secs] == [home_page.QUESTIONS[q] for q in range(1, 6)]
+    # the third question (有什麼不正常的？) is answered on 總覽's 要處理 since 2026-11-22 evening
+    assert [s.attributes["data-q"] for s in secs] == ["1", "2", "4", "5"]
+    assert [s.attributes["data-question"] for s in secs] == [home_page.QUESTIONS[q] for q in (1, 2, 4, 5)]
     titles = [(s.css_first(".v3-h h2").text() if s.css_first(".v3-h h2") else "") for s in secs]
-    assert titles == ["", "流程", "問題", "每晚紀錄", "上次換庫的變動"]  # plain nouns
+    assert titles == ["", "流程", "每晚紀錄", "上次換庫的變動"]  # plain nouns
+    assert tree.css_first("#problems") is None
     assert not re.findall(r"<script[^>]* src=", html)  # nothing fetched from outside: the page draws with HTML alone
     assert "pl-flowmap" not in html and "v3-sites" not in html and "各步驟細節" not in html
 
@@ -191,19 +193,33 @@ def test_the_pipeline_is_seven_nodes_and_a_picked_one_shows_its_in_out_and_reaso
     assert no_swap.css_first(".hm-fig").text() == "—"  # nothing known of the swap: no figure, never the last run's words
 
 
+def front_todo(s: dict, t: dict | None = None) -> LexborHTMLParser:
+    """總覽's 要處理 of a reading (the problems' list moved there from 每晚運行 on 2026-11-22 evening)."""
+    t = t or tonight()
+    rows = tonight_page.problems(t, s, [] if not s.get("steps") else tonight_page.handle_rows(s, None))
+    return LexborHTMLParser(panorama.todo_card(todo.collect(None, rows, [], None, {}), not s.get("steps")))
+
+
 def test_every_problem_is_listed_once_where_it_is():
-    tree = LexborHTMLParser(page())
-    rows = [li.text() for li in tree.css("#problems .v3-problems li")]
-    # 流水線's export step and the site it names: one row each, where · state · what the source says (spec 八.5)
-    assert len(rows) == 2 and rows[0].startswith("導出留意有 1 站") and rows[1].startswith("甲處留意新導出")
-    assert not any("交給" in r for r in rows) and tree.css_first("#problems .hm-count").text() == "2"
-    site = tree.css("#problems .v3-problems li")[1].css_first("a")
+    tree = front_todo(snap())
+    items = tree.css("#todo > .pn-tlist li")
+    rows = [li.css_first(".pn-twhat").text() for li in items]
+    # 流水線's export step and the site it names: one row each, where · what the source says (spec 八.5), on 總覽
+    assert len(rows) == 2 and rows[0].startswith("導出有 1 站") and rows[1].startswith("甲處新導出")
+    assert [li.attributes["data-sev"] for li in items] == [WARN, WARN]
+    assert not any("交給" in r for r in rows) and tree.css_first("#todo .pn-tcount").text() == "2"
+    step, site = (li.css_first("a") for li in items)
     assert site.attributes["href"] == "/site?site=a.example" and site.text() == "甲處"
-    calm = LexborHTMLParser(home_page.home_body({**snap(), "steps": [], "sites": []}, tonight(), None, hist(), {}))
-    assert calm.css_first("#problems .v3-none") is None and "正在讀每一步的紀錄" in calm.css_first("#problems").text()
-    none = LexborHTMLParser(home_page.home_body({**snap(), "steps": [snap()["steps"][0]], "sites": []}, tonight(), None,
-                                                hist(), {}))
-    assert "沒有問題" in none.css_first("#problems .v3-none").text() and none.css_first("#problems .hm-count") is None
+    assert step.attributes["href"] == "/tonight#step-export"  # a step opens its panel on 每晚運行
+    # 每晚運行 counts them in its sentence and sends there
+    say = LexborHTMLParser(page()).css_first(".v3-say")
+    assert say.css_first("a").attributes["href"] == "/#todo" and say.text().endswith("有 2 個問題 列在總覽的要處理")
+    calm = front_todo({**snap(), "steps": [], "sites": []})
+    assert calm.css_first(".pn-tnone") is None and "正在讀各步驟的紀錄" in calm.css_first("#todo").text()
+    none = front_todo({**snap(), "steps": [snap()["steps"][0]], "sites": []})
+    assert "沒有要處理的" in none.css_first("#todo .pn-tnone").text() and none.css_first("#todo .pn-tcount") is None
+    assert LexborHTMLParser(home_page.home_body({**snap(), "steps": [snap()["steps"][0]], "sites": []}, tonight(), None,
+                                                hist(), {})).css_first(".v3-say a") is None  # nothing to send to
 
 
 def test_a_row_a_night_shows_each_steps_time_and_what_came_in_and_left():
@@ -245,6 +261,10 @@ def test_the_last_swap_is_three_figures_and_its_sites_the_unexplained_first():
     assert [r.css_first("a").text() for r in rows] == ["甲處", "乙處"]
     assert [td.text() for td in rows[0].css("td")[1:]] == ["4", "2", "3", "✕ 1"]
     assert rows[0].css_first("a").attributes["href"] == "/site?site=a.example"
+    # the night these changes are of lists its sites here, not again in its side panel (2026-11-22 evening)
+    night = tree.css_first("[data-panel='night-2026-11-16']")
+    assert night is not None and night.css_first(".hm-nsites") is None and night.css_first(".hm-counts") is not None
+    assert LexborHTMLParser(page()).css_first("[data-panel='night-2026-11-16'] .hm-nsites") is not None  # none below
     quiet = {**CHANGES, "totals": {**CHANGES["totals"], "unexplained": 0}}
     assert [th.text() for th in LexborHTMLParser(home_page.home_body(snap(), tonight(), quiet, hist(), {})).css(
         "#changes table.hm-t thead th")] == ["網站", "新進", "改了", "離開"]  # no column of zeros
@@ -452,7 +472,9 @@ def test_the_recorder_writes_a_finished_night_the_home_then_draws(db, tmp_path, 
 def test_the_headline_is_one_template_whatever_the_night():
     # spec 八.4: 「{哪一晚}：{最後的狀態}；…；有 P 個問題」, never 正常 beside a mark that is not
     tree = LexborHTMLParser(home_page.home_body(snap(), tonight(), None, hist(), {}))
-    assert tree.css_first(".v3-state b").text() == "完成" and tree.css_first(".v3-say").text() == "11-16 夜：完成；有 2 個問題"
+    assert tree.css_first(".v3-state b").text() == "完成"
+    # the template, then where the problems are listed (總覽's 要處理, since 2026-11-22 evening)
+    assert tree.css_first(".v3-say").text() == "11-16 夜：完成；有 2 個問題 列在總覽的要處理"
     fine = {**snap(), "steps": [snap()["steps"][0]], "sites": []}  # one step read, and normal
     calm = LexborHTMLParser(home_page.home_body(fine, tonight(), None, hist(), {}))
     assert calm.css_first(".v3-state b").text() == "完成" and calm.css_first(".v3-say").text() == "11-16 夜：完成；沒有問題"

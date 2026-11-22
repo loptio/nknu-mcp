@@ -88,8 +88,10 @@ def render(template: str, data: dict) -> bytes:
 class State:
     """The page as last computed, and the thread that keeps it current (start: once; stop: with the app)."""
 
-    def __init__(self, root: Path, template: str | None = None, interval: float = 60.0) -> None:
+    def __init__(self, root: Path, template: str | None = None, interval: float = 60.0,
+                 kept: object | None = None) -> None:
         self.root, self.interval = root, interval
+        self.kept = kept  # nknu.ops.keep.Kept: the data of the same files and day survives a restart (2026-11-22)
         self.template = template if template is not None else PAGE.read_text(encoding="utf-8")
         self.lock = threading.Lock()
         self.page = self.page_gz = self.data = None
@@ -108,6 +110,13 @@ class State:
         self.io_error = ""
         if not self.watch.due(sig):
             return
+        if self.data is None and self.kept is not None:  # after a restart: the same files and day, the same data
+            got = self.kept.get("sites", sig)
+            if isinstance(got, dict) and got.get("sites"):
+                self._show(got)
+                self.watch.finished(sig)
+                log.info("网站总览：用了重启前算好的统计（资料库 %s 建）", got.get("built"))
+                return
         t0 = time.monotonic()
         try:
             data = overview_data.collect(self.root, today=day)
@@ -119,13 +128,19 @@ class State:
             return
         body = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
         data["live"], data["stamp"] = True, hashlib.sha256(body).hexdigest()[:16]
+        self._show(data)
+        if self.kept is not None:
+            self.kept.put("sites", sig, data)
+        self.watch.finished(sig)
+        log.info("网站总览统计完成：%d 个网站，资料库 %s 建，用了 %.1f 秒", len(data["sites"]), data["built"],
+                 time.monotonic() - t0)
+
+    def _show(self, data: dict) -> None:
+        """data drawn into the page the requests get."""
         page = render(self.template, data)
         with self.lock:
             self.data, self.page, self.page_gz = data, page, gzip.compress(page, 6)
             self.stamp, self.built, self.error = data["stamp"], data["built"], ""
-        self.watch.finished(sig)
-        log.info("网站总览统计完成：%d 个网站，资料库 %s 建，用了 %.1f 秒", len(data["sites"]), data["built"],
-                 time.monotonic() - t0)
 
     def start(self) -> None:
         """The thread, once (the app's start, or the first request for the page)."""

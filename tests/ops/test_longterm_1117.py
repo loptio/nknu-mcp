@@ -15,7 +15,7 @@ import pytest
 from selectolax.lexbor import LexborHTMLParser
 from starlette.datastructures import QueryParams
 
-from nknu.ops import home_page, nightly, site_page, tonight_page
+from nknu.ops import home_page, nightly, panorama, site_page, todo, tonight_page
 from nknu.ops.pipeline import PIPE, Where
 from nknu.ops.try_page import TryPage
 from tests.ops.test_nightly import NIGHT, SAID, at, crawler_log, crawler_status, ingest, library, run
@@ -77,6 +77,12 @@ def where(tmp_path) -> Where:
     return Where(root=tmp_path, db=db, archive=tmp_path / "crawl")
 
 
+def todo_rows(t: dict) -> list:
+    """總覽's 要處理 rows of the night once the steps are read (the problems' list moved there from 每晚運行)."""
+    got = todo.collect(None, tonight_page.problems(t, {"steps": []}, []), [], None, {})
+    return LexborHTMLParser(panorama.todo_card(got, False)).css(".pn-tlist li")
+
+
 def test_no_page_says_who_should_fix_anything(where, mcp):
     crawler_log(where, NIGHT, at("2026-11-17T02:06:00"))
     crawler_status(where)
@@ -89,7 +95,11 @@ def test_no_page_says_who_should_fix_anything(where, mcp):
                                detail=detail, changes={"state": "none", "words": ""}, changes_title="", view=None,
                                archive=False, kinds={}, tables="", row=row, hist={"enabled": False, "why": "x"})
     _title, search = TryPage(mcp).page(QueryParams(""))
-    for page in (home, site, search):
+    # 總覽's 要處理, where the problems are listed since 2026-11-22 evening (snap's reasons name a fixer)
+    rows = tonight_page.problems(t, snap(), tonight_page.handle_rows(snap(), None))
+    front = panorama.todo_card(todo.collect(None, rows, [], None, {}), False)
+    assert "甲處" in front and "導出" in front
+    for page in (home, site, search, front):
         assert "交給" not in page and "session" not in page.lower()
         for gone in ("爬蟲可補", "建庫可補", "排程那次"):
             assert gone not in page
@@ -104,7 +114,7 @@ def test_the_headline_is_one_template_and_the_problems_carry_each_sources_own_re
     html = home_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
     tree = LexborHTMLParser(html)
     assert tree.css_first(".v3-say").text() == "11-16 夜：出錯（建庫）；有 1 個問題"
-    rows = [li.text() for li in tree.css(".v3-problems li")]
+    rows = [li.text() for li in todo_rows(t)]  # listed on 總覽's 要處理 since 2026-11-22 evening
     assert len(rows) == 1 and "建庫" in rows[0] and "出錯" in rows[0] and "build_exit_1" in rows[0]
 
 
@@ -117,8 +127,10 @@ def test_an_unknown_code_is_shown_as_it_is_and_lights_the_night(where):
     html = home_page.home_body({"steps": []}, t, None, {"enabled": False, "why": ""}, {})
     tree = LexborHTMLParser(html)
     assert tree.css_first(".v3-state").attributes["data-state"] in ("warn", "bad")
-    text = " ".join(li.text() for li in tree.css(".v3-problems li"))
+    rows = todo_rows(t)  # listed on 總覽's 要處理 since 2026-11-22 evening
+    text = " ".join(li.text() for li in rows)
     assert "exploded" in text and "mystery_code_7" in text and "沒見過" in text
+    assert {li.attributes["data-sev"] for li in rows} <= {"warn", "bad"}  # never drawn as normal
 
 
 def test_a_night_with_three_attempts_draws_three_runs_and_says_nothing_special(where):
@@ -142,7 +154,7 @@ def test_a_night_with_three_attempts_draws_three_runs_and_says_nothing_special(w
 
 def test_the_search_page_builds_its_controls_from_whatever_tools_are_listed(mcp):
     title, body = TryPage(mcp).page(QueryParams(""))
-    assert title == "測試"
+    assert title == "搜尋"
     tree = LexborHTMLParser(body)
     form = tree.css_first("form.sr-form")
     assert form.attributes["data-tool"] == "ask"

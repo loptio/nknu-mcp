@@ -146,10 +146,6 @@ def top_figures(changes: dict | None, parts: dict | None, rows: list[dict]) -> s
         unx = tot.get("unexplained") or 0
         figs += [("新進", tot.get("new") or 0, ""), ("離開", tot.get("left") or 0, ""),
                  ("說不出原因", unx, BAD if unx else OK)]
-    if parts is not None:
-        figs += [("新問題", len(parts["new"]), WARN if parts["new"] else OK), ("之前就有的問題", len(parts["old"]), "")]
-    elif rows:
-        figs.append(("問題", len(rows), WARN))
     if not figs:
         return ""
     return "<p class='hm-top'>" + "".join(
@@ -180,7 +176,9 @@ def status_section(snap: dict, t: dict, changes: dict | None, rows: list[dict], 
     live = " data-live" if t.get("live") else ""
     body = (f"<div class='hm-now' data-tonight='{e(api)}' data-sig='{e(t.get('sig'))}'{live}>"
             f"<div class='v3-state' data-state='{e(state)}'><span class='v3-dot'>{drawing}</span><b>{e(word)}</b></div>"
-            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading, new))}</p>{figs}{fresh}{pause}"
+            f"<div class='v3-main'><p class='v3-say'>{e(said(t, changes, rows, reading, new))}"
+            + (" <a href='/#todo'>列在總覽的要處理</a>" if rows and not reading else "")  # the list lives there since 11-22
+            + f"</p>{figs}{fresh}{pause}"
             "</div></div>")
     return section(1, "now", "", f"<div class='hm-pad'>{body}</div>")
 
@@ -613,7 +611,7 @@ def record_note(hist: dict) -> str:
             "<span class='faint'>只看得到最近 7 晚各步的時間，沒有新進和離開的數</span></p>")
 
 
-def night_panel(r: dict) -> str:
+def night_panel(r: dict, listed_below: str = "") -> str:
     pid = f"night-{r['night']}"
     head = (f"<header><h3>{e(r['title'])}</h3><span class='pill {TONE_PILL.get(r['tone'], 'none')}'>"
             f"{e(r['word'] or TONE_WORDS.get(r['tone'], ''))}</span></header>")
@@ -641,7 +639,7 @@ def night_panel(r: dict) -> str:
                   + (f"<div><dt>庫裡文件</dt><dd><b class='num'>{n(r['docs'])}</b> 份</dd></div>" if r["docs"] else "")
                   + "</dl>")
     sites = ""
-    if r["sites"]:
+    if r["sites"] and r["night"] != listed_below:  # 上次換庫的變動 lists that night's sites already
         order = sorted(r["sites"], key=lambda s: (-(s.get("unexplained") or 0),
                                                   -((s.get("new") or 0) + (s.get("left") or 0)), s.get("name") or s["site"]))
         lis = []
@@ -1175,11 +1173,13 @@ def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dic
     where = {**panels, "#sites": all_href}  # 「看每站的數字」: every site is listed on 網站
     nodes = chain_nodes(snap, t, changes)
     nights = night_rows(t, hist, now)
-    side = "".join(node_panel(x, where) for x in nodes) + "".join(night_panel(r) for r in nights)
+    below = (changes or {}).get("night") or "" if (changes or {}).get("state") == "ready" else ""
+    side = "".join(node_panel(x, where) for x in nodes) + "".join(night_panel(r, below) for r in nights)
     flow = section(2, "flow", "流程", chain_html(nodes))
     when = ""
     if snap.get("at"):
-        when = (f"<p class='hm-foot'>各步驟的紀錄每 5 分鐘讀一次，這次 {e(stamp(snap.get('at')))}"
+        before = "（重啟前讀的）" if snap.get("kept") else ""  # nknu.ops.keep: shown until a new reading ends
+        when = (f"<p class='hm-foot'>各步驟的紀錄每 5 分鐘讀一次，這次 {e(stamp(snap.get('at')))}{before}"
                 + ("（正在重新讀）" if snap.get("running") else " · <a href='/tonight?fresh=1'>現在重讀</a>") + "</p>")
     again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if reading or snap.get("running") else ""
     return (f"<style>{charts.CSS}{SHARED_CSS}{CSS}</style>"
@@ -1188,7 +1188,6 @@ def home_body(snap: dict, t: dict, changes: dict | None, hist: dict, panels: dic
                              figs="" if reading else top_figures(changes, parts, rows))
             + f"<div class='hm' data-home data-first='{e(first_pick(nodes, nights))}'>{flow}"
             + f"<aside class='hm-side' aria-label='選中的步驟或夜晚'>{side}</aside>"
-            + problems_section(rows, reading, parts, (base or {}).get("at") or "", base_note)
             + section(4, "nights", "每晚紀錄", nights_chart(nights) + (
                 f"<details class='hm-table'><summary>看每步花多久的表</summary>{nights_html(nights)}</details>"
                 if any(r["cells"] or r["runs"] for r in nights) else nights_html(nights)) + record_note(hist))

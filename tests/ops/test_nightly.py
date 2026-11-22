@@ -824,8 +824,11 @@ def test_the_api_and_the_home_carry_tonight(db, tmp_path):
         brief = client.get("/api/tonight?brief=1").json()
     assert brief["sig"] == data["sig"] and set(brief["changes"]) <= {"state", "words", "keys", "night", "totals"}
     assert "data-tonight='/api/tonight?brief=1'" in home
-    # the five questions in the spec's order (panels v3 三), then the steps' detail folded
-    assert [home.index(f"data-q='{q}'") for q in range(1, 6)] == sorted(home.index(f"data-q='{q}'") for q in range(1, 6))
+    # the spec's questions in its order (panels v3 三), then the steps' detail folded; the third (問題) is 總覽's
+    # 要處理 since 2026-11-22 evening
+    asked = (1, 2, 4, 5)
+    assert [home.index(f"data-q='{q}'") for q in asked] == sorted(home.index(f"data-q='{q}'") for q in asked)
+    assert "data-q='3'" not in home
     assert "各步驟細節" not in home or home.index("data-q='5'") < home.index("各步驟細節")
 
 

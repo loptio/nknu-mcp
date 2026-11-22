@@ -547,7 +547,9 @@ def shell(title: str, body: str, db: dict, status: int = 200, *, tab: str = "") 
     # 庫建於, not 資料截至: beside a section's 「頁面更新」 a cold reader took two times for one (the lab, 11-17)
     meta = f"<span data-tip='{e(hover)}'>庫建於 {e(built[5:])}</span>" if built else ""
     note = ""
-    if state and state["drift"]:
+    # only where the panel's own copy of the content code computes what is shown (a search's scores, why a document
+    # is not in the library): on every page it was a line nobody read after the first day (2026-11-22 evening)
+    if state and state["drift"] and tab in ("try", "doc"):
         some = "、".join(state["drift"][:3]) + (" 等" if len(state["drift"]) > 3 else "")
         note = (f"<div class='note'>{icon('warn', 16)}<div data-tip='{len(state['drift'])} 個檔不一樣：{e(some)}\n"
                 "照 deploy/lab-inspect/README.md「換程序」重裝一次就一致了'>檢視台的程式和建庫的程式不一樣："

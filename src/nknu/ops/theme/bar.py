@@ -54,12 +54,14 @@ _MODE_JS = ("<script>(()=>{const r=document.documentElement,k='nknu-theme';let s
 # nothing listens on those ports, and every jump failed (2026-11-18). A page opened on one of the serving machine's own
 # ports (panels.json "local") rights such links to that family of ports: the ones in the markup once the page has
 # loaded, the ones a script draws later as the pointer or the keyboard reaches them (before a click, a middle click or
-# the context menu acts on them). Opened through the tunnel it does nothing. %s is ports()'s map as JSON.
+# the context menu acts on them). The find box's form (find_box: 資料庫's sends to 檢視台's /doc) is righted with the
+# links. Opened through the tunnel it does nothing. %s is ports()'s map as JSON.
 _PORT_JS = ("<script>(()=>{const M=%s,H=['127.0.0.1','localhost','[::1]'];"
             "if(!Object.values(M).includes(location.port))return;"
-            "const fix=a=>{if(!a)return;let u;try{u=new URL(a.href)}catch(e){return}"
-            "if(H.includes(u.hostname)&&M[u.port]){u.port=M[u.port];u.hostname=location.hostname;a.href=u.href}};"
-            "const all=()=>document.querySelectorAll('a[href]').forEach(fix);"
+            "const fix=a=>{if(!a)return;const k=a.tagName==='FORM'?'action':'href';let u;try{u=new URL(a[k])}"
+            "catch(e){return}"
+            "if(H.includes(u.hostname)&&M[u.port]){u.port=M[u.port];u.hostname=location.hostname;a[k]=u.href}};"
+            "const all=()=>document.querySelectorAll('a[href],form[action]').forEach(fix);"
             "all();document.addEventListener('DOMContentLoaded',all);"
             "for(const t of['pointerdown','mousedown','focusin','keydown','click','auxclick','contextmenu'])"
             "document.addEventListener(t,e=>fix(e.target&&e.target.closest&&e.target.closest('a[href]')),true)"
@@ -121,12 +123,32 @@ def site_prefix(here: str, folder: Path = HERE) -> str:
 
 
 def _link(item: dict, current: str, here: str, conf: dict, cls: str = "") -> str:
-    """One entry or tool as a link: marked when it is this page; another panel's (資料庫) with the arrow out."""
-    mark = " aria-current='page'" if item["key"] == current else ""
+    """One entry or tool as a link: marked when it is this page (aria-current='page') or the entry this page is reached
+    from (panels.json "within": aria-current='true'); another panel's (資料庫) with the arrow out."""
+    mark = (" aria-current='page'" if item["key"] == current
+            else " aria-current='true'" if conf.get("within", {}).get(current) == item["key"] else "")
     away = " target='_blank' rel='noopener'" if item.get("away") else ""
     out = _OUT if item["host"] != here else ""
     return (f"<a{cls} href='{html.escape(_href(item, here, conf))}' data-tip='{html.escape(item['tip'])}'{mark}{away}>"
             f"{html.escape(item['name'])}{out}</a>")
+
+
+_FIND = ("<svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.6' "
+         "stroke-linecap='round' aria-hidden='true'><circle cx='7' cy='7' r='4.5'/><path d='M10.5 10.5 14 14'/></svg>")
+
+
+def find_box(current: str, here: str, conf: dict) -> str:
+    """The one box that finds a document, an address or a site (panels.json "find": 文件搜尋, /doc), in the bar of every
+    page since 2026-11-22 evening (it was a page of its own whose page was only this box). The page it answers on
+    keeps what was typed (its own box), so the bar's starts empty."""
+    find = conf.get("find")
+    if not find:
+        return ""
+    on = " nk-on" if current == "doc" else ""
+    return (f"<form class='nk-find{on}' role='search' action='{html.escape(_href(find, here, conf))}' method='get'>"
+            f"{_FIND}<input type='search' name='{html.escape(find['name'])}' "
+            f"placeholder='{html.escape(find['placeholder'])}' aria-label='{html.escape(find['placeholder'])}' "
+            f"data-tip='{html.escape(find['tip'])}' autocomplete='off' enterkeyhint='search'></form>")
 
 
 def bar(current: str, here: str, meta: str = "", folder: Path = HERE) -> str:
@@ -148,5 +170,5 @@ def bar(current: str, here: str, meta: str = "", folder: Path = HERE) -> str:
     tail = f"<span class='nk-meta'>{meta}</span>" if meta else ""
     mode = f"<button type='button' class='nk-mode' aria-label='換成深色'>{_MODE}</button>"
     return (f"<header class='nk-bar'><nav class='nk-tabs' aria-label='面板'>{''.join(links)}{more}</nav>"
-            f"<div class='nk-end'>{tail}{mode}</div></header>" + (_MENU_JS if tools else "") + _MODE_JS
+            f"{find_box(current, here, conf)}<div class='nk-end'>{tail}{mode}</div></header>" + (_MENU_JS if tools else "") + _MODE_JS
             + port_js(conf))

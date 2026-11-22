@@ -474,6 +474,15 @@ def test_attachments_that_land_on_a_page_or_the_school_home_are_not_got(more):
     assert got["att-home"]["bucket"] == "gone" and got["att-home"]["result"] == "gone_home"
 
 
+def test_the_classes_reach_the_checks_own_items(more):
+    got = _by_id(pagecheck.check(more.archive, MORE))
+    assert got["att-page"]["cls"] == "fix"  # an attachment that came back a page: the crawler's to look into
+    assert got["loop"]["cls"] == "school"  # a redirect loop: the school's server
+    assert got["js-open"]["cls"] == "school" and got["js-open"]["code"] == "server_down"
+    assert got["data-href"]["cls"] == got["dup"]["cls"] == "fix"
+    assert got["att-home"]["cls"] == "" and got["short-out"]["cls"] == ""  # no miss, no class
+
+
 def test_a_redirect_to_an_address_left_out_takes_its_link_verdict_and_a_loop_fails(more):
     got = _by_id(pagecheck.check(more.archive, MORE))
     assert got["short-out"]["bucket"] == "rule" and got["short-out"]["result"] == "out:social"
@@ -769,3 +778,48 @@ def test_a_stored_file_is_opened_as_it_is_and_a_page_under_the_strictest_policy(
     rec = {"id": 7, "url": "https://x.example/a/規則.docx", "ctype": "application/msword", "body": b"\xd0\xcf\x11\xe0"}
     assert not pagecheck.is_markup(rec["ctype"], rec["body"]) and pagecheck.is_markup("", b"  <html>")
     assert pagecheck.visible_text("<body><script>x()</script><p>甲</p>\n\n<p> 乙 </p><style>p{}</style></body>") == "甲\n乙"
+
+
+def test_the_sweeps_check_says_what_the_whole_check_says_whether_it_reads_the_page_or_keeps_its_read(more,
+                                                                                                   monkeypatch):
+    """pagecheck.check_verdict (網頁核查's sweep, 2026-11-22): the same state, verdict and misses as check, made by the
+    same lookups, from the stored page read now or from its read kept in ops.db (sweep.pack_steps); a record that
+    could not be read is never kept."""
+    from nknu.ops import sweep
+    c = scope.canonical
+    broken = c(SITE + "Broken.aspx")
+    urls = [c(PAGE), c(MORE), c(SITE + "Frames.aspx"), c(SITE + "Big5.aspx"), broken, c(SITE + "News/Report.aspx"),
+            c(SITE + "News/Gone.aspx"), c(SITE + "News/Fail.aspx"), c(SITE + "Nowhere.aspx")]
+    whole = {u: sweep.compact(u, pagecheck.check(more.archive, u).summary) for u in urls}
+    assert {f.state for f in whole.values()} == {"ok", "unreadable", "not_html", "not_fetched", "not_in_ledger"}
+    reads: dict = {}
+    fresh = {u: sweep.compact(u, pagecheck.check_verdict(more.archive, u, reads=reads).summary) for u in urls}
+    assert fresh == whole
+    assert set(reads) == {u for u, f in whole.items() if f.state in ("ok", "not_html")}  # never the unreadable
+    kept = {u: (key, sweep.unpack_steps(sweep.pack_steps(read))) for u, (key, read) in reads.items()}
+    real = pagecheck.read_record
+
+    def read_again(archive, row):
+        assert row["url"] == broken, f"read again: {row['url']}"
+        return real(archive, row)
+
+    monkeypatch.setattr(pagecheck, "read_record", read_again)
+    again = {u: sweep.compact(u, pagecheck.check_verdict(more.archive, u, reads=kept).summary) for u in urls}
+    assert again == whole
+    page = pagecheck.check_verdict(more.archive, c(PAGE), reads=kept)
+    assert {i.n: (i.bucket, i.zone, i.target) for i in page.items} == {
+        i["n"]: (i["bucket"], i["zone"], i["target"]) for i in pagecheck.check(more.archive, c(PAGE)).summary["items"]}
+
+
+def test_a_kept_read_is_read_again_when_the_ledger_points_the_address_at_another_record(more):
+    c = scope.canonical
+    reads: dict = {}
+    pagecheck.check_verdict(more.archive, c(MORE), reads=reads)
+    first = reads[c(MORE)][0]
+    conn = sqlite3.connect(more.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE url SET warc_offset = (SELECT warc_offset FROM url WHERE url = ?) WHERE url = ?",
+                 (c(SITE + "Big5.aspx"), c(MORE)))
+    conn.close()
+    got = pagecheck.check_verdict(more.archive, c(MORE), reads=reads)
+    assert reads[c(MORE)][0] != first and got.summary["verdict"] == pagecheck.check(more.archive, c(MORE)).summary[
+        "verdict"]

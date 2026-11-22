@@ -325,8 +325,10 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     # since 11-17 the bar is the panels' one (nknu/ops/theme): the entries by their tunnel addresses, and 資料庫, a
     # tool, marked in the row and in 更多 (structure design 2026-11-17 section 二; one row since 11-22)
     assert "aria-current='page'>資料庫</a>" in table["nk_bar"] and "<details class='nk-more nk-on'>" in table["nk_bar"]
-    assert "href='http://127.0.0.1:18878/try'" in table["nk_bar"] and "href='http://127.0.0.1:18878/doc'" in table["nk_bar"]
-    assert "data-tip='每個網站收了多少、缺什麼" in table["nk_bar"]  # what each entry is floats over its name
+    assert "href='http://127.0.0.1:18878/try'" in table["nk_bar"] and "href='http://127.0.0.1:18878/sites'" in table["nk_bar"]
+    # 2026-11-22 evening: finding a document is the bar's box on every page, 資料庫's too (to 檢視台's /doc)
+    assert "<form class='nk-find' role='search' action='http://127.0.0.1:18878/doc'" in table["nk_bar"]
+    assert "data-tip='收了什麼、缺什麼" in table["nk_bar"]  # what each entry is floats over its name
     # a site's name on the home's list opens its page in 檢視台; a document's trace too
     assert table["site_page"] == "http://127.0.0.1:18878/site?site=" and table["trace_url"].endswith(":18878/trace?ref=")
     assert "--k0:" in table["nk_theme"] and "--act:" in table["nk_theme"]
@@ -754,9 +756,9 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     committed file, which the lab PC does not hold until the next code sync)."""
     repo, out = tmp_path / "repo", tmp_path / "out"
     files = ("src/nknu/retrieval/hybrid.py", "src/nknu/retrieval/search.py", "src/nknu/retrieval/server.py",
-             "src/nknu/admin/cli.py", "src/nknu/core/models.py", "src/nknu/ops/web.py",
+             "src/nknu/admin/cli.py", "src/nknu/core/models.py", "src/nknu/retrieval/respond.py", "src/nknu/ops/web.py",
              "src/nknu/core/model_service.py", "src/nknu/archive/fetch.py", "deploy/lab-inspect/install.sh",
-             "deploy/lab-inspect/compose.yaml")
+             "deploy/lab-inspect/compose.yaml")  # the first six replace the lab's own (pack.sh CHANGED; respond.py 11-22)
     for name in files:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text("ONE\n", encoding="utf-8")
@@ -770,7 +772,7 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     assert got.returncode == 0, got.stderr
     base = dict(reversed(line.split("  ")) for line in (out / "inspect-code.base.sha256").read_text().splitlines())
     one = hashlib.sha256(b"ONE\n").hexdigest()
-    assert base == {name: one for name in files[:5]}
+    assert base == {name: one for name in files[:6]}
     names = subprocess.run(["tar", "-tf", str(out / "inspect-code.tar")], check=True, capture_output=True, text=True)
     assert "src/nknu/ops/web.py" in names.stdout and "src/nknu/retrieval/hybrid.py" in names.stdout
     assert "src/nknu/archive/fetch.py" in names.stdout  # the crawler's package goes along: 网页核查 calls it

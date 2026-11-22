@@ -80,7 +80,9 @@ html { scroll-padding-top: calc(var(--nk-bar-h) + 8px); }
 .nk-bar { position: sticky; top: 0; z-index: 40; overflow: visible; display: flex; align-items: center; gap: 6px 16px;
   min-height: var(--nk-bar-h); padding: 6px max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter)));
   background: var(--bg); border-bottom: 1px solid var(--line); font: 13px/1.4 var(--font); }
-.nk-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
+/* the entries never wrap to a second row (the sticky parts of pages start --nk-bar-h under the top): the find box
+   shrinks first */
+.nk-tabs { flex: none; display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; }
 /* :link / :visited and the bar's class in front: Datasette's app.css colours every `header a:link` */
 .nk-bar .nk-tabs > a, .nk-bar .nk-tabs > a:link, .nk-bar .nk-tabs > a:visited { display: inline-flex; align-items: center;
   gap: 4px; padding: 5px 11px; border-radius: 8px; color: var(--ink2); text-decoration: none; white-space: nowrap;
@@ -91,6 +93,17 @@ html { scroll-padding-top: calc(var(--nk-bar-h) + 8px); }
 .nk-bar .nk-tabs > a[aria-current], .nk-bar .nk-tabs > a[aria-current]:link, .nk-bar .nk-tabs > a[aria-current]:visited {
   background: var(--act); color: var(--on-act); font-weight: 650; }
 .nk-bar .nk-tabs > a svg { opacity: .6; }
+/* the box that finds a document, an address or a site (bar.find_box, 2026-11-22 evening): between the entries and the
+   end, as wide as there is room for, down to its icon and a sliver on a phone */
+.nk-find { flex: 0 1 280px; min-width: 44px; height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--sunk); color: var(--ink3); }
+.nk-find:focus-within { border-color: var(--line2); background: var(--surface); color: var(--ink2); }
+.nk-find.nk-on { border-color: var(--act); }
+.nk-find svg { flex: none; }
+.nk-bar .nk-find input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent;
+  color: var(--ink); font: 13px/1 var(--font); }
+.nk-bar .nk-find input::placeholder { color: var(--ink3); }
+.nk-bar .nk-find input::-webkit-search-cancel-button { display: none; }
 .nk-sep { flex: none; width: 1px; height: 18px; margin: 0 8px; background: var(--line2); }
 .nk-end { margin-left: auto; display: flex; align-items: center; gap: 4px 12px; min-width: 0; }
 .nk-meta { color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -117,8 +130,10 @@ html { scroll-padding-top: calc(var(--nk-bar-h) + 8px); }
 @media (max-width: 860px) {
   .nk-bar .nk-tabs > a.nk-tool, .nk-sep, .nk-meta { display: none; }
   .nk-more { display: block; }
+  .nk-find { flex: 1 1 44px; }
 }
 @media (max-width: 480px) {
   .nk-bar { gap: 6px 8px; }
+  .nk-find { padding: 0 8px; }
   .nk-bar .nk-tabs > a, .nk-bar .nk-tabs > a:link, .nk-more > summary { padding: 5px 7px; }
 }

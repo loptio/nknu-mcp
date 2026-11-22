@@ -880,27 +880,30 @@ def crawl_step(where: Where) -> Step:
 
 
 def page_check_cells(where: Where, step: Step) -> None:
-    """網頁核查's sweep (in this process: nknu.ops.sweep) as numbers of the crawl step and of every site's row. Neutral
-    on purpose 【Claude】: what it finds is handed to the crawler session in batches (the owner's rule of 11-16), so a
-    long-known miss is a number to see, not an alarm every morning."""
+    """網頁核查's results (nknu.ops.sweep, kept in ops.db since 2026-11-22 night) as numbers of the crawl step and of
+    every site's row: addresses counted once, in the three classes of 網頁核查 (爬蟲能補, 要確認, 學校那邊; owner 11-22:
+    count each address once). A site's cell is what the crawler can fetch and the pages it could not get itself.
+    Neutral on purpose 【Claude】: what it finds is handed to the crawler session in batches (the owner's rule of
+    11-16), so a long-known miss is a number to see, not an alarm every morning."""
     view = where.sweep() if where.sweep else None
     if not view or not view.get("totals"):
         phase = ((view or {}).get("progress") or {}).get("phase")
         if phase in ("reading", "checking"):
-            step.notes.append("網頁核查正在逐頁核對，核完才有每站的漏抓數字")
+            step.notes.append("網頁核查正在核對，核完才有每站的漏抓數字")
         elif where.sweep:
-            step.notes.append("網頁核查還沒跑過（打開「網頁核查」那一頁就會開始，約 17 分鐘）")
+            step.notes.append("網頁核查還沒跑過（打開「網頁核查」那一頁就會開始）")
         return
     totals, progress = view["totals"], view.get("progress") or {}
+    cls = totals.get("cls") or {}
     done = "核完" if progress.get("phase") == "done" else f"核了 {progress.get('done', 0):,}/{progress.get('total', 0):,} 頁"
-    step.notes.append(f"網頁核查（{done}）：正文區有漏 {totals['gap']:,} 頁、沒抓下來 {totals['nofetch']:,} 頁、"
-                      f"要查 {totals['check']:,} 頁")
+    step.notes.append(f"網頁核查（{done}）：爬蟲能補 {cls.get('fix', 0):,} 個網址、要確認 {cls.get('check', 0):,} 個、"
+                      f"學校那邊 {cls.get('school', 0):,} 個；沒抓下來的網頁 {totals.get('nofetch', 0):,} 頁")
     for site in view.get("sites") or []:
-        lost = (site.get("gap") or 0) + (site.get("nofetch") or 0)
-        tip = (f"網頁 {site.get('pages', 0):,} 頁；正文區有漏 {site.get('gap', 0):,}、沒抓下來 {site.get('nofetch', 0):,}、"
-               f"要查 {site.get('check', 0):,}、選單沒抓到的連結 {site.get('menu_links', 0):,}")
-        cell(where, site["key"], "check", lost, tip=tip, sub=f"{site.get('pages', 0):,} 頁裡" if lost else "",
-             name=site.get("name") or "")
+        c = site.get("cls") or {}
+        lost = (c.get("fix") or 0) + (site.get("nofetch") or 0)
+        tip = (f"網頁 {site.get('pages', 0):,} 頁；爬蟲能補 {c.get('fix', 0):,} 個網址、要確認 {c.get('check', 0):,} 個、"
+               f"學校那邊 {c.get('school', 0):,} 個；沒抓下來的網頁 {site.get('nofetch', 0):,} 頁")
+        cell(where, site["key"], "check", lost, tip=tip, sub="個網址、頁" if lost else "", name=site.get("name") or "")
 
 
 # ------------------------------------------------------------------------------------------------ 導出
@@ -1713,30 +1716,48 @@ def previous_reports(kit: Path) -> Path | None:
 
 
 def check_step(where: Where) -> Step:
-    step = Step("check", "品質檢查", "建庫最後跑的兩種檢查：33 題測試題（標準答案排第幾）和 22 項真資料檢查")
-    step.more = [("看 33 題", "board")]
+    """品質檢查: the student questions measured each night after the swap (deploy/lab-pipeline/eval/student_eval.py:
+    a sample of the open half since 2026-11-22, the owner: the 33 questions and their steps are not needed any more)
+    and the build's real-data checks. A warning when the sample's first place or top 10 dropped since the night
+    before, or a real-data check failed that passed before."""
+    step = Step("check", "品質檢查", "換庫後的檢查：每晚抽樣量的學生題（標準答案排第幾）和 22 項真資料檢查")
+    step.more = [("看學生題", "board")]
     built_at = library_facts(where.library)["built_at"]
-    off = offline_metrics(where.pipe / "offline_new_r3.json")
     real = realdata(where.pipe / "checks.md")
-    if off is None and real is None:
+    student = read_json(where.pipe / "student_eval.json")
+    if real is None and not student:
         step.say = "還沒有建庫的檢查結果"
         return step
-    parts = []
-    stale = []
-    if off is not None:
-        q, a = off["question"], off["agent"]
-        if off["built_at"] != built_at:
-            stale.append("33 題")
-        step.into = [("題測試題", int(q.get("n") or 33))]
-        step.out = [("題答案排進前 10", int(q.get("top10") or 0)), ("題排第 1", int(q.get("top1") or 0))]
-        step.figure, step.unit = f"{int(q.get('top10') or 0)}/{int(q.get('n') or 33)}", "題答案排進前 10"
-        step.bar = [int(q.get("top10") or 0), int(q.get("n") or 33)]
-        parts.append(f"33 題測試：答案排第 1 的 {q.get('top1')} 題、前 3 的 {q.get('top3')} 題、前 10 的 {q.get('top10')} 題")
-        step.nums.update(n=int(q.get("n") or 33), top1=q.get("top1"), top3=q.get("top3"), top10=q.get("top10"),
-                         agent={k: a.get(k) for k in ("top1", "top3", "top10")} if a else None)
-        if a:
-            step.notes.append(f"讓 AI 自己改寫問題再搜（agent 重放）：第 1 {a.get('top1')}、前 3 {a.get('top3')}、"
-                              f"前 10 {a.get('top10')} 題")
+    parts: list[str] = []
+    stale: list[str] = []
+    worse: list[str] = []
+    if student and student.get("n"):
+        totals = student.get("totals") or {}
+        n_q, raw, agent = int(student["n"]), totals.get("raw") or {}, totals.get("agent") or {}
+        lib = ((student.get("library") or {}).get("built") or "")[:16]
+        if built_at and lib and lib != str(built_at)[:16]:
+            stale.append("學生題")
+        sample = (student.get("sample") or {}).get("version") or ""
+        step.into = [("題學生題", n_q)]
+        step.out = [("題答案排進前 10", int(raw.get("top10") or 0)), ("題排第 1", int(raw.get("top1") or 0))]
+        step.figure, step.unit = f"{int(raw.get('top10') or 0)}/{n_q}", "題答案排進前 10"
+        step.bar = [int(raw.get("top10") or 0), n_q]
+        parts.append(f"學生題 {n_q} 題（{(student.get('measured') or '')[5:16].replace('T', ' ')} 量"
+                     + (f"，抽樣 {sample}" if sample else "") + f"）：排第 1 的 {raw.get('top1')} 題、前 3 的 "
+                     f"{raw.get('top3')} 題、前 10 的 {raw.get('top10')} 題")
+        step.nums.update(student_n=n_q, student_raw=raw, student_agent=agent, student_sample=sample)
+        if agent:
+            step.notes.append(f"AI 換說法再搜：第 1 {agent.get('top1')}、前 3 {agent.get('top3')}、前 10 {agent.get('top10')} 題")
+        for key, word in (("A", "從文件出的題"), ("C", "新進庫的內容")):
+            g = (student.get("groups") or {}).get(key) or {}
+            if g.get("n"):
+                r = g.get("raw") or {}
+                step.notes.append(f"{word} {g['n']} 題：第 1 {r.get('top1')}、前 10 {r.get('top10')} 題")
+        prev = ((student.get("prev") or {}).get("totals") or {}).get("raw") or {}
+        for k, name in (("top10", "前 10 名"), ("top1", "第 1 名")):
+            now_n, then_n = raw.get(k), prev.get(k)
+            if isinstance(now_n, int) and isinstance(then_n, int) and now_n < then_n:
+                worse.append(f"學生題排{name}的從 {then_n} 題掉到 {now_n} 題")
     if real is not None:
         if real["built_at"] and real["built_at"] != built_at:
             stale.append("真資料檢查")
@@ -1745,37 +1766,21 @@ def check_step(where: Where) -> Step:
             step.nums.update(real_passed=real["passed"], real_total=real["passed"] + real["failed"])
         step.lost = [(f"真資料檢查第 {k} 項：{tw(v)}", 1) for k, v in real["fails"].items()]
         step.lost_label = "沒通過的檢查"
-    say = "；".join(parts)
-    state, fix = OK, ""
-    # 「33 题只当别退步的底线」(the owner's line of 11-08): an alarm only when this build did worse than the one before
-    before = previous_reports(where.pipe / "lab_pc")
-    if before is not None and not stale:
-        old_off = offline_metrics(before / "offline_new_r3.json")
-        old_real = realdata(before / "checks.md")
-        worse = []
-        if off is not None and old_off is not None:
-            for k, name in (("top10", "前 10 名"), ("top3", "前 3 名")):
-                now_n, then_n = off["question"].get(k), old_off["question"].get(k)
-                if isinstance(now_n, int) and isinstance(then_n, int) and now_n < then_n:
-                    worse.append(f"33 題進{name}的從 {then_n} 題掉到 {now_n} 題")
-        if real is not None and old_real is not None:
+        before = previous_reports(where.pipe / "lab_pc")
+        old_real = realdata(before / "checks.md") if before is not None else None
+        if old_real is not None:
             newly = sorted(set(real["fails"]) - set(old_real["fails"]), key=int)
             if newly:
                 worse.append("真資料檢查新冒出沒過的：" + "、".join(f"第 {k} 項" for k in newly))
-        if worse:
-            state, fix = WARN, CONTENT
-            say = "比上一次建庫退步了：" + "；".join(worse)
-        step.notes.append(f"和上一次建庫比（{before.name}）" + ("：沒有退步" if not worse else ""))
+    say = "；".join(parts)
+    state, fix = OK, ""
+    if worse and not stale:
+        state, fix = WARN, CONTENT
+        say = "比前一晚退步了：" + "；".join(worse)
     step.nums["stale"] = bool(stale)
     if stale:
         state = NONE
-        say = "、".join(stale) + " 是上一份庫的結果（新庫的檢查還在跑，換庫後約 50 分鐘才跑完）"
-    board = where.board() if where.board else None
-    if board and board.get("total") and board.get("done") == board.get("total"):
-        c = board["counts"]
-        step.notes.append(f"檢視台今天用今天的日期重跑 33 題：第 1 名 {c.get('first', 0)}、前 3 名 "
-                          f"{c.get('first', 0) + c.get('top3', 0)}、前 10 名 "
-                          f"{c.get('first', 0) + c.get('top3', 0) + c.get('top', 0)} 題")
+        say = "、".join(stale) + " 是上一份庫的結果（學生搜到的庫換過了，新庫的還沒量）"
     step.at = built_at or ""
     step.state, step.say, step.fix = state, say, fix
     return step
@@ -2331,7 +2336,7 @@ class Pipeline:
     """The steps as last read, read again in a background thread when older than every seconds (or when asked)."""
 
     def __init__(self, where: Where, probes: list[tuple[str, str, Callable[[Where], Step]]] | None = None,
-                 every: float = EVERY) -> None:
+                 every: float = EVERY, kept: object | None = None) -> None:
         self.where = where
         self.probes = probes if probes is not None else PROBES
         self.every = every
@@ -2339,6 +2344,11 @@ class Pipeline:
         self._snap: dict | None = None
         self._read_at = 0.0
         self._thread: threading.Thread | None = None
+        # nknu.ops.keep.Kept: the last reading before a restart, shown (said so) until the first new one ends; never
+        # what last() gives, so the nights' record is kept from a reading of this process only (2026-11-22 night)
+        self.kept = kept
+        before = kept.get("pipeline", "last") if kept is not None else None
+        self._before: dict | None = {**before, "kept": True} if isinstance(before, dict) and before.get("steps") else None
 
     def _run(self) -> None:
         started = time.monotonic()
@@ -2357,6 +2367,8 @@ class Pipeline:
                 "site_cols": [c for c in SITE_COLS if any(c[0] in r["cells"] for r in sites)]}
         with self._lock:
             self._snap, self._read_at = snap, time.monotonic()
+        if self.kept is not None:
+            self.kept.put("pipeline", "last", snap)
 
     def snapshot(self, fresh: bool = False) -> dict:
         """The last reading ({'at', 'took', 'state', 'say', 'steps', 'sites', 'site_cols'}, plus 'running': a reading
@@ -2369,7 +2381,8 @@ class Pipeline:
                 self._thread = threading.Thread(target=self._run, name="pipeline", daemon=True)
                 self._thread.start()
                 running = True
-            snap = dict(self._snap) if self._snap else {"steps": [], "state": NONE, "say": "", "at": ""}
+            snap = dict(self._snap) if self._snap else dict(self._before) if self._before else {
+                "steps": [], "state": NONE, "say": "", "at": ""}
         snap["running"] = running
         return snap
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -156,11 +158,14 @@ def test_a_site_merges_one_target_across_its_pages_the_content_area_first(made, 
     view = sw.site_view(ACA)
     total = view["sum"]
     assert (total["pages"], total["gap"], total["menu_links"], total["check"], total["nofetch"]) == (7, 2, 1, 2, 1)
-    fix = [(r["target"], r["zone"], r["pages"]) for r in view["fix"]]
-    assert fix == [(MISSING, "in", 2), (LOST, "out", 4)]  # the deleted page's menu adds nothing
-    first = view["fix"][0]
+    # owner 11-22: each address once, in its class, with on how many pages; the menus' misses apart, counted once
+    assert total["cls"] == {"fix": 1, "check": 1, "school": 0} and total["cls_pages"] == {"fix": 2, "check": 1, "school": 0}
+    misses = [(r["target"], r["zone"], r["pages"], r["cls"], r["kind"]) for r in view["misses"]]
+    assert misses == [(MISSING, "in", 2, "fix", "page"), (THIN, "in", 1, "check", "page")]
+    assert [(r["target"], r["zone"], r["pages"]) for r in view["menu"]] == [(LOST, "out", 4)]  # not the deleted page's
+    first = view["misses"][0]
     assert first["page"] == NEWS1 and first["n"] > 0 and first["text"] == "漏了的辦法"
-    assert [(r["target"], r["bucket"]) for r in view["look"]] == [(THIN, "look")]
+    assert view["misses"][1]["bucket"] == "look" and view["misses"][1]["reason"] == "頁面幾乎是空的"
     assert view["chips"] == {"gap": 2, "menu": 2, "check": 2, "nofetch": 1}  # the deleted page: listed, no chip
     sw.close()
 
@@ -237,7 +242,7 @@ def test_the_site_asked_for_is_checked_first(made, lib):
 
     def checker(archive, url, **kw):
         seen.append(url)
-        return pagecheck.check(archive, url, **kw)
+        return pagecheck.check_verdict(archive, url, **kw)
 
     sw = sweep.Sweep(made.archive, lib, checker=checker)
     sw.prioritize(ACA)  # the larger site, which the sweep's own order puts after the smaller one
@@ -251,7 +256,7 @@ def test_a_page_whose_check_fails_is_listed_under_check_with_the_error_floating(
     def checker(archive, url, **kw):
         if url == NEWS1:
             raise ValueError("讀到一半壞了")
-        return pagecheck.check(archive, url, **kw)
+        return pagecheck.check_verdict(archive, url, **kw)
 
     sw = sweep.Sweep(made.archive, lib, checker=checker)
     sw.ensure()
@@ -270,7 +275,7 @@ def test_a_changed_ledger_is_swept_again_and_the_older_results_show_until_replac
         if sw.gen > 1:
             entered.set()
             assert gate.wait(30)
-        return pagecheck.check(archive, url, **kw)
+        return pagecheck.check_verdict(archive, url, **kw)
 
     sw = sweep.Sweep(made.archive, lib, checker=checker, resweep_seconds=0)
     sw.ensure()
@@ -302,7 +307,7 @@ def test_a_ledger_busy_for_a_moment_never_hides_an_older_real_result(made, lib):
     def checker(archive, url, **kw):
         if sw.gen > 1 and url == NEWS1:
             raise sqlite3.OperationalError("database is locked")
-        return pagecheck.check(archive, url, **kw)
+        return pagecheck.check_verdict(archive, url, **kw)
 
     sw = sweep.Sweep(made.archive, lib, checker=checker, resweep_seconds=0)
     sw.ensure()
@@ -375,7 +380,7 @@ def test_the_schools_page_check_is_its_own_page_and_the_doc_search_opens_on_what
     assert empty.css_first(".dc-try a").attributes["href"].startswith("/doc?q=") and not empty.css("#doc-list .lists")
     assert empty.css_first("a.dc-more").attributes["href"] == "/check" and "已核查" not in empty.text()
     assert "dc-empty" in client.get("/doc/find").json()["html"]
-    assert "已核查 8 頁" in page.text and "正文區有漏" in page.text and "選單沒抓到" in page.text
+    assert "已核查 8 頁" in page.text and "爬蟲能補" in page.text and "選單裡沒抓到" in page.text
     assert "帳本裡沒有這個網址" not in page.text and "<iframe" not in page.text
     assert " title=" not in page.text.split("<main>", 1)[1]
     # the old list's answer (its script's) still answers, its rows now opening a site's page
@@ -405,11 +410,13 @@ def test_a_sites_page_has_its_merged_misses_and_its_pages(client):
     assert tree.css_first(".st-head h1").text() == "教務處"
     start = tree.css_first("h2#check a.btn")
     assert start.text() == "從首頁開始" and start.attributes["data-live-href"] == HOME
-    lists = tree.css(".lists section")
-    fix = lists[0].css("a.prob")
-    assert len(fix) == 2 and "正文區 · 帳本沒有" in fix[0].text() and "2 頁" in fix[0].text() and "選單等" in fix[1].text()
+    panes = tree.css(".ck-tabs .ck-pane")
+    fix = panes[0].css("a.prob")
+    assert len(fix) == 1 and "網頁 · 帳本沒有" in fix[0].text() and "出現在 2 頁" in fix[0].text()
     assert fix[0].attributes["href"].endswith(f"&n={made_n(client)}")
-    assert "很薄的頁" in lists[1].text()
+    assert "很薄的頁" in panes[1].text() and "hidden" in panes[1].attributes
+    menu = tree.css_first("details.ck-menu")  # the menus' miss: a small line under the tiles that opens its list
+    assert "選單裡沒抓到 1 個連結" in menu.css_first("summary").text() and "選單等" in menu.css_first("a.prob").text()
     rows = tree.css("#chk-rows a.prow")
     assert [r.css_first(".pn").text() for r in rows[:2]] == ["第一則消息", "第二則消息"]
     assert rows[0].css_first(".pill").text() == "正文區有漏"
@@ -573,30 +580,119 @@ def test_school_text_is_escaped_everywhere(made, lib, tmp_path):
 
 # ---------------------------------------------------------------- 11-16 evening: the second round of the page check
 
-def test_the_entry_lists_the_schools_misses_merged_across_sites_the_most_pages_first():
-    def row(key, pages, zone="in", bucket="missing", text="", page="p"):
-        return {"key": key, "target": key, "text": text, "zone": zone, "bucket": bucket, "reason": "", "what": "link",
-                "tip": "", "page": page, "n": 1, "pages": pages, "last": ""}
+def _row(key, pages, *, zone="in", bucket="missing", text="", page="p", what="link", target=None, cls="fix"):
+    """A site's merged row as sweep.merge_problems makes it."""
+    target = key if target is None else target
+    return {"key": key, "target": target, "text": text, "zone": zone, "bucket": bucket, "reason": "", "what": what,
+            "tip": "", "page": page, "n": 1, "pages": pages, "last": "", "cls": cls,
+            "kind": pagecheck.miss_kind(what, target)}
+
+
+def _data(*rows, menu=(), pages=None) -> sweep.SiteData:
+    misses = sorted(rows, key=sweep.list_order)
+    return sweep.SiteData(misses=misses, menu=list(menu), cls_pages=pages or {},
+                          cls={k: sum(r["cls"] == k for r in misses) for k in sweep.CLASS_KEYS})
+
+
+def test_the_entry_lists_the_schools_misses_merged_across_sites_each_address_once():
     one, two = sweep.Site("a", "甲站", "", True, ()), sweep.Site("b", "乙站", "", True, ())
-    first = sweep.SiteData(fix=[row("https://x.example/1", 3, page="a1"), row("https://x.example/m", 50, zone="out")],
-                           look=[row("https://x.example/thin", 2, bucket="look")])
-    second = sweep.SiteData(fix=[row("https://x.example/1", 5, page="b1", text="辦法"),
-                                 row("https://x.example/2", 4, zone="files")])
+    m = _row("https://x.example/m", 50, zone="out")
+    first = _data(_row("https://x.example/1.pdf", 3, page="a1"), _row("https://x.example/thin", 2, bucket="look",
+                                                                       cls="check"), menu=[m], pages={"fix": 3, "check": 2})
+    second = _data(_row("https://x.example/1.pdf", 5, page="b1", text="辦法"), _row("https://x.example/2", 4, zone="files"),
+                   menu=[m], pages={"fix": 7})
     top = sweep.school_problems([(one, first), (two, second)], limit=1)
-    assert top["n_fix"] == 2 and top["n_look"] == 1  # a menu's miss is the site page's, not the entry's
-    got = top["fix"][0]
-    assert (got["target"], got["pages"], got["sites"]) == ("https://x.example/1", 8, 2)
+    assert top["n"] == {"fix": 2, "check": 1, "school": 0}  # a menu's miss is no tile's: counted apart, once
+    assert top["menu"] == 1 and top["pages"] == {"fix": 10, "check": 2, "school": 0}
+    got = top["rows"]["fix"][0]
+    assert (got["target"], got["pages"], got["sites"], got["kind"]) == ("https://x.example/1.pdf", 8, 2, "file")
     assert (got["site_name"], got["page"], got["text"]) == ("乙站", "b1", "辦法")  # opens the site that has it most
-    assert len(top["fix"]) == 1
+    assert len(top["rows"]["fix"]) == 1
+
+
+def test_one_address_on_thousands_of_pages_counts_once_and_never_heads_the_list():
+    """The lab, 11-22: 「高師大官網 7,859 頁 · 課程查詢系統 等 62 個網站 · 正文區 · 失敗」 was one address heading the
+    school's list (the school's homepage taken for a file: not_file), 「Hide Document Map」 a report viewer's button."""
+    home = "https://w3.nknu.edu.tw/"
+    sites = []
+    for i in range(62):
+        site = sweep.Site(f"s{i}", f"站{i}", "", True, ())
+        rows = [_row(home, 7859 // 62 + (i < 7859 % 62), bucket="failed", text="高師大官網")]
+        if i == 0:
+            rows += [_row("https://x.example/rule.pdf", 2, text="辦法"), _row("https://x.example/a.aspx", 3, text="一頁"),
+                     _row("https://x.example/p.png", 9, what="image"),
+                     _row("button|Hide Document Map", 423, what="button", target="", text="Hide Document Map",
+                          bucket="missing", cls="check")]
+        sites.append((site, _data(*rows, pages={"fix": 7859 if i == 0 else 0})))
+    top = sweep.school_problems(sites)
+    assert top["n"]["fix"] == 4  # the homepage once, not 7,859 times; the button is no 爬蟲能補
+    fix = [(r["target"], r["kind"], r["sites"], r["pages"]) for r in top["rows"]["fix"]]
+    assert fix == [("https://x.example/rule.pdf", "file", 1, 2), (home, "page", 62, 7859),
+                   ("https://x.example/a.aspx", "page", 1, 3), ("https://x.example/p.png", "image", 1, 9)]
+    assert [(r["text"], r["kind"]) for r in top["rows"]["check"]] == [("Hide Document Map", "button")]
+    rows = [_row("button|查詢", 900, what="button", target="", text="查詢", cls="check"),
+            _row("https://x.example/thin", 1, bucket="look", cls="check")]
+    assert [r["kind"] for r in sorted(rows, key=sweep.list_order)] == ["page", "button"]  # buttons last
+
+
+def test_the_class_of_a_miss_follows_the_owners_three_groups():
+    c = pagecheck.miss_class
+    # the crawler's: no record in the ledger, a failure of ours
+    assert c("missing") == c("missing", "image", "not_discovered") == "fix"
+    assert c("failed", "link", "not_file") == "fix"  # the school's homepage taken for a file
+    assert c("failed", "link", "failed", "timeout") == c("failed", "link", "failed", "tls") == "fix"
+    assert c("failed", "link", "failed", "net_ReadError") == c("failed", "link", "lab", "connect") == "fix"
+    # 11-22 evening: a host no name server knows is a dead link on the school's page; a wrong certificate the site's
+    assert c("failed", "link", "lab", "dns") == c("failed", "link", "failed", "tls_cert") == "school"
+    assert c("failed", "link", "http_4xx", "http_400") == c("failed", "link", "parked", "denied_dir") == "fix"
+    assert c("failed", "link", "api_quota") == "fix"
+    # the school's: sign-in and refusals, deletions and broken links, its error pages and servers, Google's
+    assert c("failed", "link", "refused", "http_403") == c("failed", "link", "server_error") == "school"
+    assert c("failed", "link", "failed", "connect") == c("failed", "link", "failed", "server_down") == "school"
+    assert c("failed", "link", "failed", "http_503") == "school"
+    assert c("failed", "link", "not_file", "not_file:saying:gone_page") == "school"
+    assert c("failed", "link", "not_file", "out:error_page") == "school"  # a file link sent to the school's error page
+    assert c("review", "link", "api_error", "api:notFound") == c("review", "link", "api_error", "api:cannotDownloadFile")
+    assert c("review", "link", "api_error", "api:notFound") == "school"
+    # to look at: doubtful content, a writing nobody decided, Google's other answers, and every button
+    assert c("look", "link", "thin") == c("review", "link", "unhandled:google") == "check"
+    assert c("review", "link", "api_error", "api:automated_queries") == "check"
+    for bucket in pagecheck.PROBLEMS:
+        assert c(bucket, "button", "refused") == c(bucket, "button") == "check"
+    assert c("got") == c("rule", "link", "gone") == ""  # what no list shows has no class
+    assert [k for k, _n, _t in pagecheck.CLASSES] == ["fix", "check", "school"]  # the tabs' order
+
+
+def test_what_a_miss_is_is_read_from_its_address():
+    k = pagecheck.miss_kind
+    assert k("link", "https://x.example/a/rule.PDF") == k("link", "https://drive.google.com/file/d/1a/view") == "file"
+    assert k("link", "https://sso.nknu.edu.tw/news/attachedfile.aspx?x=1") == "file"
+    assert k("link", "https://docs.google.com/document/d/1a/edit") == "file"
+    assert k("link", "https://docs.google.com/forms/d/1a/viewform") == k("link", "https://w3.nknu.edu.tw/") == "page"
+    assert k("link", "https://x.example/p.jpg") == k("image", "https://x.example/a.pdf") == "image"
+    assert k("button", "") == "button" and k("link", "") == "page"
+    assert [w for _k, w in pagecheck.KINDS] == ["檔案", "網頁", "圖片", "按鈕"]
+
+
+def test_a_check_without_a_class_is_classed_when_it_is_kept():
+    summary = {"state": "ok", "verdict": {"fix": {"in": 1}}, "problems": [
+        {"target": "https://x.example/a", "zone": "in", "bucket": "failed", "result": "refused", "what": "link"},
+        {"target": "https://x.example/b", "zone": "in", "bucket": "failed", "result": "not_file", "what": "link"}]}
+    kept = sweep.compact("https://x.example/", summary).problems
+    assert [p.cls for p in kept] == ["school", "fix"]
+    assert kept[1].reason == "應該是檔案，回來不是"  # no reason of its own: the result's words, not the bucket's 失敗
 
 
 def test_the_entry_shows_the_schools_lists_and_its_old_list_still_sorts(client):
     tree = LexborHTMLParser(client.get("/check").text)
-    lists = tree.css("#doc-list .lists section")
-    assert len(lists) == 2 and "漏了的辦法" in lists[0].text() and "教務處 · 正文區 · 帳本沒有" in lists[0].text()
-    assert "很薄的頁" in lists[1].text() and "選單沒抓到" not in lists[0].text()
+    tabs = tree.css("#doc-list .ck-tabs [role=tab]")
+    assert [t.text() for t in tabs] == ["爬蟲能補1", "要確認1", "學校那邊0"]
+    panes = tree.css("#doc-list .ck-tabs .ck-pane")
+    assert len(panes) == 3 and "漏了的辦法" in panes[0].text() and "網頁 · 教務處 · 帳本沒有" in panes[0].text()
+    assert "很薄的頁" in panes[1].text() and "選單" not in panes[0].text()  # a menu's miss: the site page's
+    assert "選單裡沒抓到 1 個連結" in tree.css_first("#doc-list .ck-notes").text()
     # the part its script asks for again
-    assert client.get("/doc/find", params={"school": "1"}).json()["html"].count("class='lists") == 1
+    assert client.get("/doc/find", params={"school": "1"}).json()["html"].count("class='card pad ck-tabs'") == 1
     listed = LexborHTMLParser(client.get("/check/list", params={"sort": "check"}).json()["html"])
     check = next(a for a in listed.css(".sl-head a") if a.text() == "要查")
     assert check.attributes["aria-pressed"] == "true"
@@ -639,14 +735,13 @@ def test_a_nameless_image_or_frame_is_named_by_its_file_or_its_host():
 
 
 def test_buttons_merge_by_their_words_on_one_site_only_and_a_wordless_one_is_its_own():
-    def row(key, target="", text="", page="p"):
-        return {"key": key, "target": target, "text": text, "zone": "in", "bucket": "failed", "reason": "",
-                "what": "button", "tip": "", "page": page, "n": 1, "pages": 1, "last": ""}
+    def row(key, text=""):
+        return _row(key, 1, bucket="failed", what="button", target="", text=text, cls="check")
     one, two = sweep.Site("a", "甲站", "", True, ()), sweep.Site("b", "乙站", "", True, ())
-    first = sweep.SiteData(fix=[row("button|查詢", text="查詢"), row("button|https://a/1#3")])
-    second = sweep.SiteData(fix=[row("button|查詢", text="查詢"), row("button|https://b/1#3")])
+    first = _data(row("button|查詢", text="查詢"), row("button|https://a/1#3"))
+    second = _data(row("button|查詢", text="查詢"), row("button|https://b/1#3"))
     top = sweep.school_problems([(one, first), (two, second)])
-    assert top["n_fix"] == 4 and all(r["sites"] == 1 for r in top["fix"])
+    assert top["n"]["check"] == 4 and all(r["sites"] == 1 for r in top["rows"]["check"])
 
 
 def test_an_older_result_is_not_dimmed_and_a_checked_page_names_its_tab_by_the_page(client):
@@ -669,7 +764,8 @@ def test_a_merged_row_opens_in_place_with_its_pages_and_the_archived_page_flashe
     assert sw.item_view(ACA, "https://nowhere.example/") is None and sw.item_view(ACA, "") is None
     got = client.get("/check/item", params={"site": ACA, "key": MISSING})
     tree = LexborHTMLParser(got.json()["html"])
-    assert tree.css_first("h2").text() == "漏了的辦法" and "出現在" in tree.text() and "爬蟲可補" in tree.text()
+    assert tree.css_first("h2").text() == "漏了的辦法" and "出現在" in tree.text() and "爬蟲能補" in tree.text()
+    assert "網頁" in tree.css_first(".dr-tags").text()  # what it is, as its row says
     frame = tree.css_first("iframe.dr-frame")
     assert frame.attributes["src"] == "/check/raw?" + urlencode({"url": NEWS1})
     assert frame.attributes["data-flash"] == str(made_n(client)) and frame.attributes["sandbox"] == "allow-same-origin"
@@ -687,9 +783,9 @@ def test_the_rows_open_the_drawer_and_never_the_school_window(client):
         rows = tree.css("a.prob.two")
         assert rows and all(r.attributes.get("data-key") for r in rows)
         assert not any("data-live-href" in r.attributes for r in rows)
-    site_row = LexborHTMLParser(client.get("/check", params={"site": ACA}).text).css_first("a.prob.two")
+    site_row = LexborHTMLParser(client.get("/check", params={"site": ACA}).text).css_first(".ck-tabs a.prob.two")
     assert site_row.attributes["data-site"] == ACA and site_row.attributes["data-key"] == MISSING
-    entry_row = LexborHTMLParser(client.get("/check").text).css_first("a.prob.two")
+    entry_row = LexborHTMLParser(client.get("/check").text).css_first(".ck-tabs a.prob.two")
     assert entry_row.attributes["data-site"] == ""  # an address: the drawer lists every site's pages
 
 
@@ -708,11 +804,14 @@ def test_the_deciding_numbers_are_four_tiles_never_a_line_joined_by_dots(client)
     from nknu.ops.check_sites import summary_line
     tree = LexborHTMLParser(client.get("/check").text)
     tiles = tree.css("#doc-list .sv .ck-fig")
-    assert [t.css_first(".ck-w").text() for t in tiles] == ["正文區有漏", "選單沒抓到", "要查", "沒抓下來"]
-    assert [t.css_first("b").text() for t in tiles] == ["2", "1", "2", "1"]
+    # owner 11-22: the misses counted once each in their three classes, on how many pages they are under each
+    assert [t.css_first(".ck-w").text() for t in tiles] == ["爬蟲能補", "要確認", "學校那邊", "沒抓下來"]
+    assert [t.css_first("b").text() for t in tiles] == ["1", "1", "0", "1"]
+    assert [t.css_first("small").text() for t in tiles] == ["個網址", "個", "個", "頁"]
+    assert [(s.text() if (s := t.css_first(".ck-s")) else "") for t in tiles] == ["出現在 2 頁", "出現在 1 頁", "", ""]
     assert all(t.attributes.get("data-tip") for t in tiles) and "class='sep'" not in tree.html
     assert tree.css_first("#doc-list .sv .sv-line .hd").text() == "已核查 8 頁"
-    zero = summary_line({"phase": "done", "ready": True}, {"pages": 3, "checked": 3, "gap": 0, "menu_links": 4})
+    zero = summary_line({"phase": "done", "ready": True}, {"pages": 3, "checked": 3, "cls": {"fix": 2}, "menu": 4})
     assert "class='ck-fig z'" in zero and "class='ck-fig'" in zero  # a 0 is faint, a count violet
     running = summary_line({"phase": "checking", "running": True, "ready": True, "done": 1, "total": 4},
                            {"pages": 4, "checked": 1, "gap": 1})
@@ -756,7 +855,7 @@ def test_one_sites_page_holds_everything_about_it_in_order(client):
     client.get("/site", params={"site": ACA})
     client.app_state.kinds.wait(10)
     page = client.get("/site", params={"site": ACA})
-    assert page.status_code == 200 and "aria-current='page'>網站</a>" in page.text  # a site's page is 網站's
+    assert page.status_code == 200 and "aria-current='page'>內容</a>" in page.text  # a site's page is 內容's
     tree = LexborHTMLParser(page.text)
     head = tree.css_first(".st-head h1")
     assert head.text() == "教務處" and ACA in head.attributes["data-tip"] and HOME in head.attributes["data-tip"]
@@ -822,3 +921,207 @@ def test_a_sweep_is_not_started_while_the_nightly_update_fetches_and_the_pages_s
     assert "每晚更新在跑，先看上次的結果" in line and "已核查 8 頁" in line
     sw.ensure()
     assert sw.wait(30) and sw.gen == 2 and not sw.progress()["held"]
+
+
+# ---------------------------------------------------------------- owner 11-22: three classes, each address once
+
+def test_the_list_is_three_tabs_that_switch_in_place():
+    from nknu.ops.check_sites import MERGED_SHOWN, SITES_JS, miss_tabs
+    rows = {"fix": [{**_row(f"https://x.example/{i}.pdf", 1), "site_name": "甲站", "sites": 1, "site": "a"}
+                    for i in range(MERGED_SHOWN + 5)],
+            "check": [{**_row("button|匯出PDF", 421, what="button", target="", text="匯出PDF", cls="check"),
+                       "site_name": "甲站", "sites": 1, "site": "a"}]}
+    html = miss_tabs(rows, {"fix": MERGED_SHOWN + 7, "check": 1, "school": 0}, {"fix": 9, "check": 421, "school": 0},
+                     group="school", empty={"school": "沒有學校那邊的"}, school=True)
+    tree = LexborHTMLParser(html)
+    box = tree.css_first("section.ck-tabs")
+    assert box.attributes["data-tabs"] == "school" and box.css_first(".ck-tabbar").attributes["role"] == "tablist"
+    tabs = box.css("[role=tab]")
+    assert [(t.attributes["data-tab"], t.attributes["aria-selected"]) for t in tabs] == [
+        ("fix", "true"), ("check", "false"), ("school", "false")]  # 爬蟲能補 first, shown
+    assert [t.css_first("b").text() for t in tabs] == [f"{MERGED_SHOWN + 7:,}", "1", "0"]
+    panes = box.css("[role=tabpanel]")
+    assert [p.attributes["id"] for p in panes] == [t.attributes["aria-controls"] for t in tabs]
+    assert ["hidden" in p.attributes for p in panes] == [False, True, True]
+    assert len(panes[0].css("a.prob")) == MERGED_SHOWN and "還有 7 條沒列出" in panes[0].text()
+    button = panes[1].css_first("a.prob")
+    assert "按鈕 · 甲站 · 帳本沒有" in button.text() and "出現在 421 頁" in button.text()
+    assert "沒有學校那邊的" in panes[2].text()
+    # the page's script switches them without a reload and keeps the one picked when the sweep draws the list again
+    assert "[data-tabs] [role=tab]" in SITES_JS and "MutationObserver" in SITES_JS and "ArrowRight" in SITES_JS
+
+
+
+# ---------------------------------------------------------------- kept in ops.db (owner 2026-11-22: 「改」)
+
+FIVE_AM = datetime(2026, 11, 22, 5, 0, tzinfo=pagecheck.TAIPEI).timestamp()  # night 11-21 (nightly.night_of)
+
+
+def kept_sweep(made, lib, ops: Path, **kw) -> sweep.Sweep:
+    """A sweep kept in ops (no watcher thread: the tests call tick), its first sweep run to its end."""
+    kw.setdefault("watch_seconds", 0)
+    sw = sweep.Sweep(made.archive, lib, ops_db=ops, **kw)
+    if sw.listing is None:
+        sw.ensure()
+        assert sw.wait(30)
+    return sw
+
+
+def _same(f: sweep.Found) -> tuple:
+    return f.state, f.fix, f.check, f.next, f.problems, f.more
+
+
+def _whole(made, url: str) -> tuple:
+    """What a whole check of the page (the opened page's) leaves for the lists."""
+    return _same(sweep.compact(url, pagecheck.check(made.archive, url).summary))
+
+
+def test_the_results_are_on_the_pages_at_once_after_a_restart_and_nothing_is_checked_again(made, lib, tmp_path):
+    ops = tmp_path / "ops" / "ops.db"
+    first = kept_sweep(made, lib, ops)
+    before, totals = {u: _same(f) for u, f in first.found.items()}, first.overview()["totals"]
+    first.close()
+    seen: list[str] = []
+
+    def checker(archive, url, **kw):
+        seen.append(url)
+        return pagecheck.check_verdict(archive, url, **kw)
+
+    again = sweep.Sweep(made.archive, lib, ops_db=ops, checker=checker, watch_seconds=0)
+    progress = again.progress()
+    assert progress["ready"] and progress["phase"] == "done" and progress["at"]  # no 正在讀帳本: drawn at once
+    assert not progress["stale"] and not progress["running"]
+    assert {u: _same(f) for u, f in again.found.items()} == before and again.overview()["totals"] == totals
+    assert again.listing.names[NEWS1] == "第一則消息" and again.site_view(ACA)["sum"]["gap"] == 2
+    again.ensure()  # the ledger is the one they were checked over: nothing to do
+    assert again.thread is None and again.gen == first.gen and seen == []
+    html = school_section(again.overview())
+    assert "正在讀帳本" not in html and f"{progress['at']} 核查完" in html
+    again.close()
+
+
+def test_a_page_whose_stored_copy_changed_is_read_again_and_the_others_only_looked_up(made, lib, tmp_path,
+                                                                                      monkeypatch):
+    ops = tmp_path / "ops.db"
+    kept_sweep(made, lib, ops).close()
+    offset, = _records(made.archive / WARC, [(NEWS2, "200", [("Content-Type", "text/html; charset=utf-8")],
+                                              _page(MENU, '<a href="Thin.aspx">很薄的頁</a>'))])
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    conn.execute("UPDATE url SET warc_offset = ? WHERE url = ?", (offset, NEWS2))  # the crawl fetched it again
+    conn.close()
+    read: list[str] = []
+    real = pagecheck.read_record
+    monkeypatch.setattr(pagecheck, "read_record", lambda archive, row: (read.append(row["url"]), real(archive, row))[1])
+    sw = kept_sweep(made, lib, ops, resweep_seconds=0)
+    assert sw.found[NEWS2].fix[0] == 1  # the kept result shows until the page is checked again
+    sw.ensure()
+    assert sw.wait(30) and sw.phase == "done"
+    assert read == [NEWS2]  # one page read again; the six others looked up from what was kept
+    assert sw.found[NEWS2].fix[0] == 0 and not any(p.target == MISSING for p in sw.found[NEWS2].problems)
+    assert all(_same(f) == _whole(made, u) for u, f in sw.found.items())  # what a whole check says, page by page
+    sw.close()
+
+
+def test_an_address_the_ledger_now_has_changes_the_verdict_of_the_pages_linking_it(made, lib, tmp_path):
+    ops = tmp_path / "ops.db"
+    first = kept_sweep(made, lib, ops)
+    assert first.found[NEWS1].fix[0] == 1 and first.site_view(ACA)["sum"]["gap"] == 2  # 漏了的辦法 is missing
+    first.close()
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    _url(conn, MISSING)  # the crawl found it: neither page's own copy changed
+    conn.close()
+    sw = kept_sweep(made, lib, ops, resweep_seconds=0)
+    sw.ensure()
+    assert sw.wait(30)
+    assert sw.found[NEWS1].fix[0] == 0 and sw.found[NEWS2].fix[0] == 0 and sw.site_view(ACA)["sum"]["gap"] == 0
+    assert all(_same(f) == _whole(made, u) for u, f in sw.found.items())
+    sw.close()
+    third = sweep.Sweep(made.archive, lib, ops_db=ops, watch_seconds=0)  # and so it stays after a restart
+    assert third.found[NEWS1].fix[0] == 0 and third.phase == "done"
+    third.close()
+
+
+def test_a_changed_ledger_waits_until_it_is_quiet_and_never_while_the_nightly_update_fetches(made, lib, tmp_path):
+    ops = tmp_path / "ops.db"
+    kept_sweep(made, lib, ops).close()
+    conn = sqlite3.connect(made.archive / pagecheck.LEDGER, isolation_level=None)
+    _url(conn, MISSING)
+    conn.close()
+    later = {"s": 0.0}
+    fetching = {"now": True}
+    sw = sweep.Sweep(made.archive, lib, ops_db=ops, watch_seconds=0, hold=lambda: fetching["now"],
+                     wall=lambda: time.time() + later["s"])
+    sw.tick()  # the crawler wrote a moment ago, and the nightly update is fetching
+    assert sw.thread is None and sw.progress()["held"]
+    fetching["now"] = False
+    sw.tick()  # not fetching, but the ledger was written a moment ago: not quiet yet
+    assert sw.thread is None and not sw.progress()["held"] and sw.progress()["stale"]
+    assert "稍後重新核查" in school_section(sw.overview())  # the kept results, said to be of an older ledger
+    later["s"] = sweep.QUIET_SECONDS + 1
+    sw.tick()
+    assert sw.thread is not None and sw.wait(30) and sw.found[NEWS1].fix[0] == 0
+    sw.close()
+
+
+def test_one_record_a_night_of_the_schools_totals_and_the_entry_draws_them(made, lib, tmp_path):
+    ops = tmp_path / "ops.db"
+    clock = {"t": FIVE_AM}
+    sw = kept_sweep(made, lib, ops, wall=lambda: clock["t"])
+    totals = sw.overview()["totals"]
+    rec = sw.store.night("2026-11-21")
+    assert rec is not None and rec["run"] == sw.gen and rec["at"].startswith("2026-11-22T05:00")
+    assert (rec["cls_fix"], rec["cls_check"], rec["cls_school"]) == tuple(totals["cls"][k] for k in sweep.CLASS_KEYS)
+    assert (rec["pages_fix"], rec["menu"], rec["nofetch"], rec["pages"]) == (
+        totals["cls_pages"]["fix"], totals["menu"], totals["nofetch"], totals["pages"])
+    assert rec["cls_fix"] == 1 and rec["pages_fix"] == 2  # 漏了的辦法, once, on two pages
+    clock["t"] += 86400  # the next night, the ledger untouched: the watcher keeps its record too
+    sw.tick()
+    assert sw.thread is not None and sw.store.night("2026-11-22")["cls_fix"] == 1
+    hist = sw.overview()["history"]
+    assert hist["enabled"] and len(hist["days"]) == sweep.NIGHTS_SHOWN and hist["days"][-1] == "2026-11-22"
+    assert [n is not None for n in hist["nights"][-3:]] == [False, True, True]
+    tree = LexborHTMLParser(school_section(sw.overview()))
+    trend = tree.css_first(".ck-trend")
+    assert "最近 14 晚" in trend.text() and [p.css_first(".ck-tr-h").text() for p in trend.css(".ck-tr")] == [
+        "爬蟲能補1", "要確認1", "學校那邊0"]
+    bars = trend.css(".ck-tr")[0].css(".ck-bars i")
+    assert len(bars) == 14 and [b.attributes.get("class") for b in bars[-3:]] == ["none", None, "last"]
+    assert "11-22 夜" == bars[-1].attributes["data-tip-h"] and "爬蟲能補 1 個，出現在 2 頁" in bars[-1].attributes["data-tip"]
+    assert [r.css_first("td").text() for r in trend.css("tbody tr")] == ["11-22 夜", "11-21 夜"]
+    sw.close()
+
+
+def test_without_a_file_nothing_is_kept_and_no_trend_is_drawn(made, lib, tmp_path):
+    sw = swept(made, lib)
+    view = sw.overview()
+    assert sw.kept is None and not view["history"]["enabled"] and sw.watcher is None
+    assert "ck-trend" not in school_section(view)
+    sw.close()
+    assert not any(tmp_path.rglob("ops.db"))
+
+
+def test_the_panel_keeps_the_sweep_in_its_own_file_and_a_restarted_panel_draws_it_at_once(made, lib, tmp_path,
+                                                                                          tmp_path_factory):
+    ops = tmp_path_factory.mktemp("ops") / "ops.db"  # its own volume: never under the library's root (history.Store)
+    app = web.create_app(lib, tmp_path, models=models(), today_fn=lambda: TODAY, archive=made.archive, ops_db=ops,
+                         record=False)
+    with TestClient(app, base_url="http://127.0.0.1:8878") as c:
+        c.get("/check")
+        assert app.state.sweep.wait(30) and app.state.sweep.kept is not None
+    again = web.create_app(lib, tmp_path, models=models(), today_fn=lambda: TODAY, archive=made.archive, ops_db=ops,
+                           record=False)
+    with TestClient(again, base_url="http://127.0.0.1:8878") as c:
+        got = c.get("/api/check/sweep").json()
+        assert got["ready"] and got["phase"] == "done" and not got["running"] and got["totals"]["cls"]["fix"] == 1
+        assert again.state.sweep.thread is None
+        assert "正在讀帳本" not in c.get("/check").text
+
+
+def test_a_kept_result_and_listing_read_back_as_they_were(made, lib):
+    sw = swept(made, lib)
+    back = sweep.unpack_listing(sweep.pack_listing(sw.listing))
+    assert back.pages == sw.listing.pages and back.sites == sw.listing.sites and back.names == sw.listing.names
+    assert back.site_pages == sw.listing.site_pages and back.keys == sw.listing.keys and back.order == sw.listing.order
+    for url, f in sw.found.items():
+        assert sweep.unpack_found(url, sweep.pack_found(f), f.gen, f.at) == f
+    sw.close()
