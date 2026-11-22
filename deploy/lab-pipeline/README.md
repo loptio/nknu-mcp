@@ -280,11 +280,13 @@ Mac 上的两条转文字线 11-03 中午就永久停了；它转好的 4,111 �
 - 3 记账：列出每个档转得怎样，确保没有档悄悄漏掉（所有网站写在同一份 `totext/summary.md`）；
 - 4 组装：把每个网站转好的文字和网页、附件对上，各拼成一个 `corpus/<网站>.json`；
 - 5 建库：把所有网站做成同一个 `aca.db`，同时用 bge-m3 模型给每一小段算一组数字（叫「向量」，让用词不同、意思相近的问法也找得到）；用显卡，最久。接着写 `site_report.md`：每个网站一行（各种文件几份、没有文字的网页、没日期的文件、用标题自己搜搜不搜得到），有 ⚠ 的要看一下，但它不挡建库；
-- 6 标准出处：把题库标准答案的出处对到新库；
-- 7 离线检查：用题库量新库（标准出处排第几、答案原句有没有送到），和 11-01 的骨架库并排比；
-- 8 真资料检查：22 项，写在 `checks.md`。
+- 5b 题库抽样量测（11-22 起）：从新题库 `research/eval_2026-11-18/` 平时那一半钉死抽一份（B 组学生角度的题为主），在学生现在用的库上量正确文件排第几，写 `student_eval.json`。程序是 `eval/student_eval.py`，搜索控制在 5 分钟内，最多跑 600 秒（`STUDENT_EVAL_LIMIT`）。它只是量测，失败或超时只记一笔，不挡换库。题库不进 git，要手放到实验室的 `/work/research/eval_2026-11-18/`（`questions.json`、`agent_queries.json`），缺了这一步就跳过。
+- 6 标准出处、7 离线检查：旧的 33 题（只问教务处），11-22 起每晚不跑，加 `--q33` 才跑。
+  - 6 把 33 题标准答案的出处对到新库。
+  - 7 量标准出处排第几、答案原句有没有送到，和 11-01 的骨架库并排比，每晚约 17 分钟。
+- 8 真资料检查：22 项，写在 `checks.md`，每晚照跑，约 4 分钟。
 
-题库只问教务处：清单里没有教务处的导出时，6～8 不跑，只建库和写 `site_report.md`。
+清单里没有教务处的导出时，6～8 不跑；5b 照跑。
 
 估计 40 分钟到 2 小时（没在这台量过；每一步的实际时间会记在日志里）。分两次跑：
 
@@ -444,7 +446,17 @@ scp /tmp/nknu-lab-pipeline/install.sh nknu-lab:C:/nknu-transfer/tools/lab_pipeli
 docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nknu-transfer\out:/out -w /work -e NKNU_CONFIG_DIR=/work/config -e PYTHONPATH=/work/src nknu-pipeline bash /tools/lab_pipeline_install.sh
 ```
 
-它会核对包的 SHA-256、确认没有东西在跑、把被换掉的档存成 `/work/previous/lab-pipeline-<时间>.tar`、解开、跑这条线的测试。`compose.yaml` 或 `nightly_ingest.cmd` 有改的话，另外 scp 到 `C:\nknu-transfer\build\`（旧的先改名留着）。装完跑一次 `... run --rm ingest status` 和 `... run --rm progress` 确认还读得到。
+它会核对包的 SHA-256、确认没有东西在跑、把被换掉的档存成 `/work/previous/lab-pipeline-<时间>.tar`、解开、跑这条线的测试。
+
+11-22 晚上换过一次，包是这样打的：
+- 底子是 git 里已提交的 `deploy/lab-pipeline` 和 `tests/pipeline`。
+- 再放上这次的改动（还没提交）：`build.sh` 的 5b 和 `--q33`、`nightly_ingest.py` 的 `student_eval`、新档 `eval/student_eval.py`、两个测试档、本说明。
+- 工作区里内容那边「删掉不再用的开关」（`build.sh` 第 9 步、`offline_eval.py`、`check_realdata.py`、`hand/lab_trial_checks.sh`）不在里面，那几个档用的都是已提交的版本。
+- 装完的情形：34 个档，实验室上测试 115 个全过，被换掉的档在 `/work/previous/lab-pipeline-20261122-220205.tar`。
+- 模拟跑一次，步骤是 3、4、5、5b、8。实际量一次抽样，用了 226 秒。
+- 约 22:11 又装了一次，只多了一个改动：手动 `promote` 时，状态也记下试建那次的抽样量测。实验室上测试 117 个全过。这一次被换掉的是上一次装的版本，存在 `/work/previous/lab-pipeline-20261122-221139.tar`；要退回今晚改之前，用 `20261122-220205` 那一份。
+
+所以在 Mac 上直接跑 `pack.sh` 会把工作区里那些「先不要」的改动一起打进去；那些改动提交或丢掉以前，要照上面这样另外打包。`compose.yaml` 或 `nightly_ingest.cmd` 有改的话，另外 scp 到 `C:\nknu-transfer\build\`（旧的先改名留着）。装完跑一次 `... run --rm ingest status` 和 `... run --rm progress` 确认还读得到。
 
 ## 13. 这台电脑坏了，在另一台重架
 
@@ -473,4 +485,4 @@ docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nkn
 | `hand/lab_export_vs_library.py` | 一份新导出进库以前，对着正式库看这一站的每份文件还在不在（在实验室的映像里跑） |
 | `hand/lab_state.sh` | 看库、暂停记号、把关结果（别的脚本叫它） |
 
-过的标准（11-18 起用的）：33 题每一格最多比上一份少 1 题；真资料检查不比正式库少过；逐份核对没拦。
+过的标准（11-18 起用的）：33 题每一格最多比上一份少 1 题；真资料检查不比正式库少过；逐份核对没拦。11-22 起每晚建库不再量 33 题（改量题库抽样，第 7 节 5b）。手动试建的 `hand/trial.sh` 是自己调 `lab_trial_checks.sh` 量 33 题，这次没改，过的标准照旧。

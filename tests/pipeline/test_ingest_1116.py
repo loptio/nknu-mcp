@@ -831,3 +831,72 @@ def test_promote_and_reports_from_the_command_line(listed_new, monkeypatch):
     make_trial(listed_new, {})
     assert ni.main(["promote"]) == 2
     assert ni.main(["promote", TRIAL]) == 0 and ni.main(["reports", TRIAL]) == 0
+
+
+# ---------------------------------------------------------------- 11-22: build.sh step 5b, the question sample
+
+
+class Sampled(Calls):
+    """build.sh since 11-22: past its swap, step 5b writes the question sample's run record (whatever happened) and,
+    when it measured, the measurement."""
+
+    def __init__(self, paths, rc_5b: int | None = 0, **kw):
+        super().__init__(paths, **kw)
+        self.rc_5b = rc_5b
+
+    def build(self, paths, limit: float = 0.0, options=()):
+        rc = super().build(paths, limit, options)
+        if self.rc_5b is not None:
+            (paths.pipe / ni.STUDENT_EVAL_RUN).write_text(
+                json.dumps({"exit": self.rc_5b, "seconds": 241, "at": "2026-11-23T03:30:00+08:00"}), encoding="utf-8")
+        if self.rc_5b == 0:
+            (paths.pipe / ni.STUDENT_EVAL).write_text(json.dumps({
+                "measured": "2026-11-23T03:30:00", "library": {"built": "2026-11-18T03:10:00+08:00"}, "n": 73,
+                "totals": {"B": {"raw": [20, 30, 38]}}, "questions": [{"id": "B001", "raw": 1}]}), encoding="utf-8")
+        return rc
+
+
+def test_a_swapped_night_says_what_the_question_sample_did(repo):
+    assert night(repo, Sampled(repo, built=NEW)) == 0
+    said = status(repo)["student_eval"]
+    assert said == {"outcome": "ok", "exit": 0, "seconds": 241, "measured": "2026-11-23T03:30:00",
+                    "library_built": "2026-11-18T03:10:00+08:00", "n": 73, "totals": {"B": {"raw": [20, 30, 38]}}}
+    assert "questions" not in json.dumps(status(repo))  # totals only: no question is ever in the status
+
+
+@pytest.mark.parametrize(("rc", "outcome"), [(124, "timeout"), (4, "failed")])
+def test_a_sample_that_failed_is_only_said_and_the_swap_stands(repo, rc, outcome):
+    assert night(repo, Sampled(repo, rc_5b=rc, built=NEW)) == 0
+    assert status(repo)["outcome"] == "swapped"
+    assert status(repo)["student_eval"] == {"outcome": outcome, "exit": rc, "seconds": 241}
+
+
+def test_no_sample_this_night_is_none_and_an_old_record_is_not_this_nights(repo):
+    assert night(repo, Sampled(repo, rc_5b=None, built=NEW)) == 0
+    assert status(repo)["student_eval"] is None
+    run = repo.pipe / ni.STUDENT_EVAL_RUN
+    run.write_text('{"exit": 0, "seconds": 1}', encoding="utf-8")
+    long_ago = run.stat().st_mtime - 3600
+    os.utime(run, (long_ago, long_ago))
+    assert ni.student_eval_ran(repo, run.stat().st_mtime + 3600) is None
+    run.write_text("not json", encoding="utf-8")
+    assert ni.student_eval_ran(repo, 0) == {"outcome": "unreadable"}
+
+
+def test_a_promoted_trial_brings_its_own_question_sample(listed_new):
+    # the trial's build.sh wrote step 5b into the trial's folder; promote says it, and the measurement moves along
+    repo = listed_new
+    make_trial(repo, {})
+    t = repo.pipe / TRIAL
+    (t / ni.STUDENT_EVAL_RUN).write_text('{"exit": 0, "seconds": 226, "at": "x"}', encoding="utf-8")
+    (t / ni.STUDENT_EVAL).write_text(json.dumps({"measured": "m", "library": {"built": TRIAL_AT}, "n": 43,
+                                                 "totals": {"raw": [16, 25, 35]}}), encoding="utf-8")
+    assert ni.promote(repo, TRIAL) == 0
+    said = status(repo)["student_eval"]
+    assert (said["outcome"], said["seconds"], said["library_built"], said["n"]) == ("ok", 226, TRIAL_AT, 43)
+    assert (repo.pipe / ni.STUDENT_EVAL).is_file() and ni.STUDENT_EVAL in status(repo)["reports"]
+
+
+def test_a_promoted_trial_without_a_sample_says_none(listed_new):
+    make_trial(listed_new, {})
+    assert ni.promote(listed_new, TRIAL) == 0 and status(listed_new)["student_eval"] is None

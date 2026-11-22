@@ -18,6 +18,9 @@
 # input's, which check_realdata reads) and writes the per-site report site_report.md (site_report.py: it flags, it
 # never stops the build). Steps 6-9 measure 教务处's questions, so they run only when 教务处's export (site c.nknu.edu.tw/aca)
 # is in the list, its corpus giving the gold; without it they are skipped (and --from 6 or later is refused).
+# 11-22: the night's measure is step 5b, a fixed sample of the question bank research/eval_2026-11-18 (student_eval.py,
+# at most a few minutes of searching); steps 6 and 7, the 33 old questions of research/eval_2026-11-01, run only with
+# --q33 (the owner: the 33 are no longer the yardstick).
 #
 # --db PATH (plan 2026-11-08 T5): the database to build, research/pipeline_2026-11-02/aca.db by default, and every
 # output where it always was. Another path makes a test build: its corpora, accounting, reports and checks go to the
@@ -36,7 +39,7 @@
 # the models (check 17 of step 8 starts the MCP server, which loads them a second time). Never the real-agent test
 # (research/eval_2026-11-01/run_agent.py costs tokens and needs the owner).
 #
-#   build.sh [--first] [--from N] [--constants] [--skip-marker-check] [--db PATH] [--dry-run]
+#   build.sh [--first] [--from N] [--q33] [--constants] [--skip-marker-check] [--db PATH] [--dry-run]
 #   The same words can come from BUILD_OPTS:  docker compose -f ... run --rm -e BUILD_OPTS="--first" build
 #   Another export list:  docker compose -f ... run --rm -e EXPORTS=research/pipeline_2026-11-02/exports-pilot.txt build
 #
@@ -50,9 +53,12 @@
 #   5  build, with vectors nknu.content.build --input ... --embed: the database, <out>/build_report.json,
 #                          research/pipeline_2026-11-02/vec_cache.sqlite; build_helpers.py vectors; site_report.py:
 #                          <out>/site_report.md (keyword search only)                              bge-m3   15-45 min
-#   6  gold for the new db offline_eval.py gold (教务处's corpus): <out>/gold_docs.json; gold-diff: gold_diff.txt
-#                          (the plan's diff, by address since plan 2026-11-08 T1 changed every id)      no model  1 min
-#   7  offline checks      offline_eval.py run x7 and compare x2: <out>/offline_*.json, offline_report_r3.md,
+#   5b the question sample eval/student_eval.py, a fixed sample of research/eval_2026-11-18 (in no commit) on the
+#                          library in use: <out>/student_eval.json, <out>/student_eval.run.json; never a stop, at most
+#                          STUDENT_EVAL_LIMIT seconds (600)                                           both     ~5 min
+#   6  gold for the new db only with --q33. offline_eval.py gold (教务处's corpus): <out>/gold_docs.json; gold-diff:
+#                          gold_diff.txt (the plan's diff, by address since plan 2026-11-08 T1 changed every id)  1 min
+#   7  offline checks      only with --q33. offline_eval.py run x7 and compare x2: <out>/offline_*.json, offline_report_r3.md,
 #                          offline_report_r4.md. base_r3, base_r4 and kw_r3 load no model; new_r3 and new_r4 both;
 #                          dense_r3 bge-m3; rerank_r3 bge-reranker-v2-m3                                    15-40 min
 #   8  real-data checks    check_realdata.py --search hybrid (through build_helpers.py): <out>/checks.md
@@ -65,7 +71,9 @@
 #                    or converting: they count as not converted (assemble --allow-pending), and lane A may keep
 #                    converting them. Default: every file has a result (or failed for good) and no lane runs.
 #   --from N         start at step N (3-9); what the earlier steps wrote must be there. --from 9 implies --constants.
-#   --constants      also run step 9 after step 8.
+#                    Step 5b runs with any --from up to 8.
+#   --q33            also run steps 6 and 7: the 33 old questions (off by default since 11-22).
+#   --constants      also run step 9 after step 8 (it reads step 6's gold_docs.json).
 #   --skip-marker-check  skip the guard on 'started' markers younger than an hour (a file a lane may be converting
 #                    now): only once docker ps shows no nknu-lane-A, nknu-lane-B or nknu-lane-C, or the recent markers
 #                    are known crashes. A lane that is running (lanes.sh holding lab_pc/lane{A,C,B}.lock) still stops
@@ -111,7 +119,7 @@ STATUS=$K/build.status
 TODAY=2026-11-01  # check_realdata's --today in the plan (offline_eval fixes the same day itself)
 MIN_FREE_GB=5
 
-FIRST=0 FROM=3 CONSTANTS=0 SKIP_MARKERS=0 DRY=0 FAILED=0 STEP=准备 DB=$DB_DEFAULT HAS_ACA=0 ACA_NAME=""
+FIRST=0 FROM=3 Q33=0 CONSTANTS=0 SKIP_MARKERS=0 DRY=0 FAILED=0 STEP=准备 DB=$DB_DEFAULT HAS_ACA=0 ACA_NAME=""
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
 
@@ -122,6 +130,7 @@ while (($#)); do
     --first) FIRST=1 ;;
     --from) [[ $# -ge 2 ]] || { echo "--from 后面要接步骤号（3 到 9）" >&2; exit 2; }; FROM=$2; shift ;;
     --from=*) FROM=${1#--from=} ;;
+    --q33) Q33=1 ;;
     --constants) CONSTANTS=1 ;;
     --skip-marker-check) SKIP_MARKERS=1 ;;
     --db) [[ $# -ge 2 ]] || { echo "--db 后面要接资料库的路径" >&2; exit 2; }; DB=$2; shift ;;
@@ -199,8 +208,12 @@ run() {  # run CMD...: one command, logged with its output, exit code and time; 
   return "$rc"
 }
 
-# step N runs in this invocation: from FROM on, step 9 only with --constants, steps 6-9 only with 教务处's export
-will() { (($1 >= FROM)) && { (($1 < 9)) || ((CONSTANTS)); } && { (($1 < 6)) || ((HAS_ACA)); }; }
+# step N runs in this invocation: from FROM on, steps 6 and 7 only with --q33, step 9 only with --constants, steps 6-9
+# only with 教务处's export
+will() {
+  (($1 >= FROM)) && { (($1 != 6 && $1 != 7)) || ((Q33)); } && { (($1 < 9)) || ((CONSTANTS)); } \
+    && { (($1 < 6)) || ((HAS_ACA)); }
+}
 
 step() {  # step N TITLE: start step N; 0 when it is to run, 1 when this invocation skips it
   will "$1" || return 1
@@ -342,7 +355,7 @@ STEP="准备 保留上一次的报告"
 previous=()
 for f in "$ACC"/accounting.jsonl "$ACC"/summary.json "$ACC"/summary.md "$C"/*.json "$O"/build_report.json \
   "$O"/gold_docs.json "$O"/gold_diff.txt "$O"/offline_*.json "$O"/offline_report_r3.md "$O"/offline_report_r4.md \
-  "$O"/checks.md "$O"/site_report.md "$O"/site_checks.json; do
+  "$O"/checks.md "$O"/site_report.md "$O"/site_checks.json "$O"/student_eval.json "$O"/student_eval.run.json; do
   if [[ -f $f ]]; then previous+=("$f"); fi  # an unmatched glob stays a literal name: dropped here too
 done
 if ((${#previous[@]})); then
@@ -415,6 +428,37 @@ if step 5 "建库，含 bge-m3 向量"; then
     ${since[@]+"${since[@]}"} || log "每个网站的检查没写成（退出码 $?）：它只是提醒，建库照样算成功"
 fi
 
+# ---- 5b. the question sample on the library students get ----------------------------------------------------------
+# student_eval.py: a fixed sample of research/eval_2026-11-18 (in no commit; its 平时 half only), raw and agent ranks,
+# into $O/student_eval.json, which the panels read (11-22: the owner wants the night's searching kept within 5 minutes,
+# so a sample; the 33 old questions only with --q33). Past step 5 the swap is decided and $DB is the library in use (a
+# build the swap guard held stopped at step 5: the file keeps the last measurement, which says which library it
+# measured). One process, at most SE_LIMIT seconds; what it did is kept in $O/student_eval.run.json for the night's
+# status (nightly_ingest.py). Never a stop.
+SE=research/eval_2026-11-18
+SE_PROG=$KP/eval/student_eval.py
+SE_LIMIT=${STUDENT_EVAL_LIMIT:-600}
+if ((FROM <= 8)) && [[ -f $SE_PROG && -f $SE/questions.json && -f $SE/agent_queries.json ]]; then
+  STEP="5b 题库抽样量测"
+  log ""
+  log "==== 步骤 5b 题库抽样量测 ===="
+  status "running step 5b since $(now)"
+  se_rc=0 se_t0=$SECONDS
+  run timeout "$SE_LIMIT" python "$SE_PROG" run --db "$DB" --questions "$SE" --out "$O/student_eval.json" \
+    || se_rc=$?
+  if ((!DRY)); then
+    printf '{"exit": %d, "seconds": %d, "at": "%s"}\n' "$se_rc" "$((SECONDS - se_t0))" \
+      "$(TZ=CST-8 date '+%FT%T+08:00')" > "$O/student_eval.run.json"
+  fi
+  if ((se_rc == 124)); then
+    log "题库抽样量测超过 ${SE_LIMIT} 秒没量完，停掉了：只是量测，不影响换库"
+  elif ((se_rc)); then
+    log "题库抽样量测没量成（退出码 ${se_rc}）：只是量测，不影响换库"
+  fi
+elif ((FROM <= 8)); then
+  log "题库抽样量测这次不跑：缺 ${SE_PROG} 或 ${SE}/questions.json、agent_queries.json（题库不进 git，要手放到实验室）"
+fi
+
 # ---- 6. gold for the new database ---------------------------------------------------------------------------------
 
 if step 6 "新库的标准出处"; then
@@ -470,7 +514,9 @@ fi
 STEP="完成"
 log ""
 checks=""  # (an assignment whose $( ) fails would end the script under set -e)
-((HAS_ACA)) && checks="、gold_docs.json、gold_diff.txt、offline_*.json、offline_report_r3.md、offline_report_r4.md、checks.md"
+((HAS_ACA)) && checks="、checks.md"
+((HAS_ACA && Q33)) && checks+="、gold_docs.json、gold_diff.txt、offline_*.json、offline_report_r3.md、offline_report_r4.md"
+[[ -f $O/student_eval.json ]] && checks+="、student_eval.json（题库抽样量测）"
 log "全部跑完。资料库 ${DB}；结果在 ${O}/：corpus/（每份导出一个 corpus 和组装报告）、build_report.json、"
 log "site_report.md（每个网站一行）${checks}；转文字记账在 ${ACC}/summary.md。"
 log "把这些交给 Claude 看；真 agent 测试（花 token）不在这里跑。"
