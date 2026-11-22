@@ -84,12 +84,12 @@ async def test_defaults_say_nothing_and_limit_reaches_the_search(db_path):
 async def test_a_unit_filters_the_search_and_joins_the_searched_text(db_path):
     rec = Recorder(hit("d0", [1]))
     body = json.loads((await call(db_path, rec, "search", {"query": "停修", "unit": "教务处"})).content[0].text)
-    asked = rec.calls[-1]
+    asked = rec.calls[0]  # the second call is the plain search of other_units (test_other_units_1122.py)
     assert asked["query"] == "停修 教務處" and asked["only"] is not None and asked["only"].unit_id == "教務處"
     assert body["query"] == "停修"  # the agent's own query is echoed
     assert body["applied"] == {"unit": {"input": "教务处", "applied": True, "unit": "教務處"}}
     await call(db_path, rec, "search", {"query": "教務處 停修", "unit": "教務處"})
-    assert rec.calls[-1]["query"] == "教務處 停修"  # named already
+    assert rec.calls[-2]["query"] == "教務處 停修" and rec.calls[-2]["only"] is not None  # named already
 
 
 async def test_an_unknown_unit_searches_everything_and_says_so(db_path):

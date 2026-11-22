@@ -161,6 +161,12 @@ NOTE_RANKING_HYBRID_SITES = ("【系統】結果依關鍵字比對和語意相�
                              "若下列原文都不能回答問題，請換幾個說法再查；"
                              "仍然沒有，請告訴使用者：目前收錄的資料裡查無相關內容，不要推測。")
 NOTE_NOT_FOUND_SITES = "【系統】查無相關資料：已收錄的網站的資料裡沒有符合的內容，請勿推測。"
+# search with a unit (server.OTHER_UNITS, 11-22): results holds that unit's documents only, other_units the best of
+# the rest, since an agent that names the wrong office would otherwise never see the page that answers 【Claude】
+NOTE_OTHER_UNITS = ("【系統】results 只列「{unit}」的文件；other_units 另附其他單位最相關的 {n} 筆，"
+                    "各筆的 identity 寫著它的單位。unit 若填錯，答案可能在 other_units 裡。")
+NOTE_NOT_FOUND_UNIT = ("【系統】「{unit}」的文件裡查無相關資料；other_units 是其他單位最相關的 {n} 筆，"
+                       "各筆的 identity 寫著它的單位。unit 若填錯，答案可能在 other_units 裡。")
 NOTE_DOWNGRADED = "【系統】回應太長，後面幾筆只給片段；需要時照各筆 more 用 fetch 讀。"
 NOTE_REFS = ("【系統】referenced_by 是引用此檔的頁面（在正文或附件區連到它的網頁和公告），由新到舊；"
              "只出現在選單的連結不列。")
@@ -886,45 +892,62 @@ def _item(conn: sqlite3.Connection, doc: sqlite3.Row, h: DocHit, level: str, tod
                  copies=_copies(conn, doc["doc_id"]))
 
 
-def _render(head: dict, items: list[_Item], downgraded: bool, note: str) -> dict:
-    """note: the ranking note, first (NOTE_RANKING or NOTE_RANKING_HYBRID)."""
+def _render(head: dict, items: list[_Item], downgraded: bool, note: str, others: list[_Item] | None = None,
+            unit: str = "") -> dict:
+    """note: the ranking note, first (NOTE_RANKING or NOTE_RANKING_HYBRID). others: the other_units rows of a search
+    with a unit (unit, the name it took), after results."""
+    others = others or []
     results = [it.row(rank) for rank, it in enumerate(items, 1)]
+    extra = [it.row(rank) for rank, it in enumerate(others, 1)]
+    rows = results + extra
     notes = [note]
-    if any(r.get("background") for r in results):
+    if any(r.get("background") for r in rows):
         notes.append(NOTE_BACKGROUND)
-    if any(r["content_type"] == "章節" for r in results):
+    if any(r["content_type"] == "章節" for r in rows):
         notes.append(NOTE_SECTIONS)
-    notes += _copies_notes([c for it in items if not it.lean() for c in it.copies[: it.copies_cap]])
+    notes += _copies_notes([c for it in (*items, *others) if not it.lean() for c in it.copies[: it.copies_cap]])
+    if extra:
+        notes.append(NOTE_OTHER_UNITS.format(unit=unit, n=len(extra)))
     notes.append(NOTE_DATES)
     if downgraded:
         notes.append(NOTE_DOWNGRADED)
-    return {**head, "found": True, "results": results, "notes": notes}
+    return {**head, "found": True, "results": results, **({"other_units": extra} if extra else {}), "notes": notes}
 
 
-def _fit(head: dict, items: list[_Item], note: str) -> dict:
+def _fit(head: dict, items: list[_Item], note: str, others: list[_Item] | None = None, unit: str = "") -> dict:
     """Over budget, a step at a time until it fits (design §二 limit): from the last result up to the second, a result
     becomes a 片段 row (its 片段 and the short header); copies shrink to 2 then 0 (the totals stay); results go from the end
-    (at least one stays); last, rank 1's content is cut. note goes to every render."""
+    (at least one stays); last, rank 1's content is cut. note goes to every render. The other_units rows (others) go
+    first at each step: they shrink before any result, and all of them go before the first result does."""
+    others = list(others or [])
     down = False
-    resp = _render(head, items, down, note)
-    for it in reversed(items[1:]):
+
+    def render() -> dict:
+        return _render(head, items, down, note, others, unit)
+
+    resp = render()
+    for it in [*reversed(others), *reversed(items[1:])]:
         if _size(resp) <= RESPONSE_BUDGET_BYTES:
             return resp
         if not it.lean():
             it.short, down = True, True
-            resp = _render(head, items, down, note)
+            resp = render()
     for cap in (2, 0):
         if _size(resp) <= RESPONSE_BUDGET_BYTES:
             return resp
-        if any(len(it.copies) > cap for it in items):
-            for it in items:
+        if any(len(it.copies) > cap for it in (*items, *others)):
+            for it in (*items, *others):
                 it.copies_cap = min(it.copies_cap, cap)
             down = True
-            resp = _render(head, items, down, note)
+            resp = render()
+    while _size(resp) > RESPONSE_BUDGET_BYTES and others:
+        others.pop()
+        down = True
+        resp = render()
     while _size(resp) > RESPONSE_BUDGET_BYTES and len(items) > 1:
         items.pop()
         down = True
-        resp = _render(head, items, down, note)
+        resp = render()
     if _size(resp) > RESPONSE_BUDGET_BYTES:
         _trim_first(head, items, note)
         resp = _render(head, items, True, note)
@@ -987,11 +1010,13 @@ def _head(conn: sqlite3.Connection, today: date) -> dict:
 
 
 def build_response(conn: sqlite3.Connection, result: SearchResult, *, today: date, detail: str = DEFAULT_DETAIL,
-                   applied: dict | None = None) -> dict:
+                   applied: dict | None = None, others: SearchResult | None = None) -> dict:
     """The search answer. Its first note is NOTE_RANKING_HYBRID when result.ranking is 'hybrid' (vectors or the
     reranker shaped the order), else NOTE_RANKING (their *_SITES forms in a database with sites rows: plan 2026-11-08
     T4); 片段 and 段落 centre on the query's own tokens (understood.tokens). detail: one of DETAILS (design §二);
-    applied: what the server says of its optional parameters (design §四), in the head when given."""
+    applied: what the server says of its optional parameters (design §四), in the head when given. others: the hits a
+    unit filter left out (server.outside), as other_units: a 段落 each, or the 片段 when detail is snippet, never a full
+    place; with no result of the unit's own the answer is found false and says so, the others still given."""
     if detail not in DETAILS:
         raise ValueError(f"detail must be one of {DETAILS}: {detail!r}")
     u = result.understood
@@ -1014,9 +1039,20 @@ def build_response(conn: sqlite3.Connection, result: SearchResult, *, today: dat
                 places += place
                 level = "full" if place else "snippet"
             items.append(_item(conn, doc, h, level, today, tokens))
+    other_items: list[_Item] = []
+    if others is not None:
+        level = "snippet" if detail == "snippet" else "passage"
+        for h in others.hits:
+            if (doc := _doc(conn, h.doc_id, text=True)) is not None:
+                other_items.append(_item(conn, doc, h, level, today, list(others.understood.tokens)))
+    unit = str(((applied or {}).get("unit") or {}).get("unit") or "")
+    if not items and other_items:
+        rows = [it.row(rank) for rank, it in enumerate(other_items, 1)]
+        return {**head, "found": False, "notes": [NOTE_NOT_FOUND_UNIT.format(unit=unit, n=len(rows))],
+                "other_units": rows}
     if not items:
         return {**head, "found": False, "notes": [NOTE_NOT_FOUND_SITES if many else NOTE_NOT_FOUND]}
-    return _fit(head, items, note)
+    return _fit(head, items, note, other_items, unit)
 
 
 # ---------------------------------------------------------------- read

@@ -17,6 +17,7 @@ NAME = "高師大校園資訊（非官方）"
 NOT_OFFICIAL = "這不是學校的官方服務。資料整理自高師大各單位的公開網站，請以學校原頁為準。"
 SCHOOL_TEXT = "以下都是學校原文，不是 AI 寫的；每筆附出處和資料截至日，請以學校原頁為準。"
 NOT_FOUND = "查不到。查不到不代表沒有：請換個說法再查（同義詞、全稱或簡稱、學校公告的寫法）。"
+OTHER_UNITS_HEAD = "其他單位也有這些相關資料"
 CONVERTED = "文字由程式從學校的網頁或檔案轉出，可能有錯字或版面走樣，請以學校原頁為準。"
 LOGGED = ("我們記錄的東西：查了什麼字、什麼時候查、回了哪幾份文件，用來看哪些問題查不到。"
           "不記錄 IP 位址，也不記錄你是誰。")
@@ -171,18 +172,27 @@ def _applied(resp: dict) -> str:
     return f"<p class=\"note\">只看：{escape(str(unit.get('unit', '')))}</p>" if unit.get("unit") else ""
 
 
+def _others(resp: dict) -> str:
+    """A search with a unit: the best documents of the other units (server.OTHER_UNITS, 11-22), after the results."""
+    rows = resp.get("other_units") or []
+    if not rows:
+        return ""
+    return f"<h2>{escape(OTHER_UNITS_HEAD)}</h2>" + "".join(_result(r) for r in rows)
+
+
 def search_html(resp: dict | None, q: str, *, unit: str = "", sort: str = "relevance", message: str = "") -> str:
     """design §四: the results page. resp None with a message: a refused argument or a failure, said in our own
-    words (a failure is no proof of 查無資料)."""
+    words (a failure is no proof of 查無資料). A search with a unit shows the other units' best documents after its
+    results, and after the not-found line when the unit had none."""
     form = search_form(q, unit=unit, sort=sort, options=True)
     if resp is None:
         return page(f"{q}｜{NAME}", f"{form}<p>{escape(message)}</p>", noindex=True)
     if not resp.get("found"):
-        body = f"{form}{_applied(resp)}<p>{escape(NOT_FOUND)}</p>"
+        body = f"{form}{_applied(resp)}<p>{escape(NOT_FOUND)}</p>{_others(resp)}"
         return page(f"{q}｜{NAME}", body, noindex=True)
     results = "".join(_result(r) for r in resp.get("results", []))
     coverage = f"<p class=\"note\">{escape(str(resp['coverage']))}</p>" if resp.get("coverage") else ""
-    body = f"{form}<p class=\"note\">{escape(SCHOOL_TEXT)}</p>{_applied(resp)}{results}{coverage}"
+    body = f"{form}<p class=\"note\">{escape(SCHOOL_TEXT)}</p>{_applied(resp)}{results}{_others(resp)}{coverage}"
     return page(f"{q}｜{NAME}", body, noindex=True)
 
 

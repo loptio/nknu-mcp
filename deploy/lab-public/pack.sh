@@ -13,15 +13,16 @@ mkdir -p "$OUT"
 (cd "$OUT" && rm -f public-src.tar public-src.tar.sha256 compose.yaml)
 
 git archive HEAD src/nknu | tar -x -C "$STAGE"
-# 对外服务自己的三个档：还没提交时带工作区里的这一版（提交以后和上面那份一样，这一步等于没做）
-OWN=(src/nknu/retrieval/public.py src/nknu/retrieval/web.py src/nknu/retrieval/server.py)
+# 对外服务自己的三个档，加上 server.py 要成对带的 respond.py（11-22 other_units：新的 server.py 传 others= 给
+# respond.build_response）：还没提交时带工作区里的这一版（提交以后和上面那份一样，这一步等于没做）
+OWN=(src/nknu/retrieval/public.py src/nknu/retrieval/web.py src/nknu/retrieval/server.py src/nknu/retrieval/respond.py)
 for f in "${OWN[@]}"; do cp "$f" "$STAGE/$f"; done
 
 (cd "$STAGE" && COPYFILE_DISABLE=1 tar --no-xattrs -cf "$OUT/public-src.tar" src)
 (cd "$OUT" && shasum -a 256 public-src.tar > public-src.tar.sha256)
 cp deploy/lab-public/compose.yaml "$OUT/"
 
-echo "打好了：${OUT}（照 $(git rev-parse --short HEAD) 这一版，加上对外服务自己的三个档）"
+echo "打好了：${OUT}（照 $(git rev-parse --short HEAD) 这一版，加上对外服务自己的三个档和 respond.py）"
 ls -l "$OUT"
 echo "接着（都只经 SSH）："
 echo "  (cd $OUT && scp public-src.tar public-src.tar.sha256 compose.yaml nknu-lab:C:/nknu-transfer/public/)"

@@ -117,7 +117,8 @@ class Gate:
 
 class QueryLog:
     """One JSON line a call: the time (Asia/Taipei), the interface (mcp, web, api), the tool, its arguments, whether
-    anything was found, the ids that came back, and ms: the milliseconds from the call's arrival to its answer, the
+    anything was found, the ids that came back (other_ids: a search's other_units, when it had any), and ms: the
+    milliseconds from the call's arrival to its answer, the
     wait for a search slot included. A call that got no answer has a line too, with error (busy: it waited
     WAIT_SECONDS for a slot; bad_args; unavailable: the library could not be read; internal), found false and no ids.
     The searched text is masked for personal data (nknu.core.pii) and cut; no client address is ever written. Rotated
@@ -151,8 +152,10 @@ class QueryLog:
         said = {k: redact(v.encode("utf-8", "replace").decode("utf-8"))[: self.TEXT_MAX] if isinstance(v, str) else v
                 for k in LOGGED_ARGS if isinstance(v := args.get(k), str | int | float) and v not in ("", None)}
         ids = [r.get("id") for r in resp.get("results", [])] if tool == "search" else [resp.get("id")]
+        others = [r.get("id") for r in resp.get("other_units", [])] if tool == "search" else []
         line = {"t": self.now().isoformat(timespec="seconds"), "via": via, "tool": tool, **said,
                 "found": bool(resp.get("found")), "ids": [i for i in ids if i],
+                **({"other_ids": [i for i in others if i]} if any(others) else {}),
                 **({"ms": ms} if ms is not None else {}), **({"error": error} if error else {})}
         data = (json.dumps(line, ensure_ascii=False) + "\n").encode("utf-8")
         try:

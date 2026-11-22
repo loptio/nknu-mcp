@@ -52,7 +52,7 @@ from pydantic import ValidationError as PydanticValidationError
 from nknu.core.timeutil import today_tpe
 from nknu.retrieval.respond import CALENDAR_PART, DEFAULT_DETAIL, build_response, read_response, to_json
 from nknu.retrieval.types import DocHit, SearchResult
-from nknu.retrieval.unitfilter import unit_filter
+from nknu.retrieval.unitfilter import UnitFilter, unit_filter
 from nknu.settings import REPO_ROOT
 
 if TYPE_CHECKING:
@@ -85,6 +85,10 @@ SEARCH_TITLE, FETCH_TITLE = "搜尋高師大資料", "讀一份文件"
 MAX_LEN = {"query": 300, "id": 1000, "part": 20, "unit": 50}  # id: a URL the library holds too (design §三)
 DEFAULT_LIMIT, MAX_LIMIT = 10, 50  # design §二 limit: the reranker orders about the first 50
 DATE_DEPTH = 20  # sort=date reorders at least the 20 most relevant (design §二 sort) 【Claude】
+# unit filters hard, so a wrong unit hides the answer: a search with one also gives the best documents it left out,
+# found by a plain search this deep (11-22, research/eval_2026-11-18/runs/compare_1122.md §3: of the 28 questions a
+# small model missed with a unit, 17 had the answer among the plain search's first 10) 【Claude】
+OTHER_UNITS, OTHER_DEPTH = 3, DEFAULT_LIMIT
 # a failure is no proof of 查無資料 (spec 2026-11-02 §3.5, borrowed from WeKnora)
 MSG_UNAVAILABLE = "資料暫時無法讀取，請稍後再試。這次失敗不代表查無資料。"
 MSG_INTERNAL = "查詢失敗，請稍後再試。這次失敗不代表查無資料。"
@@ -109,7 +113,8 @@ DETAIL_DESCRIPTION = ("每筆給多少原文。passage（預設）：每筆約 5
                       "再用 fetch 讀需要的那幾份。full：前 5 筆給全文（長文件給命中的章節和目錄），其餘給片段，適合細讀規定。")
 LIMIT_DESCRIPTION = "要幾筆，1～50，預設 10。"
 UNIT_DESCRIPTION = ("只看某個單位的資料：填單位名稱，全稱或簡稱都可以（例如「教務處」「軟體工程與管理學系」）。"
-                    "填系所時也包含全校適用的文件。不確定是哪個單位就不要填。")
+                    "填系所時也包含全校適用的文件。不確定是哪個單位就不要填。"
+                    "填了單位時，results 只列這個單位的文件，other_units 另附其他單位最相關的 3 筆。")
 SORT_DESCRIPTION = ("relevance（預設）：最相關的在前。date：在相關的結果裡，有日期的由新到舊；沒有日期的（例如行事曆事項）"
                     "留在原來的位置。適合問「最新」「最近」的公告。")
 ID_DESCRIPTION = "search 回傳的 id；也可以填收錄的網頁或檔案的網址。"
@@ -306,11 +311,24 @@ def applied_of(detail: str, limit: int, unit: dict | None, sort: str) -> dict | 
     return {k: v for k, v in out.items() if v is not None} or None
 
 
+def outside(conn: sqlite3.Connection, only: UnitFilter, hits: list[DocHit], taken: set[str],
+            n: int = OTHER_UNITS) -> list[DocHit]:
+    """The first n hits, in their order, whose documents the unit filter leaves out and the answer does not hold."""
+    ids = [h.doc_id for h in hits]
+    if not ids:
+        return []
+    inside = {r[0] for r in conn.execute(f"SELECT doc_id FROM docs WHERE doc_id IN ({','.join('?' * len(ids))})"
+                                         f" AND ({only.sql})", (*ids, *only.params))}
+    return [h for h in hits if h.doc_id not in inside and h.doc_id not in taken][:n]
+
+
 def search_answer(db_path: Path, query: str, *, search_fn: SearchFn, today: date, detail: str = DEFAULT_DETAIL,
                   limit: int = DEFAULT_LIMIT, unit: str = "", sort: str = "relevance") -> dict:
     """design 2026-11-16-mcp-interface-design §二: unit, when the tree knows it, filters both candidate paths and is
     added to the searched text unless the query names it already (a named unit is not discounted as off its audience,
-    and the reranker reads it); the answer echoes the agent's query. sort=date reorders max(limit, DATE_DEPTH)."""
+    and the reranker reads it); the answer echoes the agent's query. sort=date reorders max(limit, DATE_DEPTH).
+    With a unit filter, a plain search of the agent's own words gives other_units: the first OTHER_UNITS documents
+    the filter left out, by relevance whatever the sort (11-22)."""
     conn = connect(db_path)
     try:
         only, said, text = None, None, query
@@ -322,11 +340,17 @@ def search_answer(db_path: Path, query: str, *, search_fn: SearchFn, today: date
                 text = f"{query} {said['unit']}"
         depth = max(limit, DATE_DEPTH) if sort == "date" else limit
         extra = {"only": only} if only is not None else {}
-        result = search_fn(conn, text, today=today, aliases=aliases_of(conn), limit=depth, **extra)
+        aliases = aliases_of(conn)
+        result = search_fn(conn, text, today=today, aliases=aliases, limit=depth, **extra)
         hits = by_date(conn, result.hits) if sort == "date" else result.hits
         result = replace(result, query=query, hits=hits[:limit])
+        others = None
+        if only is not None:
+            plain = search_fn(conn, query, today=today, aliases=aliases, limit=OTHER_DEPTH)
+            if picked := outside(conn, only, plain.hits, {h.doc_id for h in result.hits}):
+                others = replace(plain, hits=picked)
         return build_response(conn, result, today=today, detail=detail,
-                              applied=applied_of(detail, limit, said, sort))
+                              applied=applied_of(detail, limit, said, sort), others=others)
     finally:
         conn.close()
 
