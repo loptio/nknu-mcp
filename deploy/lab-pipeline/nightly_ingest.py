@@ -499,7 +499,7 @@ class Status:
                      "sites_unlisted": [], "sites_not_ready": [], "sites_held": [],
                      "library": {"before": None, "after": None},
                      "held": None, "departures": None, "unexplained_left": None, "new_reminders": [],
-                     "student_eval": None, "disk_free_gb": None, "gpu_mb": None,
+                     "disk_free_gb": None, "gpu_mb": None,
                      "log": f"{PIPE}/lab_pc/ingest.log", "build_log": f"{PIPE}/lab_pc/build.log"}
         _write(self.paths.status, self.data)
 
@@ -578,38 +578,6 @@ def read_swap(paths: Paths, since: float) -> dict | None:
     except (OSError, ValueError):
         return None
     return told if isinstance(told, dict) else None
-
-
-STUDENT_EVAL = "student_eval.json"          # build.sh step 5b's measurement (eval/student_eval.py), the panels read it
-STUDENT_EVAL_RUN = "student_eval.run.json"  # build.sh step 5b: {exit, seconds, at}, written whatever happened
-
-
-def student_eval_ran(paths: Paths, since: float, folder: Path | None = None) -> dict | None:
-    """build.sh step 5b in the build that began at since, as codes: outcome ok / failed / timeout / unreadable, exit,
-    seconds; on ok also the measurement's time, the library it measured, n and totals (totals only: no question of
-    the sealed half is ever in the status). None: it did not run in that build. folder: where that build wrote (a
-    trial's own folder for promote; the pipeline folder by default)."""
-    folder = paths.pipe if folder is None else folder
-    path = folder / STUDENT_EVAL_RUN
-    try:
-        if path.stat().st_mtime < since - 1:
-            return None
-        said = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError):
-        return {"outcome": "unreadable"}
-    rc = said.get("exit") if isinstance(said, dict) else None
-    out = {"outcome": "ok" if rc == 0 else "timeout" if rc == 124 else "failed", "exit": rc,
-           "seconds": said.get("seconds") if isinstance(said, dict) else None}
-    if rc == 0:
-        try:
-            got = json.loads((folder / STUDENT_EVAL).read_text(encoding="utf-8"))
-            out.update(measured=got.get("measured"), library_built=(got.get("library") or {}).get("built"),
-                       n=got.get("n"), totals=got.get("totals"))
-        except (OSError, ValueError, AttributeError):
-            out["outcome"] = "unreadable"
-    return out
 
 
 def held_detail(paths: Paths, told: dict | None = None) -> dict:
@@ -836,7 +804,6 @@ def _night(paths: Paths, st: Status, lanes, build, limit: float, disk, gpu, left
                         if before["sites"].get(s) != after["sites"].get(s)}
         st.data["library"] = {"before": _facts(before, changed), "after": _facts(after, changed)}
         st.data["new_reminders"] = new_reminders(paths.checks, after["built_at"])
-        st.data["student_eval"] = student_eval_ran(paths, began)  # build.sh step 5b, the question sample (11-22)
         # the swap stands whatever the checks after it did (the owner's third point): their failure is only said
         st.end("swapped", None if rc == 0 else "checks_timeout" if rc == EXIT_TIMEOUT else f"checks_exit_{rc}")
         return 0
@@ -895,7 +862,7 @@ def rollback(paths: Paths) -> int:
 # meta inputs_json, wherever they are).
 REPORTS = ("build_report.json", "site_report.md", "site_checks.json", "totext/accounting.jsonl", "totext/summary.json",
            "totext/summary.md", "gold_docs.json", "gold_diff.txt", "offline_report_r3.md", "offline_report_r4.md",
-           "checks.md", STUDENT_EVAL)
+           "checks.md")
 REPORT_GLOBS = ("offline_*.json",)
 _TRIAL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 _NOT_TRIALS = frozenset({"aca", "aca.prev", "aca.held", "aca.rolled-back"})
@@ -1018,8 +985,6 @@ def _promote(paths: Paths, st: Status, name: str) -> int:
         keep_lists(paths)
         flag_swap(after["built_at"])
         _write(paths.swap_json, told)
-        # the trial's own step 5b (its folder), read before take_reports moves student_eval.json beside aca.db
-        st.data["student_eval"] = student_eval_ran(paths, 0, folder=paths.pipe / name)
         st.data["reports"] = take_reports(paths, name)
         st.data["new_reminders"] = new_reminders(paths.checks, after["built_at"])
         if behind(paths, after):

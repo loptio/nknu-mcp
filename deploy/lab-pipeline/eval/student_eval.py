@@ -1,5 +1,8 @@
-"""The nightly sample of the question set, on the library students get (2026-11-22; the owner: a sample every night,
-its searches under 5 minutes, in place of the 33 questions' steps). The question set is research/eval_2026-11-18 (its
+"""A pinned sample of the question set measured on a library, run by hand. Written 11-22 as build.sh's nightly step 5b
+(the owner: a sample every night, its searches under 5 minutes, in place of the 33 questions' steps); the same night
+the owner dropped every nightly question measure (a set that counts only the documents it lists marks a copy or the
+school's newer version wrong), so no build runs it: the question set is for checking the whole project by hand, and
+the night's flags below (run.json, the status's student_eval) are gone with step 5b. The question set is research/eval_2026-11-18 (its
 README.md; school text and names, so in no commit: on the lab PC /work/research/eval_2026-11-18; this folder holds the
 program only). Until now it was measured by hand through the search service (research/eval_2026-11-18/tools/
 measure.py); this measures a pinned sample of it on a library file, so the build runs it every night (build.sh 5b).

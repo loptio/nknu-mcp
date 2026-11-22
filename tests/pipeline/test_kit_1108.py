@@ -659,9 +659,8 @@ def test_build_assembles_each_export_and_builds_one_database_from_every_pair(tmp
             f" --out {P}/aca.db --report {P}/build_report.json") in out
     assert f"--vec-cache {P}/vec_cache.sqlite" in out
     assert f"site_report.py --db {P}/aca.db --out {P}/site_report.md" in out
-    # 11-22: the 33 old questions (steps 6 and 7) only with --q33; the night measures the question sample (step 5b)
-    assert "offline_eval.py" not in out
-    assert f"student_eval.py run --db {P}/aca.db" in out or "题库抽样量测这次不跑" in out
+    # 11-22: the night measures no questions: the 33 old ones (steps 6 and 7) only with --q33, the question bank never
+    assert "offline_eval.py" not in out and "student_eval" not in out
     assert f"check-realdata --db {P}/aca.db --out {P}/checks.md" in out
 
 
@@ -671,16 +670,8 @@ def test_the_33_old_questions_come_back_with_q33(tmp_path):
     out = r.stdout
     assert f"offline_eval.py gold --db {P}/aca.db --corpus {P}/corpus/{NAME_A}.json --out {P}/gold_docs.json" in out
     assert f"offline_eval.py run --db {P}/aca.db --gold {P}/gold_docs.json" in out
-    assert out.index("步骤 5b") < out.index("步骤 6") < out.index("步骤 7") < out.index("步骤 8")
-
-
-def test_the_question_sample_runs_after_the_build_and_never_stops_it(tmp_path):
-    kit = (KIT / "build.sh").read_text(encoding="utf-8")
-    block = kit[kit.index("# ---- 5b."):kit.index("# ---- 6.")]
-    # one process with a time limit, its failure only said: `|| se_rc=$?` keeps set -e from ending the build
-    assert 'run timeout "$SE_LIMIT" python "$SE_PROG" run' in block and "|| se_rc=$?" in block
-    assert "SE_LIMIT=${STUDENT_EVAL_LIMIT:-600}" in block and "fail " not in block
-    assert kit.index("# ---- 5. ") < kit.index("# ---- 5b.")  # past the swap guard of step 5
+    assert out.index("步骤 5 ") < out.index("步骤 6") < out.index("步骤 7") < out.index("步骤 8")
+    assert "student_eval" not in out
 
 
 def test_build_gives_the_aca_pair_first_whatever_the_list_order(tmp_path):
