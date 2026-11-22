@@ -17,6 +17,7 @@
   ],
   "tools": [
     {"key": "check", "name": "網頁核查", "host": "ops", "path": "/check", "tip": "全校抓下來的網頁有沒有漏：沒抓到的、要查的"},
+    {"key": "units", "name": "單位", "host": "ops", "path": "/units", "tip": "每個單位發布了多少文件、來自哪些網站、最新一份是哪天；沒有文件、一年沒更新的單位標出來"},
     {"key": "tables", "name": "資料庫", "host": "tables", "path": "/", "tip": "庫裡的每張表：篩選、找網站、看沒日期的原因"}
   ],
   "site": {"host": "ops", "path": "/site?site="}

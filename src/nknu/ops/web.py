@@ -65,7 +65,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from nknu.core.timeutil import today_tpe
-from nknu.ops import history, nightly, pagecheck
+from nknu.ops import history, nightly, pagecheck, units_page
 from nknu.ops import overview as overview_mod
 from nknu.ops.board import Board
 from nknu.ops.changes import Changes
@@ -823,6 +823,14 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     # hands out what it last made
     sites_state = overview_mod.State(root)
 
+    def units_view(_request: Request) -> Response:
+        """單位 (nknu.ops.units_page): the unit tree with each unit's documents, sites and newest date."""
+        conn = connect(db_path)
+        try:
+            return shell("單位 · 檢視台", units_page.body(conn, today_fn()), db_info(conn), tab="units")
+        finally:
+            conn.close()
+
     def sites_page(request: Request) -> Response:
         sites_state.start()
         with sites_state.lock:
@@ -893,6 +901,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/pipeline/site", guarded(pipeline_site, False), methods=["GET"]),
               Route("/file", guarded(original, True), methods=["GET"]),
               Route("/check", guarded(check_panel, False), methods=["GET"]),
+              Route("/units", guarded(units_view, False), methods=["GET"]),
               Route("/check/raw", guarded(check_raw, True), methods=["GET"]),
               Route("/check/source", guarded(check_source, False), methods=["GET"]),
               Route("/check/text", guarded(check_text, False), methods=["GET"]),
