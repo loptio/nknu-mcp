@@ -21,6 +21,10 @@
 # 11-22: the night measures no questions. Steps 6 and 7, the 33 old questions of research/eval_2026-11-01, run only with
 # --q33; the question bank research/eval_2026-11-18 is for checking the whole project by hand, not a nightly step
 # (the owner: a set that counts only the documents it lists marks a copy or the school's newer version wrong).
+# 11-23: step 8, the real-data checks, runs only with --realdata (or --from 8). They check how the programs treat
+# real data (dates, scans, copies, sections, replies, the MCP server), which changes on the day a program is
+# installed, not from night to night, and they never held a swap back (they ran on the library already in place):
+# run them by hand after an install.
 #
 # --db PATH (plan 2026-11-08 T5): the database to build, research/pipeline_2026-11-02/aca.db by default, and every
 # output where it always was. Another path makes a test build: its corpora, accounting, reports and checks go to the
@@ -39,7 +43,7 @@
 # the models (check 17 of step 8 starts the MCP server, which loads them a second time). Never the real-agent test
 # (research/eval_2026-11-01/run_agent.py costs tokens and needs the owner).
 #
-#   build.sh [--first] [--from N] [--q33] [--constants] [--skip-marker-check] [--db PATH] [--dry-run]
+#   build.sh [--first] [--from N] [--q33] [--realdata] [--constants] [--skip-marker-check] [--db PATH] [--dry-run]
 #   The same words can come from BUILD_OPTS:  docker compose -f ... run --rm -e BUILD_OPTS="--first" build
 #   Another export list:  docker compose -f ... run --rm -e EXPORTS=research/pipeline_2026-11-02/exports-pilot.txt build
 #
@@ -58,7 +62,7 @@
 #   7  offline checks      only with --q33. offline_eval.py run x7 and compare x2: <out>/offline_*.json, offline_report_r3.md,
 #                          offline_report_r4.md. base_r3, base_r4 and kw_r3 load no model; new_r3 and new_r4 both;
 #                          dense_r3 bge-m3; rerank_r3 bge-reranker-v2-m3                                    15-40 min
-#   8  real-data checks    check_realdata.py --search hybrid (through build_helpers.py): <out>/checks.md
+#   8  real-data checks    only with --realdata. check_realdata.py --search hybrid (build_helpers.py): <out>/checks.md
 #                                                                                                 both     5-15 min
 #   9  constants           only with --constants: step 7's optional sweep, <out>/offline_const_*_r3.json
 #                                                                                                 both    10-30 min
@@ -67,8 +71,10 @@
 #   --first          the first database while the journals and past exam papers (the deferred files) are still waiting
 #                    or converting: they count as not converted (assemble --allow-pending), and lane A may keep
 #                    converting them. Default: every file has a result (or failed for good) and no lane runs.
-#   --from N         start at step N (3-9); what the earlier steps wrote must be there. --from 9 implies --constants.
+#   --from N         start at step N (3-9); what the earlier steps wrote must be there. --from 8 implies --realdata,
+#                    --from 9 --constants.
 #   --q33            also run steps 6 and 7: the 33 old questions (off by default since 11-22).
+#   --realdata       also run step 8: the real-data checks (off by default since 11-23; run them after an install).
 #   --constants      also run step 9 after step 8 (it reads step 6's gold_docs.json).
 #   --skip-marker-check  skip the guard on 'started' markers younger than an hour (a file a lane may be converting
 #                    now): only once docker ps shows no nknu-lane-A, nknu-lane-B or nknu-lane-C, or the recent markers
@@ -115,7 +121,7 @@ STATUS=$K/build.status
 TODAY=2026-11-01  # check_realdata's --today in the plan (offline_eval fixes the same day itself)
 MIN_FREE_GB=5
 
-FIRST=0 FROM=3 Q33=0 CONSTANTS=0 SKIP_MARKERS=0 DRY=0 FAILED=0 STEP=准备 DB=$DB_DEFAULT HAS_ACA=0 ACA_NAME=""
+FIRST=0 FROM=3 Q33=0 REALDATA=0 CONSTANTS=0 SKIP_MARKERS=0 DRY=0 FAILED=0 STEP=准备 DB=$DB_DEFAULT HAS_ACA=0 ACA_NAME=""
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
 
@@ -127,6 +133,7 @@ while (($#)); do
     --from) [[ $# -ge 2 ]] || { echo "--from 后面要接步骤号（3 到 9）" >&2; exit 2; }; FROM=$2; shift ;;
     --from=*) FROM=${1#--from=} ;;
     --q33) Q33=1 ;;
+    --realdata) REALDATA=1 ;;
     --constants) CONSTANTS=1 ;;
     --skip-marker-check) SKIP_MARKERS=1 ;;
     --db) [[ $# -ge 2 ]] || { echo "--db 后面要接资料库的路径" >&2; exit 2; }; DB=$2; shift ;;
@@ -138,6 +145,7 @@ while (($#)); do
   shift
 done
 [[ $FROM =~ ^[3-9]$ ]] || { echo "--from 要是 3 到 9 的步骤号，不是「${FROM}」" >&2; exit 2; }
+((FROM != 8)) || REALDATA=1
 ((FROM < 9)) || CONSTANTS=1
 
 # ---- the database and where this run writes (plan 2026-11-08 T5) --------------------------------------------------
@@ -204,11 +212,11 @@ run() {  # run CMD...: one command, logged with its output, exit code and time; 
   return "$rc"
 }
 
-# step N runs in this invocation: from FROM on, steps 6 and 7 only with --q33, step 9 only with --constants, steps 6-9
-# only with 教务处's export
+# step N runs in this invocation: from FROM on, steps 6 and 7 only with --q33, step 8 only with --realdata, step 9
+# only with --constants, steps 6-9 only with 教务处's export
 will() {
-  (($1 >= FROM)) && { (($1 != 6 && $1 != 7)) || ((Q33)); } && { (($1 < 9)) || ((CONSTANTS)); } \
-    && { (($1 < 6)) || ((HAS_ACA)); }
+  (($1 >= FROM)) && { (($1 != 6 && $1 != 7)) || ((Q33)); } && { (($1 != 8)) || ((REALDATA)); } \
+    && { (($1 < 9)) || ((CONSTANTS)); } && { (($1 < 6)) || ((HAS_ACA)); }
 }
 
 step() {  # step N TITLE: start step N; 0 when it is to run, 1 when this invocation skips it
@@ -479,14 +487,15 @@ fi
 STEP="完成"
 log ""
 checks=""  # (an assignment whose $( ) fails would end the script under set -e)
-((HAS_ACA)) && checks="、checks.md"
+((HAS_ACA && REALDATA)) && checks="、checks.md"
 ((HAS_ACA && Q33)) && checks+="、gold_docs.json、gold_diff.txt、offline_*.json、offline_report_r3.md、offline_report_r4.md"
 log "全部跑完。资料库 ${DB}；结果在 ${O}/：corpus/（每份导出一个 corpus 和组装报告）、build_report.json、"
 log "site_report.md（每个网站一行）${checks}；转文字记账在 ${ACC}/summary.md。"
 log "把这些交给 Claude 看；真 agent 测试（花 token）不在这里跑。"
 if ((!DRY)); then
   shown=("$DB" "$O"/build_report.json "$O"/site_report.md)
-  ((HAS_ACA)) && shown+=("$O"/gold_docs.json "$O"/offline_report_r3.md "$O"/offline_report_r4.md "$O"/checks.md)
+  ((HAS_ACA && Q33)) && shown+=("$O"/gold_docs.json "$O"/offline_report_r3.md "$O"/offline_report_r4.md)
+  ((HAS_ACA && REALDATA)) && shown+=("$O"/checks.md)
   ls -l "${shown[@]}" "$C"/*.json 2>&1 | tee -a "$LOG" || true
 fi
 status "ok $MODE, from step $FROM$( ((CONSTANTS)) && echo ", with step 9" ), ${#EXP_DIRS[@]} exports, db $DB"

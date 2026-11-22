@@ -12,8 +12,9 @@ export folders into the library. The steps are the ones run by hand until now, c
            the rest), and the night builds from the others (11-19: one batch of slow scans kept the updates of
            fifty sites out for a day). When there is nothing to go back to, or nothing else is new: deferred.
   keep     the library in use stays beside itself as aca.prev.db (a hard link: no space, no time).
-  build    build.sh: assemble, build, the swap guard, the swap, the per-site report, the 33 questions and the real-data
-           checks. The checks are recorded and never undo a swap (the owner's third point).
+  build    build.sh: assemble, build, the swap guard, the swap, the per-site report. The 33 questions (--q33, since
+           11-22) and the real-data checks (--realdata, since 11-23) are run by hand, never by the night; when they ran
+           after a swap they were recorded and never undid it (the owner's third point).
   done     the lists that keep the export service from deleting the folders of the library in use
            (exports-official.txt) and of the one before (exports-prev.txt) are written from the libraries themselves
            (sites.export), and a flag file asks the host script to restart Datasette.
@@ -35,7 +36,8 @@ written whole and renamed into place at the start (outcome running) and at each 
 ingest-history.jsonl. Outcomes: running, swapped, held (the swap guard kept the library in use; the new one is
 aca.held.db), nothing_new, paused, deferred, failed; the history also holds busy (another night still ran) and
 rolled_back. A night is named by the day it belongs to (night_of: a run at 02:00 is the night before's), and of
-several lines of one night the last is that night's result (both asked by the dashboard session 11-16).
+several lines of one night the last is that night's result (both asked by the dashboard session 11-16). That name
+is the files' key only: what people read names a run by the day it starts (the 01:00 run of 11-23 is 11-23; 11-23).
 
 Usage, in the container (compose service ingest; the host's nightly_ingest.cmd runs it and restarts Datasette):
   python research/pipeline_2026-11-02/lab_pc/nightly_ingest.py run        the night
@@ -932,7 +934,7 @@ def promote(paths: Paths, name: str) -> int:
     folders, the status file and a history line (outcome swapped; promoted: the trial's file), the flag that restarts
     Datasette, the trial's swap file as aca.swap.json and its reports beside aca.db. aca.db becomes the trial's file
     by a hard link; the trial's own name and folder stay, since the library names its corpora there (meta
-    inputs_json) and the trial's later checks (build.sh --db NAME.db --from 6) run on it: `reports NAME` brings those
+    inputs_json) and the trial's later checks (build.sh --db NAME.db --from 8) run on it: `reports NAME` brings those
     over. Exit 0 swapped; 1 refused (nothing changed) or failed before the swap."""
     global _LOG
     _LOG = paths.kit / "ingest.log"
@@ -1021,7 +1023,8 @@ def show(paths: Paths) -> int:
     sites = list(((d.get("departures") or {}).get("by_site") or {}).items())[:3]
     look = (f"；有 {n} 份文件说不出原因地离开库或被掏空（" + "、".join(f"{s} {k}" for s, k in sites)
             + "），要人看" if n else "")
-    print(f"{d.get('night')} 那一晚：{_OUTCOME.get(d.get('outcome'), d.get('outcome'))}{look}"
+    day = (d.get("started_at") or "")[:10] or d.get("night")  # named by the day it starts, not by the night key
+    print(f"{day} 那次：{_OUTCOME.get(d.get('outcome'), d.get('outcome'))}{look}"
           f"（{d.get('started_at')} 开始，{d.get('finished_at') or '还没结束'}；步骤 {d.get('step')}）")
     if d.get("error"):
         err = str(d["error"])

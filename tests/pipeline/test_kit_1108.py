@@ -661,7 +661,8 @@ def test_build_assembles_each_export_and_builds_one_database_from_every_pair(tmp
     assert f"site_report.py --db {P}/aca.db --out {P}/site_report.md" in out
     # 11-22: the night measures no questions: the 33 old ones (steps 6 and 7) only with --q33, the question bank never
     assert "offline_eval.py" not in out and "student_eval" not in out
-    assert f"check-realdata --db {P}/aca.db --out {P}/checks.md" in out
+    # 11-23: nor the real-data checks: step 8 only with --realdata, by hand after an install
+    assert "check-realdata" not in out and "步骤 8" not in out
 
 
 def test_the_33_old_questions_come_back_with_q33(tmp_path):
@@ -670,8 +671,21 @@ def test_the_33_old_questions_come_back_with_q33(tmp_path):
     out = r.stdout
     assert f"offline_eval.py gold --db {P}/aca.db --corpus {P}/corpus/{NAME_A}.json --out {P}/gold_docs.json" in out
     assert f"offline_eval.py run --db {P}/aca.db --gold {P}/gold_docs.json" in out
-    assert out.index("步骤 5 ") < out.index("步骤 6") < out.index("步骤 7") < out.index("步骤 8")
-    assert "student_eval" not in out
+    assert out.index("步骤 5 ") < out.index("步骤 6") < out.index("步骤 7")
+    assert "student_eval" not in out and "check-realdata" not in out
+
+
+@pytest.mark.parametrize("args", [["--realdata"], ["--from", "8"]])
+def test_the_real_data_checks_run_with_realdata_or_from_8(tmp_path, args):
+    r, _ = _dry(tmp_path, args, {"aca": SITE_A})
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = r.stdout
+    assert f"check-realdata --db {P}/aca.db --out {P}/checks.md" in out
+    assert "offline_eval.py" not in out  # the 33 questions stay with --q33
+    if args == ["--from", "8"]:
+        assert "nknu.content.build" not in out  # from step 8 on: no build
+    else:
+        assert out.index("步骤 5 ") < out.index("步骤 8")
 
 
 def test_build_gives_the_aca_pair_first_whatever_the_list_order(tmp_path):
