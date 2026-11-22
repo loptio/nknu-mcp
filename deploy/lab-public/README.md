@@ -23,7 +23,7 @@
 - 查询纪录在实验室电脑的 `C:\nknu-transfer\public\log\queries.jsonl`。
 - 换过的程序：
   - 11-22 13:09 装了 `sort=date` 的修正（`a97ffd2`），旧包留成 `public-src.1121.tar`。
-  - 11-22 20:5x 装了「附带其他单位」：填了 unit 时多给 `other_units`，见接口设计稿 §二 `unit`。这次是已提交的 `3a7a61e` 加上工作区的 `server.py`、`respond.py`、`web.py`、`public.py`（四个都还没提交），旧包留成 `public-src.1122a.tar`。查询纪录多一栏 `other_ids`。
+  - 11-22 20:5x 装了「附带其他单位」：填了 unit 时多给 `other_units`，见接口设计稿 §二 `unit`。这次是已提交的 `3a7a61e` 加上工作区的 `server.py`、`respond.py`、`web.py`、`public.py`（这四个档同一晚提交在 `b6f2701`），旧包留成 `public-src.1122a.tar`。查询纪录多一栏 `other_ids`。
   - `pack.sh` 从这次起也带工作区的 `respond.py`：它和 `server.py` 要成对，只换其中一个，填了 unit 的搜索会出错。
 
 ## 从 Mac 上看

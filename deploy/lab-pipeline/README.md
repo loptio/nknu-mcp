@@ -450,7 +450,7 @@ docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nkn
 
 11-22 晚上换过一次，包是这样打的：
 - 底子是 git 里已提交的 `deploy/lab-pipeline` 和 `tests/pipeline`。
-- 再放上这次的改动（还没提交）：`build.sh` 的 5b 和 `--q33`、`nightly_ingest.py` 的 `student_eval`、新档 `eval/student_eval.py`、两个测试档、本说明。
+- 再放上这次的改动（同一晚提交在 `78049e0`）：`build.sh` 的 5b 和 `--q33`、`nightly_ingest.py` 的 `student_eval`、新档 `eval/student_eval.py`、两个测试档、本说明。
 - 工作区里内容那边「删掉不再用的开关」（`build.sh` 第 9 步、`offline_eval.py`、`check_realdata.py`、`hand/lab_trial_checks.sh`）不在里面，那几个档用的都是已提交的版本。
 - 装完的情形：34 个档，实验室上测试 115 个全过，被换掉的档在 `/work/previous/lab-pipeline-20261122-220205.tar`。
 - 模拟跑一次，步骤是 3、4、5、5b、8。实际量一次抽样，用了 226 秒。
