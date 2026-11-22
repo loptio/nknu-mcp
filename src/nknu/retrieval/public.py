@@ -11,7 +11,7 @@ can say different things and the two scoring models load once.
     /health                   alive, and how old the library is
     anything else             404 (the /.well-known probes of a client looking for a login among them)
 
-Around all of them: a Host allow-list (421 for any other name), the request limit of v1 (nknu.server.ratelimit: 60 a
+Around all of them: a Host allow-list (421 for any other name), the request limit of v1 (nknu.retrieval.ratelimit: 60 a
 minute per client, 600 shared by Anthropic's range), a cap on searches running at once (the models share one GPU; a
 search that waits too long fails and says a failure is no proof of 查無資料), and the query log: what was searched,
 what came back, what was read, by which interface; never an address, never who.
@@ -55,8 +55,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from nknu.core.pii import redact
 from nknu.core.timeutil import TAIPEI, today_tpe
 from nknu.retrieval import server, web
+from nknu.retrieval.ratelimit import RateLimiter, RateLimitMiddleware
 from nknu.retrieval.respond import DEFAULT_DETAIL, DETAILS, to_json
-from nknu.server.ratelimit import RateLimiter, RateLimitMiddleware
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
@@ -220,7 +220,7 @@ class HostGuard:
 class LocalPeer:
     """A connection from one of these networks is this machine's own (its peer becomes 127.0.0.1). In a container the
     tunnel on the host reaches the service through Docker's gateway, so every request has the gateway's address:
-    v1's limiter (nknu.server.ratelimit) trusts the tunnel's client header, or shares one budget, only for a loopback
+    v1's limiter (nknu.retrieval.ratelimit) trusts the tunnel's client header, or shares one budget, only for a loopback
     peer. Only the published port's forwarder can connect from there (Docker publishes it on the host's 127.0.0.1)."""
 
     def __init__(self, app: ASGIApp, networks: Sequence[str]):
@@ -450,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                      public_url=env.get("NKNU_PUBLIC_URL", ""), local_peers=_csv(env.get("NKNU_LOCAL_PEERS")))
     print(f"对外服务：http://{args.host}:{args.port}/ （MCP 在 /mcp；认的主机名：{', '.join([*LOCAL_HOSTS, *hosts])}；"
           f"查询纪录：{args.log or '不记'}）", file=sys.stderr)
-    # proxy_headers off: the limiter must see the real TCP peer (nknu.server.ratelimit)
+    # proxy_headers off: the limiter must see the real TCP peer (nknu.retrieval.ratelimit)
     uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, server_header=False, log_level="info")
     return 0
 

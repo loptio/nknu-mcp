@@ -4,7 +4,7 @@ The folder's shape is Claude's proposal the owner agreed to (【用户同意 Cla
 Claude's (【Claude 的执行办法】).
 
 What goes out (README.md in the folder says it again, in words):
-- pages/: each web page once, as the crawler decoded it (nknu.crawl.fetch.decode_body: the HTTP header's charset, else
+- pages/: each web page once, as the crawler decoded it (nknu.archive.fetch.decode_body: the HTTP header's charset, else
   UTF-8, else Big5; never the page's <meta charset>, which on c.nknu says big5 for UTF-8 bytes), saved as UTF-8 with a
   byte order mark (a browser then reads it as UTF-8 whatever the meta says) and otherwise unchanged. A list's further
   pages and a notice brought by a button (the action table's pager and detail answers) are pages too.
@@ -99,8 +99,8 @@ from zoneinfo import ZoneInfo
 from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import google_api, links, monitor, outcome, postback, profiles, progress, scope, sniff, watch
+from nknu.archive.fetch import DecodeError, decode_body
 from nknu.archive.frontier import KEPT_COLS, _missing
-from nknu.crawl.fetch import DecodeError, decode_body
 
 TZ = ZoneInfo("Asia/Taipei")
 PAGE, FILE, IMAGE, DATA, BUTTON = "网页", "附件", "图片", "资料", "按钮"
@@ -363,7 +363,7 @@ codecs.register_error("nknu.pair", _pair)
 
 
 def redecode(body: bytes, ctype: str | None = None) -> tuple[str, str, str, int]:
-    """A page strict decoding refused (nknu.crawl.fetch.decode_body: the header's charset, UTF-8, Big5; 结果 编码有问题)
+    """A page strict decoding refused (nknu.archive.fetch.decode_body: the header's charset, UTF-8, Big5; 结果 编码有问题)
     read again, as (text, encoding, who names it in words or '', how many characters it lost): strictly with an
     encoding the page names (_labelled_charsets: its own <meta> label, then its server's charset), the first that
     reads the whole body (lost 0); else with whichever of those and of DEFAULTS loses the fewest characters (each lost
@@ -3038,7 +3038,7 @@ def _csv(path: Path, rows: list[dict[str, str]]) -> None:
 def program_digest() -> str:
     """程式 of 导出依据: the sha256 (its first 16 hex digits) of the export's program, every module of the archive
     package (the views that judge the rows, the platform profiles, the export itself …) and the crawler's decoder
-    (nknu.crawl.fetch); '' when one cannot be read."""
+    (nknu.archive.fetch); '' when one cannot be read."""
     try:
         files = [*sorted(Path(__file__).parent.glob("*.py")), Path(sys.modules[decode_body.__module__].__file__)]
         h = hashlib.sha256()

@@ -33,8 +33,8 @@ from zoneinfo import ZoneInfo
 from selectolax.lexbor import LexborHTMLParser, LexborNode, SelectolaxError
 
 from nknu.archive import google_api, links, outcome, postback, profiles, progress, scope
+from nknu.archive.fetch import DecodeError, decode_body
 from nknu.archive.links import _base as page_base  # the crawler's <base href>, so hrefs join as the crawler joined them
-from nknu.crawl.fetch import DecodeError, decode_body
 from nknu.totext import pagetext
 
 log = logging.getLogger(__name__)

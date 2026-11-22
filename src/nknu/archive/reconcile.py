@@ -50,9 +50,9 @@ from urllib.parse import urlsplit
 from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import google_api, jsread, links, monitor, outcome, postback, profiles, round1, scope
+from nknu.archive.fetch import DecodeError, Snapshot, decode_body
 from nknu.archive.frontier import ROUND, Frontier, round_of, wall
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import DecodeError, Snapshot, decode_body
+from nknu.archive.target import Target
 
 # thin (design §10.1): the design's numbers, checked by the offline rehearsal (§18.1) on 10-26 (archive-rehearsal-2:
 # 7,197 stored pages of 46 sites read back; the 25 questions' answer pages: 137 addresses, 59 of them stored pages

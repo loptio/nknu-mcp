@@ -12,13 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from nknu.archive import links, postback, profiles, scope
+from nknu.archive import links, postback, profiles, scope, webforms
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
 from nknu.archive.postback import Chains, list_end, read_page, title_ok
-from nknu.crawl import webforms
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "archive_postback"
 SSO_LIST = "https://sso.nknu.edu.tw/news/subjectlist.aspx?cat=SCHOOLADMIN"

@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from nknu.crawl.tls import nknu_ssl_context
+from nknu.archive.tls import nknu_ssl_context
 
 
 @pytest.mark.live

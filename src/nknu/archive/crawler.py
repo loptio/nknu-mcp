@@ -138,7 +138,22 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
 
-from nknu.archive import google_api, links, outcome, pagetypes, postback, profiles, round1, scope, sniff
+from nknu.archive import google_api, links, outcome, pagetypes, postback, profiles, round1, schoollock, scope, sniff
+from nknu.archive.fetch import (
+    BREAKER_THRESHOLD,
+    KEEPALIVE_LIMITS,
+    ArchiveWriteError,
+    Client,
+    DecodeError,
+    FetchError,
+    HostCircuitOpen,
+    NotArchived,
+    RetryableStatus,
+    RetryLater,
+    Snapshot,
+    TooLarge,
+    UnwantedType,
+)
 from nknu.archive.frontier import (
     ALL_QUEUES,
     NETWORKS,
@@ -160,24 +175,8 @@ from nknu.archive.robots import (
     judge_answer,
     unparsed,
 )
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.fetch import (
-    BREAKER_THRESHOLD,
-    KEEPALIVE_LIMITS,
-    ArchiveWriteError,
-    Client,
-    DecodeError,
-    FetchError,
-    HostCircuitOpen,
-    NotArchived,
-    RetryableStatus,
-    RetryLater,
-    Snapshot,
-    TooLarge,
-    UnwantedType,
-)
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import RateLimit, Target
+from nknu.archive.warc import WarcSink
 
 log = logging.getLogger("nknu.archive")
 

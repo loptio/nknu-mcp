@@ -19,12 +19,11 @@ import pytest
 from typer.testing import CliRunner
 
 from nknu.archive import crawler as mod
-from nknu.archive import round1, scope, seeds
+from nknu.archive import round1, schoollock, scope, seeds
+from nknu.archive.fetch import Client, FetchError
 from nknu.archive.frontier import Frontier, round_of
 from nknu.archive.monitor import politeness, scope_audit
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Client, FetchError
+from nknu.archive.target import Target
 from tests.archive.test_archive import Net, Sink, make, seed, snap
 from tests.archive.test_crawler_round1 import (
     FORM,
@@ -570,24 +569,6 @@ def test_the_run_start_says_which_school_lock_the_run_holds(tmp_path):
     crawler.run(poll_s=0.01)
     start = json.loads(events(crawler, "run_start")[-1])
     assert start["school_lock"] == str(schoollock.lock_path()) == os.environ["NKNU_SCHOOL_LOCK"]
-
-
-def test_archive_run_refuses_on_a_machine_with_the_services_env_unless_the_lock_path_is_given(tmp_path, monkeypatch):
-    env = tmp_path / "etc-nknu-env"
-    env.write_text("# the services' settings\n")
-    monkeypatch.setattr(schoollock, "SERVICES_ENV", env)
-
-    class NoCrawler:
-        def __init__(self, *a, **k):
-            raise AssertionError("built a crawler with a lock the services may not share")
-
-    monkeypatch.setattr(mod, "Crawler", NoCrawler)
-    lock = os.environ.pop("NKNU_SCHOOL_LOCK")
-    try:
-        out = cli("run", "--dir", str(tmp_path / "a"))
-    finally:
-        os.environ["NKNU_SCHOOL_LOCK"] = lock
-    assert out.exit_code == 1 and "NKNU_SCHOOL_LOCK" in out.output
 
 
 def test_a_lock_file_this_user_may_only_read_is_still_a_lock(tmp_path):

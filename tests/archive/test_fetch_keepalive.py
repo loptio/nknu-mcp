@@ -19,11 +19,11 @@ import httpx
 import pytest
 from warcio.archiveiterator import ArchiveIterator
 
-from nknu.crawl import fetch as fetch_mod
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.fetch import KEEPALIVE_LIMITS, Client, FetchError, RetryLater, TooSlow
-from nknu.crawl.warc import WarcSink
+from nknu.archive import fetch as fetch_mod
+from nknu.archive import schoollock
+from nknu.archive.fetch import KEEPALIVE_LIMITS, Client, FetchError, RetryLater, TooSlow
+from nknu.archive.target import RateLimit, Target
+from nknu.archive.warc import WarcSink
 
 RL = RateLimit()  # 2–5 s between requests, on the fake clock
 

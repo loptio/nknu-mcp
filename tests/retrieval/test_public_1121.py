@@ -13,7 +13,7 @@ import pytest
 from fastmcp import Client
 
 from nknu.retrieval import public, server, web
-from nknu.server.ratelimit import RateLimiter
+from nknu.retrieval.ratelimit import RateLimiter
 from tests.retrieval.test_respond import TODAY, Tiny, hit, prose, result
 
 HOST = "mcp.example.org"

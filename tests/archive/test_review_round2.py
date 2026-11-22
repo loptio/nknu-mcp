@@ -15,7 +15,7 @@ from nknu.archive import scope
 from nknu.archive.frontier import Frontier
 from nknu.archive.monitor import politeness, scope_audit
 from nknu.archive.robots import Robots
-from nknu.crawl.adapter import Target
+from nknu.archive.target import Target
 from tests.archive.test_archive import Sink, make, seed, snap
 from tests.archive.test_review_fixes import cli, conn_err, drive, events, html_response, real, rows
 

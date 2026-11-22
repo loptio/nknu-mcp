@@ -24,7 +24,6 @@ PII_SAMPLES: dict[str, set[str]] = {
                                "email:someone.name@google.com", "student_id:４０００００００１", "mobile:０９１２３４５６７８",
                                "national_id:a123456789"},
     "tests/admin/test_checks.py": {"mobile:0912-345-678", "mobile:0987-654-321", "student_id:412345678"},
-    "tests/server/test_app.py": {"mobile:0912-345-678"},
     # made-up Google calendar IDs and an event UID: calendar IDs are shaped like email addresses
     "tests/archive/test_google_api.py": {"email:c_0123456789abcdef@group.calendar.google.com", "email:nknuOOO@gmail.com",
                                          "email:holiday@group.v.calendar.google.com", "email:e1@google.com"},
@@ -113,7 +112,7 @@ def check_startup(settings: Settings) -> list[str]:
         out.append(f"startup: Asia/Taipei timezone unavailable ({exc}); install tzdata")
     if "unittest.mock" in sys.modules and "pytest" not in sys.modules:
         out.append("startup: unittest.mock is loaded in a production process")
-    from nknu.crawl.tls import NKNU_CA_PATH, NKNU_CA_SHA256, pem_sha256
+    from nknu.archive.tls import NKNU_CA_PATH, NKNU_CA_SHA256, pem_sha256
 
     if not NKNU_CA_PATH.exists() or pem_sha256(NKNU_CA_PATH) != NKNU_CA_SHA256:
         out.append(f"startup: bundled TWCA intermediate missing or changed: {NKNU_CA_PATH}")

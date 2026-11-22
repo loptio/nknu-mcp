@@ -18,10 +18,10 @@ import pytest
 from nknu.archive import crawler as crawl_mod
 from nknu.archive import outcome, profiles, reconcile
 from nknu.archive.crawler import AlreadyRunning, Crawler, hold_run_lock
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 from tests.archive.plans import plan as make_plan
 from tests.archive.plans import site as make_site
 from tests.archive.test_archive import Clock, Net, snap

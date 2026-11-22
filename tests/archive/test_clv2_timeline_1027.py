@@ -21,7 +21,7 @@ from pathlib import Path
 
 from nknu.archive import jscheck, profiles
 from nknu.archive.crawler import Crawler
-from nknu.crawl.warc import WarcSink
+from nknu.archive.warc import WarcSink
 from tests.archive.plans import OpenPlan
 from tests.archive.test_archive import Clock, seed, snap
 

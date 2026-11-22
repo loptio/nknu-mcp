@@ -755,7 +755,8 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     repo, out = tmp_path / "repo", tmp_path / "out"
     files = ("src/nknu/retrieval/hybrid.py", "src/nknu/retrieval/search.py", "src/nknu/retrieval/server.py",
              "src/nknu/admin/cli.py", "src/nknu/core/models.py", "src/nknu/ops/web.py",
-             "src/nknu/core/model_service.py", "deploy/lab-inspect/install.sh", "deploy/lab-inspect/compose.yaml")
+             "src/nknu/core/model_service.py", "src/nknu/archive/fetch.py", "deploy/lab-inspect/install.sh",
+             "deploy/lab-inspect/compose.yaml")
     for name in files:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text("ONE\n", encoding="utf-8")
@@ -772,6 +773,7 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
     assert base == {name: one for name in files[:5]}
     names = subprocess.run(["tar", "-tf", str(out / "inspect-code.tar")], check=True, capture_output=True, text=True)
     assert "src/nknu/ops/web.py" in names.stdout and "src/nknu/retrieval/hybrid.py" in names.stdout
+    assert "src/nknu/archive/fetch.py" in names.stdout  # the crawler's package goes along: 网页核查 calls it
 
 
 # --- this round (owner 11-15: 「頁面廢話太多了」「我想挑選我感興趣的欄位看（默認就顯示一些比較重要的欄位）」「找網站的時候有點費勁」)

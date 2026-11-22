@@ -24,7 +24,7 @@ from nknu.admin.cli import app
 from nknu.archive import crawler as mod
 from nknu.archive import google_api, links, monitor
 from nknu.archive.frontier import Frontier
-from nknu.crawl.warc import WarcSink
+from nknu.archive.warc import WarcSink
 from tests.archive import test_gsites_images_1027 as gs
 from tests.archive.plans import OpenPlan
 from tests.archive.test_archive import Clock, seed, snap

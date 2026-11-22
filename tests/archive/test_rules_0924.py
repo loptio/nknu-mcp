@@ -6,9 +6,9 @@ import httpx
 import pytest
 
 from nknu.archive import scope
+from nknu.archive.fetch import Client, UnwantedType
 from nknu.archive.monitor import scope_audit
-from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.fetch import Client, UnwantedType
+from nknu.archive.target import RateLimit, Target
 from tests.archive.test_archive import drain, make, seed, snap
 
 

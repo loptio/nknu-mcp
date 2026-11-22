@@ -6,11 +6,11 @@ import pytest
 
 from nknu.archive import scope
 from nknu.archive.crawler import Crawler
+from nknu.archive.fetch import FetchError, HostCircuitOpen, Snapshot, TooLarge
 from nknu.archive.links import extract
 from nknu.archive.monitor import politeness, report, scope_audit
 from nknu.archive.robots import Robots, judge_answer
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import FetchError, HostCircuitOpen, Snapshot, TooLarge
+from nknu.archive.target import Target
 from tests.archive.plans import OpenPlan
 
 # ---------------------------------------------------------------- scope

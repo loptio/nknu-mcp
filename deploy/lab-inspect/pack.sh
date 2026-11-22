@@ -14,7 +14,9 @@ mkdir -p "$OUT"
 PACKED=(inspect-code.tar inspect-code.tar.sha256 inspect-code.base.sha256 install.sh compose.yaml)
 (cd "$OUT" && rm -f "${PACKED[@]}")  # 输出资料夹用过的话，先拿掉上一次的五个档
 
-NEW=(src/nknu/ops deploy/lab-inspect src/nknu/core/model_service.py)
+# src/nknu/archive whole: 网页核查 calls the crawler's own functions, and since 11-22 the crawler's fetch layer
+# (fetch, warc, schoollock, tls, webforms, target) lives there instead of src/nknu/crawl (v1, removed)
+NEW=(src/nknu/ops deploy/lab-inspect src/nknu/core/model_service.py src/nknu/archive)
 CHANGED=(src/nknu/retrieval/hybrid.py src/nknu/retrieval/search.py src/nknu/retrieval/server.py src/nknu/admin/cli.py
          src/nknu/core/models.py)
 

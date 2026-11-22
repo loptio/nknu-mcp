@@ -5,11 +5,11 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
+from nknu.archive.target import Target
 from nknu.archive.viewer import PREVIEW_CSP, build_index, page_text, serve
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.warc import WarcSink
 
 HTML = "<html><head><title>教務處</title><script>alert(1)</script></head><body><h1>規章</h1><img src='https://c.nknu.edu.tw/x.jpg'></body></html>"
 

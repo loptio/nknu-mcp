@@ -21,10 +21,10 @@ import pytest
 from selectolax.lexbor import LexborHTMLParser
 
 from nknu.archive import export, outcome
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 
 SITE = "c.nknu.edu.tw/aca"
 BASE = "https://c.nknu.edu.tw/aca/"

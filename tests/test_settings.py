@@ -1,6 +1,6 @@
 """Settings come from the environment (/etc/nknu/env on the lab machine, copied once from deploy/env.example)."""
 
-from nknu.crawl.fetch import CREDENTIALS
+from nknu.archive.fetch import CREDENTIALS
 from nknu.settings import REPO_ROOT, load_settings
 
 

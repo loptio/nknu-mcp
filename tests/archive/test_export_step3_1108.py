@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 
 from nknu.admin.cli import app
 from nknu.archive import export, outcome
-from nknu.crawl.fetch import DecodeError, decode_body
+from nknu.archive.fetch import DecodeError, decode_body
 from tests.archive.test_export_1027 import (
     BASE,
     DRIVE_ID,

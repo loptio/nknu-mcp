@@ -81,11 +81,10 @@ from warcio.archiveiterator import ArchiveIterator
 from warcio.exceptions import ArchiveLoadFailed
 from warcio.statusandheaders import StatusAndHeadersParserException
 
-from nknu.archive import links, outcome, profiles, scope, sniff
+from nknu.archive import links, outcome, profiles, scope, sniff, webforms
+from nknu.archive.fetch import DecodeError, decode_body
 from nknu.archive.frontier import Frontier, ids_clause, wall
-from nknu.crawl import webforms
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import DecodeError, decode_body
+from nknu.archive.target import Target
 
 MAX_PAGES = 500  # one chain walks at most this many pages (§7.5: max_pages)
 GENERIC = "generic"  # listwalk.profile of a site no platform file describes

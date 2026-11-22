@@ -1,4 +1,5 @@
-"""Paths and environment switches shared by the crawler, builder and server."""
+"""Paths and environment switches shared by the crawler, the builder and the public service (deploy/env.example lists
+every one)."""
 
 from __future__ import annotations
 
@@ -22,25 +23,17 @@ def _off(value: str | None) -> bool:
 class Settings:
     data_dir: Path
     config_dir: Path
-    readonly: bool
-    disabled_sources: frozenset[str]
     allowed_hosts: list[str]
     allowed_origins: list[str]
-    discord_webhook: str | None
-    backup_dir: Path | None
     # Cloudflare tunnel: trust cloudflared's CF-Connecting-IP from loopback; Tailscale Funnel: 0 (see ratelimit.py)
     trust_cf_header: bool = True
-    # the machine-wide lock on requests to the school (crawl/schoollock.py, round-1 design §6.9): every program that
+    # the machine-wide lock on requests to the school (archive/schoollock.py, round-1 design §6.9): every program that
     # sends to the school's servers takes this one file, so they must all read the same path
     school_lock: Path = Path.home() / ".cache" / "nknu" / "school-requests.lock"
 
     @property
-    def facts_path(self) -> Path:
+    def facts_path(self) -> Path:  # v1's facts library, which `nknu archive seed` reads round 1's start from when present
         return self.data_dir / "facts.db"
-
-    @property
-    def serve_path(self) -> Path:
-        return self.data_dir / "serve.db"
 
     @property
     def warc_dir(self) -> Path:
@@ -48,16 +41,11 @@ class Settings:
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
-    backup = env.get("NKNU_BACKUP_DIR")
     return Settings(
         data_dir=Path(env.get("NKNU_DATA_DIR", "./data")),
         config_dir=Path(env.get("NKNU_CONFIG_DIR", REPO_ROOT / "config")),
-        readonly=env.get("NKNU_READONLY", "") == "1",
-        disabled_sources=frozenset(_csv(env.get("NKNU_DISABLED_SOURCES"))),
         allowed_hosts=_csv(env.get("NKNU_ALLOWED_HOSTS", "127.0.0.1,localhost")),
         allowed_origins=_csv(env.get("NKNU_ALLOWED_ORIGINS")),
-        discord_webhook=env.get("NKNU_DISCORD_WEBHOOK") or None,
-        backup_dir=Path(backup) if backup else None,
         trust_cf_header=not _off(env.get("NKNU_TRUST_CF_HEADER")),
         school_lock=Path(env.get("NKNU_SCHOOL_LOCK") or Path.home() / ".cache" / "nknu" / "school-requests.lock"),
     )

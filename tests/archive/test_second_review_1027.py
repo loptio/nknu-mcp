@@ -31,8 +31,8 @@ from typer.testing import CliRunner
 from nknu.admin.cli import app
 from nknu.archive import google_api, links, monitor, profiles, progress, sniff
 from nknu.archive.crawler import hold_run_lock
+from nknu.archive.fetch import FetchError
 from nknu.archive.frontier import Frontier
-from nknu.crawl.fetch import FetchError
 from tests.archive import test_clv2_timeline_1027 as tl
 from tests.archive import test_gsites_images_1027 as gs
 from tests.archive.test_archive import Clock, seed, snap

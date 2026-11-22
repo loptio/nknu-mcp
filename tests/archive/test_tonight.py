@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from nknu.archive import scope
+from nknu.archive.fetch import FetchError
 from nknu.archive.seeds import SSO_LISTS, v1_known
-from nknu.crawl.fetch import FetchError
 from tests.archive.test_archive import drain, make, seed, snap
 
 

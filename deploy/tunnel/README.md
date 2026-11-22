@@ -1,5 +1,7 @@
 # 對外網址（隧道）設定
 
+> **這份是第一版時寫的**：那時打算裝在 Ubuntu 上，服務聽 8765 埠，設定寫在 `/etc/nknu/env`，用 systemd 重啟。現在的對外服務在 Windows 實驗室電腦的 Docker 裡，聽 `127.0.0.1:8770`，`NKNU_ALLOWED_HOSTS` 這些設定寫在 `deploy/lab-public/compose.yaml`，重啟照 `deploy/lab-public/README.md`。下面兩種做法（Cloudflare 隧道、Tailscale Funnel）和要注意的事照樣適用，但埠號、設定檔和指令要照現在的樣子改，真的要架時再改寫這份。
+
 MCP 伺服器只聽實驗室機器本機的 `127.0.0.1:8765`，外面連不到。「隧道」是在同一台機器上執行的小程式，它主動連到 Cloudflare 或 Tailscale，把外面打到固定網址的請求轉回本機。這樣不用開防火牆，也不用公網 IP。
 
 v1 還沒決定用哪一種，兩種都寫在下面。**網址公開之後就不能再改**，否則所有人設定好的連接器都會失效。

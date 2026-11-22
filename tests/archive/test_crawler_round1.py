@@ -18,11 +18,10 @@ import httpx
 import pytest
 
 from nknu.archive import crawler as mod
-from nknu.archive import outcome, round1, scope
+from nknu.archive import outcome, round1, schoollock, scope
+from nknu.archive.fetch import KEEPALIVE_LIMITS, FetchError, RetryableStatus, Sent, Snapshot
 from nknu.archive.monitor import politeness, scope_audit
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import KEEPALIVE_LIMITS, FetchError, RetryableStatus, Sent, Snapshot
+from nknu.archive.target import Target
 from tests.archive.plans import plan, site
 from tests.archive.test_archive import Clock, Net, Sink, make, seed, snap
 

@@ -53,13 +53,28 @@ from nknu.core.timeutil import today_tpe
 from nknu.retrieval.respond import CALENDAR_PART, DEFAULT_DETAIL, build_response, read_response, to_json
 from nknu.retrieval.types import DocHit, SearchResult
 from nknu.retrieval.unitfilter import unit_filter
-from nknu.server.envelope import echo
 from nknu.settings import REPO_ROOT
 
 if TYPE_CHECKING:
     from nknu.retrieval.hybrid import HybridConfig
 
 log = logging.getLogger(__name__)
+
+ECHO_BYTES = 24  # user input quoted in an error message (echo)
+
+
+def echo(value: object) -> str:
+    """User input quoted inside an error message. Non-printable characters become ?, and the quote is cut to ECHO_BYTES
+    of UTF-8, so a long or strange input cannot make the message long. Every piece of user input reaches an error
+    message through here."""
+    s = "".join(c if c.isprintable() else "?" for c in str(value))
+    size = 0
+    for i, c in enumerate(s):
+        size += len(c.encode())
+        if size > ECHO_BYTES:
+            return f"「{s[:i]}…」"
+    return f"「{s}」"
+
 
 NAME = "nknu"  # plan 2026-11-08 T4: no longer 教務處's alone ("nknu-aca" before)
 DEFAULT_DB = REPO_ROOT / "research" / "pipeline_2026-11-02" / "aca.db"

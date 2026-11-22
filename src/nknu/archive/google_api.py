@@ -49,7 +49,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 from nknu.archive import links, outcome, round1, scope
 from nknu.archive.frontier import ids_clause
-from nknu.crawl.adapter import Target
+from nknu.archive.target import Target
 
 API_HOST = "www.googleapis.com"
 QUEUE = "googleapis"  # design §6.1: the named queue of Drive API and Calendar API requests

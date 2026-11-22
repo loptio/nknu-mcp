@@ -28,14 +28,13 @@ import httpx
 import pytest
 from warcio.archiveiterator import ArchiveIterator
 
-from nknu.archive import jscheck, jsfetch
+from nknu.archive import jscheck, jsfetch, schoollock
 from nknu.archive.crawler import archive_client, hold_run_lock, resolve
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
 from nknu.archive.jscheck import Ask
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 
 NOW = datetime(2026, 11, 17, 3, 30, tzinfo=UTC)
 ORD = "https://ord.nknu.edu.tw"

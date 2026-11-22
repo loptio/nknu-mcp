@@ -18,10 +18,10 @@ import pytest
 
 from nknu.archive import google_api as g
 from nknu.archive import links, round1, scope
+from nknu.archive.fetch import Client, FetchError, Snapshot
 from nknu.archive.frontier import Frontier
-from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.fetch import Client, FetchError, Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import RateLimit, Target
+from nknu.archive.warc import WarcSink
 from tests.archive.plans import plan, site
 
 ACA = "c.nknu.edu.tw/aca"

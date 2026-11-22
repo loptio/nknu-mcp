@@ -16,8 +16,8 @@ import pytest
 
 from nknu.archive import postback
 from nknu.archive.crawler import Crawler
-from nknu.crawl.fetch import FetchError, RetryLater
-from nknu.crawl.warc import WarcSink
+from nknu.archive.fetch import FetchError, RetryLater
+from nknu.archive.warc import WarcSink
 from tests.archive.plans import OpenPlan
 from tests.archive.test_archive import Clock, Net, seed, snap
 from tests.archive.test_postback import MORE, fx
@@ -214,7 +214,7 @@ def test_drive_downloads_wait_longer_between_them_than_pages(tmp_path):
 
 
 def test_every_host_is_checked_with_the_bundled_twca_intermediate(monkeypatch):
-    from nknu.crawl import fetch
+    from nknu.archive import fetch
 
     assert not hasattr(fetch, "default_ssl_context")  # the context without the intermediate is not used for any host
     seen = []

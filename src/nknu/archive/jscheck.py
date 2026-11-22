@@ -101,7 +101,7 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.archive import google_api, links, outcome, pagetypes, profiles, round1, scope
+from nknu.archive import google_api, links, outcome, pagetypes, profiles, round1, schoollock, scope
 from nknu.archive.crawler import (
     _CAMPUS_OFF,
     _KIND_OF0,
@@ -130,11 +130,7 @@ from nknu.archive.crawler import (
     netcheck,
     resolve,
 )
-from nknu.archive.frontier import Frontier, round_of, utc_now, wall
-from nknu.archive.robots import MAX_CRAWL_DELAY_S
-from nknu.crawl import schoollock
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import (
+from nknu.archive.fetch import (
     CREDENTIALS,
     USER_AGENT,
     ArchiveWriteError,
@@ -144,7 +140,10 @@ from nknu.crawl.fetch import (
     RetryLater,
     Snapshot,
 )
-from nknu.crawl.warc import WarcSink
+from nknu.archive.frontier import Frontier, round_of, utc_now, wall
+from nknu.archive.robots import MAX_CRAWL_DELAY_S
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 
 log = logging.getLogger("nknu.archive.jscheck")
 
@@ -1184,8 +1183,6 @@ class JsCheck:
             except schoollock.SchoolLockBusy as exc:
                 raise JsCheckRefused(f"另一个程序正在对学校发请求（pid {exc.pid}，全机锁 {exc.path}）：等它停下再 "
                                      "jscheck") from None
-            except schoollock.SchoolLockUnshared as exc:
-                raise JsCheckRefused(str(exc)) from None
             try:
                 (self.root / "STOP").unlink(missing_ok=True)  # only the program that holds run.lock clears a STOP
                 self.fr = Frontier(db)

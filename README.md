@@ -88,17 +88,18 @@ MCP（Model Context Protocol）是 AI 助理呼叫外部工具的共通規格。
 
 | 資料夾 | 內容 |
 |---|---|
-| `src/nknu/archive/` | 爬蟲：抓取、存檔、每晚更新、匯出 |
+| `src/nknu/archive/` | 爬蟲：發請求、存檔（WARC）、全機一把的學校請求鎖、每晚更新、匯出 |
 | `src/nknu/totext/` | 網頁和附件轉文字 |
 | `src/nknu/content/` | 建資料庫：文件、日期、單位、段落、向量 |
 | `src/nknu/retrieval/` | 搜尋、MCP、網頁和 JSON 介面（`public.py` 是對外服務） |
 | `src/nknu/ops/` | 維護用的檢視台（每晚跑得怎樣、每個網站的情況、一份文件從抓取到搜尋的經過） |
 | `src/nknu/core/` | 共用的部分（模型、個資遮蔽等） |
+| `src/nknu/admin/` | `nknu` 指令的入口（爬蟲指令、推送前的檢查 `nknu check`） |
 | `config/` | 單位表、別名、網站和單位的對應 |
 | `deploy/` | 實驗室電腦上的安裝和每晚排程，各資料夾的 `README.md` 是維護說明（簡體中文） |
 | `tests/` | 測試 |
 
-第一版（只有場館開放時間、教學行事曆和公告的 4 個工具）的程式還在 `src/nknu/crawl/`、`build/`、`server/`、`admin/`，也在 `feat/v1` 分支。
+第一版（只有場館開放時間、教學行事曆和公告的 4 個工具）的程式已經從這個分支拿掉，要看可以到 `feat/v1` 分支。
 
 ## 自己架一份
 

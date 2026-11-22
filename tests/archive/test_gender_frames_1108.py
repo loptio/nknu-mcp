@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from nknu.archive import reconcile, round1, scope
 from nknu.archive.crawler import Crawler
 from nknu.archive.frontier import Frontier
-from nknu.crawl.warc import WarcSink
+from nknu.archive.warc import WarcSink
 from tests.archive.plans import plan as make_plan
 from tests.archive.plans import site as make_site
 from tests.archive.test_archive import Clock, seed, snap

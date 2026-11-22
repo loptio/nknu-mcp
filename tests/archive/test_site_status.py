@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 
 from nknu.archive import monitor, outcome
+from nknu.archive.fetch import Snapshot
 from nknu.archive.frontier import Frontier
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import Snapshot
-from nknu.crawl.warc import WarcSink
+from nknu.archive.target import Target
+from nknu.archive.warc import WarcSink
 
 T0, T1, T2, T3, T4, T5 = (f"2026-10-26T0{h}:00:00+00:00" for h in range(6))
 

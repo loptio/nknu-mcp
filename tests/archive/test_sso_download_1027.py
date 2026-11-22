@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 from nknu.admin.cli import app
 from nknu.archive import outcome, postback, sniff
 from nknu.archive.crawler import Crawler, hold_run_lock
-from nknu.crawl.fetch import FetchError, RetryLater, TooLarge
+from nknu.archive.fetch import FetchError, RetryLater, TooLarge
 from tests.archive.plans import OpenPlan
 from tests.archive.test_archive import Clock, seed, snap
 from tests.archive.test_pilot_fixes import PDF, SSO_Q, PressNet, work

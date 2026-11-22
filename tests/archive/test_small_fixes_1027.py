@@ -22,7 +22,7 @@ import json
 import httpx
 
 from nknu.archive import jscheck, outcome, profiles, progress
-from nknu.crawl.fetch import FetchError
+from nknu.archive.fetch import FetchError
 from tests.archive.test_archive import make as make_net
 from tests.archive.test_archive import seed, snap
 from tests.archive.test_crawler_round1 import conn_err, rows, settle

@@ -262,9 +262,9 @@ def walk(ask: Ask, limit: int = LIMIT, say: Callable[[str], None] = lambda s: No
 def _school(gap: tuple[float, float]) -> tuple[Ask, Callable[[], None]]:
     """The school asked for real: the crawler's own client under the machine-wide school lock (SchoolLockBusy while a
     crawl or anything else sends), one request at a time, the gap between requests. Returns ask and what closes it."""
-    from nknu.crawl import schoollock
-    from nknu.crawl.adapter import RateLimit, Target
-    from nknu.crawl.fetch import Client
+    from nknu.archive import schoollock
+    from nknu.archive.fetch import Client
+    from nknu.archive.target import RateLimit, Target
 
     lock = schoollock.hold()
     client = Client(attempts=1)

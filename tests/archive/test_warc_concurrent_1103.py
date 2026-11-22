@@ -9,10 +9,10 @@ from datetime import UTC, datetime
 import httpx
 from warcio.archiveiterator import ArchiveIterator
 
-from nknu.crawl.adapter import RateLimit, Target
-from nknu.crawl.fetch import Client
-from nknu.crawl.warc import WarcSink
-from tests.crawl.test_warc_raw import Fake, response_at
+from nknu.archive.fetch import Client
+from nknu.archive.target import RateLimit, Target
+from nknu.archive.warc import WarcSink
+from tests.archive.test_warc_raw import Fake, response_at
 
 URL = "https://c.nknu.edu.tw/aca/newslist.aspx?gi=4"
 

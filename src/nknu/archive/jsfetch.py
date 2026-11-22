@@ -48,13 +48,12 @@ from urllib.parse import urlsplit
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 
-from nknu.archive import jscheck, links, scope
+from nknu.archive import jscheck, links, schoollock, scope
 from nknu.archive.crawler import CAMPUS_URL, GAP, AlreadyRunning, check_gap, hold_run_lock, local_address, resolve
+from nknu.archive.fetch import Client
 from nknu.archive.frontier import Frontier, rehearsal_of, round_of, wall
 from nknu.archive.jscheck import Answer, Ask, Browser, JsCheck, Observation, PageBridge, PlaywrightBrowser, Sender
-from nknu.crawl import schoollock
-from nknu.crawl.fetch import Client
-from nknu.crawl.warc import WarcSink
+from nknu.archive.warc import WarcSink
 
 # a picture by its address, whatever resource type the browser gives it (a site's icon is asked as "other"): the crawler
 # fetches the pictures a shown page links, a look never needs them (11-17 offline trial: ord's /images/logo.png on every
@@ -653,8 +652,6 @@ class JsFetchRun:
             except schoollock.SchoolLockBusy as exc:
                 raise JsFetchRefused(f"另一个程序正在对学校发请求（pid {exc.pid}，全机锁 {exc.path}）：等它停下再开"
                                      ) from None
-            except schoollock.SchoolLockUnshared as exc:
-                raise JsFetchRefused(str(exc)) from None
             try:
                 (self.root / "STOP").unlink(missing_ok=True)  # only the program that holds run.lock clears a STOP
                 fr = Frontier(db)
@@ -781,7 +778,7 @@ def _cmd_render(a: argparse.Namespace) -> int:
     try:
         try:
             school = schoollock.hold()
-        except (schoollock.SchoolLockBusy, schoollock.SchoolLockUnshared) as exc:
+        except schoollock.SchoolLockBusy as exc:
             print(f"没有开：全机锁拿不到（{exc}）")
             return 2
         try:

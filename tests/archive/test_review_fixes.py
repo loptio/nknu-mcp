@@ -17,11 +17,11 @@ import pytest
 from typer.testing import CliRunner
 
 from nknu.archive import scope
+from nknu.archive.fetch import FetchError, HostCircuitOpen, RetryableStatus, Snapshot
 from nknu.archive.frontier import Frontier
 from nknu.archive.links import extract
 from nknu.archive.monitor import report, scope_audit
-from nknu.crawl.adapter import Target
-from nknu.crawl.fetch import FetchError, HostCircuitOpen, RetryableStatus, Snapshot
+from nknu.archive.target import Target
 from tests.archive.test_archive import Sink, make, seed, snap
 
 # ---------------------------------------------------------------- helpers
@@ -136,7 +136,7 @@ def test_P2_a_request_that_reached_the_server_is_logged_and_waited_for_whatever_
 
 
 def test_P2_a_warc_that_cannot_be_written_stops_the_whole_run(tmp_path):
-    from nknu.crawl.fetch import ArchiveWriteError
+    from nknu.archive.fetch import ArchiveWriteError
 
     crawler, net, _ = make(tmp_path, {"robots.txt": snap("x", 404), "d.nknu.edu.tw/a": ArchiveWriteError("disk full", 200),
                                       "d.nknu.edu.tw/b": lambda u: snap(u, html="<p>b</p>")})
@@ -188,7 +188,7 @@ def test_P3_a_robots_txt_with_no_rule_in_it_is_logged(tmp_path):
 def test_P4_a_4xx_page_is_an_archived_answer_not_a_failure(tmp_path):
     from warcio.archiveiterator import ArchiveIterator
 
-    from nknu.crawl.warc import WarcSink
+    from nknu.archive.warc import WarcSink
 
     def handler(req):
         if req.url.path.startswith("/upload/"):
@@ -259,7 +259,7 @@ def test_P4_a_directory_that_denies_ten_urls_in_a_row_cools_down(tmp_path):
 
 
 def test_P5_retry_after_rests_the_whole_server_queue(tmp_path):
-    from nknu.crawl.fetch import RetryLater
+    from nknu.archive.fetch import RetryLater
 
     busy = RetryLater("https://a.nknu.edu.tw/p0: HTTP 503 with Retry-After 3600 s", 3600.0)
     crawler, net, clock = make(tmp_path, {"robots.txt": snap("x", 404), "a.nknu.edu.tw/p": busy,
@@ -277,7 +277,7 @@ def test_P5_retry_after_rests_the_whole_server_queue(tmp_path):
 
 
 def test_P5_a_busy_robots_txt_is_not_an_unreachable_host(tmp_path):
-    from nknu.crawl.fetch import RetryLater
+    from nknu.archive.fetch import RetryLater
 
     busy = RetryLater("https://a.nknu.edu.tw/robots.txt: HTTP 503 with Retry-After 3600 s", 3600.0)
     crawler, net, clock = make(tmp_path, {"robots.txt": busy})

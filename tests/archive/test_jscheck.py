@@ -26,12 +26,11 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 import pytest
 
-from nknu.archive import jscheck, pagetypes
+from nknu.archive import jscheck, pagetypes, schoollock
 from nknu.archive.crawler import archive_client, hold_run_lock, resolve
+from nknu.archive.fetch import USER_AGENT
 from nknu.archive.frontier import Frontier
 from nknu.archive.jscheck import Ask, JsCheck, JsCheckRefused
-from nknu.crawl import schoollock
-from nknu.crawl.fetch import USER_AGENT
 from tests.archive.plans import OpenPlan
 
 EE = "https://ee.nknu.edu.tw"
