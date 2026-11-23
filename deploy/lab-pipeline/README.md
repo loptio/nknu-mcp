@@ -468,6 +468,14 @@ docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nkn
 - 约 22:11 又装了一次，只多了一个改动：手动 `promote` 时，状态也记下试建那次的抽样量测。实验室上测试 117 个全过。这一次被换掉的是上一次装的版本，存在 `/work/previous/lab-pipeline-20261122-221139.tar`。
 - 第三次（约 23:5x）把每晚的抽样量测整个拿掉：用户说拿题库当每晚的尺子没有意义。`build.sh` 的 5b 和 `nightly_ingest.py` 的 `student_eval` 都退回加之前的样子，只留下 `--q33` 那个开关。`eval/student_eval.py` 留在仓库里当手动工具，每晚不跑。
 
+11-23 23:02 只换了一个档：`src/nknu/content/build.py`，加上相簿缩图修正（`4eae974`）。
+- 实验室的 `/work/src` 比 git 旧：还没有「删掉不再用的开关」（`7f0e86d`）、共用模型（`525ca93`）和检索那几批。`build.py` 是 `6a2f2ab` 那一版。
+- 所以没有整份 `--with-src` 换，只在 `6a2f2ab` 的 `build.py` 上套用 `4eae974` 的改动。唯一冲突的一处，保留了实验室版的 `single_lines` 开关。这个档因此不等于 git 里任何一版。
+- 在 Mac 上用同一版代码跑 `tests/content tests/pipeline tests/totext`，1,365 个过；实验室上这条线的测试 118 个过。
+- 被换掉的档在 `/work/previous/lab-pipeline-20261123-230249.tar`。
+- 真资料只读算过：116 份图落在导出标「相簿不收」的网址上，荣誉榜 14 份留下，其余没有网页链接的按「定了不收：相簿照片」离开；最多一站离开 15 份，每站都还留 98% 以上，不会碰到「掉到一半」的把关。
+- 以后 `/work/src` 整份跟上 git 时，这个档会被 git 的版本盖掉，修正已经在里面。
+
 所以在 Mac 上直接跑 `pack.sh` 会把工作区里那些「先不要」的改动一起打进去；那些改动提交或丢掉以前，要照上面这样另外打包。`compose.yaml` 或 `nightly_ingest.cmd` 有改的话，另外 scp 到 `C:\nknu-transfer\build\`（旧的先改名留着）。装完跑一次 `... run --rm ingest status` 和 `... run --rm progress` 确认还读得到。
 
 **`/work/config` 里的设定档**（11-23 对过）：转文字、建库、面板都读这里（`NKNU_CONFIG_DIR=/work/config`）。
