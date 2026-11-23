@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>公告</title></head><body>
+<form method="post" action="./subjectlist.aspx?cat=SCHOOLADMIN" id="uForm">
+<div class="aspNetHidden">
+<input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="" />
+<input type="hidden" name="__EVENTARGUMENT" id="__EVENTARGUMENT" value="" />
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="VS-SSO-P1" />
+<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="EV-SSO-P1" />
+</div>
+<script type="text/javascript">
+var theForm = document.forms['uForm'];
+function __doPostBack(eventTarget, eventArgument) { theForm.__EVENTTARGET.value = eventTarget; theForm.submit(); }
+</script>
+<input type="hidden" name="SelTabCategoryId" id="SelTabCategoryId" />
+<div class="form-inline">
+<select name="ddlCategory" id="ddlCategory" class="form-control mr-1">
+<option value="all">全部分類</option>
+<option selected="selected" value="SCHOOLADMIN">行政資訊</option>
+<option value="JOB">徵才就業</option>
+</select>
+<input name="tbKeyword" type="text" id="tbKeyword" class="mr-1 form-control" />
+<button onclick="__doPostBack('ctl09','')" class="btn btn-primary" type="button">查詢</button>
+</div>
+<div class="form-inline "><span id="lbResult">搜尋結果：共4筆</span></div>
+<div>
+<table id="gvFull">
+<tr><th>分類</th><th>標題</th><th>單位</th><th>開始</th><th>結束</th><th>點閱</th></tr>
+<tr><td><span id="gvFull_ctl02_Category">行政資訊</span></td>
+<td><span class="btn-success btn-sm">置頂</span><a id="gvFull_ctl02_linkSubject_short" href="https://sso.nknu.edu.tw/News/lastNews.aspx?UNID=AAAA000000000000000000000000000000000001">【置頂】校園資安提醒</a></td>
+<td><span id="gvFull_ctl02_DeptName">圖資處</span></td><td><span id="gvFull_ctl02_StartDate">2026-10-01</span></td><td><span id="gvFull_ctl02_EndDate">2026-12-31</span></td><td><span id="gvFull_ctl02_ReadCounter">10</span></td></tr>
+<tr><td><span id="gvFull_ctl03_Category">行政資訊</span></td>
+<td><a id="gvFull_ctl03_linkSubject_short" href="https://sso.nknu.edu.tw/News/lastNews.aspx?UNID=AAAA000000000000000000000000000000000002">停修申請時間公告</a></td>
+<td><span id="gvFull_ctl03_DeptName">教務處</span></td><td><span id="gvFull_ctl03_StartDate">2026-10-21</span></td><td><span id="gvFull_ctl03_EndDate">2026-11-16</span></td><td><span id="gvFull_ctl03_ReadCounter">20</span></td></tr>
+<tr><td><span id="gvFull_ctl04_Category">行政資訊</span></td>
+<td><a id="gvFull_ctl04_linkSubject_short" href="https://sso.nknu.edu.tw/News/lastNews.aspx?UNID=AAAA000000000000000000000000000000000003">保管組廠商總整理</a></td>
+<td><span id="gvFull_ctl04_DeptName">總務處</span></td><td><span id="gvFull_ctl04_StartDate">2026-09-07</span></td><td><span id="gvFull_ctl04_EndDate">2027-01-10</span></td><td><span id="gvFull_ctl04_ReadCounter">30</span></td></tr>
+<tr align="center"><td colspan="6"><table><tr>
+<td><span>1</span></td><td><a href="javascript:__doPostBack(&#39;gvFull&#39;,&#39;Page$2&#39;)">2</a></td>
+</tr></table></td></tr>
+</table>
+</div>
+</form>
+</body></html>

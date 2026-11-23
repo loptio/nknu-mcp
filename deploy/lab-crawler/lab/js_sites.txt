@@ -1,0 +1,6 @@
+# 要 JavaScript 的网站（第二轮第一批，11-17）：每晚的定期更新给它们开浏览器（nightly_update.sh 第 5b 步）
+w3.nknu.edu.tw
+ord.nknu.edu.tw
+ite.nknu.edu.tw
+gauss.nknu.edu.tw
+see.nknu.edu.tw

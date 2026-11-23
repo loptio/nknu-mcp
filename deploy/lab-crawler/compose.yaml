@@ -1,0 +1,118 @@
+# 爬虫在实验室电脑上跑（仓库里的位置 deploy/lab-crawler/compose.yaml；在 Windows 上是 C:\nknu-crawl\compose.yaml）。
+# 命令（PowerShell 或经 SSH 的 cmd，前面加 set "DOCKER_CONFIG=%USERPROFILE%\.docker-ssh" &）：
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm nightly      每晚的定期更新（工作排程器 01:00 跑的就是这一行）
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm stop         有计划地停：写 STOP，正在跑的抓取做完手上的请求就结束
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm status       爬虫健康报告（不连网）
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm rejudge --sites <网站键,…>   规则改了重算（不连网、不重抓）
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm coverage       把这一晚各网站抓到、没抓到的数量记一行（给面板）
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm warc-backup    把原档拷一份到备份的硬盘（排程每晚最后跑；
+#                                                                       后面加 --check 只看要拷几个、什么都不拷）
+# 手动跑别的脚本（补抓、导出几个站、试跑）也用 nightly 这个服务，它带着程序、锁、金钥和要挂的资料夹：
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm -v C:/nknu-crawl/in/<资料夹>:/in:ro nightly bash /in/<脚本>.sh
+# 资料：具名磁碟区 nknu-crawl（/crawl：code-update 每晚和手动用的程序、export-code 白天导出用的程序、archive 的
+# 账本和报告、locks 锁），抓下来的大档在 E:\nknu\warc（11-23 从 D:\nknu-crawl\warc 搬来：工作资料放 E 槽的固态硬盘，
+# D 槽只放备份，都收在 D:\nknu-backup），账本每晚的备份在 D:\nknu-backup\crawler-nightly，原档每晚拷一份到
+# D:\nknu-backup\crawler-warc（warc-backup 服务：只加不删，拷完读回来对校验码）。
+# 挂载的路径写错时 Docker 不报错、自己建一个空资料夹：每晚脚本开工前会对着账本查原档的资料夹（update warc-there），
+# 不是账本记的那一个就什么都不动；备份的资料夹挂错只会让备份写到别处，空跑会印出里面有几份，一看就知道。
+# 正式存档以这台为准，绝不在 Mac 上开爬（两台的锁互相管不到）。
+# 金钥只给会连 Google 的服务：C:\nknu-crawl\secrets\google.env 唯读挂进去，由脚本载入，绝不印出；手动工具不挂金钥。
+# 这里没有会听端口的服务。看进度、看存下来的网页用检视台（deploy/lab-inspect，它自己读账本和原档）；旧看板
+# （viewer 服务，8877 端口）11-21 收掉了。
+# 第一轮开爬时用的 crawler、dryrun、rehearse 三个服务和它们的 /crawl/code（11-09 的程序）11-19 从这份拿掉了：
+# 现在的抓取都由 nightly 走；那三支脚本留在 research/crawler_lab_2026-11-04/。
+name: nknu-crawl
+
+x-tool: &tool
+  # 手动工具：和每晚同一份程序（/crawl/code-update），不连网、不挂金钥
+  image: nknu-pipeline
+  working_dir: /crawl/code-update
+  network_mode: none
+  environment:
+    TZ: Asia/Taipei
+    PYTHONPATH: /crawl/code-update/src
+    PYTHONDONTWRITEBYTECODE: "1"
+    NKNU_SCHOOL_LOCK: /crawl/locks/school-requests.lock
+  profiles: ["tools"]
+
+services:
+  stop:
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+    command: ["python", "-c", "from nknu.admin.cli import app; app()", "archive", "stop", "--dir", "/crawl/archive"]
+  status:
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+      - E:/nknu/warc:/crawl/archive/warc:ro
+    command: ["python", "-c", "from nknu.admin.cli import app; app()", "archive", "status", "--dir", "/crawl/archive"]
+  rejudge:
+    # 规则或平台读法改了以后重算已存的网页（不重抓）：没有抓取在跑、run.lock 空着才做；只读 WARC。
+    #   docker compose -f C:\nknu-crawl\compose.yaml run --rm rejudge --sites <网站键,逗号分隔>
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+      - E:/nknu/warc:/crawl/archive/warc:ro
+    entrypoint: ["python", "-c", "from nknu.admin.cli import app; app()", "archive", "rejudge", "--dir", "/crawl/archive"]
+  coverage:
+    # 每晚各网站的抓取覆盖数字（11-23，面板要画「抓到 ÷ 该抓」的走势和每站那一晚的数字）：只读账本，照面板自己的算法
+    # （url_result 按网站和结果数，用 outcome.user_bucket 归类，第二轮开着的批次分开算），一晚一行写进
+    # /crawl/archive/reports/coverage.jsonl；同一晚重算会换掉那一行。排程档在内容的进库回来以后跑它，不连网。
+    # 补历史：加 -v D:/nknu-backup/crawler-nightly:/b:ro，后面接 --db /b/nightly-<年月日>-<时分秒>.db
+    # （每晚的备份是那一天开跑前的账本，算成前一天那一行）。
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+    entrypoint: ["timeout", "-k", "30", "1800", "python", "-m", "nknu.archive.coverage", "--dir", "/crawl/archive"]
+  warc-backup:
+    # 原档的每晚备份（11-23）：E 槽的原档是唯一完整的一份，里面有些网页学校已经删了、没办法重抓，所以每晚拷一份到
+    # 另一颗硬盘。排程档 nightly_update.cmd 在内容的进库回来以后才跑它，它出什么事都拦不到进库。
+    # 原档唯读挂进来（程序出错也写不了 E 槽）；备份那边只加不删，E 槽少了的档备份里照留；每个档先写成 .part、
+    # 读回来 SHA-256 和原档一样才改成正名；每次都比整棵资料夹，漏了一晚下一次自己补。有抓取拿着 run.lock 就不拷。
+    # 备份的资料夹是空的就不拷（路径写错时 Docker 会建空资料夹，会在那里再拷出一整份）：真的是第一次才加 --first。
+    # 结果在 /crawl/archive/reports/warc-backup.json（开工写「running」，做完写结果）和 warc-backup.log。
+    # timeout 7 小时：备份的硬盘卡住时不会拖到下一晚的排程开不了；被砍掉的那一次，状态档停在「running」。
+    #   docker compose -f C:\nknu-crawl\compose.yaml run --rm warc-backup [--check | --first]
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+      - E:/nknu/warc:/crawl/archive/warc:ro
+      - D:/nknu-backup/crawler-warc:/backup-warc
+    entrypoint: ["timeout", "-k", "60", "25200", "python", "-m", "nknu.archive.warcbackup",
+                 "--dir", "/crawl/archive", "--to", "/backup-warc"]
+  nightly:
+    # 每晚的定期更新（11-16 第一次真跑以后，用户「先修这三件」）：排程只跑这一行，不再手打一长串：
+    #   docker compose -f C:\nknu-crawl\compose.yaml run --rm nightly
+    # （Windows 工作排程器跑 C:\nknu-crawl\nightly_update.cmd，它就是这一行加一份 log；排程的时间等用户定）
+    # 程序是 /crawl/code-update（定期更新的程序；爬虫的 /crawl/code 不动），时区台北、全机锁、备份放 D 槽
+    # D:\nknu-backup\crawler-nightly（nightly-*.db 留 7 份），存网页的资料夹要能写、要连网、要金钥（Google 的网址）。
+    # 少一样，脚本开跑前就停在 preflight、什么都不动（nightly_update.sh 第 0 步）。
+    # 11-18 (计划 2026-11-17-jsfetch-integration 第 6 件)：nknu-browser = nknu-pipeline 加 Chrome（js爬虫 11-17 做的映像），
+    # 每晚给要 JavaScript 的网站开浏览器（/crawl/code-update/lab/js_sites.txt）；Chrome 要比 Docker 默认 64 MB 大的共享记忆体
+    image: nknu-browser
+    shm_size: "1gb"
+    working_dir: /crawl/code-update
+    environment:
+      TZ: Asia/Taipei
+      PYTHONPATH: /crawl/code-update/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      NKNU_SCHOOL_LOCK: /crawl/locks/school-requests.lock
+      BACKUPS: /backup-nightly
+    volumes:
+      - nknu-crawl:/crawl
+      - E:/nknu/warc:/crawl/archive/warc
+      - D:/nknu-backup/crawler-nightly:/backup-nightly
+      - C:/nknu-crawl/secrets/google.env:/run/secrets/google.env:ro
+      # 导出那一批 T7：每晚导出有变动的网站到 /work/archive-export/sites（导出服务的资料夹），最后写 seen.tsv；
+      # 不删内容 session 的 exports*.txt 写着的资料夹（/work/research/pipeline_2026-11-02）
+      - nknu-work:/work
+    command: ["bash", "/crawl/code-update/lab/nightly_update.sh"]
+    profiles: ["tools"]
+    restart: "no"
+
+volumes:
+  nknu-crawl:
+    external: true
+  nknu-work:
+    external: true

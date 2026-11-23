@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>本校姐妹校一覽</title></head><body>
+<ul class="third_nav">
+<li><a href="javascript:void(0)" onclick="loadSubcategoryContent(20)" class="active">美洲</a></li>
+<li><a href="javascript:void(0)" onclick="loadSubcategoryContent(21)" class="">亞洲</a></li>
+<li><a href="javascript:void(0)" onclick="loadSubcategoryContent(46)" class="">歐洲</a></li>
+</ul>
+<div class="side-post-content" id="dynamic-content"><table><caption>美洲地區</caption><tr><td>1</td><td><a href="https://example.edu/">某大學</a></td></tr></table></div>
+<script>
+function loadSubcategoryContent(subcategoryId) {
+	const contentDiv = document.getElementById('dynamic-content');
+	contentDiv.innerHTML = '<div class="text-center py-4"> 載入中...</div>';
+	fetch('load_content.php?sub_id=' + subcategoryId)
+		.then(response => response.json())
+		.then(data => { if (data.success) { contentDiv.innerHTML = data.content; } });
+}
+</script>
+</body></html>

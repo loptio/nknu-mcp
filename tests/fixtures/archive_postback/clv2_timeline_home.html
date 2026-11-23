@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head><title>首頁 - 校安中心(原軍訓室)</title><meta charset="utf-8" /></head>
+<body>
+    <script src="/include/js/extend_NKNU/ajaxAnalysis.js"></script>
+    <script>
+        "use strict";
+        document.addEventListener("DOMContentLoaded", function () {
+            // make it as accordion for smaller screens
+            if (window.innerWidth > 992) {
+                document.querySelectorAll('.navbar .nav-item').forEach(function (everyitem) {
+                    everyitem.addEventListener('mouseover', function (e) {
+                        let el_link = this.querySelector('a[data-bs-toggle]');
+                        if (el_link != null) {
+                            let nextEl = el_link.nextElementSibling;
+                            el_link.classList.add('show');
+                            nextEl.classList.add('show');
+                        }
+                    });
+                    everyitem.addEventListener('mouseleave', function (e) {
+                        let el_link = this.querySelector('a[data-bs-toggle]');
+                        if (el_link != null) {
+                            let nextEl = el_link.nextElementSibling;
+                            el_link.classList.remove('show');
+                            nextEl.classList.remove('show');
+                        }
+                    })
+                });
+            }
+            // end if innerWidth
+        });
+
+        $(document).ready(function () {
+            getTimeLine();
+            /* 按下GoTop按鈕時的事件 */
+            $('#gotop').click(function () {
+                $('html,body').animate({ scrollTop: 0 }, 'slow');   /* 返回到最頂上 */
+                return false;
+            });
+            /* 偵測卷軸滑動時，往下滑超過400px就讓GoTop按鈕出現 */
+            $(window).scroll(function () {
+                if ($(this).scrollTop() > 400) {
+                    $('#gotop').fadeIn();
+                } else {
+                    $('#gotop').fadeOut();
+                }
+            });
+        });
+
+        function getTimeLine() {
+            //alert(cLv2);
+            var oOption = {
+                cFunction: "getTimelineJson",
+                pLv2: cLv2
+            };
+            json('/Unit/Info/ajaxServices/ajaxTimeline.aspx', oOption, timelineCallback);
+        }
+
+        function timelineCallback(data) {
+            var timeline_json = data[0];
+            var option = {
+                start_at_end: true,
+                language: 'zh-tw'
+            };
+            //console.log(Object.keys(data[0].events).length);
+            if (Object.keys(data[0].events).length > 0) {
+                $('#timeline-embed').css('height', '600px');
+                var timeline = new TL.Timeline('timeline-embed', timeline_json, option);
+            } else {
+                $('#timeline-embed').css('height', '0');
+            }
+        }
+
+        function SetFrameHeight(uFrameID) {
+            var uFrame = document.getElementById(uFrameID); //iframe id  
+            if (document.getElementById) {
+                if (uFrame && !window.opera) {
+                    if (uFrame.contentDocument && uFrame.contentDocument.body.offsetHeight) {
+                        uFrame.height = uFrame.contentDocument.body.offsetHeight;
+                    } else if (uFrame.Document && uFrame.Document.body.scrollHeight) {
+                        uFrame.height = uFrame.Document.body.scrollHeight;
+                    }
+                }
+            }
+        }
+    </script>
+
+    <form method="post" action="./index.aspx?clv2=100061" id="form1" enctype="multipart/form-data">
+<div class="aspNetHidden">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="VS-CLV2-TIMELINE" />
+</div>
+        <script>var cLv2 = '100061';</script>
+        <ul class="breadcrumb"><li><a href="/services/site/index.aspx?cLv2=100061">首頁</a></li><li><a href="/services/site/index.aspx?cLv2=100061&amp;page=4" title="交通安全宣導專頁" target="_self">交通安全宣導專頁</a><span></span></li><li><a href="/services/site/index.aspx?cLv2=100061&amp;page=7" title="作業流程" target="_self">作業流程</a><span></span></li></ul>
+        <div id="divContent"><p>交通安全宣導、校園安全資訊交通安全宣導、校園安全資訊交通安全宣導、校園安全資訊交通安全宣導、校園安全資訊</p></div>
+        <div id='timeline-embed' class="w-100 mh-50" style="z-index: 1;"></div>
+    </form>
+    <script src="/include/imageSite/assets/js/timeline-min.js"></script>
+</body>
+</html>

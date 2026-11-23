@@ -1,0 +1,163 @@
+# 网站对单位小表（计划 2026-11-08 T3；设计稿 2026-11-08 §二 6）：第一轮名单 config/archive_round1.json 的每个网站键一行
+# （第一轮的 107 个网站，再加附加起点的 4 个网站键；11-17 起再加爬虫交来的第二轮网站），对到单位树（nknu.content.units：网站普查
+# research/site_probe_2026-10-23/data.json 加 config/units.yaml）里的单位编号。nknu.content.sites 读它。
+# 由 research/step3_2026-11-08/site_units.py 产生，不要手改：要改先改脚本里的手填行（HAND、EXTRA），再跑
+#   uv run --no-sync python research/step3_2026-11-08/site_units.py
+# （第二轮的网站改脚本里的 ROUND2_IN、ROUND2）
+#   unit:   单位编号（单位树里的名字）。
+#   how:    auto: 程序对上的（第一轮名称、它的繁体、去掉「品保網站」、普查里网址在这个网站的单位）；hand: 手填，写理由，
+#           不确定的记全校并写明。
+#   shared: true 的是很多单位共用的平台（全校公告系统、SSO 根目录和共用模块）：别的网站导出里带到的这里的网页和档，算那个
+#           网站的单位；这个网站自己导出的才算这一行的单位。
+# 一份文件的单位看它自己网址所属的网站（别的网站共用的档算它主人的单位）；网址的网站不在表里（校外、SSO 的 webservices
+# 档案服务）或是 shared 的，算它所在导出的网站的；都不知道就算全校（school）。它只决定结果里显示的发布单位（单位加减分
+# 11-08 起是 0），第 4 步再把单位名放进关键词索引和 passage。
+
+school: 國立高雄師範大學
+sites:
+  c.nknu.edu.tw/aca: {unit: "教務處", how: "auto: 第一轮名称「教务处」"}
+  c.nknu.edu.tw/affair: {unit: "總務處", how: "auto: 第一轮名称「总务处」"}
+  c.nknu.edu.tw/reality: {unit: "體育室", how: "auto: 第一轮名称「体育室」"}
+  clcts.nknu.edu.tw: {unit: "語文教學中心", how: "auto: 普查里网址在这个网站的单位「語文教學中心」"}
+  ksped.nknu.edu.tw: {unit: "特殊教育中心", how: "auto: 普查里网址在这个网站的单位「特殊教育中心」"}
+  lis.nknu.edu.tw: {unit: "圖書資訊處", how: "auto: 第一轮名称「图书资讯处」"}
+  news.nknu.edu.tw: {unit: "秘書室", shared: true, how: "hand: 全校公告系统的另一台主机（普查：和 SSO 公告中心同一套 UNID），和 sso.nknu.edu.tw/news 一样记秘书室（计划 2026-11-08 T3 指定公告中心归秘书室）。各则公告其实是各单位发的，发布单位要等爬虫 session 看公告页哪一栏写单位（research.json 对象 2 待定问题 1）"}
+  oia.nknu.edu.tw: {unit: "國際事務處", how: "auto: 第一轮名称「国际事务处」"}
+  sites.google.com/mail.nknu.edu.tw/counseling-center: {unit: "學生輔導中心", how: "auto: 第一轮名称「学生辅导中心」"}
+  sites.google.com/mail.nknu.edu.tw/educational-internship-web: {unit: "檢定與實習組", how: "hand: 普查「教育實習Q&A（Google Sites）」的上级写「師就處 檢定與實習組」；第一轮名称也写（师培处检定与实习组）"}
+  sso.nknu.edu.tw: {unit: "國立高雄師範大學", shared: true, how: "hand: 不确定，记全校：SSO 根目录的公开页分属好几个单位（普查：系所博覽的上级是教務處，學分學程是學分學程中心，學院教師簡歷、師生研發產品平台没写）"}
+  sso.nknu.edu.tw/academicaffairs: {unit: "教務處", how: "hand: 普查：高中生專區的上级是招生企劃組；新生報到系統没写上级，教务处公告写新生入学须知由「本校教務組」寄（导出 aca-20261102 的 nid=473）。两样都是教务处的组办的，记处"}
+  sso.nknu.edu.tw/coursemap: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：普查「課程地圖」没写上级；课程地图列的是各系所的课程"}
+  sso.nknu.edu.tw/dataopen2search: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：第一轮只抓这里的两页，分属两个单位（普查：遺失物招領系統的上级是生活輔導組；另一页是开课课表，课务是教务处的）"}
+  sso.nknu.edu.tw/freshmaninfo: {unit: "國立高雄師範大學", how: "hand: 学校首页的「新生資訊專區」（教务处公告写「本校首頁新生專區」），里面是教务、学务等各处的栏目，记全校"}
+  sso.nknu.edu.tw/news: {unit: "秘書室", shared: true, how: "hand: 计划 2026-11-08 T3 指定 SSO 公告中心归秘书室（普查「訊息綜覽與發布（全校公告中心）」没写上级）；各单位都在这里发公告，发布单位要等爬虫 session 看公告页哪一栏写单位（research.json 对象 2 待定问题 1）"}
+  sso.nknu.edu.tw/osa: {unit: "學生事務處", how: "hand: 计划 2026-11-08 T3 指定 osa 归学务处；普查：獎助學金的上级是學生事務處，導師名單、社團一覽的上级是課外活動指導組（学务处的组）"}
+  sso.nknu.edu.tw/regulations: {unit: "秘書室", how: "hand: 普查「法規彙編系統平台」的上级写秘書室"}
+  sso.nknu.edu.tw/site/100061: {unit: "校安中心", how: "auto: 第一轮名称「校安中心」"}
+  sso.nknu.edu.tw/software: {unit: "圖書資訊處", how: "hand: 校园授权软件是计网的业务，计网并在图书资讯处（第一轮名单 lis.nknu.edu.tw 写「图书资讯处（图书馆＋计网）」）；普查没有这一项"}
+  sso.nknu.edu.tw/stu: {unit: "綜合業務組", how: "hand: 普查「課程查詢系統（開課查詢）」的上级写綜合業務組"}
+  sso.nknu.edu.tw/web/127: {unit: "衛生保健組", how: "auto: 普查里网址在这个网站的单位「衛生保健組」"}
+  sso.nknu.edu.tw/web/44: {unit: "通識教育中心", how: "auto: 第一轮名称「通识教育中心」"}
+  sso.nknu.edu.tw/web/592: {unit: "學生事務處", how: "auto: 第一轮名称「学生事务处」"}
+  sso.nknu.edu.tw/web/593: {unit: "學生事務處", how: "hand: 普查「性別平等教育專區」（webIdx=593）的上级写學生事務處"}
+  sso.nknu.edu.tw/web/595: {unit: "生活輔導組", how: "auto: 普查里网址在这个网站的单位「生活輔導組」"}
+  sso.nknu.edu.tw/web/596: {unit: "課外活動指導組", how: "auto: 普查里网址在这个网站的单位「課外活動指導組」"}
+  sso.nknu.edu.tw/web/597: {unit: "原住民族學生資源中心", how: "auto: 第一轮名称「原住民族学生资源中心」"}
+  sso.nknu.edu.tw/web/598: {unit: "學生事務處", how: "hand: 普查：较早的「獎助生與兼任助理專區」（Google Sites）上级写學生事務處（另一条写學務處），备注「多半已改用 sso webIdx=598」"}
+  sso.nknu.edu.tw/web/600: {unit: "學生事務處", how: "hand: 普查「新生學務資訊」（webIdx=600）的上级写學生事務處"}
+  sso.nknu.edu.tw/web/601: {unit: "課外活動指導組", how: "hand: 普查「新生定向共識營」（webIdx=601）的上级写課外活動指導組"}
+  sso.nknu.edu.tw/web/605: {unit: "課外活動指導組", how: "hand: 普查「畢業典禮專區」（webIdx=605）的上级写課外活動指導組"}
+  sso.nknu.edu.tw/web/606: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：普查「場地租借專區」（webIdx=606）没写上级；学校首页列出它，备注写图资处也有「校外租借」"}
+  tecs.nknu.edu.tw: {unit: "師資培育與就業輔導處", how: "auto: 第一轮名称「师资培育与就业辅导处」"}
+  arts.nknu.edu.tw: {unit: "美術學系", how: "auto: 第一轮名称「美術學系」"}
+  c.nknu.edu.tw/bio: {unit: "生物科技系", how: "auto: 第一轮名称「生物科技系」"}
+  c.nknu.edu.tw/bm: {unit: "事業經營學系", how: "auto: 第一轮名称「事業經營學系」"}
+  c.nknu.edu.tw/ccee: {unit: "進修學院", how: "auto: 第一轮名称「进修学院」"}
+  c.nknu.edu.tw/ch: {unit: "國文學系", how: "auto: 第一轮名称「國文學系」"}
+  c.nknu.edu.tw/edu: {unit: "教育學系", how: "auto: 第一轮名称「教育學系」"}
+  c.nknu.edu.tw/iu: {unit: "原住民族藝術學士學位學程", how: "auto: 第一轮名称「原住民族藝術學士學位學程」"}
+  c.nknu.edu.tw/nknu_ula: {unit: "文學院", how: "auto: 第一轮名称「文學院」"}
+  c.nknu.edu.tw/ns: {unit: "理學院", how: "auto: 第一轮名称「理學院」"}
+  c.nknu.edu.tw/pe: {unit: "體育學系", how: "auto: 第一轮名称「體育學系」"}
+  c.nknu.edu.tw/tcsl: {unit: "華語文教學研究所", how: "auto: 第一轮名称「華語文教學研究所」"}
+  c.nknu.edu.tw/tg: {unit: "成人教育研究所", how: "auto: 第一轮名称「成人教育研究所」"}
+  c.nknu.edu.tw/tni: {unit: "台灣歷史文化及語言研究所", how: "auto: 第一轮名称「台灣歷史文化及語言研究所」"}
+  c.nknu.edu.tw/tsi: {unit: "原住民族運動與運動產業學士學位學程", how: "auto: 第一轮名称「原住民族運動與運動產業學士學位學程」"}
+  c.nknu.edu.tw/uk: {unit: "經學研究所", how: "auto: 第一轮名称「經學研究所」"}
+  c.nknu.edu.tw/uo: {unit: "原住民族語言與文化學系", how: "auto: 第一轮名称「原住民族語言與文化學系」"}
+  cprc.nknu.edu.tw: {unit: "諮商心理與復健諮商研究所", how: "auto: 第一轮名称「諮商心理與復健諮商研究所」"}
+  ee.nknu.edu.tw: {unit: "電子工程學系", how: "auto: 第一轮名称「电子工程学系」"}
+  elec.nknu.edu.tw: {unit: "電機工程學系", how: "auto: 第一轮名称「电机工程学系」"}
+  elecnas.nknu.edu.tw: {unit: "電機工程學系", how: "auto: 第一轮名称「电机工程学系」"}
+  english.nknu.edu.tw: {unit: "英語學系", how: "auto: 第一轮名称「英语学系」"}
+  fine-arts.nknu.edu.tw: {unit: "藝術學院", how: "auto: 第一轮名称「艺术学院」"}
+  gender.nknu.edu.tw: {unit: "性別教育研究所", how: "auto: 第一轮名称「性别教育研究所」"}
+  geo.nknu.edu.tw: {unit: "地理學系", how: "auto: 第一轮名称「地理学系」"}
+  giast.nknu.edu.tw: {unit: "聽力學與語言治療碩士班", how: "auto: 第一轮名称「聽力學與語言治療碩士班」"}
+  hrkm.nknu.edu.tw: {unit: "人力與知識管理研究所", how: "auto: 第一轮名称「人力與知識管理研究所」"}
+  id.nknu.edu.tw: {unit: "工業設計學系", how: "auto: 第一轮名称「工业设计学系」"}
+  sea.nknu.edu.tw: {unit: "東南亞學碩士學位學程", how: "auto: 第一轮名称「東南亞學碩士學位學程」"}
+  sites.google.com/mail.nknu.edu.tw/aiml: {unit: "軟體工程與管理學系", how: "hand: 普查「人工智慧與機器學習學分學程（Google Sites）」的上级写軟體工程與管理學系"}
+  sites.google.com/mail.nknu.edu.tw/ainlp: {unit: "軟體工程與管理學系", how: "hand: 普查「人工智慧自然語言技術學分學程（Google Sites）」的上级写軟體工程與管理學系"}
+  sites.google.com/mail.nknu.edu.tw/cybersecurity: {unit: "軟體工程與管理學系", how: "hand: 普查「人工智慧資訊安全技術學分學程（Google Sites）」的上级写軟體工程與管理學系"}
+  sites.google.com/mail.nknu.edu.tw/iai: {unit: "原住民族藝術學士學位學程", how: "hand: 普查「藝產班 新生指南（Google Sites）」的上级写「原住民族藝術學士學位學程（藝術產業學士原住民專班）」"}
+  sites.google.com/mail.nknu.edu.tw/nknumath: {unit: "數學系", how: "hand: 普查「高雄師範大學數學系（Google Sites）」的上级写數學系；第一轮名称前面多了校名，程序对不上"}
+  spe.nknu.edu.tw: {unit: "特殊教育學系", how: "auto: 第一轮名称「特殊教育學系」"}
+  sso.nknu.edu.tw/services: {unit: "國立高雄師範大學", shared: true, how: "hand: 不确定，记全校：SSO 平台的共用模块，放各单位的东西（普查：校園活動列表的上级是課外活動指導組；捐款、ODF 平台没写上级）"}
+  sso.nknu.edu.tw/site/201011: {unit: "國文學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「國文學系」"}
+  sso.nknu.edu.tw/site/201014: {unit: "地理學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「地理學系」"}
+  sso.nknu.edu.tw/site/201016: {unit: "台灣歷史文化及語言研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「台灣歷史文化及語言研究所」"}
+  sso.nknu.edu.tw/site/201018: {unit: "華語文教學研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「華語文教學研究所」"}
+  sso.nknu.edu.tw/site/201021: {unit: "東南亞學碩士學位學程", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「東南亞學碩士學位學程」"}
+  sso.nknu.edu.tw/site/203012: {unit: "化學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「化學系」"}
+  sso.nknu.edu.tw/site/203013: {unit: "物理學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「物理學系」"}
+  sso.nknu.edu.tw/site/205011: {unit: "教育學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「教育學系」"}
+  sso.nknu.edu.tw/site/205013: {unit: "特殊教育學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「特殊教育學系」"}
+  sso.nknu.edu.tw/site/205014: {unit: "成人教育研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「成人教育研究所」"}
+  sso.nknu.edu.tw/site/205017: {unit: "體育學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「體育學系」"}
+  sso.nknu.edu.tw/site/205018: {unit: "性別教育研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「性別教育研究所」"}
+  sso.nknu.edu.tw/site/205024: {unit: "性別教育研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「性別教育博士學位學程」"}
+  sso.nknu.edu.tw/site/205025: {unit: "諮商心理與復健諮商研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「諮商心理與復健諮商研究所」"}
+  sso.nknu.edu.tw/site/205028: {unit: "原住民族運動與運動產業學士學位學程", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「原住民族運動與運動產業學士學位學程」"}
+  sso.nknu.edu.tw/site/206000: {unit: "管理學院", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「管理學院」"}
+  sso.nknu.edu.tw/site/206061: {unit: "人力與知識管理研究所", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「人力與知識管理研究所」"}
+  sso.nknu.edu.tw/site/206062: {unit: "事業經營學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「事業經營學系」"}
+  sso.nknu.edu.tw/site/206063: {unit: "高齡產業經營學士原住民專班", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「高齡產業經營學士原住民專班」"}
+  sso.nknu.edu.tw/site/207012: {unit: "工業設計學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「工業設計學系」"}
+  sso.nknu.edu.tw/site/207016: {unit: "軟體工程與管理學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「軟體工程與管理學系」"}
+  sso.nknu.edu.tw/site/209011: {unit: "美術學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「美術學系」"}
+  sso.nknu.edu.tw/site/209013: {unit: "視覺設計學系", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「視覺設計學系」"}
+  sso.nknu.edu.tw/site/209015: {unit: "原住民族藝術學士學位學程", how: "auto: 第一轮名称去掉「品保網站」「網站…」：「原住民族藝術學士學位學程」"}
+  sso.nknu.edu.tw/web/22: {unit: "表演藝術碩士學位學程", how: "auto: 第一轮名称「表演藝術碩士學位學程」"}
+  sso.nknu.edu.tw/web/24: {unit: "客家文化研究所", how: "auto: 第一轮名称「客家文化研究所」"}
+  sso.nknu.edu.tw/web/26: {unit: "科技學院", how: "auto: 第一轮名称「科技學院」"}
+  sso.nknu.edu.tw/web/31: {unit: "音樂學系", how: "auto: 第一轮名称「音乐学系」"}
+  sso.nknu.edu.tw/web/39: {unit: "教育學院", how: "auto: 第一轮名称「教育学院」"}
+  sso.nknu.edu.tw/web/43: {unit: "軟體工程與管理學系", how: "auto: 第一轮名称「软体工程与管理学系」"}
+  sso.nknu.edu.tw/web/49: {unit: "跨領域藝術研究所", how: "auto: 第一轮名称「跨领域艺术研究所」"}
+  sso.nknu.edu.tw/web/578: {unit: "管理學院", how: "auto: 第一轮名称「管理學院」"}
+  sso.nknu.edu.tw/web/608: {unit: "原住民族創新產業碩士在職專班", how: "auto: 普查里网址在这个网站的单位「原住民族創新產業碩士在職專班」"}
+  sso.nknu.edu.tw/web/610: {unit: "智慧科技與半導體製造國際學士學位學程", how: "auto: 第一轮名称「智慧科技與半導體製造國際學士學位學程」"}
+  sso.nknu.edu.tw/web/617: {unit: "環境與創意產業碩士在職學位學程", how: "auto: 第一轮名称「環境與創意產業碩士在職學位學程」"}
+  sso.nknu.edu.tw/web/619: {unit: "高齡產業經營學士原住民專班", how: "auto: 第一轮名称「高齡產業經營學士原住民專班」"}
+  sso.nknu.edu.tw/web/7: {unit: "工程國際碩士學位學程", how: "auto: 第一轮名称「工程國際碩士學位學程」"}
+  vd.nknu.edu.tw: {unit: "視覺設計學系", how: "auto: 第一轮名称「視覺設計學系」"}
+  sso.nknu.edu.tw/recruit: {unit: "招生企劃組", how: "hand: 第一轮附加起点（招生报名的 4 页）：普查「招生報名系統」（Recruit）的上级写招生企劃組"}
+  sso.nknu.edu.tw/staff: {unit: "和平教務組", how: "hand: 第一轮附加起点（课务查询首页）：普查「課務查詢（選課）系統」（Staff/CourseEnrollInfo）的上级写和平教務組"}
+  sso.nknu.edu.tw/unit: {unit: "秘書室", how: "hand: 第一轮附加起点（专案小组会议纪录）：普查「會議紀錄系統」（Unit/Info/ShowMeetingFiles）的上级写秘書室"}
+  sso.nknu.edu.tw/studentprofile: {unit: "文書組", how: "hand: 第一轮附加起点（学生信件招领）：普查「學生郵件招領」（StudentProfile/stud_mails）的上级写「總務處 文書組」"}
+  114-yt3qscn.gamma.site: {unit: "電機工程學系", how: "hand: 第二轮名称「电机系 114 学年度实作专题成果发表展」：电机系的专题展"}
+  2060631web-repository.github.io: {unit: "高齡產業經營學士原住民專班", how: "hand: 第二轮名称「高龄产业经营学士原住民专班 AIM-I」，单位名后面多了 AIM-I，程序对不上"}
+  cirn.k12ea.gov.tw: {unit: "國中小自造及科技輔導中心", how: "auto: 第二轮名称「国中小自造及科技辅导中心」"}
+  cirn.moe.edu.tw: {unit: "綜合活動領域教學研究中心", how: "auto: 第二轮名称「综合活动领域教学研究中心」"}
+  eduhighschool.webflow.io: {unit: "教育學系", how: "hand: 第二轮名称「教育学系高中生专区（Webflow）」"}
+  gdg.community.dev: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：GDG on Campus NKNU 是学生社团（普查：课外活动指导组的社团一览列着它），单位树上没有社团"}
+  groups.google.com: {unit: "華語文教學研究所", how: "hand: 第二轮名称「华语学程论坛、华语所论坛」；普查：nknutc 是华语所（Facebook 同名粉专的上级写華語文教學研究所）"}
+  ix5961.wixstudio.com/2026nclcknu: {unit: "華語文教學研究所", how: "hand: 普查「2026NCL.NKNU 第二十七屆全國語言學論文研討會」的上级写華語文教學研究所"}
+  kppvrrc.bur.tw: {unit: "諮商心理與復健諮商研究所", how: "hand: 普查「身心障礙者職業重建服務資源中心網站」的上级写諮商心理與復健諮商研究所"}
+  lifedunknu.wixsite.com/life-education-nknu: {unit: "教育學系", how: "hand: 第二轮名称「教育学系生命教育研究学会（Wix）」；普查：生命教育研究學會（Facebook）的上级写教育學系"}
+  lit.link: {unit: "課外活動指導組", how: "hand: 第二轮名称「119 级新生定向共识营」；普查「新生定向共識營」（webIdx=601）的上级写課外活動指導組，sso web/601 这一行也是"}
+  nknu-edu.my.canva.site: {unit: "教育學系", how: "hand: 第二轮名称「教育学系高中生专区（Canva）」"}
+  nknuchinese.tw: {unit: "國文學系", how: "auto: 第二轮名称「国文学系」"}
+  nknufablab.github.io: {unit: "高師大數位跨域教育基地", how: "hand: 普查「NKNU-FABLAB 文件站」的上级写高師大數位跨域教育基地（FabLab）"}
+  pairnknu.wixstudio.io/pair-center: {unit: "閱讀評量與教學研究中心", how: "auto: 第二轮名称「閱讀評量與教學研究中心」"}
+  semfreshman.sdpmlab.org: {unit: "軟體工程與管理學系", how: "hand: 第二轮名称「软件工程与管理学系高中生专区」"}
+  sites.google.com/iec-nknu.page/iec: {unit: "資訊教育中心", how: "auto: 第二轮名称「资讯教育中心」"}
+  sites.google.com/site/empowerteacher: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：第二轮名称「生活科技科教师增能推动总召暨开班计划」没写哪个单位，普查没有这一项"}
+  sites.google.com/view/nknu-educational-review: {unit: "教育學系", how: "hand: 第二轮名称「教育学刊（教育学系）」"}
+  sites.google.com/view/nknu-shine-center: {unit: "教務創新組", how: "hand: 普查「SHINE Center 南區社會情緒學習與教育創新中心」的上级写「教務處 教務創新組」"}
+  sites.google.com/view/nknuite-forum2019: {unit: "工業科技教育學系", how: "hand: 第二轮名称「科技教育研究与发展学术研讨会」，网址的 nknuite 是工教系（ite.nknu.edu.tw）"}
+  sites.google.com/view/nknuite2022-18: {unit: "工業科技教育學系", how: "hand: 第二轮名称「科技教育研究与发展学术研讨会」，网址的 nknuite 是工教系（ite.nknu.edu.tw）"}
+  sites.google.com/view/nknuparking: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：普查的上级写「FabLab-NKNU 自造者基地」，单位树上没有这个名字（和数位跨域教育基地是不是同一个没查清）"}
+  sites.google.com/view/taiwanology: {unit: "超現代台灣學研究中心", how: "auto: 第二轮名称「超现代台湾学研究中心」"}
+  solink.soundon.fm: {unit: "性別教育研究所", how: "hand: 第二轮名称「性别教育研究所 Podcast」"}
+  streetphysics.blogspot.com: {unit: "物理學系", how: "hand: 第二轮名称「街头物理 Adept 实验室」：物理的实验室，记物理学系"}
+  ul2974.wixsite.com/nknuhakka: {unit: "客家文化研究所", how: "auto: 第二轮名称「客家文化研究所」"}
+  www.ted.com: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：TEDxNKNU 是学生办的活动，名称没写哪个单位"}
+  nknugender.wixsite.com/nknugender: {unit: "性別教育研究所", how: "auto: 第二轮名称「性别教育研究所」"}
+  github.com: {unit: "國立高雄師範大學", how: "hand: 不确定，记全校：GDG on Campus NKNU 的 GitHub 组织，学生社团，单位树上没有社团"}
+  w3.nknu.edu.tw: {unit: "國立高雄師範大學", how: "hand: 学校首页，记全校（程序照普查对到的是校長室：普查里网址在这个网站的单位有校長室、全校等好几个）"}
+  ord.nknu.edu.tw: {unit: "研究發展處", how: "auto: 第二轮名称「研究发展处」"}
+  ite.nknu.edu.tw: {unit: "工業科技教育學系", how: "auto: 第二轮名称「工业科技教育学系」"}
+  gauss.nknu.edu.tw: {unit: "數學系", how: "auto: 第二轮名称「数学系」"}
+  see.nknu.edu.tw: {unit: "科學教育暨環境教育研究所", how: "auto: 第二轮名称「科学教育暨环境教育研究所」"}

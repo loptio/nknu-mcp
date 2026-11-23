@@ -1,0 +1,59 @@
+{% import "_crumbs.html" as crumbs with context %}<!DOCTYPE html>
+{#- Every page of 資料庫 (Datasette 0.65.5's base.html, with the top bar and the foot of our panels: owner 11-15,
+    「我打算后面把这些管理面板整合」 and, of these pages, 「字太雜了…顏色也沒有考慮過」). The panel's name was 翻庫裡的表
+    until the owner, 11-15: 「datasettle那个文字的名字叫“翻库里的表” 你看看这像话吗？」 The blocks are Datasette's own,
+    so its other templates and ours extend this one unchanged. The look is static/tc.css, the floating word
+    static/tip.js (on every page, an error page too). Since 2026-11-17 the top bar and the colours are the panels'
+    one (nknu/ops/theme: `nk_bar`, `nk_theme` from plugins/guide.py), and the crumbs sit under the bar. -#}
+<html lang="zh-Hant-TW">
+<head>
+    <title>{% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ urls.static('app.css') }}?{{ app_css_hash }}">
+    <style>{{ nk_theme|safe }}</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+{% for url in extra_css_urls %}
+    <link rel="stylesheet" href="{{ url.url }}"{% if url.sri %} integrity="{{ url.sri }}" crossorigin="anonymous"{% endif %}>
+{% endfor %}
+{#- an error page is drawn without metadata.yaml's extra_css_urls (Datasette gives it only a few names): our sheet
+    by its own address, so that page looks like the others -#}
+{% if not extra_css_urls %}
+    <link rel="stylesheet" href="{{ urls.path('/static/tc.css') }}">
+{% endif %}
+{% for url in extra_js_urls %}
+    <script {% if url.module %}type="module" {% endif %}src="{{ url.url }}"{% if url.sri %} integrity="{{ url.sri }}" crossorigin="anonymous"{% endif %}></script>
+{% endfor %}
+{%- if alternate_url_json -%}
+    <link rel="alternate" type="application/json+datasette" href="{{ alternate_url_json }}">
+{%- endif -%}
+{%- block extra_head %}{% endblock -%}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+<div class="not-footer">
+{{ nk_bar|safe }}
+<nav class="crumbs-row">{% block nav %}{% block crumbs %}{{ crumbs.nav(request=request) }}{% endblock %}{% endblock %}</nav>
+
+{% block messages %}
+{% if show_messages %}
+    {% for message, message_type in show_messages() %}
+        <p class="message-{% if message_type == 1 %}info{% elif message_type == 2 %}warning{% elif message_type == 3 %}error{% endif %}">{{ message }}</p>
+    {% endfor %}
+{% endif %}
+{% endblock %}
+
+<section class="content">
+{% block content %}
+{% endblock %}
+</section>
+</div>
+<footer class="ft">{% block footer %}{% include "_footer.html" %}{% endblock %}</footer>
+
+{% include "_close_open_menus.html" %}
+<script src="{{ urls.path('/static/tip.js') }}"></script>
+
+{% for body_script in body_scripts %}
+    <script{% if body_script.module %} type="module"{% endif %}>{{ body_script.script }}</script>
+{% endfor %}
+
+{% if select_templates %}<!-- Templates considered: {{ select_templates|join(", ") }} -->{% endif %}
+</body>
+</html>

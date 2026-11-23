@@ -1,0 +1,31 @@
+# Alias table, a seed (owner tentative decision 10-31: an alias table; skeleton spec 11-01). Each group lists words that
+# mean the same thing on the 教務處 site: the school's own wording and what students type. A query that names one
+# member also searches for the others, and a document holding another member counts as covering it (search coverage).
+# Matching runs on normalised text (NFKC, lowercase, Traditional->Simplified), longest member first and without
+# overlaps; an ASCII member matches whole words only. Renamed wording (碩博士/博碩士) is joined here (no series since
+# 11-03). Sources: review 2026-11-01 §3.3 and the 50-question draft
+# (research/content_recon_2026-10-29/question_set_draft.md); every member was counted in the 10-29 教務處 corpus.
+# Left out on purpose, as not the same thing: 休學/保留學籍, 學位考試/口試 (口試 is also the 甄試 interview),
+# 推甄 (the corpus uses it for undergraduate admission).
+groups:
+  - [停修, 棄選, 退選, 退課]  # 棄選 is the old name of 停修 (review §3.3); students say 退選, 退課
+  - [加退選, 加退選課]  # the add/drop week is a word of its own, so 退選 inside it is not read as 停修
+  - [碩博士, 博碩士]  # titles up to 113 say 博碩士 (review §3.3)
+  - [研究所甄試, 碩博士班甄試, 博碩士班甄試, 碩士班甄試]  # the site never writes 研究所甄試
+  - [學分抵免, 抵免學分]  # both orders are used (Q13, Q14)
+  - [英文免修, 免修英文]  # 免修英文要點 (Q15)
+  - [學生證, 識別證]  # Q36
+  - [成績單, 歷年成績]  # 歷年成績單 (Q38)
+  - [學位證書, 畢業證書]  # 數位學位證書, 數位畢業證書 (Q41, Q42)
+  - [延畢, 延長修業]  # 延畢生, 延長修業年限 (Q19)
+  - [學費, 學雜費]  # the site writes 學雜費 (Q35)
+  - [暑修, 暑期班, 暑期修課]  # Q33
+  - [校際選課, 跨校選課]  # Q34
+  - [教室借用, 借教室, 借用教室]  # Q44
+  - [單一登入, 單登, SSO]  # where online applications are made (Q03)
+  - [行事曆, 校曆]
+  - [書卷獎, 學業成績前三名]  # 書卷獎 is the usual name; the site writes 學業成績前三名 (Q39)
+  # plan 2026-11-14 (direction 2026-11-13 第 5 件: 「N21 的答案里没有『學測』两个字，缺一条别名」): what students say
+  # beside what the school writes. Added by Claude; the owner 11-14: 「你加的改动：两组别名（學測、校車）……全部保留。」
+  - [學測, 大學學科能力測驗, 學科能力測驗]  # the calendar event is 大學學科能力測驗 (N21)
+  - [校車, 交通車]  # 總務處 writes 往返兩校區交通車時刻表; students say 校車 (N01)

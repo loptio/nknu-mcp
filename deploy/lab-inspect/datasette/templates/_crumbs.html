@@ -1,0 +1,16 @@
+{#- Where this page is: the database and the table, by the names the pages use (zh_tables, db_titles: plugins/guide.py). The
+    brand in the top bar is the way home, so the first crumb (Datasette's "home") is left out. -#}
+{% macro nav(request, database=None, table=None) -%}
+{% if crumb_items is defined %}
+  {% set items=crumb_items(request=request, database=database, table=table) %}
+  {% if items and items|length > 1 %}
+    <p class="crumbs">
+      {% for item in items[1:] %}
+        <span class="sep">›</span>
+        {%- set zh = (zh_tables or {}).get(item.label) or (db_titles or {}).get(item.label) %}
+        <a href="{{ item.href }}">{% if zh %}{{ zh }} <code>{{ item.label }}</code>{% else %}{{ item.label }}{% endif %}</a>
+      {% endfor %}
+    </p>
+  {% endif %}
+{% endif %}
+{%- endmacro %}

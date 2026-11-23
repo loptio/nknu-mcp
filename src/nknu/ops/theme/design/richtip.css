@@ -1,0 +1,10 @@
+.rt-h{display:block;font-size:12px;font-weight:650;color:var(--ink);margin:0 0 4px}
+.rt-r{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;font-size:12px;line-height:1.55}
+.rt-r span{color:var(--ink2)}.rt-r b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;text-align:right}
+.rt-p{margin:2px 0;font-size:12px;line-height:1.5;color:var(--ink2)}.rt-r+.rt-p,.rt-p+.rt-r{margin-top:4px}
+.rt-r.rt-sub{padding-left:12px}.rt-r.rt-sub span,.rt-r.rt-sub b{color:var(--ink3);font-weight:500}
+.rt-r~.rt-p{color:var(--ink3);font-size:11px}
+/* the night head's library figure: the design copy kept these rules in this file (its 定時更新 head on 內容) */
+.nt-lib .nt-lr{display:flex;align-items:center;gap:8px}.nt-d{display:flex;flex-direction:column;line-height:1.1}
+.nt-d em{font-style:normal;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}.nt-d em.in{color:var(--cal-in)}.nt-d em.out{color:var(--cal-out)}
+.nt-lib{cursor:help}.nt-unx{align-self:center;padding:2px 10px;border-radius:999px;background:var(--bad-bg);color:var(--bad-ink);font-size:12px;font-weight:600;cursor:help}

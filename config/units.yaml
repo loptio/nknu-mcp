@@ -1,0 +1,248 @@
+# Units: what the site list (research/site_probe_2026-10-23/data.json) does not say (addendum 2026-11-02 F, task T6c;
+# read by nknu.content.units.load_units). Keys are names as the list writes them, a trailing note in brackets left out.
+#   campus:   和平 or 燕巢, the campus whose students the unit serves: a department's is where it is, a 教務處 section's
+#             the campus whose 學系 it handles (it counts when a query names the section; the section's own documents
+#             still apply to the whole school, see units.reach). Units under it take it unless they set their own. A
+#             unit serving both campuses has none, wherever its office is (招生企劃組, 教務創新組, 綜合業務組 and
+#             學分學程中心 run school-wide work from 和平).
+#   aliases:  other names the school writes (short names), matched like names.
+#   parent:   the unit it belongs to, when the list gives none or a wrong one.
+#   name:     the name used here when the list's is ambiguous; the list's name is then matched no more.
+#   kind + parent: a unit the list does not have.
+#   evidence: required. Where the 教務處 export archive-export/aca-20261102 (read-only) says so: the file under pages/
+#             (or files/) by its number, the page, and a short quote (spaces squashed, NFKC; no personal names).
+#             For a unit that export does not name: the site probe (普查, research/site_probe_2026-10-23/data.json: an
+#             entry's name, alias or parent as the school writes it), or a pilot export of the unit's own site
+#             (../mvp-lite-lab-transfer/pilot-20261108/<site folder>, outside the repo, read-only), cited the same way.
+# An entry without evidence stays out, and the unit's campus stays unknown. 教務處's 組 as the build's grp writes them
+# (和平教務組, 燕巢教務組, 招生企劃組, 綜合業務組, 教務創新組, 學分學程中心) are the list's own names.
+units:
+
+  # --- campus: the colleges (departments, institutes and programmes under them take it) ---------------------------------
+  文學院:
+    campus: 和平
+    evidence: >-
+      pages/0093「和平教務組 - 編制與業務」：「承辦日間學制文學院：(含大學部、研究所)各項教務業務」，列出國文系、英語系、地理系；
+      同页「承辦日間學制獨立研究所：(研究所) 各項教務業務」列出本院的臺研所、經學所、華文所、客文所。
+      pages/0267（113 学年度转系公告）：「送和平教務組（和平校區學系）或燕巢教務組（燕巢校區學系）彙辦」。
+  教育學院:
+    campus: 和平
+    evidence: >-
+      pages/0093「和平教務組 - 編制與業務」：「承辦日間學制教育學院及管理學院：(含大學部、研究所)各項教務業務」，
+      列出教育系、特教系、體育系；同页独立研究所列出本院的成教所、性別所、諮商復健所。pages/0267 同文學院。
+  管理學院:
+    campus: 和平
+    evidence: >-
+      pages/0093「和平教務組 - 編制與業務」：「承辦日間學制教育學院及管理學院：(含大學部、研究所)各項教務業務」，
+      列出事經系；同页独立研究所列出本院的人知所。pages/0267 同文學院。
+  藝術學院:
+    campus: 和平
+    evidence: >-
+      pages/0093「和平教務組 - 編制與業務」：「承辦日間學制藝術學院：(含大學部、研究所)各項教務業務」，
+      列出美術系、音樂系、視設系；同页独立研究所列出本院的跨藝所。pages/0267 同文學院。
+  理學院:
+    campus: 燕巢
+    evidence: >-
+      pages/0130「燕巢教務組 - 編制與業務」：「業務範圍：下列系所教務相關業務」，列出化學系、物理系、生科系、數學系、科環所
+      （名单上本院的五个日间系所都在；列出的系所只属于理學院和科技學院）。pages/0267：「…或燕巢教務組（燕巢校區學系）彙辦」。
+      pages/0666（校刊）：「關懷理學院燕巢住宿生」。
+  科技學院:
+    campus: 燕巢
+    evidence: >-
+      pages/0130「燕巢教務組 - 編制與業務」：「業務範圍：下列系所教務相關業務」，列出工教系、電機系、工程國際碩士學位學程、
+      電子系、軟體系、工設系。pages/0267：「…或燕巢教務組（燕巢校區學系）彙辦」。
+
+  # --- campus and aliases: 教務處's sections -----------------------------------------------------------------------------
+  和平教務組:
+    campus: 和平
+    aliases: [和平校區教務組]
+    evidence: >-
+      pages/0267（113 学年度转系公告）：「送和平教務組（和平校區學系）或燕巢教務組（燕巢校區學系）彙辦」；
+      pages/0654：「和平校區學系：分機1131-1137(和平教務組)」；pages/0093：「協助和平校區日間部學生學籍管理」。
+      别名：pages/1250（免修英語課程申請表）：「和平校區:802 高雄市苓雅區和平一路116號 和平校區教務組」。
+  燕巢教務組:
+    campus: 燕巢
+    aliases: [燕巢校區教務組]
+    evidence: >-
+      pages/0267：「送和平教務組（和平校區學系）或燕巢教務組（燕巢校區學系）彙辦」；
+      pages/0654：「燕巢校區學系：分機6101-6106(燕巢教務組)」。
+      别名：pages/0269（111 学年度转系公告）：「送教務處和平教務組（和平校區學系）或燕巢校區教務組（燕巢校區學系）彙辦」；
+      pages/1250：「燕巢校區:824 高雄市燕巢區深中路62號 燕巢校區教務組」。
+  招生企劃組:
+    aliases: [招生組]
+    evidence: >-
+      pages/0647：「歡迎來電洽詢教務處招生組，學校總機：07-7172930分機1112、1117、1118」；这三个分机在
+      pages/0049「招生企劃組 - 編制與業務」上都是本组的。不写校区：办全校的招生。
+  教務創新組:
+    aliases: [創新組]
+    evidence: >-
+      pages/0250：「教務處創新組」（一位组长的头衔）；pages/1093：「（創新組提供）」。
+      不写校区：办全校的学分学程、微学分，办公室在和平（pages/0641：「教務處教務創新組（和平校區行政大樓4樓）」）。
+
+  # --- aliases: departments' short names as 教務處 writes them --------------------------------------------------------
+  軟體工程與管理學系:
+    aliases: [軟體系, 軟工系, 軟工]
+    evidence: >-
+      pages/0130：「軟體系Department of Software Engineering and Management」；
+      pages/0256：「來自師就處、軟工系、特教系、化學系、英語系、事經系、人知所、國文系、美術系共15位教師熱情參與」。
+      軟工：files/1167-100b.pdf 和 files/1177-99b.pdf（招生企劃組的歷屆轉學考微積分試題，pages/0372「數學系」列出）
+      每页页首：「系所別：數學、物理、光通、電子、軟工等系二年級」（addendum H5，main session 11-02）。
+  工業科技教育學系:
+    aliases: [工教系]
+    evidence: pages/0130：「工教系Department of Industrial Technology Education」。
+  電機工程學系:
+    aliases: [電機系]
+    evidence: pages/0130：「電機系Department of Electrical Engineering」。
+  物理學系:
+    aliases: [物理系]
+    evidence: pages/0130：「物理系Department of Physics」。
+  電子工程學系:
+    aliases: [電子系]
+    evidence: pages/0130：「電子系Department of Electronic Engineering」。
+  工業設計學系:
+    aliases: [工設系]
+    evidence: pages/0130：「工設系Department of Industry Design」。
+  生物科技系:
+    aliases: [生科系]
+    evidence: pages/0130：「生科系Department of Biotechnology」。
+  科學教育暨環境教育研究所:
+    aliases: [科環所]
+    evidence: pages/0130：「科環所Graduate Institute of Science Education and Environmental Education」。
+  美術學系:
+    aliases: [美術系]
+    evidence: >-
+      pages/0093：「承辦日間學制藝術學院：(含大學部、研究所)各項教務業務」列出「美術系」
+      （该页它的英文名写成 Department of Music，和音樂系的对调了）。
+  音樂學系:
+    aliases: [音樂系]
+    evidence: pages/0093：「承辦日間學制藝術學院」列出「音樂系」（英文名同美術學系那条，对调了）。
+  視覺設計學系:
+    aliases: [視設系]
+    evidence: pages/0093：「視設系Department of Visual Design」。
+  教育學系:
+    aliases: [教育系]
+    evidence: pages/0093：「教育系Department of Education」。
+  特殊教育學系:
+    aliases: [特教系]
+    evidence: pages/0093：「特教系Department of Special Education」。
+  體育學系:
+    aliases: [體育系]
+    evidence: pages/0093：「體育系Department of Physical Education」。
+  事業經營學系:
+    aliases: [事經系]
+    evidence: pages/0093：「事經系Department of Business Management」。
+  國文學系:
+    aliases: [國文系]
+    evidence: pages/0093：「國文系Department of Chinese」。
+  英語學系:
+    aliases: [英語系]
+    evidence: pages/0093：「英語系Department of English」。
+  地理學系:
+    aliases: [地理系]
+    evidence: pages/0093：「地理系Department of Geography」。
+  台灣歷史文化及語言研究所:
+    aliases: [臺研所]
+    evidence: pages/0093：「臺研所Graduate Institute of Taiwan History, Culture and Languages」。
+  經學研究所:
+    aliases: [經學所]
+    evidence: pages/0093：「經學所Graduate Institute of Chinese Classics」。
+  華語文教學研究所:
+    aliases: [華文所]
+    evidence: pages/0093：「華文所Graduate Institute of Teaching Chinese as a Second/Foreign Language」。
+  客家文化研究所:
+    aliases: [客文所, 客家文化所]
+    evidence: >-
+      pages/0093：「客文所Graduate Institute of Hakka Culture Studies」；pages/0702（校刊）：「本校客家文化所共同舉辦客音探訪之路」。
+  成人教育研究所:
+    aliases: [成教所]
+    evidence: pages/0093：「成教所Graduate Institute of Adult Education」。
+  性別教育研究所:
+    aliases: [性別所]
+    evidence: pages/0093：「性別所Graduate Institute of Gender Education」。
+  人力與知識管理研究所:
+    aliases: [人知所]
+    evidence: pages/0093：「人知所Graduate Institute of Human Resource and Knowledge Management」。
+  諮商心理與復健諮商研究所:
+    aliases: [諮商復健所]
+    evidence: pages/0093：「諮商復健所Graduate Institute of Counseling Psychology and Rehabilitation Counseling」。
+  跨領域藝術研究所:
+    aliases: [跨藝所]
+    evidence: pages/0093：「跨藝所Graduate Institute of Transdisciplinary Art」。
+
+  # --- a parent, a name, other short names -------------------------------------------------------------------------------
+  聽力學與語言治療碩士班:
+    parent: 特殊教育學系
+    evidence: >-
+      名单上它没有上级单位。pages/0865（114 学年度碩士班招生考试简章修正公告）：「特殊教育學系聽力學與語言治療碩士班語言治療組」；
+      pages/0395「特教聽語」：「特殊教育學系聽力學與語言治療」。
+  教務組:
+    name: 進修學院教務組
+    evidence: >-
+      名单把進修學院的教务组叫「教務組」。导出里单写的「教務組」在 81 页出现，指的都是两个校区的教务组，例如
+      pages/0138（115 学年度转系公告）：「經原屬學系系主任簽章後送所屬教務組（和平或燕巢）彙辦」；没有一页写「進修學院教務組」。
+      改名以后，单写的「教務組」不再认成任何单位。
+  師資培育與就業輔導處:
+    aliases: [師就處]
+    evidence: >-
+      pages/0040 同一页：「師資培育與就業輔導處課程組之教育學程課程」和「師就處課程組開設之教育學程課程」。
+  國立高雄師範大學:
+    aliases: [高師大]
+    evidence: pages/0256：「高師大探索者計畫成立的第二個教師社群」。
+
+  # --- aliases: short names of the units config/site_units.yaml gives sites (plan 2026-11-08 T4 review 【Claude】) ------
+  # The unit words (build.unit_words) put a unit's short names into the index and the passage, so 「學務處 獎學金」
+  # finds 生活輔導組's pages (a section comes after its office). Only names the school writes are here; 課指組 (said at
+  # other schools) is not: neither the 教務處 export nor the site probe writes it, they write 課外組. The units of the
+  # site table still without a short name are listed by every build (build_report.json scope.site_units_no_alias).
+  學生事務處:
+    aliases: [學務處]
+    evidence: >-
+      【Claude】pages/0748（113年度國家防災日）：「依據:學務處生輔組113年7月17日…公文簽辦單辦理」；
+      pages/0363：「須完成文件紙本繳交學務處,才算完成註冊程序」；pages/0085：「學生操行成績評定急件申請單 (學務處提供2025改版)」。
+  生活輔導組:
+    aliases: [生輔組]
+    evidence: >-
+      【Claude】pages/0748：「學務處生輔組」；pages/1251：「新生入住學校宿舍採分流方式…細節詳如生輔組公告」；
+      试跑导出 sso.nknu.edu.tw_web_595（生活輔導組自己的网站）pages/0005 的标题：「學生事務處生活輔導組 - 生輔組簡介」。
+  課外活動指導組:
+    aliases: [課外組]
+    evidence: >-
+      【Claude】pages/1251：「聯絡方式:課外組分機1251」；pages/0636：「學生本學期如有擔任課外組就學獎補助兼任工讀生」；
+      普查：課外活動指導組的网站（webIdx=596）选单页「社團一覽表（課外組選單頁）」。
+  衛生保健組:
+    aliases: [衛保組]
+    evidence: >-
+      【Claude】pages/1181 的标题：「【衛保組】教育部111學年度校園防疫指引規範」；pages/0094：「體檢未通過:至【衛保組】確認
+      ( 活動中心 1 樓 )」；普查：衛生保健組那一条的别名「衛保組 重要行程（Google Calendar）」。
+  圖書資訊處:
+    aliases: [圖資處]
+    evidence: >-
+      【Claude】pages/0098：「若有問題,請洽圖資處 ( 分機 1706 )」；pages/0097：「收不到驗證碼請洽承辦單位:圖資處」；
+      普查：「圖資處數據公開」的上级是圖書資訊處。
+  國際事務處:
+    aliases: [國際處]
+    evidence: >-
+      【Claude】pages/0871（校刊第102期）：「文創中心、通識中心、國際處辦公室空間再造」。
+  通識教育中心:
+    aliases: [通識中心]
+    evidence: >-
+      【Claude】pages/1262：「(通識中心8/27選課人數上限作業、選課相關資料備份、8/30進行抽籤作業)」；
+      pages/0668（校刊第105期）：「通識中心與高醫、高科大合辦研討會」。
+  原住民族學生資源中心:
+    aliases: [原資中心]
+    evidence: >-
+      【Claude】教務處导出里没有。普查：「原資中心統計資料」和「原資中心 Instagram（nknu_isrc）」的上级都是原住民族學生資源中心。
+  特殊教育中心:
+    aliases: [特教中心]
+    evidence: >-
+      【Claude】教務處导出里没有。普查：特殊教育中心的 Facebook 专页名「高師特教中心愛報報」（上级写特殊教育中心）。
+  學生輔導中心:
+    aliases: [學輔中心]
+    evidence: >-
+      【Claude】教務處导出里没有。试跑导出 sites.google.com_mail.nknu.edu.tw_counseling-center（中心自己的网站）
+      pages/0001「學生輔導中心」：「可 優先報名 學輔中心辦理之小團體、心衛活動與講座」（19 页里 7 页写「學輔中心」）。
+  校安中心:
+    aliases: [軍訓室]
+    evidence: >-
+      【Claude】舊名，學生還會這樣叫：试跑导出 sso.nknu.edu.tw_site_100061（校安中心自己的网站）每一页的标题都写
+      「校安中心(原軍訓室)」；普查：校安中心那一条的别名「校安中心（原軍訓室）」。

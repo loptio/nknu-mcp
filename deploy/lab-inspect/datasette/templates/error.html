@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}{% if title %}{{ title }}{% else %}出錯了 {{ status }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="card oops">
+<h1>{% if status == 404 %}找不到這一頁{% elif title %}{{ title }}{% else %}出錯了（{{ status }}）{% endif %}</h1>
+<p>{{ error }}</p>
+<p><a class="btn" href="{{ urls.instance() }}">回首頁</a></p>
+</div>
+{% endblock %}

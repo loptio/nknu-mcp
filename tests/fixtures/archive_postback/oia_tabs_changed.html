@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>本校姐妹校一覽</title></head><body>
+<ul class="third_nav">
+<li><a href="javascript:void(0)" onclick="loadSubcategoryContent(20)" class="active">美洲</a></li>
+<li><a href="javascript:void(0)" onclick="loadSubcategoryContent(21)" class="">亞洲</a></li>
+</ul>
+<div id="dynamic-content"></div>
+<script>
+function loadSubcategoryContent(subcategoryId) {
+	fetch('api/v2/content?category=' + subcategoryId).then(r => r.json());
+}
+</script>
+</body></html>

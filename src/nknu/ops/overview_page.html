@@ -1,0 +1,1466 @@
+<title>內容 · 檢視台</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a title bar; left column = the map of the sites (treemap), the dates chart, the site list; right column = one
+   sticky inspector for the current scope (all / a unit / a site). One selection model drives every part.
+   Colour has two jobs (checked with the dataviz validator, both themes, all pairs, simulated colour blindness), and --bad
+   marks what failed:
+   - what kind of document: four hues placed like the Okabe-Ito colour-blind-safe set (blue, sky, orange, bluish green), a little
+     softer in the light theme because they fill large blocks: the blocks inside every map tile, the donut, the kinds' chips
+     and lines, the thin bars of the list. The two kinds of web page share the blue family (公告 dark, 一般網頁 light), files
+     are orange, calendar events green, links a light grey. Blue means these two kinds and nothing else;
+   - how many, and how much is missing: one violet ramp, fewer lighter (owner 11-15, of the counts drawn in blue for a while:
+     「藍色已經定義過是公告和一般網站了，其他地方普遍用紫色來表達多和少」, and 「文件數量的表達換紫色而已」): the map's
+     three lenses, the meters of 資料品質, the hover card's rows, the calendar's steps; and in one step of it, --amt (--q4:
+     4.5:1 on the light surface, 5.2:1 on the dark), the dates line and its wash, the bars of the years, the list's small
+     bars, ranked rows. One kind picked: that kind's own hue (the line is then that kind's).
+   What is picked or switched on is ink, like a picked tile's ring: no data colour. */
+/* colours, type and the panels' top bar: nknu/ops/theme/theme.css, put before this sheet by server.py (11-17) */
+:root { --barh: 52px; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--bg); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; padding: 0; text-align: inherit; }
+a { color: inherit; text-underline-offset: 2px; }
+h2, h3, h4 { margin: 0; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+.app { max-width: var(--page); margin: 0 auto; padding-block: 0 28px; padding-inline: var(--gutter); }
+
+/* top bar */
+.topbar { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px)); z-index: 20; background: var(--bg); display: flex; align-items: center;
+  justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 12px 0 10px; }
+.tb-l { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; min-width: 0; }
+.crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 13px; min-width: 0; color: var(--ink3); }
+.crumbs button { padding: 2px 7px; border-radius: 7px; color: var(--ink2); }
+.crumbs button:hover { background: var(--hover); color: var(--ink); }
+.crumbs .cur { padding: 2px 7px; font-weight: 650; color: var(--ink); }
+.crumbs .sep { color: var(--ink3); }
+.crumbs .meta { font-variant-numeric: tabular-nums; }
+/* shown only when the page cannot reach the lab PC or the last update failed; the data on show is then the last one */
+.live { font-size: 12px; color: var(--bad); white-space: nowrap; }
+.top-r { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: var(--surface);
+  border: 1px solid var(--line); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chip:hover { border-color: var(--line2); }
+.chip i { font-style: normal; color: var(--ink3); padding: 0 4px; }
+.seg { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--hover); }
+.seg button { padding: 3px 10px; border-radius: 7px; font-size: 12px; color: var(--ink2); white-space: nowrap; display: inline-flex; align-items: center; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.06); }
+.seg button:disabled { opacity: .4; cursor: default; }
+.seg.ic button { padding: 4px 8px; }
+svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.find { position: relative; }
+.find input { width: 190px; padding: 6px 10px 6px 30px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); }
+.find input::placeholder { color: var(--ink3); }
+.find > svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--ink3); }
+.find-list { position: absolute; right: 0; top: calc(100% + 6px); width: 320px; max-width: 86vw; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 4px; box-shadow: 0 12px 32px rgba(0,0,0,.14); z-index: 40; }
+.find-list button { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 2px 10px; width: 100%; padding: 7px 10px; border-radius: 8px; }
+.find-list button.act, .find-list button:hover { background: var(--hover); }
+.find-list small { color: var(--ink3); grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-list b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-list em { font-style: normal; color: var(--ink3); grid-row: 1 / span 2; grid-column: 2; align-self: center; font-variant-numeric: tabular-nums; }
+
+/* grid */
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 368px; gap: 18px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 18px 20px; min-width: 0; position: relative; }
+.card-h { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-h h2 { font-size: 14px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.card-h h2 span { font-weight: 400; color: var(--ink3); }
+.card-h.cm { justify-content: flex-start; gap: 8px 10px; }
+.card-h.cm h2 { margin-right: 6px; }
+.card-h.cm .tog { margin-left: auto; }
+.ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ctl > span { color: var(--ink3); font-size: 12px; }
+.side { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; }
+.side-in { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px) + var(--barh)); max-height: calc(100vh - var(--nk-bar-h, 0px) - var(--barh) - 16px); overflow: auto; scrollbar-width: thin; }
+.empty { padding: 36px 0; text-align: center; color: var(--ink3); }
+.tog { padding: 4px 9px; border-radius: 8px; font-size: 12px; color: var(--ink2); border: 1px solid var(--line); display: inline-flex; gap: 6px; align-items: center; }
+.tog:hover { color: var(--ink); border-color: var(--line2); }
+.tog[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.help { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line2); color: var(--ink3); font-size: 12px; text-align: center; line-height: 18px; }
+.help:hover, .help[aria-expanded="true"] { color: var(--ink); border-color: var(--ink3); }
+.key { position: absolute; left: 16px; top: 46px; z-index: 30; width: 310px; max-width: calc(100% - 32px); padding: 12px 14px; border-radius: 12px; background: var(--surface);
+  border: 1px solid var(--line2); box-shadow: 0 12px 32px rgba(0,0,0,.16); display: grid; gap: 10px; }
+.key h4 { font-size: 13px; font-weight: 650; }
+.key h4 span { font-weight: 400; color: var(--ink3); margin-left: 6px; }
+.key-r { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; color: var(--ink2); font-size: 12px; }
+.key-r > span:first-child { display: flex; align-items: flex-end; gap: 3px; justify-content: flex-end; }
+.kb i { display: block; background: var(--line2); border-radius: 2px; }
+.kmini { display: grid; grid-template-columns: 34px 22px; grid-template-rows: 20px 14px; gap: 1px; width: 58px; height: 36px; border-radius: 4px; overflow: hidden; }
+.kmini i { display: block; }
+.key .ramp i { width: 10px; }
+@media (max-width: 1020px) {
+  .kl { max-width: 400px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .side { grid-column: 1; grid-row: 2; }
+  .side-in { position: static; max-height: none; }
+}
+
+/* treemap */
+/* a tile is a site; the blocks inside it are its kinds of document, each block's area its share of the site */
+/* clipped: a tile or unit name faded out keeps its last place, and after the window narrows that place can lie past the
+   edge and widen the page (the rings of a tile are drawn inside it, so nothing shown is cut) */
+.tm { position: relative; height: 500px; overflow: hidden; }
+.tile { position: absolute; border-radius: 5px; overflow: hidden; cursor: pointer; background: var(--surface); color: var(--on-k);
+  transition: left .36s cubic-bezier(.2,.7,.2,1), top .36s cubic-bezier(.2,.7,.2,1), width .36s cubic-bezier(.2,.7,.2,1), height .36s cubic-bezier(.2,.7,.2,1), opacity .2s, background-color .25s; }
+.tile.lens { background: var(--fill, var(--qx)); color: var(--ink); }
+.tile.lens.inv { color: var(--surface); }
+.tile.onw { color: var(--on-w); }
+.tile.md { border-radius: 3px; }
+.tile.sm { border-radius: 2px; }
+.tile.gone { opacity: 0; pointer-events: none; }
+.tile.dim { opacity: .14; }
+.kr { position: absolute; display: block;
+  transition: left .36s cubic-bezier(.2,.7,.2,1), top .36s cubic-bezier(.2,.7,.2,1), width .36s cubic-bezier(.2,.7,.2,1), height .36s cubic-bezier(.2,.7,.2,1), opacity .2s; }
+.tile.lens .kr { opacity: 0; }
+.tile::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+.tile:hover::after { box-shadow: inset 0 0 0 2px var(--ink), inset 0 0 0 3.5px var(--surface); }
+.tile.sel::after { box-shadow: inset 0 0 0 3px var(--ink), inset 0 0 0 5px var(--surface); }
+.tile.sel { z-index: 2; }
+.tlab { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; font-size: 11px; line-height: 1.3; pointer-events: none; overflow: hidden; padding: 4px 4px 0 6px; }
+.tlab .tn { font-weight: 650; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lc, 1); overflow: hidden; word-break: break-all; text-wrap: balance; }
+.tlab .tv { opacity: .78; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tile.big .tlab { font-size: 13px; padding: 7px 6px 0 9px; }
+.ghead { position: absolute; height: 20px; display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden;
+  transition: left .36s cubic-bezier(.2,.7,.2,1), top .36s cubic-bezier(.2,.7,.2,1), width .36s cubic-bezier(.2,.7,.2,1), opacity .2s; }
+.ghead span { font-weight: 400; color: var(--ink3); font-variant-numeric: tabular-nums; }
+.ghead:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ghead.gone { opacity: 0; pointer-events: none; }
+.tm.noanim .tile, .tm.noanim .ghead, .tm.noanim .kr { transition: none; }
+.tm-legend { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-top: 12px; color: var(--ink3); font-size: 12px; min-height: 20px; }
+.tm-legend .kinds { display: flex; gap: 4px 14px; flex-wrap: wrap; }
+.tm-legend .lens { display: inline-flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.tm-legend .lens b { font-weight: 600; color: var(--ink2); margin-right: 4px; }
+.tm-legend .nil { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; }
+.tm-legend .nil i { width: 18px; height: 9px; border-radius: 2px; background: var(--qx); box-shadow: inset 0 0 0 1px var(--line2); display: block; }
+.tm-legend button { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); }
+.tm-legend button:hover { color: var(--ink); }
+.tm-legend button.off { opacity: .35; }
+.sw { width: 10px; height: 10px; border-radius: 2.5px; display: inline-block; }
+.ramp { display: inline-flex; gap: 2px; }
+.ramp i { width: 18px; height: 9px; border-radius: 2px; display: block; }
+@media (max-width: 640px) { .tm { height: 400px; } .dn { grid-template-columns: 118px minmax(0, 1fr); gap: 10px; } }
+
+/* inspector */
+.ih-t { font-size: 20px; font-weight: 650; line-height: 1.25; }
+.ih-s { color: var(--ink2); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; }
+/* one site's page in 檢視台 (structure design 2026-11-17 section 二): the inspector's one way there, ink as every act */
+.ih-go { display: inline-flex; align-items: center; margin-top: 10px; padding: 6px 12px; border-radius: 8px; background: var(--act); color: var(--on-act); font-size: 13px; font-weight: 650; text-decoration: none; }
+.ih-go:hover { opacity: .88; }
+.ih-go[hidden] { display: none; }
+#tbl a.nm-a { color: inherit; text-decoration: none; }
+#tbl a.nm-a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.tag { display: inline-block; padding: 0 6px; border-radius: 5px; background: var(--hover); color: var(--ink2); font-size: 11px; margin-left: 6px; white-space: nowrap; }
+.dn { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; align-items: center; margin-top: 14px; }
+.dn svg { display: block; width: 100%; height: auto; }
+.dn-track { fill: none; stroke: var(--line); stroke-width: 22; }
+.dn path { cursor: pointer; transition: opacity .2s; }
+#dnV { font-size: 20px; font-weight: 650; fill: var(--ink); }
+#dnL { font-size: 11px; fill: var(--ink3); }
+.kl { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.kl li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+.kl li:hover { background: var(--hover); }
+.kl li.off { opacity: .38; }
+.kl i { width: 10px; height: 4px; border-radius: 2px; background: var(--c); }
+.kl b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+.tabs button { justify-content: center; padding: 4px 6px; }
+.sec { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.sec:first-child { border-top: 0; padding-top: 0; }
+.sec h3 { font-size: 12px; font-weight: 650; color: var(--ink2); display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.sec .sum { margin-left: auto; font-weight: 400; color: var(--ink3); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yr { display: block; width: 100%; height: 54px; }
+.yr rect.b { fill: var(--yc, var(--amt)); opacity: .65; }
+.yr rect.h { fill: transparent; }
+.yr g:hover rect.b { opacity: 1; }
+.yr-x { display: flex; justify-content: space-between; color: var(--ink3); font-size: 11px; margin-top: 2px; }
+/* one row form for everything below the donut: a name, a bar, a figure (meters and ranked lists alike) */
+.rk { display: grid; grid-template-columns: minmax(0, 46%) minmax(0, 1fr) 52px; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
+.rk > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk .bar { height: 6px; border-radius: 999px; background: var(--qx); overflow: hidden; }
+.rk .bar i { display: block; height: 100%; border-radius: 999px; background: var(--amt); opacity: .72; }
+.rk b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.rk.rest { color: var(--ink3); }
+.rk.rest b { font-weight: 400; }
+.rk.m { grid-template-columns: 64px minmax(0, 1fr) 44px; }
+.rk.m .bar i { background: var(--q3); opacity: 1; }
+.rk.m.hot .bar i { background: var(--q5); }
+.got { color: var(--ink2); font-size: 12px; }
+.got b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.stack { display: flex; gap: 2px; height: 11px; border-radius: 999px; overflow: hidden; margin: 8px 0 8px; background: var(--qx); }
+.stack i { display: block; flex: 0 1 0; min-width: 3px; border-radius: 2px; }
+.o-got { background: var(--good-s); } .o-next { background: var(--q4); } .o-todo { background: var(--q2); }
+.o-fail { background: var(--bad); } .o-login { background: var(--ink3); } .o-gone { background: var(--line2); }
+.rw { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-size: 12px; }
+.rw i { width: 10px; height: 10px; border-radius: 3px; }
+.rw b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.note { color: var(--ink3); font-size: 12px; margin-top: 8px; }
+#tNote:not(:empty) { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 8px; background: var(--sunk); color: var(--ink2); margin-top: 10px; }
+/* a reminder of the build's checks: a name and its figure, what it means floating over the row */
+.ck { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
+.ck b { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 品質提醒's rows of a scope are filters (owner 11-23): a row to press, the one on sunk with a bar at its left */
+.ck-f { cursor: pointer; border-radius: 6px; margin: 0 -6px; padding-left: 6px !important; padding-right: 6px !important; }
+.ck-f:hover { background: var(--hover); }
+.ck-f.on { background: var(--sunk); box-shadow: inset 2px 0 0 var(--ink2); }
+.ck-f:hover > span::after { content: ' ›'; color: var(--ink3); }
+/* the side card's head: 「全部網站 146」 on one line (owner 11-23, 總覽 and 內容) */
+.ih-t .ih-n { font-size: 14px; font-weight: 600; color: var(--ink3); margin-left: 6px; }
+#iS:empty { display: none; }
+
+/* dates */
+/* the readout above the chart: the count on the right, under the buttons that change it, its period just left of it
+   (owner 11-15: 「幾份文件應該在右邊顯示更人性化」); in 各類型 the kinds' chips on the left, as the lines' legend */
+.ro { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 6px; min-height: 26px; }
+.ro-n { margin-left: auto; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.ro-v { font-size: 20px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.ro-u { color: var(--ink3); margin-left: 3px; font-size: 12px; }
+.ro-l { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ro-k { display: flex; gap: 4px; flex-wrap: wrap; }
+.ro-k button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+.ro-k button.off { opacity: .38; }
+.ro-k i { width: 12px; height: 3px; border-radius: 2px; }
+.ro-k b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 1ch; }
+#tc { display: block; width: 100%; height: 250px; }
+#nav { display: block; width: 100%; height: 44px; margin-top: 2px; }
+.gy line { stroke: var(--line); shape-rendering: crispEdges; }
+.gy text, .gx text, .nx text { fill: var(--ink3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.area { opacity: .1; }
+.future { fill: var(--hover); }
+.today line { stroke: var(--ink3); shape-rendering: crispEdges; }
+.today text { fill: var(--ink3); font-size: 11px; }
+.cross line { stroke: var(--ink2); shape-rendering: crispEdges; }
+.cross circle { stroke: var(--surface); stroke-width: 2; }
+.ov { fill: transparent; cursor: crosshair; touch-action: pan-y; }
+.nav-area { fill: var(--navc, var(--amt)); opacity: .28; }
+.nx { transition: opacity .15s; }
+.brush .selection { fill: var(--amt3); fill-opacity: 1; stroke: var(--amt); stroke-opacity: .55; shape-rendering: crispEdges; }
+.brush .handle { fill: var(--amt); rx: 2px; }
+.cal-h { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }
+.cal-h b { font-size: 16px; font-weight: 650; min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.cal-h button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); text-align: center; color: var(--ink2); }
+.cal-h button:disabled { opacity: .3; cursor: default; }
+.cal-h .lg { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--ink3); font-size: 12px; }
+.cal-h .lg i { width: 11px; height: 11px; border-radius: 2px; background: var(--calc); display: inline-block; }
+.cal-w { overflow-x: auto; }
+#cal { display: block; }
+#cal text { fill: var(--ink3); font-size: 11px; }
+#cal rect { rx: 2px; cursor: pointer; }
+#cal rect.z { fill: var(--hover); }
+#cal rect.v { fill: var(--calc); }
+#cal rect.on { stroke: var(--ink); stroke-width: 2; }
+#cal rect.td { stroke: var(--ink3); stroke-width: 1; }
+.cday { margin-top: 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-width: 520px; }
+.cday h3 { font-size: 12px; font-weight: 600; color: var(--ink2); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.cday button { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(40px, 1fr) auto; gap: 8px; align-items: center; padding: 3px 6px; border-radius: 6px; font-size: 12px; }
+.cday button:hover { background: var(--hover); }
+.cday button span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cday .bar { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
+.cday .bar i { display: block; height: 100%; border-radius: 3px; background: var(--calc, var(--amt)); opacity: .6; }
+.cday b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* list */
+.seg button b { font-weight: 600; margin-left: 5px; font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; }
+th { position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--nk-bar-h, 0px) + var(--barh)); z-index: 3; background: var(--surface); text-align: left; font-size: 12px; font-weight: 650;
+  color: var(--ink3); padding: 8px 10px; white-space: nowrap; box-shadow: inset 0 -1px 0 var(--line2); cursor: pointer; user-select: none; }
+th:hover, th[aria-sort] { color: var(--ink); }
+th.r, td.r { text-align: right; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
+tbody tr { cursor: pointer; }
+tbody tr:hover td { background: var(--hover); }
+tbody tr[aria-selected="true"] td { background: var(--press); }
+tbody tr[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+/* Three levels, told apart by weight, ground and indent (owner 11-15: 「文学院这种大分类和他下面的网站区分太不明显」):
+   a unit is a bold row on the page's ground with a chevron and folds its sites; a site is indented under it; a 品保 site
+   is indented once more. Numbers sit right-aligned under right-aligned column names, no bars beside them. */
+tr.grow td { padding-top: 10px; padding-bottom: 10px; background: var(--sunk); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  font-weight: 650; color: var(--ink); }
+tr.grow:hover td { background: var(--press); }
+tr.grow td:first-child { font-size: 14px; }
+tr.grow .gn { display: flex; align-items: center; gap: 8px; min-width: 0; }
+tr.grow .gn::before { content: ""; flex: none; width: 5px; height: 5px; margin: 0 3px 0 2px; border-right: 1.5px solid var(--ink2); border-bottom: 1.5px solid var(--ink2);
+  transform: rotate(-45deg); transition: transform .15s; }
+tr.grow[aria-expanded="true"] .gn::before { transform: translateY(-2px) rotate(45deg); }
+tr.grow .gn span { font-weight: 400; font-size: 12px; color: var(--ink3); font-variant-numeric: tabular-nums; }
+tr.grow + tr.grow td { border-top: 0; }
+tr.in td:first-child { padding-left: 28px; }
+.nm { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.nm > span { overflow: hidden; text-overflow: ellipsis; }
+#tbl tbody td:first-child { width: 100%; max-width: 0; }
+#tbl th.r, #tbl td.r { width: 1%; padding-left: 18px; font-variant-numeric: tabular-nums; }
+/* a department's 品保 sites hang under it, folded */
+.fold { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; margin-left: 4px; border-radius: 5px; background: var(--hover);
+  color: var(--ink3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.fold:hover { background: var(--press); color: var(--ink); }
+.fold::after { content: ""; width: 4px; height: 4px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
+.fold[aria-expanded="true"]::after { transform: translateY(-1px) rotate(45deg); }
+tr.kid td:first-child { padding-left: 46px; color: var(--ink2); }
+tr.kid td { border-bottom-color: transparent; }
+/* the column the map is coloured by */
+th.hl { color: var(--ink); }
+td.hl { background: var(--hover); }
+.mix { display: flex; gap: 1px; width: 72px; height: 8px; border-radius: 2px; overflow: hidden; }
+.mix i { display: block; flex: 0 1 0; min-width: 0; }
+.sp { display: block; }
+.sp rect { fill: var(--spc, var(--amt)); opacity: .6; }
+/* a ratio is a plain figure; half or more is set in bold ink, the rest in grey */
+.pc { color: var(--ink2); }
+.pc.hot { color: var(--ink); font-weight: 650; }
+.pc.old { color: var(--ink3); }
+tr.grow .pc { color: var(--ink); }
+.na { color: var(--ink3); }
+.later th { cursor: default; }
+.later tbody tr { cursor: default; }
+.later tbody tr.grow { cursor: pointer; }
+.later tr.flash td { background: var(--press); }
+/* The column names stay under the top bar while the page scrolls (owner 11-13). A sideways-scrolling wrapper would stop
+   that, so the tables never scroll sideways: the name column takes what is left, and a narrower card drops columns. */
+.tw { container-type: inline-size; }
+.later td:first-child { white-space: normal; overflow-wrap: anywhere; }
+@container (max-width: 720px) { .c-yr { display: none; } }
+@container (max-width: 610px) { .c-mix { display: none; } }
+@container (max-width: 530px) { .c-p { display: none; } #tbl th.r, #tbl td.r { padding-left: 10px; } }
+@container (max-width: 420px) { .c-last, .c-m { display: none; } th, td { padding-left: 6px; padding-right: 6px; } tr.in td:first-child { padding-left: 18px; } tr.kid td:first-child { padding-left: 30px; } }
+
+/* tooltip */
+.tip { position: fixed; z-index: 60; pointer-events: none; max-width: 300px; padding: 8px 10px; border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--line2); box-shadow: 0 10px 28px rgba(0,0,0,.16); font-size: 12px; line-height: 1.45; }
+.tip h4 { font-size: 13px; font-weight: 650; margin-bottom: 2px; }
+.tip p { margin: 0; color: var(--ink2); }
+.tip .mix { width: 100%; margin: 6px 0 4px; }
+.tip .tr { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); gap: 6px; align-items: center; margin-top: 2px; }
+.tip .tr i { width: 10px; height: 3px; border-radius: 2px; }
+.tip .tr b { font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; min-width: 40px; }
+.tip .tr span { color: var(--ink2); }
+/* the card of a site: every line is a name, a bar and a figure; kinds in their colours, the three quality measures in ink */
+.tt { width: 252px; --vw: 46px; }
+.tt.wide { width: 280px; --vw: 72px; }
+.tt-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 9px; }
+.tt-top > div:first-child { min-width: 0; }
+.tip .tt-s { color: var(--ink3); margin: 0; }
+.tt-n { flex: none; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tt-n b { display: block; font-size: 13px; font-weight: 650; margin-bottom: 2px; }
+.tt-n span { color: var(--ink2); }
+.tt-r { display: grid; grid-template-columns: 62px minmax(0, 1fr) var(--vw); gap: 8px; align-items: center; padding: 2.5px 0; color: var(--ink2); }
+.tt-r b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.tt-b { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
+.tt-b i { display: block; height: 100%; border-radius: 3px; background: var(--q3); }
+.tt-d { height: 1px; background: var(--line); margin: 7px 0 5px; }
+.tt-r.on > span:first-child { color: var(--ink); font-weight: 600; }
+.tt-r.on .tt-b i { background: var(--q5); }
+@media (prefers-reduced-motion: reduce) { .tile, .ghead, .dn path { transition: none !important; } }
+</style>
+
+<main class="app"><!--NIGHT-BAND-->
+  <header class="topbar" id="bar">
+    <div class="tb-l"><nav class="crumbs" id="crumbs" aria-label="目前範圍"></nav><span class="live" id="live" role="status" hidden></span></div>
+    <div class="top-r">
+      <span id="chips" style="display:contents"></span>
+      <div class="seg" id="segMetric" role="group" aria-label="統計方式"><button data-v="docs">文件數</button><button data-v="chars" data-tip="按轉成文字後的字數算">字數</button></div>
+      <div class="find">
+        <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+        <input id="find" type="search" placeholder="搜尋網站" autocomplete="off" aria-label="搜尋網站" aria-controls="findList">
+        <div class="find-list" id="findList" hidden></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="hMap">
+      <div class="card-h cm">
+        <h2><span id="hMap" style="font-weight:650;color:var(--ink)"></span><span id="hMapSub"></span><button class="help" id="tmHelp" type="button" aria-expanded="false" aria-controls="tmKey" aria-label="這張圖怎麼看">?</button></h2>
+        <div class="seg" id="segLens" role="group" aria-label="整塊按哪一項上色；再點一次已選的那一項，回到按文件類型分色"><button data-v="ud">無日期</button><button data-v="miss">未取得</button><button data-v="old">更新時間</button></div>
+        <button class="tog" id="tmBack" type="button" hidden>‹ 全部網站</button>
+      </div>
+      <div class="key" id="tmKey" hidden>
+        <h4>矩形樹狀圖<span>treemap</span></h4>
+        <div class="key-r"><span class="kb"><i style="width:10px;height:10px"></i><i style="width:18px;height:18px"></i><i style="width:28px;height:28px"></i></span><span>一個方塊是一個網站，越大文件越多</span></div>
+        <div class="key-r"><span><span class="kmini"><i style="grid-row:1 / span 2;background:var(--k2)"></i><i style="background:var(--k0)"></i><i style="background:var(--k1)"></i></span></span><span>方塊裡的色塊是文件類型，哪種顏色大，哪種文件就多</span></div>
+        <div class="key-r"><span><span class="ramp" id="keyRamp"></span></span><span>點標題旁的無日期、未取得或更新時間，整塊換成一種顏色，按圖下方的色條讀；再點一次就回來</span></div>
+        <div class="key-r"><span></span><span>點方塊看這個網站，點單位名放大</span></div>
+      </div>
+      <div class="tm noanim" id="tm"></div>
+      <div class="tm-legend" id="tmLegend"></div>
+    </section>
+
+    <aside class="side" aria-label="目前範圍的詳情"><div class="side-in card" id="insp">
+      <div class="ih"><div class="ih-t" id="iT"></div><div class="ih-s" id="iS"></div><a class="ih-go" id="iGo" hidden data-tip="檢視台裡這個網站的一頁：每一步進多少出多少、上次換庫變了什麼、網頁核查、文件">這個網站的詳情 →</a></div>
+      <div class="dn">
+        <svg id="dn" viewBox="0 0 150 150" width="150" height="150" role="img" aria-label="文件類型佔比">
+          <circle class="dn-track" cx="75" cy="75" r="62"/><g transform="translate(75,75)" id="dnG"></g>
+          <text id="dnV" x="75" y="77" text-anchor="middle"></text><text id="dnL" x="75" y="94" text-anchor="middle"></text>
+        </svg>
+        <ul class="kl" id="kl"></ul>
+      </div>
+      <div class="seg tabs" id="segTab" role="group" aria-label="詳情分頁"><button data-v="sum">概況</button><button data-v="what">內容</button><button data-v="crawl">收錄</button></div>
+      <div id="iSecs"></div>
+    </div><!--EMBED-SIDE--></aside>
+
+    <section class="card" aria-labelledby="hTime">
+      <div class="card-h">
+        <h2 id="hTime">文件日期分佈</h2>
+        <div class="ctl">
+          <div class="seg" id="segRange" role="group" aria-label="時間範圍"><button data-v="1m">1個月</button><button data-v="3m">3個月</button><button data-v="1y">1年</button><button data-v="3y">3年</button><button data-v="all">全部</button></div>
+          <div class="seg" id="segSplit" role="group" aria-label="線的畫法"><button data-v="0" data-tip="所有類型加起來畫一條線">合計</button><button data-v="1" data-tip="公告、一般網頁、附件、行事曆各畫一條線">各類型</button></div>
+          <div class="seg ic" id="segView" role="group" aria-label="檢視方式">
+            <button data-v="line" data-tip="趨勢圖" aria-label="趨勢圖"><svg class="ic" viewBox="0 0 16 16"><path d="M2 2v12h12"/><path d="M4.5 10.5l3-3.5 2.5 2 3.5-4.5"/></svg></button>
+            <button data-v="cal" data-tip="日曆：一天一格" aria-label="日曆"><svg class="ic" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg></button>
+          </div>
+          <button class="tog" id="btnLink" type="button" aria-pressed="false" data-tip="開了以後，上面的方塊圖、右邊的詳情和下面的列表都只統計圖中這段時間內的文件；再點一次關掉"><svg class="ic" viewBox="0 0 16 16"><path d="M2 3h12l-4.6 5.4V13l-2.8-1.4V8.4z"/></svg>只看這段時間</button>
+        </div>
+      </div>
+      <div class="ro">
+        <div class="ro-k" id="roK"></div>
+        <div class="ro-n"><span class="ro-l" id="roL"></span><span><span class="ro-v" id="roV"></span><span class="ro-u" id="roU">份</span></span></div>
+      </div>
+      <div id="vLine"><svg id="tc" role="img" aria-label="各時段的文件數"></svg><svg id="nav" aria-hidden="true"></svg></div>
+      <div id="vCal" hidden>
+        <div class="cal-h"><button type="button" id="calPrev" aria-label="上一年">‹</button><b id="calY"></b><button type="button" id="calNext" aria-label="下一年">›</button>
+          <span class="lg">少<i style="opacity:.18"></i><i style="opacity:.36"></i><i style="opacity:.56"></i><i style="opacity:.78"></i><i></i>多</span></div>
+        <div class="cal-w"><svg id="cal" role="img" aria-label="每天的文件數"></svg></div>
+        <div class="cday" id="calDay"></div>
+      </div>
+      <div class="note" id="tNote"></div>
+    </section>
+
+    <!--NIGHT-LOG--><section class="card" aria-labelledby="hList">
+      <div class="card-h cm"><h2 id="hList">網站列表</h2><div class="seg" id="segList" role="group" aria-label="已抓或待抓的網站"><button data-v="got" data-tip="第一輪已經抓下來的網站">已抓取<b id="nGot"></b></button><button data-v="later" data-tip="留到第二輪再抓的網站">待抓取<b id="nLater"></b></button></div></div>
+      <div class="tw" id="tw" tabindex="0" role="region" aria-label="網站列表，上下方向鍵切換"><table id="tbl"></table></div>
+      <div class="tw later" id="later" hidden><table id="tblLater"></table></div>
+    </section>
+  </div>
+</main>
+<div class="tip" id="tip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script id="data" type="application/json">__DATA__</script>
+<script id="links" type="application/json">__LINKS__</script>
+<script>
+(function () {
+'use strict';
+const D = JSON.parse(document.getElementById('data').textContent);
+const DAY = 864e5, Y0 = 2012, Y1 = 2026, NY = Y1 - Y0 + 1;
+const KN = ['公告', '一般網頁', '附件', '行事曆', '校外連結'];
+const KTIP = ['公告列表裡的一則消息，帶發佈日期', '公告以外的網頁：說明頁、規章頁、活動頁等', '網頁上掛的檔案：PDF、Word、Excel、圖片', '日曆裡的一個活動', '網頁裡指向校外網站的連結'];
+const FMT = ['PDF（有文字）', 'PDF（掃描檔，認字）', 'Word / Excel / PPT', '圖片（認字）', '其他'];
+const DSRC = ['網頁或公告上寫的日期', '跟所屬公告的日期', '伺服器上的檔案時間', '正文裡寫的期間', '下載表格那一行寫的日期'];
+// the build's own checks of each site (site_checks.json, written after each build): a reminder's name and what it means.
+// The names say what is wrong from the reader's side, one concept one word; each was tried on a cold reader first (the
+// owner's rule for new names, 11-16). 【Claude】 redesign 2026-11-17 (research/dashboard_redesign_2026-11-17/diagnosis.md,
+// 資料總覽 ③); before it they were 沒有文件, 用標題搜不到, 同名標題, 開頭相同, 碎字附件, 整批檔案時間. 11-23 (owner: 「整个内容页
+// 有哪些名字和词需要换的，你换一下」): the design's shorter names, the site page's words (網頁無文字 as there, one word a thing).
+const CK = {
+  none: ['無文件', '這個網站一份文件都沒收進庫'],
+  self: ['標題搜不到', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
+  empty: ['網頁無文字', '兩成以上的網頁轉成文字後是空的'],
+  same_title: ['標題重複', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
+  same_opening: ['選單混入正文', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
+  fragments: ['附件逐字斷行', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
+};
+const CK_SPIKE = ['檔案時間雷同', '同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批複製時留下的），這些檔不拿這個時間當日期，算在「無日期」裡'];
+const OUTN = ['抓到', '留到下一輪', '學校已刪除', '抓取失敗', '要登入', '待處理'];
+const OUTTIP = ['', '這一輪按規則先不抓，多數是要 JavaScript 才出現的內容和按鈕', '連結還在，但學校那邊已經沒有這個網頁或檔案', '連不上、被拒絕，或者回來的不是檔案', '要登入才看得到', '寫法特殊，這一輪還沒決定怎麼抓'];
+const OUTCLS = ['o-got', 'o-next', 'o-gone', 'o-fail', 'o-login', 'o-todo'];
+// where the other panels are (server.py fills them in from nknu/ops/theme/panels.json, one place for the addresses):
+// 資料庫, whose queries say why a site's documents have no date, and one site's page in 檢視台, which the list's names and
+// the inspector link to (structure design 2026-11-17 section 二)
+const LINKS = (() => { try { return JSON.parse(document.getElementById('links').textContent); } catch (_) { return {}; } })();
+const TABLES = LINKS.tables || 'http://127.0.0.1:18001';
+const SITE_PAGE = LINKS.site || 'http://127.0.0.1:18878/site?site=';
+const QA = '品保＝教學品質保證。每個系所各有一個這樣的小網站，主要放辦法、要點和申請表';
+const GROUPS = D.groups, S0 = D.sites, byKey = {};
+const TODAY = Math.floor(Date.parse(D.today + 'T00:00:00Z') / DAY);
+const AX0 = D.dayMin, AX1 = D.dayMax;
+const $ = (q, el) => (el || document).querySelector(q);
+const $$ = (q, el) => Array.from((el || document).querySelectorAll(q));
+const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const sum = a => a.reduce((x, y) => x + y, 0);
+const fmt = n => Math.round(n).toLocaleString('en-US');
+const pct = (a, b) => !b ? '—' : a === 0 ? '0%' : 100 * a / b < 1 ? '<1%' : Math.round(100 * a / b) + '%';
+const pct1 = (a, b) => { if (!b) return '—'; const v = 100 * a / b; return v === 0 ? '0%' : v < .1 ? '<0.1%' : v < 10 ? v.toFixed(1) + '%' : Math.round(v) + '%'; };
+const charsParts = n => n >= 1e8 ? [(n / 1e8).toFixed(2), '億字'] : n >= 1e4 ? [fmt(n / 1e4), '萬字'] : [fmt(n), '字'];
+const fmtChars = n => charsParts(n).join(' ');
+const shortChars = n => { const c = charsParts(n); return c[0] + ' ' + (c[1] === '字' ? '字' : c[1].replace('字', '')); };
+const dayOf = str => Math.floor(Date.parse(str.slice(0, 10) + 'T00:00:00Z') / DAY);
+const dstr = day => new Date(day * DAY).toISOString().slice(0, 10);
+const ago = d => d == null ? '' : d < 1 ? '今天' : d < 31 ? d + ' 天前' : d < 365 ? Math.round(d / 30.4) + ' 個月前' : (d / 365).toFixed(1).replace(/\.0$/, '') + ' 年前';
+
+// A day row is [day, notice, page, attachment, event counts, then the same four in characters]: CH is how far the
+// characters sit from the counts. Every amount below follows the 文件數 / 字數 switch (owner 11-15).
+const CH = 4;
+S0.forEach((s, i) => {
+  byKey[s.k] = s; s.i = i; s.total = sum(s.t); s.rows = D.daily[i] || [];
+  s.yr = [0, 1, 2, 3].map(() => new Array(NY).fill(0)); s.yc = [0, 1, 2, 3].map(() => new Array(NY).fill(0));
+  for (const r of s.rows) {
+    const y = new Date(r[0] * DAY).getUTCFullYear();
+    if (y > Y1) continue;
+    const j = Math.max(0, y - Y0);
+    for (let k = 0; k < 4; k++) { s.yr[k][j] += r[k + 1]; s.yc[k][j] += r[k + 1 + CH]; }
+  }
+  s.age = s.last ? TODAY - dayOf(s.last) : null;
+  s.got = s.cr.p[0] + s.cr.f[0];
+  s.miss = [1, 3, 4, 5].reduce((a, j) => a + s.cr.p[j] + s.cr.f[j], 0);
+  s.missShare = s.got + s.miss ? s.miss / (s.got + s.miss) : null;
+  s.udShare = s.b ? s.ud / s.b : null;
+  // 無文件 is read off the library too: the build's checks of another build (after a swap, before its checks ran) name
+  // no site, and the filter that replaced the card of sites with no document must not go blank then 【Claude】
+  if (!s.total && !(s.ck && s.ck.f.includes('none')))
+    s.ck = Object.assign({ nw: [], st: 0, so: [0, 0], fr: 0, em: [0, 0], se: [0, 0], sp: 0 }, s.ck || {}, { f: ['none'].concat(s.ck ? s.ck.f : []) });
+});
+// A department's 品保 site hangs under the department's own site in the list (owner 11-15): same unit and same group, the
+// site named like the unit first, else the largest. s.par is the department's key, s.kids its 品保 sites.
+S0.forEach(s => { s.kids = []; });
+S0.forEach(s => {
+  if (!/品保/.test(s.f)) return;
+  const c = S0.filter(o => o !== s && !/品保/.test(o.f) && o.u === s.u && o.g === s.g).sort((a, b) => (b.n === s.u) - (a.n === s.u) || b.total - a.total);
+  if (c.length) { s.par = c[0].k; c[0].kids.push(s); }
+});
+// The map's colour: with no measure picked (S.lens null) the blocks inside a tile are its kinds of document. Picking one of
+// the three measures of 资料质量 paints the whole tile with one step of the violet ramp and prints the measure on it; picking
+// the same one again goes back (owner 11-13: one level of buttons, no mode switch). f gives 0..1 along the ramp (six equal
+// steps), lab the figure, bin the range of a step, nil why a site has no value, tip what the measure is.
+const LENS = {
+  ud: { name: '無日期的比例', lo: '0%', hi: '100%', tip: '公告、網頁、附件裡沒有日期的比例', nil: '這個網站沒有公告、網頁或附件', f: s => s.udShare, lab: s => pct(s.ud, s.b),
+    bin: i => Math.round(100 * i / 6) + '%–' + Math.round(100 * (i + 1) / 6) + '%' },
+  miss: { name: '未取得的比例', lo: '0%', hi: '50% 以上', tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例', nil: '這個網站沒有抓取紀錄', f: s => s.missShare == null ? null : Math.min(1, s.missShare / .5), lab: s => pct(s.miss, s.miss + s.got),
+    bin: i => i < 5 ? Math.round(50 * i / 6) + '%–' + Math.round(50 * (i + 1) / 6) + '%' : '42% 以上' },
+  old: { name: '更新時間', lo: '剛更新', hi: '3 年以上沒更新', tip: '最新一份帶日期的文件是多久以前的', nil: '這個網站沒有帶日期的文件', f: s => s.age == null ? null : Math.min(1, s.age / 1095), lab: s => ago(s.age),
+    bin: i => i < 5 ? (i * 6) + '–' + (i * 6 + 6) + ' 個月' : '兩年半以上' },
+};
+
+const S = { grp: null, site: null, kinds: [true, true, true, true, true], metric: 'docs', list: 'got', unfold: new Set(), gopen: new Set(),
+  range: 'all', win: [AX0 * DAY, (AX1 + 1) * DAY], link: false, split: false, view: 'line', calYear: new Date(TODAY * DAY).getUTCFullYear(), calDay: null,
+  sort: 'group', dir: -1, tab: 'sum', lens: null, ck: null };
+// 總覽 shows this page in a frame (?embed=1, set on <html> before the page draws: nknu.ops.overview.EMBED_JS)
+const EMBED = document.documentElement.classList.contains('embed');
+
+/* ---------- scope and values ---------- */
+// a reminder of 品質提醒 picked as a filter (S.ck: a CK key, or 'spike' for the sites with files of one server time)
+// narrows every part: the map, the list, the side card and the date chart (owner 11-23: 「文件日期分布也跟着筛选变」)
+const ckHit = (s, k) => !!(s.ck && (k === 'spike' ? s.ck.sp > 0 : s.ck.f.includes(k)));
+const ckKey = k => typeof k === 'string' && (Object.prototype.hasOwnProperty.call(CK, k) || k === 'spike') ? k : null;
+const inGrp = s => (S.grp === null || s.g === S.grp) && (!S.ck || ckHit(s, S.ck));
+const scopeSites = () => S.site ? [byKey[S.site]] : S0.filter(inGrp);
+const scopeKey = () => (S.site ? 's' + S.site : S.grp !== null ? 'g' + S.grp : 'all') + (S.ck ? '|ck:' + S.ck : '');
+let winCache = { key: '', map: new Map() };
+function winParts(s) {
+  const d0 = Math.floor(S.win[0] / DAY), d1 = Math.ceil(S.win[1] / DAY) - 1, off = byChars() ? CH : 0, key = d0 + ':' + d1 + ':' + off;
+  if (winCache.key !== key) winCache = { key, map: new Map() };
+  let p = winCache.map.get(s.i);
+  if (!p) {
+    p = [0, 0, 0, 0, 0];
+    const rows = s.rows; let lo = 0, hi = rows.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (rows[m][0] < d0) lo = m + 1; else hi = m; }
+    for (let i = lo; i < rows.length && rows[i][0] <= d1; i++) { const r = rows[i]; for (let k = 0; k < 4; k++) p[k] += r[k + 1 + off]; }
+    winCache.map.set(s.i, p);
+  }
+  return p;
+}
+const byChars = () => S.metric === 'chars';
+const yrOf = s => byChars() ? s.yc : s.yr;
+// one amount as the page writes it: 1,234 份 or 12 萬字
+const amount = v => byChars() ? fmtChars(v) : fmt(v) + ' 份';
+// the colour of an amount: the one kind picked, else the violet of all of them together
+const AMT = 'var(--amt)';
+const amountCol = () => { const ks = [0, 1, 2, 3].filter(k => S.kinds[k]); return ks.length === 1 ? 'var(--k' + ks[0] + ')' : AMT; };
+const partsNow = s => S.link ? winParts(s) : S.metric === 'chars' ? s.c : s.t;
+const sel = p => p.reduce((a, v, i) => a + (S.kinds[i] ? v : 0), 0);
+const fmtVal = v => byChars() ? fmtChars(v) : fmt(v);
+const unitWord = () => byChars() ? '字數' : '文件數';
+const grandTotal = () => Math.max(1, sum(S0.map(s => sel(partsNow(s)))));
+const mixBar = p => '<div class="mix">' + p.map((v, i) => S.kinds[i] && v ? '<i style="flex-grow:' + v + ';background:var(--k' + i + ')"></i>' : '').join('') + '</div>';
+
+/* ---------- tooltip ---------- */
+const tipEl = $('#tip'); let tipOwner = null;
+function showTip(html, ev, owner) {
+  tipEl.innerHTML = html; tipEl.hidden = false; tipOwner = owner || 'x';
+  const w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 16;
+  if (x + w > innerWidth - 8) x = Math.max(8, ev.clientX - w - 12);
+  if (y + h > innerHeight - 8) y = Math.max(8, ev.clientY - h - 12);
+  tipEl.style.left = x + 'px'; tipEl.style.top = y + 'px';
+}
+function hideTip(owner) { if (!owner || tipOwner === owner) { tipEl.hidden = true; tipOwner = null; } }
+document.addEventListener('pointermove', ev => {
+  const el = ev.target.closest && ev.target.closest('[data-tip]');
+  // read for the eye (richtip.js, owner 11-23: 「很多悬浮窗的文字都太杂了」): a head, rows of name and number, short lines
+  if (el) showTip(window.RICHTIP ? RICHTIP(el) : '<p>' + esc(el.dataset.tip) + '</p>', ev, 'attr'); else hideTip('attr');
+});
+document.addEventListener('scroll', () => hideTip(), true);
+function siteTip(s) {
+  if (window.NM && S.lens === 'night') return NM.tip(s);
+  const p = partsNow(s), tot = sel(p) || 1, on = S.lens || '';
+  const bar = (share, c) => '<span class="tt-b">' + (share > 0 ? '<i style="width:' + Math.max(3, 100 * Math.min(1, share)) + '%' + (c ? ';background:' + c : '') + '"></i>' : '') + '</span>';
+  const row = (id, label, share, txt) => '<div class="tt-r' + (id === on ? ' on' : '') + '"><span>' + label + '</span>' + bar(share) + '<b>' + txt + '</b></div>';
+  // top right corner of the card: the amount and the share of the whole, no words before them (owner 11-13)
+  return '<div class="tt' + (byChars() ? ' wide' : '') + '"><div class="tt-top"><div><h4>' + esc(s.f) + '</h4><p class="tt-s">' + esc(GROUPS[s.g]) + (S.link ? ' · 所選時間內' : '') + '</p></div>' +
+    '<div class="tt-n"><b>' + fmtVal(sel(p)) + (byChars() ? '' : ' 份') + '</b><span>' + pct1(sel(p), grandTotal()) + '</span></div></div>' +
+    p.map((v, i) => v && S.kinds[i] ? '<div class="tt-r"><span>' + KN[i] + '</span>' + bar(v / tot, 'var(--k' + i + ')') + '<b>' + fmtVal(v) + '</b></div>' : '').join('') +
+    '<div class="tt-d"></div>' +
+    row('ud', '無日期', s.udShare, s.udShare == null ? '—' : pct(s.ud, s.b)) +
+    row('miss', '未取得', s.missShare, s.missShare == null ? '—' : pct(s.miss, s.miss + s.got)) +
+    row('old', '更新時間', s.age == null ? 0 : s.age / 1095, s.age == null ? '—' : ago(s.age)) + '</div>';
+}
+
+/* ---------- navigation ---------- */
+function selectSite(k, from) {
+  S.site = S.site === k ? null : k;
+  if (S.site && S.grp !== null && byKey[S.site].g !== S.grp) S.grp = byKey[S.site].g;
+  render();
+  if (S.site && from === 'list' && matchMedia('(max-width: 1020px)').matches) $('#insp').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function setGroup(g) { S.grp = S.grp === g ? null : g; if (S.site && S.grp !== null && byKey[S.site].g !== S.grp) S.site = null; render(); }
+function toggleKind(i) {
+  if (S.kinds.every(Boolean)) S.kinds = S.kinds.map((_, j) => j === i);
+  else { const next = S.kinds.slice(); next[i] = !next[i]; S.kinds = next.some(Boolean) ? next : next.map(() => true); }
+  render();
+}
+function syncSeg(id, v) { $$('#' + id + ' button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === String(v)))); }
+
+function renderBar() {
+  const c = [], cur = t => '<span class="cur">' + esc(t) + '</span>', one = S.site ? byKey[S.site] : null;
+  const g = one ? one.g : S.grp;
+  if (g === null) c.push('<span class="meta" data-tip="' + (D.live ? '正式庫是這個時間建的。頁面每分鐘檢查一次，庫換了會自己更新' : '這一頁是資料庫在這個時間的樣子，不會自己更新') + '">資料截至 ' + esc(D.built) + '</span>');
+  else {
+    c.push('<button data-go="all">全部網站</button><span class="sep">›</span>');
+    c.push(one ? '<button data-go="grp" data-g="' + g + '">' + esc(GROUPS[g]) + '</button><span class="sep">›</span>' + cur(one.n) : cur(GROUPS[g]));
+  }
+  $('#crumbs').innerHTML = c.join('');
+  const chips = [];
+  if (!S.kinds.every(Boolean)) chips.push('<button class="chip" data-x="kinds">' + esc(KN.filter((_, i) => S.kinds[i]).join('、')) + '<i>✕</i></button>');
+  if (S.link) chips.push('<button class="chip" data-x="link" data-tip="只統計這段時間內帶日期的文件；沒有日期的不算">' + dstr(Math.floor(S.win[0] / DAY)) + ' – ' + dstr(Math.ceil(S.win[1] / DAY) - 1) + '<i>✕</i></button>');
+  if (S.ck) chips.push('<button class="chip" data-x="ck" data-tip="只看品質提醒點到這一項的網站">' + esc(S.ck === 'spike' ? CK_SPIKE[0] : (CK[S.ck] || [S.ck])[0]) + '<i>✕</i></button>');
+  $('#chips').innerHTML = chips.join('');
+  syncSeg('segMetric', byChars() ? 'chars' : 'docs');
+  setBarH();
+}
+function setBarH() { document.documentElement.style.setProperty('--barh', $('#bar').offsetHeight + 'px'); }
+
+/* ---------- treemap, nested: unit > site > kind. A tile is a site and its area the amount; the blocks inside it are its
+   kinds of document, largest first, so the label always sits on the kind the site mostly consists of ---------- */
+const tm = { el: $('#tm'), tiles: new Map(), heads: [] };
+// the width of a name in em: CJK characters are one em wide, the rest a little over half
+const emW = t => { let w = 0; for (const ch of t) w += ch.charCodeAt(0) > 0x2e7f ? 1 : .58; return w; };
+// how many lines a tile's name gets: `per` characters fit a line, `room` lines fit the block, the name needs `need`;
+// 0 = no label (the hover card names the site). See the treemap's label code below for why.
+const labelLines = (per, room, need) => need <= 1 && per >= 1 && room >= 1 ? 1
+  : per >= 3 && need <= Math.min(room, per >= 8 ? 3 : 2) ? need : 0;
+function tmInit() {
+  S0.forEach(s => {
+    const el = document.createElement('div'); el.className = 'tile gone'; el.dataset.k = s.k;
+    const parts = KN.map((_, i) => { const p = document.createElement('i'); p.className = 'kr'; p.style.background = 'var(--k' + i + ')'; el.appendChild(p); return p; });
+    const lab = document.createElement('div'); lab.className = 'tlab';
+    const tn = document.createElement('span'); tn.className = 'tn'; tn.textContent = s.n;
+    const tv = document.createElement('span'); tv.className = 'tv';
+    lab.append(tn, tv); el.appendChild(lab); tm.el.appendChild(el);
+    tm.tiles.set(s.k, { el, lab, tn, tv, parts, em: emW(s.n) });
+  });
+  GROUPS.forEach((g, i) => { const h = document.createElement('button'); h.type = 'button'; h.className = 'ghead gone'; h.dataset.g = i; tm.el.appendChild(h); tm.heads.push(h); });
+  const empty = document.createElement('div'); empty.className = 'empty'; empty.hidden = true; empty.textContent = '目前篩選下沒有文件'; tm.el.appendChild(empty); tm.empty = empty;
+  tm.el.addEventListener('click', ev => {
+    hideTip();
+    const t = ev.target.closest('.tile'); if (t) { selectSite(t.dataset.k); return; }
+    const h = ev.target.closest('.ghead'); if (h) setGroup(+h.dataset.g);
+  });
+  tm.el.addEventListener('pointermove', ev => {
+    const t = ev.target.closest('.tile'); if (t) { showTip(siteTip(byKey[t.dataset.k]), ev, 'tm'); return; }
+    const h = ev.target.closest('.ghead'); if (h) showTip('<h4>' + esc(GROUPS[+h.dataset.g]) + '</h4><p>' + esc(D.groupTip[+h.dataset.g]) + '</p>', ev, 'tm'); else hideTip('tm');
+  });
+  tm.el.addEventListener('pointerleave', () => hideTip('tm'));
+}
+function renderMap() {
+  const W = tm.el.clientWidth, H = tm.el.clientHeight;
+  if (!W || !H) return;
+  // the night view (window.NM, the night layer) draws its own map in this one: only the sites a night changed or a
+  // problem named, one flat field, its own sizes, colours, labels and hover (owner 11-23: 「哪里出问题直接那个区块变黄色或者红色」)
+  const nightMap = !!(window.NM && S.lens === 'night'), zoomed = S.grp !== null || nightMap, lens = S.lens ? LENS[S.lens] : null, grand = grandTotal(), sd = zoomed ? 1 : 2;
+  let items = S0.filter(inGrp).map(s => { const p = partsNow(s); return { s, p, v: sel(p) }; }).filter(o => o.v > 0);
+  if (window.NM && S.lens === 'night') items = NM.items(S0.filter(inGrp));
+  $('#hMap').textContent = '各網站' + unitWord(); $('#hMapSub').textContent = S.grp !== null ? GROUPS[S.grp] : '';
+  $('#tmBack').hidden = S.grp === null;
+  tm.empty.hidden = items.length > 0;
+  tm.empty.textContent = window.NM && S.lens === 'night' ? '這一晚沒有網站有變動' : '目前篩選下沒有文件';
+  const seen = new Set(), heads = new Set();
+  if (items.length) {
+    // a night's tile is one block of its own size (NM.items: p = [v, 0, 0, 0, 0]): the kinds' filter is not the night's
+    // (?kind=N from 總覽's legend left every night tile without a block, and d3 then without children)
+    const node = o => ({ o, children: nightMap ? [{ i: 0, v: o.v }] : o.p.map((v, i) => ({ i, v: S.kinds[i] ? v : 0 })).filter(d => d.v > 0) });
+    const tree = zoomed ? { children: items.map(node) } : { children: GROUPS.map((_, g) => ({ g, children: items.filter(o => o.s.g === g).map(node) })).filter(n => n.children.length) };
+    const root = d3.hierarchy(tree).sum(d => d.v || 0).sort((a, b) => b.value - a.value);
+    d3.treemap().size([W, H]).round(true).tile(d3.treemapSquarify.ratio(1.3))
+      .paddingInner(n => n.depth === sd ? 1 : !zoomed && n.depth === 0 ? 14 : n.children.length > 24 ? 4 : 5)
+      .paddingTop(n => { n.head = !zoomed && n.depth === 1 && n.y1 - n.y0 >= 40 && n.x1 - n.x0 >= 48; return n.head ? 22 : 0; })(root);
+    if (!zoomed) for (const n of root.children) {
+      if (!n.head) continue;
+      const h = tm.heads[n.data.g]; heads.add(n.data.g);
+      h.style.left = n.x0 + 'px'; h.style.top = n.y0 + 'px'; h.style.width = Math.max(0, n.x1 - n.x0) + 'px';
+      const gp = window.NM && S.lens === 'night' ? NM.sum(n.value) : pct1(n.value, grand), fits = (emW(GROUPS[n.data.g]) + emW(gp) * .95) * 12 + 8 <= n.x1 - n.x0;
+      h.innerHTML = esc(GROUPS[n.data.g]) + (fits ? '<span>' + gp + '</span>' : '');
+    }
+    for (const n of zoomed ? root.children : root.children.flatMap(g => g.children)) {
+      if (!n.children) continue;  // a tile with no block to draw is left out (marked gone below), never a TypeError
+      const o = n.data.o, t = tm.tiles.get(o.s.k), w = n.x1 - n.x0, h = n.y1 - n.y0, st = t.el.style;
+      seen.add(o.s.k);
+      st.left = n.x0 + 'px'; st.top = n.y0 + 'px'; st.width = w + 'px'; st.height = h + 'px';
+      // the blocks: the site's kinds, placed by the same treemap; a tile too small for that shows its largest kind only
+      const kids = n.children, c0 = kids[0], tiny = Math.min(w, h) < 12, shown = new Set();
+      kids.forEach((c, j) => {
+        if (tiny && j) return;
+        const ps = t.parts[c.data.i].style; shown.add(c.data.i); ps.display = '';
+        ps.left = (tiny ? 0 : c.x0 - n.x0) + 'px'; ps.top = (tiny ? 0 : c.y0 - n.y0) + 'px';
+        ps.width = (tiny ? w : Math.max(0, c.x1 - c.x0)) + 'px'; ps.height = (tiny ? h : Math.max(0, c.y1 - c.y0)) + 'px';
+      });
+      t.parts.forEach((p, i) => { if (!shown.has(i)) p.style.display = 'none'; });
+      const q = lens ? lens.f(o.s) : null, step = q == null ? -1 : Math.min(5, Math.floor(q * 6));
+      t.el.classList.toggle('lens', !!lens);
+      if (lens) st.setProperty('--fill', step < 0 ? 'var(--qx)' : 'var(--q' + step + ')');
+      t.el.classList.toggle('inv', !!lens && step >= 4);
+      if (window.NM && S.lens === 'night') NM.tile(o.s, t.el, st);
+      t.el.classList.toggle('onw', !lens && c0.data.i === 0);
+      // the label sits on the largest block (on the whole tile under a lens). A name is printed only where it reads as a
+      // name: whole, on at most two lines (three on a tile wide enough for 8 characters a line), at least 3 characters a
+      // line, the lines balanced (.tn text-wrap). Any other tile is left to the hover card: no name squeezed one
+      // character a line, none cut to 「原住民…」. 【Claude】 redesign 2026-11-17 (research/dashboard_redesign_2026-11-17/
+      // diagnosis.md, 資料總覽 ②)
+      const whole = !!lens || tiny, bw = whole ? w : c0.x1 - c0.x0, bh = whole ? h : c0.y1 - c0.y0;
+      const big = bw >= 150 && bh >= 72, fs = big ? 13 : 11, lh = fs * 1.3, aw = bw - (big ? 15 : 10), ah = bh - (big ? 10 : 6);
+      const per = Math.floor(aw / fs + .08), room = Math.floor(ah / lh), need = per > 0 ? Math.ceil(t.em / per) : 99;
+      const lines = labelLines(per, room, need);
+      const vtxt = lens ? (q == null ? '' : lens.lab(o.s)) : pct1(o.v, grand);
+      const showV = lines > 0 && !!vtxt && (lines + 1) * lh <= ah && emW(vtxt) * fs <= aw;
+      t.lab.style.display = lines ? '' : 'none';
+      if (lines) {
+        t.lab.style.width = bw + 'px'; t.lab.style.height = bh + 'px';
+        t.tn.style.setProperty('--lc', lines);
+        t.tv.style.display = showV ? '' : 'none'; if (showV) t.tv.textContent = vtxt;
+      }
+      t.el.classList.toggle('big', big);
+      t.el.classList.toggle('md', Math.min(w, h) < 44 && Math.min(w, h) >= 22);
+      t.el.classList.toggle('sm', Math.min(w, h) < 22);
+      t.el.classList.toggle('sel', S.site === o.s.k);
+      t.el.classList.remove('gone');
+    }
+  }
+  tm.tiles.forEach((t, k) => { if (!seen.has(k)) t.el.classList.add('gone'); });
+  tm.heads.forEach((h, g) => h.classList.toggle('gone', !heads.has(g)));
+  // under the map: the key of what the colours mean now (the kinds, which also filter; or the scale of the measure)
+  const lg = $('#tmLegend');
+  if (lens) lg.innerHTML = '<span class="lens"><b>' + lens.name + '</b><span>' + lens.lo + '</span><span class="ramp">' +
+    [0, 1, 2, 3, 4, 5].map(i => '<i style="background:var(--q' + i + ')" data-tip="' + lens.bin(i) + '"></i>').join('') + '</span><span>' + lens.hi + '</span>' +
+    (items.some(o => lens.f(o.s) == null) ? '<span class="nil" data-tip="' + lens.nil + '"><i></i>無資料</span>' : '') + '</span>';
+  else lg.innerHTML = '<span class="kinds">' + KN.map((n, i) => '<button data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" data-tip="' + esc(KTIP[i]) + '"><span class="sw" style="background:var(--k' + i + ')"></span>' + n + '</button>').join('') + '</span>';
+  $('#keyRamp').innerHTML = [0, 1, 2, 3, 4, 5].map(i => '<i style="background:var(--q' + i + ')"></i>').join('');
+  syncSeg('segLens', S.lens);
+  if (window.NM) NM.after();  // the map redrawn alone (a resize) keeps the night's title and key
+  $$('#segLens button').forEach(b => { b.dataset.tip = S.lens === b.dataset.v ? '再點一次，回到按文件類型分色' : '整塊換成一種顏色：' + LENS[b.dataset.v].tip; });
+}
+
+/* ---------- inspector ---------- */
+let animate = false;
+const still = () => !animate || document.hidden || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+const arc = d3.arc().innerRadius(51).outerRadius(73).cornerRadius(3).padAngle(.018);
+const pie = d3.pie().sort(null).value(d => d.v);
+function drawDonut(parts) {
+  const paths = d3.select('#dnG').selectAll('path').data(pie(parts.map((v, i) => ({ v, i }))), d => d.data.i);
+  paths.enter().append('path').attr('fill', d => 'var(--k' + d.data.i + ')').each(function (d) { this._cur = { startAngle: d.startAngle, endAngle: d.startAngle, padAngle: 0 }; })
+    .on('click', (ev, d) => toggleKind(d.data.i))
+    .on('pointermove', (ev, d) => showTip('<div class="tr"><i style="background:var(--k' + d.data.i + ')"></i><b>' + fmtVal(d.data.v) + '</b><span>' + KN[d.data.i] + ' · ' + pct(d.data.v, sum(parts)) + '</span></div><p>' + esc(KTIP[d.data.i]) + '</p>', ev, 'dn'))
+    .on('pointerleave', () => hideTip('dn'))
+    .merge(paths).attr('opacity', d => S.kinds[d.data.i] ? 1 : .18)
+    .each(function (d) {
+      const sel = d3.select(this).interrupt();
+      if (still()) { this._cur = d; sel.attr('d', arc(d)); return; }
+      const i = d3.interpolate(this._cur, d); this._cur = d;
+      sel.transition().duration(420).attrTween('d', () => t => arc(i(t)));
+    });
+}
+function tweenNum(el, to, f) {
+  const from = +el.dataset.v || 0; el.dataset.v = to;
+  if (still()) { d3.select(el).interrupt(); el.textContent = f(to); return; }
+  d3.select(el).interrupt().transition().duration(420).tween('n', () => { const i = d3.interpolateNumber(from, to); return t => { el.textContent = f(i(t)); }; });
+}
+// ranked rows of [name, amount]; follows marks an amount of documents that the 文件數 / 字數 switch turns into characters
+function rankRows(list, max, follows) {
+  max = max || 8;
+  const f = follows && byChars() ? shortChars : fmt;
+  const top = list.slice(0, max), rest = list.slice(max), mx = Math.max(1, ...top.map(r => r[1]));
+  let h = top.map(r => '<div class="rk"><span data-tip="' + esc(r[0]) + '">' + esc(r[0]) + '</span><span class="bar"><i style="width:' + (100 * r[1] / mx) + '%"></i></span><b>' + f(r[1]) + '</b></div>').join('');
+  if (rest.length) h += '<div class="rk rest"><span>其餘 ' + rest.length + ' 項</span><span></span><b>' + f(sum(rest.map(r => r[1]))) + '</b></div>';
+  return h;
+}
+function merge(lists) {
+  const m = new Map();
+  lists.forEach(l => l.forEach(r => m.set(r[0], (m.get(r[0]) || 0) + r[1])));
+  return Array.from(m).filter(r => r[1] > 0).sort((a, b) => b[1] - a[1]);
+}
+function sec(title, body, right) {
+  return '<div class="sec"><h3>' + title + (right ? '<span class="sum">' + right + '</span>' : '') + '</h3>' + body + '</div>';
+}
+// a meter row: a name, how much of the whole, the figure (the same row form as the ranked lists)
+function meterRow(p, label, tip, fig) {
+  const txt = fig != null ? fig : p == null ? '—' : p === 0 ? '0%' : p < .01 ? '<1%' : Math.round(p * 100) + '%';
+  return '<div class="rk m' + (p >= .5 ? ' hot' : '') + '" data-tip="' + esc(tip) + '"><span>' + label + '</span><span class="bar">' + (p ? '<i style="width:' + Math.max(2, 100 * Math.min(1, p)) + '%"></i>' : '') + '</span><b>' + txt + '</b></div>';
+}
+// the reminders of the build's checks: for one site its own, each with its figure; for a scope how many sites have each,
+// the sites floating over it. Nothing when none is flagged (or the checks are of another build than the library on show)
+function ckFig(k, c) {
+  return k === 'self' ? c.se[0] + '/' + c.se[1] : k === 'empty' ? fmt(c.em[0]) + '/' + fmt(c.em[1]) + ' 頁'
+    : k === 'same_title' ? fmt(c.st) + ' 份' : k === 'same_opening' ? fmt(c.so[0]) + '/' + fmt(c.so[1]) + ' 頁'
+    : k === 'fragments' ? fmt(c.fr) + ' 份' : '';
+}
+const NEW_SUM = n => '<span data-tip="標了「新」的提醒：這次建庫才出現，上一次建庫時沒有">新出現 ' + n + ' 項</span>';
+// key: a scope's row is a filter (one site's own rows stay plain); pressed again, or its chip's ✕, it lets go
+function ckRow(name, tip, fig, isNew, key) {
+  return '<div class="ck' + (key ? ' ck-f' + (S.ck === key ? ' on' : '') + '" data-ck="' + key + '" role="button" tabindex="0" aria-pressed="' + (S.ck === key) : '') + '" data-tip="' + esc(tip) + '"><span>' + name + (isNew ? '<span class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' : '') + '</span><b>' + fig + '</b></div>';
+}
+function checkRows(one, sc) {
+  if (one) {
+    const c = one.ck;
+    if (!c) return null;
+    const rows = c.f.map(k => ckRow(CK[k][0], CK[k][1], ckFig(k, c), c.nw.includes(k)));
+    if (c.sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1], fmt(c.sp) + ' 份', false));
+    return [rows.join(''), c.nw.length ? NEW_SUM(c.nw.length) : ''];
+  }
+  const rows = [];
+  let fresh = 0;
+  for (const k of Object.keys(CK)) {
+    const hit = sc.filter(s => s.ck && s.ck.f.includes(k));
+    if (!hit.length) continue;
+    const isNew = hit.filter(s => s.ck.nw.includes(k)).length;
+    fresh += isNew;
+    rows.push(ckRow(CK[k][0], CK[k][1] + '：' + hit.slice(0, 6).map(s => s.f).join('、') + (hit.length > 6 ? ' 等' : ''), hit.length + ' 站', isNew, k));
+  }
+  // 檔案時間雷同 counts files, not sites: as a filter it keeps the sites that have such files (their number in its hover)
+  const sp = sum(sc.map(s => (s.ck && s.ck.sp) || 0));
+  if (sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1] + '（' + sc.filter(s => s.ck && s.ck.sp > 0).length + ' 站）', fmt(sp) + ' 份', false, 'spike'));
+  return rows.length ? [rows.join(''), fresh ? NEW_SUM(fresh) : ''] : null;
+}
+function renderInsp() {
+  const one = S.site ? byKey[S.site] : null, sc = scopeSites();
+  $('#iT').innerHTML = one ? esc(one.n) : esc(S.grp !== null ? GROUPS[S.grp] : '全部網站') + ' <small class="ih-n">' + sc.length + '</small>';
+  // a site's page opens on the reminder picked here (its 品質 tabs read ?ck=), and its way back brings the filter back
+  const go = $('#iGo'); go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k) + (S.ck ? '&ck=' + S.ck : '');
+  $('#iS').innerHTML = one
+    ? esc(GROUPS[one.g]) + ' · <a href="' + esc(one.url) + '" target="_blank" rel="noopener">' + esc(one.k) + ' ↗</a>' +
+      (one.imp ? '<span class="tag" data-tip="網站名單裡給它標的重要性">' + esc(one.imp) + '</span>' : '') + (/品保/.test(one.f) ? '<span class="tag" data-tip="' + QA + '">品保</span>' : '')
+    : '';
+  const parts = [0, 0, 0, 0, 0];
+  sc.forEach(s => partsNow(s).forEach((v, i) => { parts[i] += v; }));
+  const total = sel(parts);
+  drawDonut(parts);
+  const share = one || S.grp !== null ? '佔全部 ' + pct1(total, grandTotal()) : '';
+  const within = S.link ? ' · 所選時間內' : '';
+  if (byChars()) { tweenNum($('#dnV'), total, v => charsParts(v)[0]); $('#dnL').textContent = charsParts(total)[1] + (within || (share ? ' · ' + share : '')); }
+  else { tweenNum($('#dnV'), total, fmt); $('#dnL').textContent = within ? '份' + within : share || '份文件'; }
+  $('#kl').innerHTML = parts.map((v, i) => v > 0 || !S.kinds[i] ? '<li data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" style="--c:var(--k' + i + ')" role="button" tabindex="0" aria-pressed="' + S.kinds[i] + '" data-tip="' + esc(KTIP[i] + (EMBED ? '；點了到內容只看這一類' : '')) + '"><i></i><span>' + KN[i] + '</span><b>' + (byChars() ? shortChars(v) : fmt(v)) + '</b></li>' : '').join('');
+  syncSeg('segTab', S.tab);
+
+  const h = [];
+  if (one && one.note) h.push('<div class="note">' + esc(one.note) + '</div>');
+  const b = sum(sc.map(s => s.b)), ud = sum(sc.map(s => s.ud)), nt = sum(sc.map(s => s.nt));
+  const fm = [0, 1, 2, 3, 4].map(i => sum(sc.map(s => s.fm[i]))), att = sum(fm), ocr = fm[1] + fm[3];
+  const cp = [0, 1, 2, 3, 4, 5].map(j => sum(sc.map(s => s.cr.p[j]))), cf = [0, 1, 2, 3, 4, 5].map(j => sum(sc.map(s => s.cr.f[j]))), ci = sum(sc.map(s => s.cr.i[0]));
+  const both = cp.map((v, j) => v + cf[j]), miss = both[1] + both[3] + both[4] + both[5];
+  if (S.tab === 'sum') {
+    // the amount per year (documents or characters, as the switch says), with the date of the latest document
+    const ys = new Array(NY).fill(0), lasts = sc.map(s => s.last).filter(Boolean).sort(), last = lasts.length ? lasts[lasts.length - 1] : '';
+    sc.forEach(s => { const yv = yrOf(s); for (let k = 0; k < 4; k++) if (S.kinds[k]) for (let j = 0; j < NY; j++) ys[j] += yv[k][j]; });
+    const ymx = Math.max(...ys);
+    if (ymx > 0) {
+      const bw = 300 / NY;
+      h.push(sec(byChars() ? '各年字數' : '各年文件數', '<svg class="yr" viewBox="0 0 300 54" preserveAspectRatio="none" style="--yc:' + amountCol() + '">' + ys.map((v, j) => {
+        const bh = v ? Math.max(1.5, 50 * v / ymx) : 0;
+        return '<g data-tip="' + (j === 0 ? Y0 + ' 年及以前' : (Y0 + j) + ' 年') + '：' + amount(v) + '"><rect class="h" x="' + (j * bw) + '" y="0" width="' + bw + '" height="54"/><rect class="b" x="' + (j * bw + 1.5) + '" y="' + (54 - bh) + '" width="' + (bw - 3) + '" height="' + bh + '" rx="1.5"/></g>';
+      }).join('') + '</svg><div class="yr-x"><span>' + Y0 + '</span><span>' + Y1 + '</span></div>', last ? '<span data-tip="最新一份帶日期的公告、網頁或附件：' + ago(TODAY - dayOf(last)) + '">最新一份 ' + last + '</span>' : ''));
+    }
+    // shares of documents whatever the switch says: they are about documents (a document has a date or not)
+    h.push(sec('資料品質',
+      meterRow(b ? ud / b : null, one && ud ? '<a href="' + esc(TABLES + '/aca/site_undated_why?site=' + encodeURIComponent(one.k)) + '" target="_blank" rel="noopener">無日期 ↗</a>' : '無日期',
+        '公告、網頁、附件裡沒有日期的：' + fmt(ud) + ' 份' + (one && ud ? '；點「無日期」看每一份為什麼沒有日期' : '')) +
+      meterRow(both[0] + miss ? miss / (both[0] + miss) : null, '未取得', '網頁、附件和按鈕裡這一輪沒抓下來的：' + fmt(miss) + ' 個') +
+      (one ? meterRow(one.age == null ? null : Math.min(1, one.age / 1095), '更新時間', one.age == null ? '這個網站沒有帶日期的文件' : '最新一份帶日期的文件：' + one.last + '；條越長越久沒更新', one.age == null ? '—' : ago(one.age)) : '') +
+      meterRow(b ? nt / b : null, '無文字', '轉成文字後正文是空的（掃描圖沒認出字、空網頁等），只能靠標題找到：' + fmt(nt) + ' 份') +
+      meterRow(att ? ocr / att : null, 'OCR 認字', '附件裡是掃描檔或圖片、靠影像認字（OCR）轉出文字的，可能有錯字：' + fmt(ocr) + ' 份')));
+    const checks = checkRows(one, sc);
+    if (checks) h.push(sec('<span data-tip="每次建庫後自動檢查每個網站；只提醒，不擋建庫' + (D.checked ? '（' + esc(D.checked) + ' 那次）' : '') + '">品質提醒</span>', checks[0], checks[1]));
+  } else if (S.tab === 'what') {
+    // [name, documents, characters] from the data; the switch picks one
+    const pick = l => l.map(r => [r[0], byChars() ? r[2] : r[1]]);
+    const pk = merge(sc.map(s => pick(s.pk))), ct = merge(sc.map(s => pick(s.ct))), gr = merge(sc.map(s => pick(s.gr)));
+    const fmv = [0, 1, 2, 3, 4].map(i => sum(sc.map(s => (byChars() ? s.fmc : s.fm)[i])));
+    const n = l => l.length > 6 ? l.length + ' 種' : '';
+    if (att) h.push(sec('附件格式', rankRows(FMT.map((n, i) => [n, fmv[i]]).filter(r => r[1]).sort((x, y) => y[1] - x[1]), 8, true)));
+    if (pk.length) h.push(sec('網頁欄目', rankRows(pk, 6, true), n(pk)));
+    if (ct.length) h.push(sec('學校分類', rankRows(ct, 6, true), n(ct)));
+    if (gr.length) h.push(sec('發佈組別', rankRows(gr, 6, true), n(gr)));
+    if (!h.length) h.push('<div class="empty">這裡沒有更細的分類</div>');
+  } else {
+    // what the crawler fetched and what the build left out are counts of addresses and of pages, whatever the switch says
+    if (sum(both)) {
+      const order = [0, 1, 5, 3, 4, 2];
+      h.push(sec('抓取結果',
+        '<div class="stack">' + order.map(j => both[j] ? '<i class="' + OUTCLS[j] + '" style="flex-grow:' + both[j] + '" data-tip="' + OUTN[j] + '：' + fmt(both[j]) + ' 個"></i>' : '').join('') + '</div>' +
+        order.map(j => both[j] ? '<div class="rw" data-tip="' + (j ? OUTTIP[j] : '網頁 ' + fmt(cp[0]) + ' 個，附件 ' + fmt(cf[0]) + ' 個') + '"><i class="' + OUTCLS[j] + '"></i><span>' + OUTN[j] + '</span><b>' + fmt(both[j]) + '</b></div>' : '').join('') +
+        (ci ? '<div class="note">另外抓到圖片 ' + fmt(ci) + ' 張</div>' : ''), byChars() ? '網頁和附件，個數' : '網頁和附件'));
+    }
+    const ds = DSRC.map((_, i) => sum(sc.map(s => (byChars() ? s.dsc : s.ds)[i] || 0)));
+    if (sum(ds)) h.push(sec('日期從哪來', rankRows(DSRC.map((n, i) => [n, ds[i]]).filter(r => r[1]).sort((x, y) => y[1] - x[1]), 8, true)));
+    if (!one && S.grp === null) h.push(sec('抓到但沒收進庫', rankRows(D.excluded), byChars() ? '份數' : ''));
+    if (!h.length) h.push('<div class="empty">沒有抓取紀錄</div>');
+  }
+  $('#iSecs').innerHTML = h.join('');
+}
+
+/* ---------- dates: series ---------- */
+const GRID = {};
+(function () {
+  GRID.D = { n: AX1 - AX0 + 1, start: i => AX0 + i, idx: d => d - AX0 };
+  const mon0 = AX0 - ((new Date(AX0 * DAY).getUTCDay() + 6) % 7);
+  GRID.W = { n: Math.floor((AX1 - mon0) / 7) + 1, start: i => mon0 + 7 * i, idx: d => Math.floor((d - mon0) / 7) };
+  const a = new Date(AX0 * DAY), y0 = a.getUTCFullYear(), m0 = a.getUTCMonth(), z = new Date(AX1 * DAY);
+  GRID.M = { n: (z.getUTCFullYear() - y0) * 12 + z.getUTCMonth() - m0 + 1, start: i => Date.UTC(y0, m0 + i, 1) / DAY,
+    idx: d => { const t = new Date(d * DAY); return (t.getUTCFullYear() - y0) * 12 + t.getUTCMonth() - m0; } };
+})();
+const LVN = { D: '按天', W: '按週', M: '按月' };
+const serCache = new Map();
+// per kind and per bucket: v the documents, c their characters; val() is the one the 文件數 / 字數 switch asks for
+function series(lv) {
+  const key = scopeKey() + '|' + lv; let s = serCache.get(key);
+  if (!s) {
+    const g = GRID[lv], v = [0, 1, 2, 3].map(() => new Float64Array(g.n)), c = [0, 1, 2, 3].map(() => new Float64Array(g.n));
+    for (const site of scopeSites()) for (const r of site.rows) {
+      const i = g.idx(r[0]); if (i < 0 || i >= g.n) continue;
+      for (let k = 0; k < 4; k++) { v[k][i] += r[k + 1]; c[k][i] += r[k + 1 + CH]; }
+    }
+    s = { v, c }; serCache.set(key, s);
+    if (serCache.size > 60) serCache.delete(serCache.keys().next().value);
+  }
+  return s;
+}
+const val = ser => byChars() ? ser.c : ser.v;
+// an axis figure: 1,500 份, or 12萬 / 1.2億 字
+const axisFmt = d => {
+  if (!byChars()) return d >= 10000 ? d / 1000 + 'K' : fmt(d);
+  const [n, u] = d >= 1e8 ? [d / 1e8, '億'] : d >= 1e4 ? [d / 1e4, '萬'] : [d, ''];
+  return (Number.isInteger(n) ? fmt(n) : +n.toFixed(2)) + u;
+};
+const kindsOn = () => [0, 1, 2, 3].filter(k => S.kinds[k]);
+function bucketLabel(day, lv) {
+  const d = new Date(day * DAY);
+  if (lv === 'M') return d.getUTCFullYear() + ' 年 ' + (d.getUTCMonth() + 1) + ' 月';
+  return lv === 'W' ? dstr(day) + ' 起一週' : dstr(day) + ' 週' + '日一二三四五六'[d.getUTCDay()];
+}
+
+/* ---------- dates: stock-style chart ---------- */
+const tc = { svg: d3.select('#tc'), nav: d3.select('#nav'), W: 0, H: 250, NH: 44, m: { t: 16, r: 14, b: 22, l: 44 }, hover: null, brushing: false };
+let zoom, brush, linkTimer = null;
+function tcInit() {
+  const s = tc.svg;
+  s.append('defs').append('clipPath').attr('id', 'tcClip').append('rect');
+  tc.future = s.append('rect').attr('class', 'future');
+  tc.gy = s.append('g').attr('class', 'gy'); tc.gx = s.append('g').attr('class', 'gx');
+  tc.plot = s.append('g').attr('clip-path', 'url(#tcClip)');
+  tc.band = tc.plot.append('rect').style('fill', 'var(--hover)').style('display', 'none');
+  tc.area = tc.plot.append('path').attr('class', 'area'); tc.lines = tc.plot.append('g');
+  tc.today = s.append('g').attr('class', 'today'); tc.today.append('line'); tc.today.append('text').attr('text-anchor', 'middle').text('今天');
+  tc.cross = s.append('g').attr('class', 'cross').style('display', 'none'); tc.cross.append('line');
+  tc.ov = s.append('rect').attr('class', 'ov');
+  zoom = d3.zoom().filter(ev => !ev.button && (ev.type !== 'wheel' || ev.ctrlKey || ev.metaKey)).on('zoom', ev => {
+    S.win = ev.transform.rescaleX(tc.x0).domain().map(Number);
+    if (ev.sourceEvent) { S.range = 'custom'; syncSeg('segRange', S.range); }
+    drawLine(); syncBrush();
+    if (S.link) { clearTimeout(linkTimer); linkTimer = setTimeout(() => { renderBar(); renderMap(); renderInsp(); renderList(); }, 140); }
+  });
+  tc.ov.call(zoom).on('pointermove', ev => { tc.hover = d3.pointer(ev, tc.svg.node())[0]; drawCross(); })
+    .on('pointerleave', () => { tc.hover = null; drawCross(); });
+  tc.navArea = tc.nav.append('path').attr('class', 'nav-area'); tc.nx = tc.nav.append('g').attr('class', 'nx');
+  tc.gb = tc.nav.append('g').attr('class', 'brush');
+  brush = d3.brushX().handleSize(8)
+    .on('start', ev => { if (ev.sourceEvent) tc.brushing = true; })
+    .on('brush', ev => { if (!ev.sourceEvent || !ev.selection) return; S.range = 'custom'; syncSeg('segRange', S.range); const w = ev.selection.map(v => +tc.xn.invert(v)); setWindow(w[0], w[1], 0); })
+    .on('end', ev => { if (!ev.sourceEvent) return; tc.brushing = false; syncBrush(); });
+}
+function tcSize() {
+  const W = $('#tc').clientWidth; if (!W) return;
+  tc.W = W; const m = tc.m, lo = AX0 * DAY, hi = (AX1 + 1) * DAY;
+  tc.svg.attr('viewBox', '0 0 ' + W + ' ' + tc.H); tc.nav.attr('viewBox', '0 0 ' + W + ' ' + tc.NH);
+  tc.x0 = d3.scaleUtc().domain([lo, hi]).range([m.l, W - m.r]); tc.xn = tc.x0.copy();
+  tc.svg.select('#tcClip rect').attr('x', m.l).attr('y', 0).attr('width', W - m.l - m.r).attr('height', tc.H - m.b + 1);
+  tc.ov.attr('x', m.l).attr('y', 0).attr('width', W - m.l - m.r).attr('height', tc.H - m.b);
+  const ext = [[m.l, 0], [W - m.r, tc.H]];
+  zoom.extent(ext).translateExtent(ext).scaleExtent([1, (hi - lo) / (14 * DAY)]);
+  brush.extent([[m.l, 1], [W - m.r, tc.NH - 16]]); tc.gb.call(brush);
+  const yrs = d3.utcYear.every(W < 520 ? 10 : 5).range(new Date(lo), new Date(hi));
+  tc.nx.selectAll('text').data(yrs).join('text').attr('x', d => tc.xn(d)).attr('y', tc.NH - 3).attr('text-anchor', 'middle').text(d => d.getUTCFullYear());
+  setWindow(S.win[0], S.win[1], 0);
+}
+function setWindow(a, b, ms) {
+  const lo = AX0 * DAY, hi = (AX1 + 1) * DAY, min = 14 * DAY;
+  if (b - a < min) { const c = (a + b) / 2; a = c - min / 2; b = c + min / 2; }
+  if (a < lo) { b += lo - a; a = lo; } if (b > hi) { a -= b - hi; b = hi; } a = Math.max(lo, a);
+  const k = (hi - lo) / (b - a), t = d3.zoomIdentity.translate(tc.m.l - k * tc.x0(a), 0).scale(k);
+  (ms ? tc.ov.transition().duration(ms) : tc.ov).call(zoom.transform, t);
+}
+function rangeWin(r) {
+  const end = (TODAY + 1) * DAY, back = { '1m': 31, '3m': 92, '1y': 366, '3y': 1096 }[r];
+  return back ? [end - back * DAY, end] : [AX0 * DAY, (AX1 + 1) * DAY];
+}
+function syncBrush() { if (!tc.brushing && tc.xn) tc.gb.call(brush.move, S.win.map(tc.xn)); }
+function tickFmt(d) {
+  if (+d3.utcYear.floor(d) === +d) return String(d.getUTCFullYear());
+  if (+d3.utcMonth.floor(d) === +d) return (d.getUTCMonth() + 1) + '月';
+  return (d.getUTCMonth() + 1) + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+function drawLine() {
+  if (!tc.W) return;
+  const m = tc.m, W = tc.W, H = tc.H, w0 = S.win[0], w1 = S.win[1], span = (w1 - w0) / DAY;
+  const lv = span <= 124 ? 'D' : span <= 800 ? 'W' : 'M', g = GRID[lv], sv = val(series(lv)), ks = kindsOn();
+  const x = d3.scaleUtc().domain([w0, w1]).range([m.l, W - m.r]);
+  const i0 = Math.max(0, g.idx(Math.floor(w0 / DAY)) - 1), i1 = Math.min(g.n - 1, g.idx(Math.ceil(w1 / DAY)) + 1);
+  const pts = []; let ymax = 1;
+  for (let i = i0; i <= i1; i++) {
+    const t0 = g.start(i) * DAY, t1 = g.start(i + 1) * DAY, vs = [0, 1, 2, 3].map(k => sv[k][i]), tot = sum(ks.map(k => vs[k]));
+    pts.push({ i, t0, t1, tm: (t0 + t1) / 2, vs, tot });
+    ymax = Math.max(ymax, S.split ? Math.max(0, ...ks.map(k => vs[k])) : tot);
+  }
+  const y = d3.scaleLinear().domain([0, ymax]).nice(4).range([H - m.b, m.t]);
+  Object.assign(tc, { x, y, pts, lv });
+  const yt = y.ticks(4);
+  tc.gy.selectAll('line').data(yt).join('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', d => y(d) + .5).attr('y2', d => y(d) + .5);
+  tc.gy.selectAll('text').data(yt).join('text').attr('x', m.l - 8).attr('y', d => y(d) + 4).attr('text-anchor', 'end').text(axisFmt);
+  const xt = x.ticks(Math.max(3, Math.floor((W - m.l - m.r) / 88)));
+  tc.gx.selectAll('text').data(xt).join('text').attr('x', d => x(d)).attr('y', H - 5).attr('text-anchor', 'middle').text(tickFmt);
+  const curve = lv === 'D' ? d3.curveLinear : d3.curveMonotoneX;
+  const one = !S.split, col = amountCol();
+  const lines = one ? [{ c: col, f: p => p.tot }] : ks.map(k => ({ c: 'var(--k' + k + ')', f: p => p.vs[k] }));
+  tc.lines.selectAll('path').data(lines).join('path').attr('class', 'ln').style('stroke', d => d.c)
+    .attr('d', d => d3.line().x(p => x(p.tm)).y(p => y(d.f(p))).curve(curve)(pts));
+  tc.area.style('display', one ? '' : 'none').style('fill', col).attr('d', one ? d3.area().x(p => x(p.tm)).y0(y(0)).y1(p => y(p.tot)).curve(curve)(pts) : null);
+  const xt0 = x(TODAY * DAY), xt1 = x((TODAY + 1) * DAY), inx = v => v >= m.l && v <= W - m.r;
+  tc.today.style('display', inx(xt0) ? '' : 'none');
+  tc.today.select('line').attr('x1', xt0 + .5).attr('x2', xt0 + .5).attr('y1', m.t - 2).attr('y2', H - m.b);
+  tc.today.select('text').attr('x', Math.min(W - m.r - 12, Math.max(m.l + 12, xt0))).attr('y', m.t - 5);
+  const fx = Math.max(m.l, Math.min(W - m.r, xt1));
+  tc.future.attr('x', fx).attr('y', m.t).attr('width', Math.max(0, W - m.r - fx)).attr('height', H - m.b - m.t);
+  const sm = val(series('M')), gm = GRID.M, tot = new Array(gm.n).fill(0); let nmax = 1;
+  for (let i = 0; i < gm.n; i++) { for (const k of ks) tot[i] += sm[k][i]; nmax = Math.max(nmax, tot[i]); }
+  const yn = d3.scaleLinear().domain([0, nmax]).range([tc.NH - 16, 3]);
+  tc.navArea.style('--navc', col).attr('d', d3.area().x((d, i) => tc.xn((gm.start(i) + 15) * DAY)).y0(tc.NH - 16).y1(d => yn(d)).curve(d3.curveMonotoneX)(tot));
+  tc.nx.style('opacity', span >= (AX1 - AX0) * 0.85 ? 0 : 1);
+  drawCross();
+}
+function drawCross() {
+  const p = tc.hover == null || !tc.pts ? null : tc.pts.find(q => tc.x(q.t0) <= tc.hover && tc.hover < tc.x(q.t1));
+  tc.cross.style('display', p ? '' : 'none'); tc.band.style('display', p ? '' : 'none');
+  const ks = kindsOn();
+  if (p) {
+    const cx = tc.x(p.tm), m = tc.m;
+    tc.cross.select('line').attr('x1', cx + .5).attr('x2', cx + .5).attr('y1', m.t).attr('y2', tc.H - m.b);
+    tc.band.attr('x', tc.x(p.t0)).attr('width', Math.max(1, tc.x(p.t1) - tc.x(p.t0))).attr('y', m.t).attr('height', tc.H - m.b - m.t);
+    const dots = S.split ? ks.map(k => ({ c: 'var(--k' + k + ')', v: p.vs[k] })) : [{ c: amountCol(), v: p.tot }];
+    tc.cross.selectAll('circle').data(dots).join('circle').attr('r', 4.5).attr('cx', cx).attr('cy', d => tc.y(d.v)).style('fill', d => d.c);
+  }
+  readout(p);
+}
+function readout(p) {
+  let vs, label;
+  if (S.view === 'line' && p) { vs = p.vs; label = bucketLabel(Math.round(p.t0 / DAY), tc.lv); }
+  else {
+    const sd = val(series('D')), cal = S.view === 'cal';
+    const a = Math.max(AX0, cal ? Date.UTC(S.calYear, 0, 1) / DAY : Math.floor(S.win[0] / DAY)), z = Math.min(AX1, cal ? Date.UTC(S.calYear, 11, 31) / DAY : Math.ceil(S.win[1] / DAY) - 1);
+    vs = [0, 1, 2, 3].map(k => { let t = 0; for (let d = a; d <= z; d++) t += sd[k][d - AX0]; return t; });
+    label = cal ? S.calYear + ' 年' : dstr(a).slice(0, 7) + ' – ' + dstr(z).slice(0, 7) + ' · ' + LVN[tc.lv || 'M'];
+  }
+  const tot = sum(kindsOn().map(k => vs[k])), parts = byChars() ? charsParts(tot) : [fmt(tot), '份'];
+  $('#roV').textContent = parts[0]; $('#roU').textContent = parts[1]; $('#roL').textContent = label;
+  const box = $('#roK'); box.hidden = !(S.split && S.view === 'line');
+  if (!box.children.length) box.innerHTML = [0, 1, 2, 3].map(k => '<button type="button" data-k="' + k + '" data-tip="' + esc(KTIP[k]) + '"><i style="background:var(--k' + k + ')"></i>' + KN[k] + '<b></b></button>').join('');
+  $$('button', box).forEach((bt, k) => { bt.classList.toggle('off', !S.kinds[k]); bt.lastChild.textContent = byChars() ? shortChars(vs[k]) : fmt(vs[k]); });
+}
+
+/* ---------- dates: calendar ---------- */
+function calYears() {
+  const sd = series('D'), ks = kindsOn(); let lo = null;
+  for (let i = 0; i < GRID.D.n && lo === null; i++) for (const k of ks) if (sd.v[k][i]) { lo = i; break; }
+  return [lo === null ? S.calYear : new Date((AX0 + lo) * DAY).getUTCFullYear(), new Date(AX1 * DAY).getUTCFullYear()];
+}
+function drawCal() {
+  const yrs = calYears(); S.calYear = Math.min(yrs[1], Math.max(yrs[0], S.calYear));
+  const y = S.calYear, sdoc = series('D').v, sd = val(series('D')), ks = kindsOn(), first = Date.UTC(y, 0, 1) / DAY, last = Date.UTC(y, 11, 31) / DAY;
+  $('#calY').textContent = y; $('#calPrev').disabled = y <= yrs[0]; $('#calNext').disabled = y >= yrs[1];
+  const cells = [], nz = [];
+  for (let d = first; d <= last; d++) { const i = d - AX0; let v = 0; if (i >= 0 && i < GRID.D.n) for (const k of ks) v += sd[k][i]; cells.push({ d, v }); if (v) nz.push(v); }
+  nz.sort(d3.ascending);
+  const th = [.3, .55, .78, .93].map(q => nz.length ? d3.quantileSorted(nz, q) : 0), lvl = v => v === 0 ? 0 : 1 + th.filter(t => v > t).length;
+  const W = $('.cal-w').clientWidth || 700, c = Math.max(9, Math.min(15, Math.floor((W - 26) / 54) - 2)), st = c + 2, L = 24, T = 16;
+  const y0 = new Date(Date.UTC(y, 0, 1)), wk = d => d3.utcMonday.count(y0, new Date(d * DAY)), row = d => (new Date(d * DAY).getUTCDay() + 6) % 7;
+  if (S.calDay == null || S.calDay < first || S.calDay > last) { const c2 = cells.filter(q => q.v && q.d <= TODAY); S.calDay = c2.length ? c2[c2.length - 1].d : null; }
+  // all the kinds together: the five steps of the violet ramp, as the map's lenses; one kind: its hue, lighter for fewer
+  const col = amountCol(), ramp = col === AMT;
+  const svg = d3.select('#cal').attr('width', L + 54 * st).attr('height', T + 7 * st + 2).style('--calc', col); $('.cal-h .lg').style.setProperty('--calc', col);
+  $('#calDay').style.setProperty('--calc', col);
+  const OP = [0, .18, .36, .56, .78, 1];
+  $$('.cal-h .lg i').forEach((el, j) => { el.style.background = ramp ? 'var(--q' + (j + 1) + ')' : ''; el.style.opacity = ramp ? '' : OP[j + 1]; });
+  svg.selectAll('rect').data(cells, q => q.d).join('rect').attr('width', c).attr('height', c).attr('x', q => L + wk(q.d) * st).attr('y', q => T + row(q.d) * st)
+    .attr('class', q => (q.v ? 'v' : 'z') + (q.d === S.calDay ? ' on' : '') + (q.d === TODAY ? ' td' : ''))
+    .style('fill', q => q.v && ramp ? 'var(--q' + lvl(q.v) + ')' : null).style('fill-opacity', q => q.v && !ramp ? OP[lvl(q.v)] : null)
+    .on('pointermove', (ev, q) => {
+      const i = q.d - AX0, docs = i >= 0 && i < GRID.D.n ? sum(ks.map(k => sdoc[k][i])) : 0;
+      showTip('<h4>' + bucketLabel(q.d, 'D') + '</h4>' + (q.v ? ks.map(k => sd[k][i] ? '<div class="tr"><i style="background:var(--k' + k + ')"></i><b>' + (byChars() ? fmtChars(sd[k][i]) : fmt(sd[k][i])) + '</b><span>' + KN[k] + '</span></div>' : '').join('')
+        : docs ? '<p>這天的 ' + fmt(docs) + ' 份文件都沒讀到字</p>' : '<p>沒有文件</p>'), ev, 'cal');
+    }).on('pointerleave', () => hideTip('cal')).on('click', (ev, q) => { S.calDay = q.d; drawCal(); });
+  const months = d3.range(12).map(mo => ({ mo, d: Date.UTC(y, mo, 1) / DAY }));
+  svg.selectAll('text.mo').data(months).join('text').attr('class', 'mo').attr('x', q => L + wk(q.d + (7 - row(q.d)) % 7) * st).attr('y', 10).text(q => (q.mo + 1) + '月');
+  svg.selectAll('text.wd').data([[0, '一'], [2, '三'], [4, '五'], [6, '日']]).join('text').attr('class', 'wd').attr('x', 2).attr('y', q => T + q[0] * st + c - 2).text(q => q[1]);
+  const box = $('#calDay');
+  if (S.calDay == null) { box.innerHTML = ''; readout(null); return; }
+  const list = [];
+  for (const s of scopeSites()) {
+    const rows = s.rows; let lo = 0, hi = rows.length;
+    while (lo < hi) { const mm = (lo + hi) >> 1; if (rows[mm][0] < S.calDay) lo = mm + 1; else hi = mm; }
+    const off = byChars() ? CH : 0;
+    if (lo < rows.length && rows[lo][0] === S.calDay) { const v = sum(ks.map(k => rows[lo][k + 1 + off])); if (v) list.push([s, v]); }
+  }
+  list.sort((a, b) => b[1] - a[1]);
+  const tot = sum(list.map(r => r[1])), top = list.slice(0, 8), mx = Math.max(1, ...top.map(r => r[1]));
+  const one = v => byChars() ? shortChars(v) : fmt(v);
+  box.innerHTML = '<h3>' + bucketLabel(S.calDay, 'D') + ' · ' + amount(tot) + '</h3>' +
+    top.map(r => '<button type="button" data-k="' + esc(r[0].k) + '"><span>' + esc(r[0].n) + '</span><span class="bar"><i style="width:' + (100 * r[1] / mx) + '%"></i></span><b>' + one(r[1]) + '</b></button>').join('') +
+    (list.length > 8 ? '<div class="note">其餘 ' + (list.length - 8) + ' 個網站 ' + amount(tot - sum(top.map(r => r[1]))) + '</div>' : '');
+  readout(null);
+}
+function renderTime() {
+  $('#vLine').hidden = S.view !== 'line'; $('#vCal').hidden = S.view !== 'cal';
+  syncSeg('segView', S.view); syncSeg('segRange', S.range); syncSeg('segSplit', S.split ? 1 : 0);
+  $('#segRange').style.display = S.view === 'cal' ? 'none' : ''; $('#segSplit').style.display = S.view === 'line' ? '' : 'none';
+  $('#btnLink').setAttribute('aria-pressed', String(S.link));
+  if (S.view === 'line') { if (!tc.W) tcSize(); else drawLine(); } else drawCal();
+  const sc = scopeSites(), undated = sum(sc.map(s => sum([0, 1, 2].map(k => S.kinds[k] ? (byChars() ? s.uc : s.u3)[k] : 0)))), fut = S.kinds[3] ? sum(sc.map(s => s.fut)) : 0, miss = [];
+  if (undated) miss.push('無日期 ' + amount(undated));
+  if (fut) miss.push(fmt(fut) + ' 條行事曆排在 ' + (new Date(AX1 * DAY).getUTCFullYear() + 1) + ' 年以後');
+  $('#tNote').textContent = miss.join(' · ');
+}
+
+/* ---------- list: one row per site; amounts as neutral bars, kinds as a thin segmented bar ---------- */
+const COLS = [
+  { k: 'group', t: '網站', tip: '點一下回到按單位分組' },
+  { k: 'mix', t: '類型' },
+  { k: 'yr', t: '各年', tip: Y0 + ' 年及以前到 ' + Y1 + ' 年，每年的文件數（切到字數就是字數），每個網站按自己最多的一年畫滿' },
+  { k: 'v', t: null, r: true },
+  { k: 'ud', t: '無日期', r: true, tip: '公告、網頁、附件裡沒有日期的份數，按份數排（佔多少比例滑過去看）' },
+  { k: 'miss', t: '未取得', r: true, tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例；學校已刪除的不算' },
+  { k: 'last', t: '更新時間', r: true, tip: '最新一份帶日期的文件是多久以前的；灰色的是一年以上沒更新' },
+];
+function spark(list) {
+  const ys = new Array(NY).fill(0);
+  for (const s of list) { const yv = yrOf(s); for (let k = 0; k < 4; k++) if (S.kinds[k]) for (let j = 0; j < NY; j++) ys[j] += yv[k][j]; }
+  const mx = Math.max(...ys); if (!mx) return '<span class="na">—</span>';
+  return '<svg class="sp" width="' + (NY * 6) + '" height="18" viewBox="0 0 ' + (NY * 6) + ' 18" aria-hidden="true">' + ys.map((v, j) => { const h = v ? Math.max(1.5, 17 * v / mx) : 0; return h ? '<rect x="' + (j * 6) + '" y="' + (18 - h) + '" width="4.6" height="' + h + '" rx="1"/>' : ''; }).join('') + '</svg>';
+}
+// The measure the map is coloured by sorts the list, worst first; turning it off goes back to the grouping (owner 11-15).
+const LENS_COL = { ud: 'ud', miss: 'miss', old: 'last' };
+let listSeen = null;
+
+/* ---------- live: the page asks the lab PC every minute and reloads when the data changed, keeping the view ---------- */
+const VIEW_KEY = 'nknu-overview-view' + (EMBED ? '-embed' : '');  // 總覽's frame keeps its own, in the same tab
+function saveView() {
+  try {
+    sessionStorage.setItem(VIEW_KEY, JSON.stringify({ t: Date.now(), y: scrollY,
+      s: Object.assign({}, S, { unfold: Array.from(S.unfold), gopen: Array.from(S.gopen) }) }));
+  } catch (e) { /* no storage: the reload starts from the default view */ }
+}
+function takeView() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(VIEW_KEY) || 'null');
+    sessionStorage.removeItem(VIEW_KEY);
+    return v && Date.now() - v.t < 600000 ? v : null;
+  } catch (e) { return null; }
+}
+// put a saved view back, keeping only what still makes sense with the new data
+function restoreView(v) {
+  const one = (x, list) => list.indexOf(x) >= 0;
+  if (v.grp === null || (Number.isInteger(v.grp) && v.grp >= 0 && v.grp < GROUPS.length)) S.grp = v.grp;
+  S.site = v.site && byKey[v.site] ? v.site : null;
+  if (Array.isArray(v.kinds) && v.kinds.length === 5 && v.kinds.some(Boolean)) S.kinds = v.kinds.map(Boolean);
+  if (one(v.metric, ['docs', 'chars'])) S.metric = v.metric;
+  S.lens = v.lens && LENS[v.lens] ? v.lens : null;
+  S.ck = ckKey(v.ck);
+  if (one(v.list, ['got', 'later'])) S.list = v.list;
+  S.unfold = new Set((v.unfold || []).filter(k => byKey[k]));
+  S.gopen = new Set((v.gopen || []).filter(g => Number.isInteger(g) && g >= 0 && g < GROUPS.length));
+  if (one(v.sort, COLS.map(c => c.k))) S.sort = v.sort;
+  if (v.dir === 1 || v.dir === -1) S.dir = v.dir;
+  if (one(v.tab, ['sum', 'what', 'crawl'])) S.tab = v.tab;
+  if (Array.isArray(v.win) && v.win.length === 2 && v.win.every(Number.isFinite)) S.win = v.win;
+  if (typeof v.range === 'string') S.range = v.range;
+  S.link = !!v.link; S.split = !!v.split;
+  if (one(v.view, ['line', 'cal'])) S.view = v.view;
+  if (Number.isInteger(v.calYear)) S.calYear = v.calYear;
+  S.calDay = Number.isInteger(v.calDay) ? v.calDay : null;
+  listSeen = S.site;
+}
+function setLive(text, tip) {
+  const el = $('#live');
+  el.hidden = !text; el.textContent = text || '';
+  if (tip) el.dataset.tip = tip; else delete el.dataset.tip;
+}
+function watchLive() {
+  let pending = false;
+  const check = () => fetch(LINKS.stamp || 'stamp', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+    .then(j => {
+      setLive(j.state === 'error' ? '更新失敗' : '', j.state === 'error' ? j.error + '。顯示的是上一次的資料' : '');
+      if (j.stamp && j.stamp !== D.stamp) {
+        pending = true;
+        if (!document.hidden) { saveView(); location.reload(); }
+      }
+    })
+    .catch(() => setLive('連不上實驗室電腦', '檢查一下 SSH 通道還開著沒有。顯示的是上一次的資料'));
+  setInterval(check, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (pending) { saveView(); location.reload(); } else check();
+  });
+}
+// one set of figures for a row: a site, or a unit summed over its sites
+function figs(list, v, p) {
+  const b = sum(list.map(s => s.b)), ud = sum(list.map(s => s.ud)), got = sum(list.map(s => s.got)), miss = sum(list.map(s => s.miss));
+  const ages = list.map(s => s.age).filter(a => a != null), lasts = list.map(s => s.last).filter(Boolean).sort();
+  const why = [1, 5, 3, 4].map(j => { const n = sum(list.map(s => s.cr.p[j] + s.cr.f[j])); return n ? OUTN[j] + ' ' + fmt(n) : ''; }).filter(Boolean).join('，');
+  return { list, v, p, b, ud, got, miss, why, age: ages.length ? Math.min(...ages) : null, last: lasts.length ? lasts[lasts.length - 1] : '' };
+}
+// a ratio as a plain figure, bold from one half up (the list carries no bars beside its numbers: owner 11-15)
+const ratio = (p, txt, tip) => p == null ? '<span class="na">—</span>' : '<span class="pc' + (p >= .5 ? ' hot' : '') + '" data-tip="' + esc(tip) + '">' + txt + '</span>';
+function cells(a, grand, hl) {
+  const c = k => 'c-' + k + (k === hl ? ' hl' : '');
+  const fresh = a.age == null ? '<span class="na">—</span>' : '<span class="pc' + (a.age > 365 ? ' old' : '') + '" data-tip="最新一份帶日期的文件：' + a.last + '">' + ago(a.age) + '</span>';
+  return '<td class="' + c('mix') + '">' + (a.v ? mixBar(a.p) : '<span class="na">—</span>') + '</td><td class="' + c('yr') + '">' + spark(a.list) + '</td>' +
+    '<td class="' + c('v') + ' r" data-tip="佔全部 ' + pct1(a.v, grand) + '">' + fmtVal(a.v) + '</td>' +
+    // owner 11-17: 「我想看资料中没日期的文件数来排名网站…目前资料总览好像只能用百分比来排名」: the count shows and sorts,
+    // its share floats; bold from one half up as before
+    '<td class="' + c('ud') + ' r">' + ratio(a.b ? a.ud / a.b : null, fmt(a.ud), '沒有日期的 ' + fmt(a.ud) + ' 份，佔公告、網頁、附件的 ' + pct(a.ud, a.b)) + '</td>' +
+    '<td class="' + c('miss') + ' r">' + ratio(a.got + a.miss ? a.miss / (a.got + a.miss) : null, pct(a.miss, a.miss + a.got), a.why || '都抓到了') + '</td><td class="' + c('last') + ' r">' + fresh + '</td>';
+}
+function renderList() {
+  $('#nGot').textContent = S0.filter(inGrp).length; $('#nLater').textContent = D.later.length;
+  $('#tbl').style.setProperty('--spc', amountCol());
+  syncSeg('segList', S.list);
+  $('#tw').hidden = S.list !== 'got'; $('#later').hidden = S.list !== 'later';
+  if (S.list !== 'got') return;
+  let rows = S0.filter(inGrp).map(s => { const p = partsNow(s); return { s, p, v: sel(p) }; });
+  if (S.link) rows = rows.filter(r => r.v > 0);
+  // a 品保 site goes under its department when the department is in the list, and stands on its own otherwise
+  const shown = new Set(rows.map(r => r.s.k)), kidsOf = new Map();
+  rows.forEach(r => { if (r.s.par && shown.has(r.s.par)) { if (!kidsOf.has(r.s.par)) kidsOf.set(r.s.par, []); kidsOf.get(r.s.par).push(r); } });
+  kidsOf.forEach(l => l.sort((a, b) => b.v - a.v));
+  const top = rows.filter(r => !(r.s.par && shown.has(r.s.par)));
+  // a site picked elsewhere (map, search) opens its unit and its department once, so it can be folded again by hand
+  if (S.site && S.site !== listSeen) {
+    listSeen = S.site; S.gopen.add(byKey[S.site].g);
+    if (byKey[S.site].par) S.unfold.add(byKey[S.site].par);
+  }
+  if (!S.site) listSeen = null;
+  const grouped = S.sort === 'group' && S.grp === null, grand = grandTotal(), hl = S.lens ? LENS_COL[S.lens] : null;
+  const key = { v: r => r.v, mix: r => r.v, yr: r => r.v, ud: r => r.s.b ? r.s.ud : -1, last: r => r.s.age == null ? -1 : r.s.age, miss: r => r.s.missShare == null ? -1 : r.s.missShare }[S.sort] || (r => r.v);
+  const dir = S.sort === 'group' ? -1 : S.dir;
+  top.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || b.v - a.v; });
+  const head = '<thead><tr>' + COLS.map(c => {
+    const on = S.sort === c.k && c.k !== 'group', t = c.k === 'v' ? unitWord() : c.t;
+    return '<th scope="col" data-s="' + c.k + '" class="c-' + c.k + (c.r ? ' r' : '') + (c.k === hl ? ' hl' : '') + '"' + (on ? ' aria-sort="' + (S.dir > 0 ? 'ascending' : 'descending') + '"' : '') + (c.tip ? ' data-tip="' + esc(c.tip) + '"' : '') + '>' + t + (on ? (S.dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
+  }).join('') + '</tr></thead>';
+  const siteRow = (r, kid) => {
+    const s = r.s, ks = kidsOf.get(s.k) || [], open = S.unfold.has(s.k);
+    const fold = ks.length ? '<button type="button" class="fold" data-fold="' + esc(s.k) + '" aria-expanded="' + open + '" data-tip="' + (open ? '收起' : '展開') + '這個系的品保網站">品保' + (ks.length > 1 ? ' ' + ks.length : '') + '</button>' : '';
+    return '<tr data-k="' + esc(s.k) + '" class="' + (kid ? 'kid' : grouped ? 'in' : '') + '" aria-selected="' + (S.site === s.k) + '"><td><span class="nm"><a class="nm-a" href="' + esc(SITE_PAGE + encodeURIComponent(s.k) + (S.ck ? '&ck=' + S.ck : '')) + '" data-tip="' + esc(s.f + ' · ' + s.s) + '">' + esc(s.n) + '</a>' + fold + '</span></td>' +
+      cells(figs([s], r.v, r.p), grand, hl) + '</tr>' + (open ? ks.map(k => siteRow(k, true)).join('') : '');
+  };
+  let body = '';
+  if (grouped) {
+    // a unit row folds its sites: closed by default, opened by a click on it (owner 11-15)
+    GROUPS.map((g, gi) => ({ g, gi, rs: rows.filter(r => r.s.g === gi) })).filter(o => o.rs.length).forEach(o => {
+      const p = [0, 1, 2, 3, 4].map(i => sum(o.rs.map(r => r.p[i]))), a = figs(o.rs.map(r => r.s), sum(o.rs.map(r => r.v)), p), open = S.gopen.has(o.gi);
+      body += '<tr class="grow" data-g="' + o.gi + '" aria-expanded="' + open + '"><td><span class="gn">' + esc(o.g) + '<span>' + o.rs.length + '</span></span></td>' + cells(a, grand, hl) + '</tr>' +
+        (open ? top.filter(r => r.s.g === o.gi).map(r => siteRow(r)).join('') : '');
+    });
+  } else body = top.map(r => siteRow(r)).join('');
+  $('#tbl').innerHTML = head + '<tbody>' + (body || '<tr><td colspan="' + COLS.length + '"><div class="empty">沒有符合的網站</div></td></tr>') + '</tbody>';
+}
+// The sites left for round two, one folding row per reason, like the units of the list of sites (owner 11-15: 「很多不人性化
+// 的地方」; a flat list of 287 rows said its reason on every row). The reasons in the order of how soon they matter 【Claude】.
+const LATER_ORDER = ['整站靠 JavaScript', '校外的本校單位網站', '其他網站'];
+const laterOpen = new Set();
+function renderLater() {
+  const reasons = Array.from(new Set(D.later.map(s => s.w))).sort((a, b) => (LATER_ORDER.indexOf(a) + 1 || 9) - (LATER_ORDER.indexOf(b) + 1 || 9));
+  $('#tblLater').innerHTML = '<thead><tr><th scope="col">網站</th><th scope="col" class="c-m" data-tip="網站名單裡給它標的重要性">重要性</th><th scope="col" class="c-p">平台</th></tr></thead><tbody>' +
+    reasons.map(w => {
+      const open = laterOpen.has(w), rows = D.later.map((s, i) => [s, i]).filter(r => r[0].w === w);
+      return '<tr class="grow" data-w="' + esc(w) + '" aria-expanded="' + open + '"><td colspan="3"><span class="gn">' + esc(w) + '<span>' + rows.length + '</span></span></td></tr>' +
+        (open ? rows.map(([s, i]) => '<tr id="lt' + i + '" class="in"><td>' + (s.h ? '<a href="' + esc(s.h) + '" target="_blank" rel="noopener">' + esc(s.n) + ' ↗</a>' : esc(s.n)) + '</td><td class="c-m">' + esc(s.m || '—') + '</td><td class="c-p" style="color:var(--ink3)">' + esc(s.p) + '</td></tr>').join('') : '');
+    }).join('') + '</tbody>';
+}
+
+/* ---------- search ---------- */
+function findInit() {
+  const box = $('#find'), list = $('#findList'); let hits = [], act = 0;
+  const close = () => { list.hidden = true; };
+  const draw = () => {
+    list.innerHTML = hits.map((h, i) => h.s
+      ? '<button type="button" class="' + (i === act ? 'act' : '') + '" data-i="' + i + '"><b>' + esc(h.s.n) + '</b><em>' + (byChars() ? fmtChars(sum(h.s.c)) : fmt(h.s.total) + ' 份') + '</em><small>' + esc(GROUPS[h.s.g]) + ' · ' + esc(h.s.s) + '</small></button>'
+      : '<button type="button" class="' + (i === act ? 'act' : '') + '" data-i="' + i + '"><b>' + esc(h.l.n) + '</b><em>待抓</em><small>' + esc(h.l.w) + '</small></button>').join('') || '<div class="empty" style="padding:12px 0">沒有找到</div>';
+    list.hidden = false;
+  };
+  const pick = h => {
+    close(); box.value = ''; box.blur();
+    if (h.s) { if (S.site !== h.s.k) selectSite(h.s.k); return; }
+    S.list = 'later'; laterOpen.add(h.l.w); renderLater(); renderList(); const tr = $('#lt' + D.later.indexOf(h.l));
+    if (tr) { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('flash'); setTimeout(() => tr.classList.remove('flash'), 2400); }
+  };
+  box.addEventListener('input', () => {
+    const v = box.value.trim().toLowerCase(); if (!v) { close(); return; }
+    hits = S0.filter(s => s.n.toLowerCase().includes(v) || s.f.toLowerCase().includes(v) || s.o.toLowerCase().includes(v) || s.k.toLowerCase().includes(v)).slice(0, 7).map(s => ({ s }))
+      .concat(D.later.filter(l => l.n.toLowerCase().includes(v) || l.o.toLowerCase().includes(v) || l.h.toLowerCase().includes(v)).slice(0, 4).map(l => ({ l })));
+    act = 0; draw();
+  });
+  box.addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { if (hits.length) { act = (act + (ev.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; draw(); } ev.preventDefault(); }
+    else if (ev.key === 'Enter' && hits[act] && !list.hidden) pick(hits[act]);
+    else if (ev.key === 'Escape') { close(); box.blur(); }
+  });
+  list.addEventListener('pointerdown', ev => { const b = ev.target.closest('button[data-i]'); if (b) { ev.preventDefault(); pick(hits[+b.dataset.i]); } });
+  box.addEventListener('blur', () => setTimeout(close, 120));
+}
+
+/* ---------- wiring ---------- */
+// the night view (window.NM) redraws its parts after every render of the page
+function render() { renderBar(); renderMap(); renderInsp(); renderTime(); renderList(); addrUrl(); if (window.NM) NM.after(); }
+// 品質提醒 as filters (owner 11-23: 「如果我想知道哪些没文件的话直接用筛选来实现」): its groups open on the sites it names,
+// and the address keeps it (?ck=), so the page's own reload and a site page's way back (‹ 內容 · 標題重複) bring it back
+function ckOpen() { if (S.ck) S0.forEach(x => { if (ckHit(x, S.ck)) S.gopen.add(x.g); }); }
+// the address follows the filters at every drawing: ?ck= the reminder picked, ?kind=N while one kind alone is shown (總覽's
+// legend sends it), each gone once it is cleared, so a reload (the page's own after new data too: the saved view and the
+// address then agree) or a copied link brings back what is shown and never a filter cleared; the rest of the address (the
+// night view's ?date, &step) is kept. 總覽's frame keeps its own address.
+function addrUrl() {
+  if (EMBED) return;
+  try {
+    const u = new URL(location.href), on = [0, 1, 2, 3, 4].filter(j => S.kinds[j]);
+    if (S.ck) u.searchParams.set('ck', S.ck); else u.searchParams.delete('ck');
+    if (on.length === 1) u.searchParams.set('kind', String(on[0])); else u.searchParams.delete('kind');
+    if (u.search !== location.search) history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+  } catch (e) { /* an address that cannot be rewritten: the filters still hold on the page */ }
+}
+function setCk(k, byKeyboard) {
+  S.ck = S.ck === k ? null : ckKey(k); S.site = null; ckOpen(); render();
+  if (byKeyboard) { const r = $('#iSecs .ck-f[data-ck="' + k + '"]'); if (r) r.focus({ preventScroll: true }); }
+  if (S.ck) { const t = $('#tw'); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+}
+function init() {
+  tmInit(); tcInit(); findInit(); renderLater();
+  const view = D.live && !EMBED ? takeView() : null;
+  if (view && view.s) restoreView(view.s);
+  // the address: ?ck= a reminder as the filter, ?kind=N only that kind of document (總覽's legend sends it); 總覽's
+  // frame keeps its one setting
+  const q = new URLSearchParams(location.search);
+  if (!EMBED) {
+    if (q.has('ck')) { S.ck = ckKey(q.get('ck')); ckOpen(); }
+    const kq = q.get('kind');
+    if (kq !== null && /^\d$/.test(kq) && +kq < S.kinds.length) S.kinds = S.kinds.map((_, j) => j === +kq);
+  }
+  $('#crumbs').addEventListener('click', ev => {
+    const b = ev.target.closest('button[data-go]'); if (!b) return;
+    if (b.dataset.go === 'all') { S.grp = null; S.site = null; } else { S.grp = +b.dataset.g; S.site = null; }
+    render();
+  });
+  $('#chips').addEventListener('click', ev => {
+    const b = ev.target.closest('button[data-x]'); if (!b) return;
+    if (b.dataset.x === 'kinds') S.kinds = [true, true, true, true, true];
+    else if (b.dataset.x === 'ck') S.ck = null; else S.link = false;
+    render();
+  });
+  $('#iSecs').addEventListener('click', ev => { const r = ev.target.closest('.ck-f[data-ck]'); if (r) setCk(r.dataset.ck, false); });
+  $('#iSecs').addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const r = ev.target.closest('.ck-f[data-ck]'); if (!r) return;
+    ev.preventDefault(); setCk(r.dataset.ck, true);
+  });
+  if (EMBED && window.top !== window) {
+    // 總覽's 全部網站 leads into 內容 (owner 11-23: 「這裡少了跳轉到內容頁面」): the title and the donut open it, a kind of
+    // the legend opens it with only that kind; in 內容 itself they keep filtering in place
+    const to = u => { (window.top || window).location.href = u; }, page = LINKS.page || '/sites';
+    [$('#iT'), $('#dn')].forEach(x => { x.classList.add('ov-go'); x.dataset.tip = '到內容看全部網站'; x.addEventListener('click', () => to(page)); });
+    const kindGo = ev => { const li = ev.target.closest('li[data-k]'); if (!li) return; ev.stopImmediatePropagation(); ev.preventDefault(); to(page + '?kind=' + li.dataset.k); };
+    $('#kl').addEventListener('click', kindGo, true);
+    $('#kl').addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') kindGo(ev); }, true);
+  }
+  const key = $('#tmKey'), help = $('#tmHelp'), setKey = on => { key.hidden = !on; help.setAttribute('aria-expanded', String(on)); };
+  help.addEventListener('click', ev => { ev.stopPropagation(); setKey(key.hidden); });
+  document.addEventListener('click', ev => { if (!key.hidden && !ev.target.closest('#tmKey')) setKey(false); });
+  $('#tmBack').addEventListener('click', () => { S.grp = null; S.site = null; render(); });
+  $('#segMetric').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b && !b.disabled) { S.metric = b.dataset.v; render(); } });
+  $('#segLens').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b) {
+    S.lens = S.lens === b.dataset.v ? null : b.dataset.v; hideTip();
+    if (S.lens) { S.sort = LENS_COL[S.lens]; S.dir = -1; } else S.sort = 'group';
+    renderMap(); renderList();
+  } });
+  $('#segList').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b) { S.list = b.dataset.v; renderList(); } });
+  $('#tmLegend').addEventListener('click', ev => { const b = ev.target.closest('button[data-k]'); if (b) toggleKind(+b.dataset.k); });
+  const klick = ev => { const li = ev.target.closest('li[data-k]'); if (li) toggleKind(+li.dataset.k); };
+  $('#kl').addEventListener('click', klick);
+  $('#kl').addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); klick(ev); } });
+  $('#segTab').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b) { S.tab = b.dataset.v; renderInsp(); } });
+  $('#roK').addEventListener('click', ev => { const b = ev.target.closest('button[data-k]'); if (b) toggleKind(+b.dataset.k); });
+  $('#segRange').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; S.range = b.dataset.v; syncSeg('segRange', S.range); const w = rangeWin(S.range); setWindow(w[0], w[1], 320); });
+  $('#segSplit').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b) { S.split = b.dataset.v === '1'; renderTime(); } });
+  $('#segView').addEventListener('click', ev => { const b = ev.target.closest('button'); if (b) { S.view = b.dataset.v; tc.hover = null; renderTime(); if (S.view === 'line') tcSize(); } });
+  $('#btnLink').addEventListener('click', () => { S.link = !S.link; render(); });
+  $('#calPrev').addEventListener('click', () => { S.calYear--; S.calDay = null; drawCal(); });
+  $('#calNext').addEventListener('click', () => { S.calYear++; S.calDay = null; drawCal(); });
+  $('#calDay').addEventListener('click', ev => { const b = ev.target.closest('button[data-k]'); if (b && S.site !== b.dataset.k) selectSite(b.dataset.k); });
+  $('#tbl').addEventListener('click', ev => {
+    if (ev.target.closest('a[href]')) return;  // a site's name goes to its page in 檢視台
+    const f = ev.target.closest('button[data-fold]');
+    if (f) { const k = f.dataset.fold; if (S.unfold.has(k)) S.unfold.delete(k); else S.unfold.add(k); hideTip(); renderList(); return; }
+    const th = ev.target.closest('th[data-s]');
+    if (th) { const k = th.dataset.s; if (k === 'group') S.sort = 'group'; else if (S.sort === k) S.dir = -S.dir; else { S.sort = k; S.dir = -1; } renderList(); return; }
+    const g = ev.target.closest('tr.grow');
+    if (g) { const gi = +g.dataset.g; if (S.gopen.has(gi)) S.gopen.delete(gi); else S.gopen.add(gi); renderList(); return; }
+    const tr = ev.target.closest('tr[data-k]'); if (tr) selectSite(tr.dataset.k, 'list');
+  });
+  $('#tblLater').addEventListener('click', ev => {
+    const g = ev.target.closest('tr.grow[data-w]');
+    if (g) { const w = g.dataset.w; if (laterOpen.has(w)) laterOpen.delete(w); else laterOpen.add(w); renderLater(); }
+  });
+  $('#tw').addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    const trs = $$('#tbl tr[data-k]'); if (!trs.length) return;
+    let i = trs.findIndex(t => t.dataset.k === S.site);
+    i = i < 0 ? 0 : Math.max(0, Math.min(trs.length - 1, i + (ev.key === 'ArrowDown' ? 1 : -1)));
+    ev.preventDefault(); S.site = trs[i].dataset.k; render();
+    const tr = $$('#tbl tr[data-k]')[i]; if (tr) tr.scrollIntoView({ block: 'nearest' });
+  });
+  document.addEventListener('keydown', ev => {
+    if (ev.target.closest && ev.target.closest('input')) return;
+    if (ev.key === 'Escape') { if (!key.hidden) { setKey(false); return; } if (S.site) S.site = null; else if (S.grp !== null) S.grp = null; else return; render(); }
+    else if (ev.key === '/') { ev.preventDefault(); $('#find').focus(); }
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(setBarH).observe($('#bar'));
+    let w0 = 0;
+    new ResizeObserver(() => { const w = tm.el.clientWidth; if (w === w0) return; w0 = w; tm.el.classList.add('noanim'); renderMap(); requestAnimationFrame(() => tm.el.classList.remove('noanim')); if (S.view === 'line') tcSize(); else drawCal(); }).observe(tm.el);
+  }
+  render(); tcSize();
+  requestAnimationFrame(() => { tm.el.classList.remove('noanim'); animate = true; if (view) scrollTo(0, view.y || 0); });
+  if (D.live) watchLive();
+}
+// the page's state and drawing, for the layers that work on it (the night view's NM, nknu.ops.night_view)
+window.APP = { S, S0, render, byKey, LENS };
+if (typeof d3 === 'undefined') document.querySelector('.app').insertAdjacentHTML('afterbegin', '<div class="card" style="margin-top:16px">圖表庫沒有載入成功，請重新整理頁面再試。</div>');
+else init();
+})();
+</script>

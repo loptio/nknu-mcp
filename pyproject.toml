@@ -13,8 +13,6 @@ dependencies = [
     "uvicorn",
     "stamina",
     "warcio",
-    "icalendar",
-    "recurring-ical-events",
     "opencc-python-reimplemented",
     "typer",
     "pyyaml",
@@ -22,6 +20,19 @@ dependencies = [
     "certifi",
     "pandas",
     "lxml",
+    "protego>=0.7.0",
+]
+
+[project.optional-dependencies]
+# `nknu archive jscheck` (round-1 design §8.4): Playwright drives this machine's own Chrome (channel chrome), so no
+# browser is downloaded; the 10-25 test's version. Never a required dependency
+browser = ["playwright==1.64.1"]
+pipeline = [
+    "docling==2.145.0",
+    "onnxruntime==1.31.1",
+    "rapidocr==3.10.0",
+    "sentence-transformers==6.2.0",
+    "torch==2.15.0",
 ]
 
 [project.scripts]
@@ -38,12 +49,18 @@ build-backend = "hatchling.build"
 packages = ["src/nknu"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not live'"
-markers = ["live: 会连到真实网站"]
+addopts = "-m 'not live and not models'"
+markers = ["live: 会连到真实网站", "browser: 用本机 Chrome（Playwright）跑，只连本机回环的测试服务器；没装就跳过",
+           "models: 载入本机快取的模型（bge-m3、重排、Docling、RapidOCR），不下载；快取没有就跳过"]
 testpaths = ["tests"]
+# pytest skips dirs named "build" by default; tests/build holds the serve.db tests
+norecursedirs = [".*", "*.egg", "dist", "node_modules", "venv", "prototypes"]
 asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 120
 target-version = "py313"
 extend-exclude = ["prototypes"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]

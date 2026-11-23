@@ -1,0 +1,392 @@
+# Datasette 的说明档（plan 2026-11-15 T7；设计 2026-11-15 第二节第 1 样）：每张表、主要栏位是什么意思，和几条现成的查询。
+# 栏位的意思照 src/nknu/content/schema.py 的注释写；tests/ops/test_deploy_files.py 会核对这里写到的表和栏位库里都有、
+# 每条查询都跑得动。库的结构改了，这份要跟着改。
+# 11-15 第二版【Claude】（用户：「对我不友好，界面难操作和阅读」「按照你的想法先优化」）：首页直接放最常用的入口；
+# 现成的查询用中文栏名、种类写成中文，每份文件带一个「追踪」链接，点了到检视台看它一路怎么走；用不到的表收起来
+# （还是查得到）。标题是学校的繁体字：要用简体字找文件，用检视台的逐份追踪。
+# 11-15 第三版（用户：「可视化dashboard全部换繁体字」）：页面上的字都换成繁体字、台湾用语；库里存的值照原样
+# （units.kind 存的是简体字，说明照原样列出来，筛选时才打得对）。
+# 11-15 第四版（用户：「连有几个表 怎么连的 每个表和字段代表什么都还不知道」）：首页换成库的地图
+# （templates/index.html＋plugins/guide.py，栏位的意思照旧只写在这里）；加「为什么没有日期」的查询（plugins/undated.py）。
+# 11-15 第五版（用户：「太難看懂字太雜了…沒有很人性化的讓人看到 也沒有用一些視覺化方法點綴，顏色也沒有考慮過」）【Claude】：
+# 每一页换成和资料总览、检视台同一套样子（templates/ 全套＋static/tc.css），界面的字都是中文；首页先放「要做的事」
+# （选网站、打几个字就查，不用记代号），地图旁边一格显示点到的那张表；现成的查询按「網站」「一份文件」分组（下面每条的
+# group）；表格里存成代码的值显示成中文小标签（plugins/cells.py，文件种类用资料总览那四个颜色）。
+# 11-15 第六版（用户：「整體設計的還不錯就是頁面廢話太多了」「我想挑選我感興趣的欄位看（默認就顯示一些比較重要的欄位）」
+# 「找網站的時候有點費勁」）【Claude】：页面上不再印说明文字（查询的 description 只留给这份档的读者，标题改短，
+# 分组的小标题说它是关于什么的）；栏位的意思不重复它的名字；表格页上面一排栏位，点一下开关（plugins/columns.py）；
+# 找网站是打字就筛的清单（templates/_sitefind.html）；标题找文件简体繁体都认（plugins/script.py 的 t2s）。
+# 11-15 第七版（用户：「很多名字看着不直觉 然后感觉是想缩短文字 但又想保留细节导致不上不下的」「datasettle那个文字的名字叫
+# “翻库里的表” 你看看这像话吗？」，并举资料总览「鼠标放在某个什么才出现悬浮窗来详细解释」）【Claude】：名字只用一个直白的
+# 名词（这个面板叫「資料庫」）；栏位的意思写成「短名：完整的一句话」，页面上只显示短名，整句放进鼠标悬浮框；表名、查询名、
+# 栏名照「一个概念一个词」统一（類型、主料／背景、合併、出處……），和检视台用同一套词。
+title: 資料庫
+# 每一页都接上这份样式表（档案在 datasette/static/，compose.yaml 的 --static 把它放在 /static/）。
+extra_css_urls: ["/static/tc.css"]
+
+databases:
+  aca:
+    title: 正式庫
+    tables: &tables
+      docs:
+        description: 一列一份文件：一則公告、一個網頁、一個附件、一個行事曆事件，或一個校外連結。
+        label_column: title
+        facets: [kind_class, tier, site]
+        columns:
+          doc_id: 文件編號：d 開頭的是公告、網頁、附件，e 開頭的是行事曆事件。
+          kind_class: 類型：公告 notice、一般網頁 page、附件 attachment、行事曆 event、校外連結 link。
+          kind_raw: 匯出的類型：爬蟲匯出清單上寫的類型，例如「附件:pdf:有文字层」。
+          title: 標題
+          url: 網址
+          unit: 單位：這個網站屬於哪個單位。
+          grp: 組別：公告上寫的發佈組別。
+          parent_id: 所屬文件：附件掛在哪一份文件底下（最新一則連到它的公告或網頁）。
+          parent_title: 所屬文件標題
+          linktext: 連結文字：別的網頁連到它時用的字。
+          has_text: 讀到字：1＝讀到了；0＝掃描檔或讀不出來，只能靠標題找到它。
+          text: 全文
+          chars: 字數
+          period_ay: 學年度：標題裡寫的學年度。
+          period_sem: 學期：標題裡寫的學期（1 或 2）。
+          ident_date: 日期：搜尋結果上顯示的日期。
+          ident_kind: 日期類別：這個日期怎麼來的：公告日期 published、跟所屬公告 inherited、伺服器檔案時間 server。
+          doc_type: 背景類別：學報校刊 journal、考題 exam、會議紀錄 minutes；空白＝不是背景。
+          text_source: 文字來源：這次轉的 totext、10-29 的舊粗轉 fallback-1029、沒有 none。
+          tier: 主料／背景：主料 primary 照常排名；背景 background 分數打八折後和主料一起排，前 10 名最多 2 份。
+          site: 網站：網站的代號，就是網站表的「代號」。
+          unit_line: 單位行：給重排模型讀的「單位：…」那一行。
+          date_line: 日期行：行事曆事件的學期和日期那一行，只給重排模型讀。
+          expires: 會過期：1＝會（公告、標了學期或學年的文件、行事曆事件）；0＝不會（規章、表單、常設網頁、沒日期的）。
+          valid_ay: 所屬學年：算「還有效」的折扣時用的學年。
+          rank_date: 排序日期：它和併進它的副本裡最新的日期，排新舊時用。
+          rank_undated: 副本缺日期：1＝併進它的副本裡有沒日期的。
+      sites:
+        description: 一列一個網站：從哪份匯出建的、資料截到哪天、有幾份文件。
+        label_column: name
+        columns:
+          site: 代號：網站的代號，就是它網址的開頭。
+          name: 名稱
+          unit: 單位
+          data_as_of: 資料截至：這個網站爬到的那一天。
+          missing_pages: 沒抓到的網頁：這一輪沒抓下來的網頁數。
+          missing_files: 沒抓到的檔案：這一輪沒抓下來的檔案數。
+          docs: 文件數：收進庫的文件數。
+          export: 匯出資料夾：建庫讀的那一份匯出。
+          deleted_notices: 學校刪掉的：學校刪掉、只剩空殼的公告數；11-16 以後建的庫也算爬蟲標「學校已刪除」的網頁和附件。這些都不收。
+          under_read: 改讀整頁：正文區讀到的字太少、改讀整頁的網頁數。
+      doc_alias:
+        description: 被合併掉的文件編號，和它併進了哪一份（別的網址的同一份、同一份的另一種格式、重複的紀錄）。
+        columns:
+          alias: 被合併的編號
+          doc_id: 留下的文件
+          why: 原因：別的網址的同一份 copy、同一份的另一種格式 format、重複的紀錄 duplicate。
+      dates:
+        description: 每份文件讀到的每一個日期，和它的出處。
+        columns:
+          doc_id: 文件編號
+          kind: 日期類別：公告日期、跟所屬公告、伺服器檔案時間、期間開始、期間結束、事件開始、事件結束。
+          date: 日期
+          raw: 原文：日期在原處寫的樣子。
+          source: 出處：從哪裡讀到的（公告頁的日期欄、網頁上寫的日期、所屬公告、伺服器檔案時間、正文寫的期間、行事曆）。
+      applies_to:
+        description: 文件寫明適用於哪一屆入學的學生（「X 學年度起入學」這類）。
+        columns:
+          doc_id: 文件編號
+          unit: 單位
+          cohort_from: 起始入學年：從這個學年度入學起都適用。
+          cohort_exact: 限定入學年：只有這個學年度入學的適用。
+          raw: 原文：文件裡寫的樣子。
+      sections:
+        description: 一份文件按標題切成的章節；開頭、結尾是它在全文裡的位置。
+        hidden: true
+        columns:
+          doc_id: 文件編號
+          sec_id: 第幾節
+          heading: 章節標題
+          start: 開頭：在全文裡的位置（第幾個字）。
+          end: 結尾：在全文裡的位置（第幾個字）。
+      chunks:
+        description: 一份文件切成的小段；搜尋是一小段一小段比對的。
+        hidden: true
+        columns:
+          chunk_id: 小段編號
+          doc_id: 文件編號
+          sec_id: 第幾節
+          start: 開頭：在全文裡的位置（第幾個字）。
+          end: 結尾：在全文裡的位置（第幾個字）。
+          head_start: 表頭開頭：這一段在表格裡時，表頭在全文裡的開頭位置。
+          head_end: 表頭結尾：這一段在表格裡時，表頭在全文裡的結尾位置。
+      doc_refs:
+        description: 哪個網頁連到哪個附件、連結在網頁的哪一區、用什麼字連的。
+        hidden: true
+        columns:
+          doc_id: 附件編號
+          ref_id: 連到它的網頁
+          zone: 連結位置：正文 content、附件區 attachments、選單 nav、找不到 unknown（按鈕按出來的）。
+          context: 連結文字：那個網頁用什麼字連到它。
+      units:
+        description: 單位樹：學校、處室和組、學院和系所、中心、學程。
+        label_column: name
+        columns:
+          unit_id: 單位代號：就是單位的名字。
+          name: 名稱
+          kind: 單位類別：庫裡存的是簡體字，篩選時照這樣打：学校、行政单位、行政组别、学院、系所、中心、学程。
+          parent_id: 上層單位
+          campus: 校區：和平、燕巢；空白＝兩邊都有或不知道。
+      unit_aliases:
+        description: 每個單位認得的別名（全名和簡稱）。
+        hidden: true
+        columns:
+          alias: 別名
+          unit_id: 單位
+      doc_scope:
+        description: 每份文件和單位的關係：誰發的、適用於誰、提到了誰。
+        columns:
+          doc_id: 文件編號
+          relation: 關係：誰發的 publisher、適用於 applies_to、提到 mentions。
+          unit_id: 單位
+          campus: 校區：文件寫的校區。
+          level: 學制：文件寫的學制（學士、碩士、博士、進修）。
+          cohort_from: 起始入學年：從這個學年度入學起適用。
+      meta:
+        description: 建庫時記下的事：什麼時候建、讀了哪些匯出、每一類各有幾份沒收進來。值多半是 JSON。
+        hidden: true
+        columns:
+          key: 項目：記的是什麼，例如 built_at 建庫時間、copies:… 一份文件併掉了哪些副本。
+          value: 值
+      chunk_fts:
+        description: 關鍵字索引：每一小段切成的兩字詞，搜尋時先用它找候選。一列對小段表的一列（rowid＝小段編號）。
+        hidden: true
+        columns:
+          title_tokens: 標題的詞：標題切成的兩字詞。
+          body_tokens: 內文的詞：內文切成的兩字詞。
+          unit_tokens: 單位的詞：單位、組別、簡稱、適用對象切成的詞。
+      chunk_vecs:
+        description: 向量索引：每一小段的向量（bge-m3 算的，意思相近的段落向量也相近），搜尋時和關鍵字一起找候選。
+        hidden: true
+        columns:
+          chunk_id: 小段編號
+          vec: 向量：bge-m3 算出的一串數字，存成二進位，看不懂是正常的。
+      chunk_fts_data:
+        hidden: true
+      chunk_fts_idx:
+        hidden: true
+      chunk_fts_content:
+        hidden: true
+      chunk_fts_docsize:
+        hidden: true
+      chunk_fts_config:
+        hidden: true
+    # 每条查询的结果用中文栏名（和表的短名同一套词）；「追蹤」是检视台的文件追踪（经隧道的网址，点了在新分页看这份文件
+    # 从抓取到搜索每一步）；「原因」是 plugins/undated.py 的短名，悬浮框是它的整句（plugins/cells.py）。
+    queries: &queries
+      sites_overview:
+        title: 全部網站
+        group: 網站
+        hide_sql: true
+        sql: |-
+          select name as "網站", unit as "單位", docs as "文件數", data_as_of as "資料截至",
+                 missing_pages as "沒抓到的網頁", missing_files as "沒抓到的檔案", deleted_notices as "學校刪掉的",
+                 'http://127.0.0.1:18001/aca/site_docs?site=' || site as "代號"
+          from sites order by docs desc
+      site_docs:
+        title: 網站的文件
+        group: 網站
+        hide_sql: true
+        sql: |-
+          select title as "標題",
+                 case kind_class when 'notice' then '公告' when 'page' then '一般網頁' when 'attachment' then '附件'
+                      when 'event' then '行事曆' when 'link' then '校外連結' else kind_class end as "類型",
+                 coalesce(ident_date, '') as "日期", case tier when 'background' then '背景' else '主料' end as "主料／背景",
+                 case when has_text then chars else '沒讀到字' end as "字數",
+                 'http://127.0.0.1:18878/trace?ref=' || doc_id as "追蹤"
+          from docs where site = :site
+          order by ident_date is null, ident_date desc, title limit 2000
+      site_kinds:
+        title: 各類型份數
+        group: 網站
+        hide_sql: true
+        sql: |-
+          select case kind_class when 'notice' then '公告' when 'page' then '一般網頁' when 'attachment' then '附件'
+                      when 'event' then '行事曆' when 'link' then '校外連結' else kind_class end as "類型",
+                 case tier when 'background' then '背景' else '主料' end as "主料／背景",
+                 count(*) as "份數", sum(chars) as "字數",
+                 sum(ident_date is null) as "沒日期", sum(has_text = 0) as "沒讀到字"
+          from docs where site = :site
+          group by kind_class, tier order by count(*) desc
+      # 「为什么没有日期」三条查询（11-15，用户：「我在数据总览看到无日期我就好奇想去看为什么」）：原因是
+      # plugins/undated.py 的函数 undated_why（判是哪一种）、undated_say（那一种的短名）、undated_do（怎么办：
+      # 不用管、爬虫可补、改建库规则可补、要查）、date_seen（网页上写的第一个日期），规则只写在那里。
+      site_undated_why:
+        title: 沒日期的原因
+        group: 網站
+        hide_sql: true
+        sql: |-
+          select undated_say(why) as "原因", undated_do(why) as "怎麼辦", count(*) as "份數",
+                 'http://127.0.0.1:18001/aca/site_undated?site=' || :site || '&why=' || undated_say(why) as "看清單"
+          from (select undated_why(d.kind_class, d.kind_raw, d.url, p.kind_class,
+                                   exists (select 1 from doc_refs r where r.doc_id = d.doc_id and r.zone = 'nav'),
+                                   p.ident_date, d.text, d.doc_type) as why
+                from docs d left join docs p on p.doc_id = d.parent_id
+                where d.site = :site and d.ident_date is null and d.kind_class in ('notice', 'page', 'attachment'))
+          group by why order by undated_rank(why), count(*) desc
+      site_undated:
+        title: 沒日期的文件
+        group: 網站
+        hide_sql: true
+        sql: |-
+          select title as "標題",
+                 case kind_class when 'notice' then '公告' when 'page' then '一般網頁' else '附件' end as "類型",
+                 undated_say(why) as "原因",
+                 case when why in ('page-written', 'page-many') then date_seen(text) else '' end as "頁面上的日期",
+                 coalesce(ptitle, '') as "所屬文件", coalesce(pdate, '') as "所屬文件日期",
+                 'http://127.0.0.1:18878/trace?ref=' || doc_id as "追蹤"
+          from (select d.doc_id, d.title, d.kind_class, d.text, p.title as ptitle, p.ident_date as pdate,
+                       undated_why(d.kind_class, d.kind_raw, d.url, p.kind_class,
+                                   exists (select 1 from doc_refs r where r.doc_id = d.doc_id and r.zone = 'nav'),
+                                   p.ident_date, d.text, d.doc_type) as why
+                from docs d left join docs p on p.doc_id = d.parent_id
+                where d.site = :site and d.ident_date is null and d.kind_class in ('notice', 'page', 'attachment'))
+          where coalesce(:why, '') = '' or why = :why or undated_say(why) = :why
+          order by undated_rank(why), why, kind_class, title limit 500
+      find_title:
+        title: 用標題找文件
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select d.title as "標題",
+                 case d.kind_class when 'notice' then '公告' when 'page' then '一般網頁' when 'attachment' then '附件'
+                      when 'event' then '行事曆' when 'link' then '校外連結' else d.kind_class end as "類型",
+                 coalesce(d.ident_date, '') as "日期", s.name as "網站",
+                 'http://127.0.0.1:18878/trace?ref=' || d.doc_id as "追蹤"
+          from docs d left join sites s on s.site = d.site
+          where t2s(d.title) like '%' || t2s(:words) || '%'
+          order by d.ident_date is null, d.ident_date desc limit 200
+      doc:
+        title: 文件的全部欄位
+        group: 文件
+        hide_sql: true
+        sql: select * from docs where doc_id = :doc_id
+      why_undated:
+        title: 文件為什麼沒日期
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select title as "標題",
+                 case kind_class when 'notice' then '公告' when 'page' then '一般網頁' when 'attachment' then '附件'
+                      when 'event' then '行事曆' when 'link' then '校外連結' else kind_class end as "類型",
+                 site_name as "網站", coalesce(ident_date, '沒有') as "日期",
+                 case when ident_date is null then undated_say(why)
+                      when ident_kind = 'published' then '有日期：公告或網頁上寫的'
+                      when ident_kind = 'inherited' then '有日期：跟所屬公告'
+                      when ident_kind = 'server' then '有日期：伺服器檔案時間'
+                      else '有日期' end as "原因",
+                 case when ident_date is null then undated_do(why) else '' end as "怎麼辦",
+                 case when ident_date is null and why in ('page-written', 'page-many') then date_seen(text) else ''
+                      end as "頁面上的日期",
+                 coalesce(ptitle, '') as "所屬文件", coalesce(pdate, '') as "所屬文件日期",
+                 (select count(*) from dates t where t.doc_id = one.doc_id) as "讀到的日期數",
+                 'http://127.0.0.1:18878/trace?ref=' || doc_id as "追蹤"
+          from (select d.doc_id, d.title, d.kind_class, d.ident_date, d.ident_kind, d.text, s.name as site_name,
+                       p.title as ptitle, p.ident_date as pdate,
+                       undated_why(d.kind_class, d.kind_raw, d.url, p.kind_class,
+                                   exists (select 1 from doc_refs r where r.doc_id = d.doc_id and r.zone = 'nav'),
+                                   p.ident_date, d.text, d.doc_type) as why
+                from docs d left join docs p on p.doc_id = d.parent_id left join sites s on s.site = d.site
+                where d.doc_id = :doc_id
+                   or d.doc_id = (select a.doc_id from doc_alias a where a.alias = :doc_id)) as one
+      doc_dates:
+        title: 文件讀到的日期
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select kind as "日期類別", date as "日期", raw as "原文", source as "出處"
+          from dates where doc_id = :doc_id order by kind, date
+      doc_chunks:
+        title: 文件切成的小段
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select c.chunk_id as "小段編號", c.sec_id as "第幾節", s.heading as "章節標題", c.end - c.start as "字數",
+                 substr(d.text, c.start + 1, c.end - c.start) as "內容"
+          from chunks c
+          join docs d on d.doc_id = c.doc_id
+          left join sections s on s.doc_id = c.doc_id and s.sec_id = c.sec_id
+          where c.doc_id = :doc_id
+          order by c.chunk_id
+      doc_scope_rows:
+        title: 文件和單位的關係
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select case relation when 'publisher' then '誰發的' when 'applies_to' then '適用於' when 'mentions' then '提到'
+                      else relation end as "關係",
+                 unit_id as "單位", campus as "校區", level as "學制", cohort_from as "起始入學年"
+          from doc_scope where doc_id = :doc_id order by relation
+      copies_of:
+        title: 合併進來的副本
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select alias as "被合併的編號",
+                 case why when 'copy' then '別的網址的同一份' when 'format' then '同一份的另一種格式'
+                      when 'duplicate' then '重複的紀錄' else why end as "原因"
+          from doc_alias where doc_id = :doc_id order by why, alias
+      merged_into:
+        title: 被合併到哪一份
+        group: 文件
+        hide_sql: true
+        sql: |-
+          select d.title as "留下的文件", d.url as "網址",
+                 case a.why when 'copy' then '別的網址的同一份' when 'format' then '同一份的另一種格式'
+                      when 'duplicate' then '重複的紀錄' else a.why end as "原因",
+                 'http://127.0.0.1:18878/trace?ref=' || a.doc_id as "追蹤"
+          from doc_alias a join docs d on d.doc_id = a.doc_id where a.alias = :alias
+  # 11-23 爬蟲帳本（用戶：「frontier.db 為什麼沒有在資料庫頁面看的」「加，用每晚備份」）：D 槽每晚備份裡最新的一份，
+  # 是那一晚爬取開跑前存的（比正在寫的帳本晚一晚）。這裡只說常用的三張表；其他表照帳本原樣列著。
+  frontier:
+    title: 爬蟲帳本（每晚備份）
+    description: 爬蟲記的每一個網址、每一次請求；這是每晚爬取開跑前存的那一份，不是正在寫的帳本。
+    tables:
+      url:
+        description: 一列一個網址：從哪裡找到、抓了沒有、結果怎樣、存在哪個原檔。
+        label_column: url
+        facets: [state, kind, site]
+        columns:
+          url: 網址
+          site: 網站：這個網址算在哪個網站
+          kind: 種類：page 網頁、file 檔案、image 圖片、drive 雲端硬碟、shortlink 短網址、embed 內嵌、calendar 行事曆
+          found_via: 怎麼找到：link 頁面連結、old_frontier 舊帳本、commoncrawl Common Crawl 索引、drive 雲端硬碟、redirect 跳轉、seed 網站清單起點、click 按按鈕
+          state: 狀態：done 抓到了、failed 失敗、skipped 照規則不抓、later 留到第二輪、held 壓著、pending 還在排
+          reason: 原因：爬蟲寫的原因代碼，例如 http_404、out:skip_path、round2:offsite
+          status: HTTP：伺服器回的狀態碼
+          fetched_at: 抓的時間：最後一次抓到的時間（UTC）
+          warc: 原檔：存在哪一個 .warc.gz
+      request:
+        description: 一列一次請求：爬蟲對學校伺服器送出的每一個請求，什麼時候、用什麼方法、回了什麼。
+        facets: [purpose, method, campus]
+        columns:
+          url: 網址
+          purpose: 用途：page 直接抓、postback 按按鈕、jsfetch 用瀏覽器開、robots 讀 robots.txt、probe 檢查
+          method: 方法：GET 或 POST
+          status: HTTP：伺服器回的狀態碼
+          error: 錯誤：沒回應時的錯誤
+          campus: 校內：on 在校內發的、off 在校外發的
+      event:
+        description: 一列一件事：爬蟲記下的警告和狀況。
+        facets: [level, code]
+    queries:
+      reasons:
+        title: 各狀態、各原因的網址數
+        sql: select state as "狀態", reason as "原因", count(*) as "網址數" from url group by 1, 2 order by 3 desc
+      site_urls:
+        title: 一個網站的網址
+        sql: |-
+          select url as "網址", kind as "種類", found_via as "怎麼找到", state as "狀態", reason as "原因",
+                 status as "HTTP", fetched_at as "抓的時間" from url where site = :site order by state, url limit 1000
+      url_requests:
+        title: 一個網址的每一次請求
+        sql: |-
+          select datetime(started, 'unixepoch', '+8 hours') as "時間（台北）", purpose as "用途", method as "方法",
+                 status as "HTTP", error as "錯誤", round((ended - started) * 1000) as "毫秒", bytes as "大小",
+                 campus as "校內" from request where url = :url order by started desc

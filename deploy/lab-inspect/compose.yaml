@@ -1,0 +1,161 @@
+# 内部检视工具（plan 2026-11-15 T7；设计 docs/superpowers/specs/2026-11-15-inspect-tools-design.md 第三节）。
+# 在实验室电脑上，这个档放在 C:\nknu-transfer\inspect\compose.yaml。三个服务都只读，只从这台电脑自己的 127.0.0.1
+# 连得到；从 Mac 看要开 SSH 隧道（scripts/inspect-tunnel.sh）。给用户的步骤在同一个资料夹的 README.md。
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d            三个都开
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml ps               看状态
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart          换程序以后
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml restart datasette   换库以后（只重启它）
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml logs --tail 50 ops
+#   docker compose -f C:\nknu-transfer\inspect\compose.yaml down             全关（磁碟区不会动）
+# 程序和 Datasette 的设定装在磁碟区 nknu-work 的 /work/inspect-code（自己的一份，install.sh 装的：/work/src 抄一份、
+# 再盖上检视工具自己的档）。这样送检视工具的程序不会换掉建库用的 /work/src。换程序：pack.sh 打包、scp、install.sh、
+# restart（步骤在 README.md）。库被建库程序换掉以后，Datasette 还开着旧档（检视台和 MCP 服务每次都重新开库），
+# 所以换库以后只 restart datasette：整个 restart 会连 ops 一起重启、触发约 17 分钟的整轮网页核查，和爬虫抢硬盘
+# （爬虫夜里跑的时段不重启 ops，11-16 两个 session 说好的）。
+# 写 $$ 才是一个 $：compose 会把 ${VAR} 换成呼叫者的环境变数。
+name: nknu-inspect
+
+x-ours: &ours   # 跑我们自己程序的两个服务：映像 nknu-pipeline（建库那个），程序在 /work/inspect-code/src
+  image: nknu-pipeline
+  working_dir: /work
+  environment:
+    TZ: Asia/Taipei
+    PYTHONDONTWRITEBYTECODE: "1"         # /work 是只读的
+    PYTHONPATH: /work/inspect-code/src   # 检视工具自己那份程序（映像预设的是建库用的 /work/src）
+    NKNU_CONFIG_DIR: /work/config        # 单位表、网站对单位表这些设定照旧读建库用的那份
+    # 两个打分模型只载一份（11-21）：mcp 和 ops 问 models 那个服务要向量和重排分数，自己不载（nknu.core.model_service）。
+    # models 停了或在重启时，mcp 和 ops 这一次不用那个模型排序（和模型不在时一样），不会停
+    NKNU_MODELS_URL: http://models:8780
+  volumes:
+    - nknu-work:/work:ro
+    - nknu-models:/models:ro
+  init: true
+  shm_size: "2gb"
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+
+services:
+  # 资料库（11-15 以前叫「翻库里的表」）。官方映像，版本固定。-i 是只读而且不上锁；只开正式库（11-15 的对照库 aca1115.db 11-19 清掉了，这一段照旧是有档才开）。
+  # 不让整个库被下载（allow_download off），不自动猜分类栏（suggest_facets off：大表上很慢）；表格旁边的统计给 3 秒
+  # （facet_time_limit_ms：预设 0.2 秒，文件表的「种类」算不完，页面上只剩一句「算太久」）。
+  # --static 把 datasette/static/ 放在 /static/：每一页接上的 tc.css（繁体字的字型排在前面，metadata.yaml 指它）。
+  # --template-dir 的 index.html 换掉首页：库的地图（几张表、怎么接、每个栏位的意思，资料由 plugins/guide.py 给）。
+  # 这些资料夹要先随 pack.sh 的包装进 /work/inspect-code 才开得起来（Datasette 找不到资料夹就不启动）。
+  # 11-23 起也开爬虫帐本（用户：「frontier.db 为什么没有在资料库页面看的」「加，用每晚备份」）：D 槽每晚备份里最新的
+  # 一份（爬取开跑前存的，存好以后不再改，所以能用 -i；正在写的帐本不能这样开）。开之前 datasette/ledger_copy.py 把它拷到
+  # 容器的 /tmp/frontier.db、拿掉帐本的四个检视（这个映像的 SQLite 读不了，读不了 datasette 就整个起不来），约 10 秒；
+  # 拷不成就只开正式库。每晚换库以后 datasette 会重启（nightly_ingest.cmd），那时就换成当晚的备份。
+  datasette:
+    image: datasetteproject/datasette:0.65.5
+    volumes:
+      - nknu-work:/work:ro
+      - D:/nknu-backup/crawler-nightly:/ledger:ro
+    command:
+      - sh
+      - -c
+      - >-
+        set --;
+        for f in aca.db; do
+        if [ -f "/work/research/pipeline_2026-11-02/$$f" ]; then
+        set -- "$$@" -i "/work/research/pipeline_2026-11-02/$$f"; fi;
+        done;
+        python /work/inspect-code/deploy/lab-inspect/datasette/ledger_copy.py /ledger /tmp/frontier.db;
+        if [ -f /tmp/frontier.db ]; then set -- "$$@" -i /tmp/frontier.db; fi;
+        exec datasette "$$@" -h 0.0.0.0 -p 8001
+        --metadata /work/inspect-code/deploy/lab-inspect/datasette/metadata.yaml
+        --plugins-dir /work/inspect-code/deploy/lab-inspect/datasette/plugins
+        --static static:/work/inspect-code/deploy/lab-inspect/datasette/static
+        --template-dir /work/inspect-code/deploy/lab-inspect/datasette/templates
+        --setting sql_time_limit_ms 5000
+        --setting allow_download off
+        --setting suggest_facets off
+        --setting facet_time_limit_ms 3000
+        --setting truncate_cells_html 300
+        --setting default_page_size 50
+        --setting max_returned_rows 2000
+    ports:
+      - "127.0.0.1:8001:8001"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # MCP 服务：和以后给学生的 AI 用的是同一支程序、同一个库。MCP Inspector 连这里。
+  # 两个打分模型（bge-m3、bge-reranker-v2-m3）在这台电脑上只载这一份（11-21，以前 mcp、ops、对外服务各载一份，
+  # 一份约 2.2 GB 显存）。同一个 compose 的服务用 http://models:8780；别的 compose（对外服务）经
+  # host.docker.internal:8780。只算数字，不读库，不碰学校的资料
+  models:
+    <<: *ours
+    command: ["python", "-m", "nknu.core.model_service", "--host", "0.0.0.0", "--port", "8780"]
+    ports:
+      - "127.0.0.1:8780:8780"
+
+  mcp:
+    <<: *ours
+    command: ["python", "-m", "nknu.retrieval.server", "--db", "research/pipeline_2026-11-02/aca.db",
+              "--http", "--host", "0.0.0.0", "--port", "8766"]
+    ports:
+      - "127.0.0.1:8766:8766"
+
+  # 检视台：搜索测试、文件追踪、网页核查三页，和两条命令经隧道问的接口。--viewer-url 是从 Mac 看爬虫检视器的网址。
+  # 网页核查读爬虫的账本和 WARC（设计 docs/superpowers/specs/2026-11-16-page-check-design.md 第四节），两个都只读挂载：
+  # 账本在磁碟区 nknu-crawl 的 /crawl/archive/frontier.db，WARC 在 E:\nknu\warc（11-23 从 D 槽搬来：工作资料放 E 槽固态硬盘，D 槽只放备份）。
+  # 磁碟区是只读的，账本的 -wal、-shm 不在时程序改用 immutable=1 读（爬虫没在跑时这样读是对的）。
+  # 每晚纪录（面板第三版 2026-11-17，nknu.ops.history）：检视台唯一会写的地方是磁碟区 nknu-ops（/ops/ops.db），
+  # 只挂给 ops；/work、/crawl 照旧只读。加了这个磁碟区以后要 `up -d ops`（restart 不会挂上新的磁碟区）。
+  ops:
+    <<: *ours
+    volumes:
+      - nknu-work:/work:ro
+      - nknu-models:/models:ro
+      - nknu-crawl:/crawl:ro
+      - E:/nknu/warc:/crawl/archive/warc:ro
+      - nknu-ops:/ops
+      # 对外服务（8770）的查询纪录，只读（11-21）：首页「查詢服務」说它最近 24 小时的使用
+      - C:/nknu-transfer/public/log:/public-log:ro
+    command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
+              "--host", "0.0.0.0", "--port", "8878",
+              "--tables-url", "http://127.0.0.1:18001",
+              "--questions", "research/eval_2026-11-01", "--gold", "research/pipeline_2026-11-02/gold_docs.json",
+              "--archive", "/crawl/archive",
+              # 每晚纪录：每 5 分钟看一次各晚，跑完的那一晚记一笔（每晚運行、单站页的 14 晚长条读它）
+              "--ops-db", "/ops/ops.db",
+              # 「試用」那一页从这里调用 MCP 服务（只读、一次一个；网页不直接连它）
+              "--mcp-url", "http://mcp:8766/mcp",
+              # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
+              # （11-16 在 ops 里实测都连得到）。mcp 是握手、每小时真的搜一次；datasette 看它开的是不是正式库；
+              # 资料总览 11-21 并进检视台（/sites）、爬虫看板同一晚停用（看原样在 /check），都不用再问
+              "--watch", "搜尋服務（MCP）=mcp:http://mcp:8766/mcp",
+              "--watch", "資料庫=datasette:http://datasette:8001",
+              "--watch", "模型服務=http:http://models:8780/health",
+              # 对外服务在另一个 compose（C:\nknu-transfer\public）：只问它的 /health，不搜（搜会进它的查询纪录、载入模型）
+              "--watch", "對外服務（8770）=public:http://host.docker.internal:8770/health",
+              "--public-log", "/public-log/queries.jsonl",
+              # 首页「查詢服務」那一格说这台电脑的硬盘还剩多少、显卡内存用了多少（11-21）
+              # 11-23 起只量 E 槽：工作资料都在 E 槽；C 槽只剩 Windows，D 槽只放备份、不会一直变大
+              "--disk", "E 槽=/crawl/archive/warc"]
+    ports:
+      - "127.0.0.1:8878:8878"
+
+volumes:
+  nknu-work:
+    external: true
+  nknu-models:
+    external: true
+  nknu-crawl:   # 爬虫的存档（只读挂给检视台）
+    external: true
+  nknu-ops:     # 检视台自己的每晚纪录（可写，只挂给 ops；第一次 up 时 compose 会建它，名字固定是 nknu-ops）
+    name: nknu-ops

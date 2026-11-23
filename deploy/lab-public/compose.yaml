@@ -1,0 +1,63 @@
+# 对外的服务（设计 docs/superpowers/specs/2026-11-21-outward-interfaces-design.md）：MCP、网页、HTTP 接口，同一个进程。
+# 在实验室电脑上，这个档放在 C:\nknu-transfer\public\compose.yaml。只读正式库，只从这台电脑自己的 127.0.0.1:8770
+# 连得到；真的对外要另外架隧道把固定的主机名转到这个端口（deploy/tunnel/README.md 写了两种做法和要避开的坑）。
+#   docker compose -f C:\nknu-transfer\public\compose.yaml up -d              开
+#   docker compose -f C:\nknu-transfer\public\compose.yaml ps                 看状态
+#   docker compose -f C:\nknu-transfer\public\compose.yaml restart            换程序以后；加了网站或单位以后
+#   docker compose -f C:\nknu-transfer\public\compose.yaml logs --tail 50     看日志
+#   docker compose -f C:\nknu-transfer\public\compose.yaml down               关
+# 程序是自己的一份，放在 C:\nknu-transfer\public\src（pack.sh 打包、解开在那里），不动建库用的 /work/src，也不动
+# 检视工具的 /work/inspect-code。每晚换库不用重启：每次查询都重新开库，向量索引看建库时间自己重载。
+# 对外的主机名写在同一个资料夹的 .env（README.md 有范例）；还没有对外网址时不用这个档，只有本机名字连得到。
+name: nknu-public
+
+services:
+  public:
+    image: nknu-pipeline
+    working_dir: /work
+    environment:
+      TZ: Asia/Taipei
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /public/src            # 这个服务自己那份程序
+      NKNU_CONFIG_DIR: /work/config      # 单位表这些设定照旧读建库用的那份
+      # 容器里看到的来源都是 Docker 的网关：把它当成本机，限流才分得出隧道后面的每个人（nknu.retrieval.public.LocalPeer）
+      NKNU_LOCAL_PEERS: "172.16.0.0/12,192.168.0.0/16"
+      # 两个算分模型用实验室上共用的那一份（检视台 compose 里的 models 服务，只开本机 8780），显卡上不用再载一份。
+      # 那个服务没回应或在重启时，这个服务当场自己载一份接着答（FALLBACK local；第一次约 17 秒），所以下面的显卡
+      # 保留要留着。程序里认这两个设定的是 nknu.core.model_service；打包的那一版还没有它时，这两行没有作用。
+      NKNU_MODELS_URL: "http://host.docker.internal:8780"
+      NKNU_MODELS_FALLBACK: "local"
+      NKNU_ALLOWED_HOSTS: "${NKNU_ALLOWED_HOSTS:-}"        # 对外的主机名，只写名字
+      NKNU_ALLOWED_ORIGINS: "${NKNU_ALLOWED_ORIGINS:-}"    # https://对外的主机名
+      NKNU_PUBLIC_URL: "${NKNU_PUBLIC_URL:-}"              # 网页上印的网址，https://对外的主机名
+      NKNU_TRUST_CF_HEADER: "${NKNU_TRUST_CF_HEADER:-1}"   # Cloudflare 隧道填 1；Tailscale Funnel 一定要填 0
+    volumes:
+      - nknu-work:/work:ro
+      - nknu-models:/models:ro
+      - C:\nknu-transfer\public\src:/public/src:ro
+      - C:\nknu-transfer\public\log:/public/log            # 查询纪录 queries.jsonl（满 20 MB 换档，留 5 份）
+    command: ["python", "-m", "nknu.retrieval.public", "--db", "research/pipeline_2026-11-02/aca.db",
+              "--host", "0.0.0.0", "--port", "8770", "--log", "/public/log/queries.jsonl"]
+    ports:
+      - "127.0.0.1:8770:8770"
+    init: true
+    shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  nknu-work:
+    external: true
+  nknu-models:
+    external: true

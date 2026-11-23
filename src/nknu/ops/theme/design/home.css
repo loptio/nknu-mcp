@@ -1,0 +1,274 @@
+/* 總覽, the 11-23 design (research/design_2026-11-23/index.html): its style blocks in the copy's order, without what the
+   copy kept from the variants it compared (pips, the time bar, the visits calendar, the made-up sample rows, the old feed). */
+
+/* 日誌's lines read whole (lvfix.py, owner 11-23: 「看不全…失去了log的作用」) and 放大 */
+.lv-row{grid-template-columns:62px 40px minmax(0,1fr)!important;gap:8px!important;padding:3px 10px 3px 7px!important;border-left:3px solid transparent;cursor:text!important;align-items:baseline}
+.lv-row>span{white-space:normal!important;overflow:visible!important;text-overflow:clip!important}
+.lv-row .lv-m{white-space:pre-wrap!important;overflow-wrap:anywhere}
+.lv-row[data-l=error]{border-left-color:var(--bad-s)}.lv-row[data-l=warn]{border-left-color:var(--warn-s)}.lv-row[data-l=debug]{opacity:.6}
+.lv-lw{font-weight:700;margin-right:8px}.lv-row[data-l=error] .lv-lw{color:var(--bad-ink)}.lv-row[data-l=warn] .lv-lw{color:var(--warn-ink)}
+.lv-day{position:sticky;top:0;z-index:1;padding:3px 10px;font:600 11px var(--font);color:var(--ink3);background:var(--sunk);border-bottom:1px solid var(--line)}
+.lv-max-btn{flex:none;width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink3);cursor:pointer;display:inline-grid;place-items:center;padding:0}
+.lv-max-btn:hover{color:var(--ink);border-color:var(--line2)}
+.lv-maxed{position:fixed!important;inset:64px 24px 24px!important;z-index:60!important;display:flex!important;flex-direction:column!important;margin:0!important;max-width:none!important;
+box-shadow:0 24px 80px rgba(0,0,0,.55)!important;background:var(--surface)!important}
+.lv{min-width:0}.lg-pane[data-p=log]>.lv{flex:1;min-width:0}
+.lv-maxed .lv{flex:1;min-height:0}.lv-maxed .lv-list{flex:1 1 0!important;height:auto!important;max-height:none!important}
+body.lv-open::after{content:'';position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:59}
+#todo.lv-maxed .lg-pane[data-p=log]{flex:1;min-height:0;display:flex;max-height:none!important}
+
+/* 標成已知 always shown (owner 11-23: 「这个隐身了」), its six reasons to pick */
+.td .td-known:not([open]){opacity:1}.td-known summary{border-color:var(--line2)!important}
+.td-known form{flex-wrap:wrap;width:320px!important;gap:6px}.td-known form input[name=note]{flex:1}
+.tk-opts{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;order:-1}
+.tk-opts button{padding:2px 9px!important;border-radius:999px!important;border:1px solid var(--line2)!important;background:none!important;
+color:var(--ink2)!important;font:12px var(--font)!important;cursor:pointer;min-height:0!important;height:auto!important}
+.tk-opts button:hover,.tk-opts button[aria-pressed=true]{color:var(--ink)!important;border-color:var(--ink3)!important;background:var(--hover)!important}
+
+/* 網站訪問量 (visits.py) */
+.vs{display:flex;flex-direction:column;gap:10px;padding:16px 18px}
+.vs-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.vs-body{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px}
+.vs-chart{height:260px;min-width:0}
+.vs-tools{display:flex;align-items:center;gap:8px}
+.vs .vs-days{display:none}.vs[data-v=day] .vs-days{display:grid}.vs[data-v=day] .vs-live{display:none}
+.vs-ecg{position:relative;height:260px;border-radius:10px;overflow:hidden;background:transparent}
+.vs-ecg canvas{position:absolute;inset:0;width:100%;height:100%}
+.vs-ecg-none{position:absolute;left:40px;top:0;font-size:11px;color:var(--ink3)}
+.vs-load{display:flex;flex-direction:column;gap:8px}
+.vs-day{font-size:12px;color:var(--ink2);font-weight:650}
+.vs-main{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 12px;padding:12px 14px;border-radius:12px;
+background:var(--sunk);border:1px solid var(--line);cursor:help}
+.vs-main .vs-sl{grid-column:1/-1}
+.vs-pct{font-size:13px;color:var(--ink3)}.vs-pct b{font-size:30px;font-weight:700;color:var(--ink);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.vs-meter{height:8px;border-radius:999px;background:var(--mark2);overflow:hidden}.vs-meter i{display:block;height:100%;border-radius:999px;background:var(--q4)}
+.vs-main .vs-sn{grid-column:1/-1}
+.vs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.vs-stat{display:flex;flex-direction:column;gap:1px;padding:9px 12px;border-radius:10px;background:var(--sunk);border:1px solid var(--line);cursor:help}
+.vs-sl{font-size:11px;color:var(--ink3);letter-spacing:.02em}
+.vs-sv{font-size:12px;color:var(--ink3)}.vs-sv b{font-size:20px;font-weight:700;color:var(--ink);margin-right:2px;font-variant-numeric:tabular-nums}
+.vs-sn{font-size:11px;color:var(--ink3);min-height:14px}
+@media (max-width:760px){.vs-body{grid-template-columns:minmax(0,1fr)}}
+.lg-tabs .kn-n{font-style:normal;margin-left:4px;color:var(--ink3);font-size:11px}
+
+/* 已知 (known.py): every mark, 還在出現 then 沒再出現 */
+.kn{position:relative}
+.kn-h{margin:4px 0 6px;font-size:12px;font-weight:650;color:var(--ink2)}.kn-h span{color:var(--ink3);font-weight:500;margin-left:4px}
+.kn-h:not(:first-of-type){margin-top:16px}
+.kn-list{list-style:none;margin:0;padding:0}
+.kn-row{display:grid;grid-template-columns:64px minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:8px 4px;border-top:1px solid var(--line)}
+.kn-kind{font-size:12px;color:var(--ink3)}
+.kn-what{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;min-width:0;font-size:13px}
+.kn-what b{font-weight:600;color:var(--ink)}.kn-what span{color:var(--ink2)}
+.kn-note{flex-basis:100%;font-size:12px;color:var(--ink3)!important}.kn-note::before{content:'備註：'}
+.kn-empty::before{content:''}
+.kn-when{display:flex;flex-direction:column;align-items:flex-end;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.kn-seen{color:var(--ink2)}
+.kn-row[data-gone] .kn-what b,.kn-row[data-gone] .kn-what span{color:var(--ink3)}
+.kn-row[data-gone] .kn-seen{color:var(--good-ink)}
+.kn-offf{margin:0}
+.kn-off{font-size:12px;padding:3px 10px;border-radius:8px;border:1px solid var(--line2);background:var(--surface);color:var(--ink2);cursor:pointer}
+.kn-off:hover{color:var(--ink);border-color:var(--ink3)}
+@media (max-width:760px){.kn-row{grid-template-columns:minmax(0,1fr) auto}.kn-kind{display:none}.kn-when{grid-column:1}}
+
+/* 待處理 (todo_tune.py): one alert a line */
+.td{list-style:none;margin:0;padding:0}
+.td>li{border-top:1px solid var(--line)}.td>li:first-child{border-top:0}
+.td>li{display:grid;grid-template-columns:18px 56px minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:8px 4px}
+.td-kind{font-size:12px;color:var(--ink3);white-space:nowrap}
+.td-mark{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%}
+.td-warn{background:var(--warn-bg);color:var(--warn-ink)}.td-bad{background:var(--bad-bg);color:var(--bad-ink)}
+.td-what{display:flex;align-items:baseline;gap:12px;min-width:0;font-size:13px}
+.td-what b{color:var(--ink);font-weight:600;white-space:nowrap}
+.td-what a{color:var(--ink);font-weight:600;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.td-what a:hover{text-decoration:underline;text-underline-offset:3px}
+.td-issue{color:var(--ink2);overflow-wrap:anywhere}
+.td-code{flex:none;color:var(--ink3);font:12px/1.4 var(--mono)}
+.td-unk{flex:none;font-size:11px;padding:0 6px;border-radius:999px;background:var(--warn-bg);color:var(--warn-ink);cursor:help}
+.td-age{font-size:11px;white-space:nowrap;padding:1px 8px;border-radius:999px;color:var(--ink3);border:1px solid var(--line)}
+.td-new{background:var(--warn-bg);color:var(--warn-ink);border-color:transparent;font-weight:650}
+.td-known{position:relative;font-size:12px}
+.td-known summary{list-style:none;cursor:pointer;color:var(--ink3);padding:2px 8px;border-radius:6px;border:1px solid transparent;white-space:nowrap}
+.td-known summary::-webkit-details-marker{display:none}
+.td-known summary:hover,.td-known[open] summary{color:var(--ink);border-color:var(--line2);background:var(--surface)}
+.td-known form{position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;padding:8px;
+background:var(--surface);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--shadow)}
+/* opened, the form floats over the page beside its row (the pane scrolls and would cut it: OV-44) */
+.td-known form.tk-fixed{position:fixed;right:auto;z-index:70;max-width:calc(100vw - 16px);box-shadow:var(--pop)}
+.td-known input[name=note]{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--sunk);color:var(--ink);font:12px var(--font)}
+.td-known button{height:28px;padding:0 10px;border:1px solid var(--line2);border-radius:6px;background:var(--surface);color:var(--ink);font:12px var(--font);cursor:pointer}
+.td-none{margin:8px 4px;color:var(--good-ink);font-size:13px}
+.td-none.td-wait,.td-none.kn-none{color:var(--ink3)}
+@media (max-width:520px){.td>li{grid-template-columns:18px minmax(0,1fr) auto;row-gap:4px}.td-kind{display:none}
+.td>li>:last-child{grid-column:2/-1;justify-self:end}}
+
+/* the panes scroll inside the card (layout.py) */
+#todo .lg-pane[data-p=todo],#todo .lg-pane[data-p=known]{max-height:330px;overflow:auto;overscroll-behavior:contain}
+
+/* 文件日期分佈 + 全部網站: 內容's page in a frame (sitemap.py) */
+.sx-frame{width:100%;border:0;height:640px;display:block;color-scheme:normal}
+.mc-alone{margin-top:16px}.mc-alone[hidden]{display:none}
+
+/* the middle row: visits on the left, 待處理 | 日誌 | 已知 on the right (midrow.py) */
+.mid-row{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:16px;margin-bottom:16px;align-items:stretch}
+.mid-row>.vs{margin:0}
+.mid-row .vs-body{grid-template-columns:minmax(0,1fr);gap:12px}
+.mid-row .vs-chart,.mid-row .vs-ecg{height:200px}
+.mid-row .vs-load{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.mid-row .vs-load>.vs-day{grid-column:1/-1}
+.mid-row .vs-grid{display:contents}
+.mid-row .vs-main{grid-template-columns:1fr;padding:9px 12px;gap:2px}.mid-row .vs-pct b{font-size:20px}
+.mid-row .vs-main .vs-meter{display:none}
+.mid-row #todo .td-what a,.mid-row #todo .td-what b{flex:0 1 auto;min-width:0;max-width:48%}
+/* a long reason on one line, cut with … and whole on hover (the design's nowrap ran past the card: OV-41) */
+.mid-row #todo .td-issue{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mid-row #todo{display:flex;flex-direction:column;margin:0;min-height:0}
+.mid-row #todo .lg-pane:not([hidden]){flex:1 1 0;min-height:0;max-height:none!important;overflow:auto}
+.mid-row #todo .lv-list{max-height:none}
+@media (max-width:1000px){.mid-row{grid-template-columns:minmax(0,1fr)}.mid-row #todo .lg-pane:not([hidden]){flex:none;max-height:330px!important}}
+
+/* visits one height in both views; 日誌's search and 放大 in the head (tune2.py) */
+.mid-row .vs-body{height:360px;display:flex!important;flex-direction:column}
+.mid-row .vs:not([data-v=day]) .vs-days,.mid-row .vs[data-v=day] .vs-live{display:none!important}
+.mid-row .vs-ecg,.mid-row .vs-chart{flex:1 1 0;min-height:0;height:auto}
+.mid-row .vs-load{flex:none}
+#todo .lg-head .lv-find{display:none;flex:0 1 260px;height:30px}
+#todo[data-tab=log] .lg-head .lv-find{display:flex}
+#todo .lg-head .lv-max-btn{display:none}#todo[data-tab=log] .lg-head .lv-max-btn{display:inline-grid}
+.mid-row #todo .lg-pane[data-p=log]:not([hidden]){overflow:hidden;display:flex}
+.mid-row #todo .lv{flex:1;min-height:0;gap:6px}
+.mid-row #todo .lv-chips button{height:24px;padding:0 8px}
+.mid-row #todo .lv-list{flex:1 1 0;min-height:0;max-height:none}
+.mid-row .vs-days .vs-load{grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:6px}
+.mid-row .vs-days .vs-main,.mid-row .vs-days .vs-stat{padding:7px 9px}
+.mid-row .vs-days .vs-sv b,.mid-row .vs-days .vs-pct b{font-size:17px}
+.mid-row .vs-days .vs-sn{min-height:0}
+.mid-row #todo .lv-bar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;gap:10px}
+.mid-row #todo .lv-chips{flex-wrap:nowrap;flex:none}
+.mid-row #todo .lv-chips button{flex:none;white-space:nowrap}
+.mid-row #todo .lv-hist{height:20px}
+.mid-row #todo .lv-meta{display:none}
+.mid-row #todo .lv-more{display:none}
+@media (max-width:560px){.mid-row .vs-days .vs-load{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+
+/* the calendar's head: the legend beside the tools, no title in the week (caltune.py) */
+.cal>.pn-chd{display:flex;align-items:center;gap:16px;margin-bottom:12px}
+.cal>.pn-chd h2:empty{display:none}
+.cal[data-view=week]>.pn-chd h2{display:none}
+.cal-key-top{margin:0!important;flex:1}
+.wk-d{min-height:0!important;gap:5px!important;padding:8px 6px!important}
+.wk-day{flex-direction:row!important;gap:6px;align-items:baseline!important}
+.wk-day b{font-size:13px!important}
+.wk-d .ic-ring{width:60px!important;height:60px!important}
+
+/* the ? of a card (help.py) */
+.cal-tools{display:flex;align-items:center;gap:8px}
+.hp{flex:none;width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);background:transparent;color:var(--ink3);
+font:600 12px var(--font);cursor:help;display:inline-grid;place-items:center;padding:0}
+.hp:hover,.hp:focus-visible{color:var(--ink);border-color:var(--ink3)}
+#todo .lg-head{gap:10px}
+.vs-head .pn-khead{font-size:14px;font-weight:650;color:var(--ink);letter-spacing:normal}
+
+/* the week's dial around the ring and the head's two numbers (gauge.py) */
+.wk-d .ic-ring.ic-gauge{width:92px!important;height:88px!important}
+.ga-bg{fill:none;stroke:var(--mark2);stroke-width:5;stroke-linecap:butt}
+.ga path:not(.ga-bg){fill:none;stroke-width:5;stroke-linecap:butt}
+.ga-s0,.ga-s1,.ga-s2,.ga-s3,.ga-s4{stroke:var(--ink)}
+.ga path[data-tip]{cursor:help}
+.cal-times{display:flex;flex-direction:column;align-items:flex-end;gap:0;margin-right:6px;font-size:12px;line-height:1.35;font-variant-numeric:tabular-nums;color:var(--ink3)}
+.ct{cursor:help}.ct-next{color:var(--ink);font-weight:650;font-size:13px}
+.ga-tick{stroke:var(--ink3);stroke-width:.8}
+.wk-d{--cellbg:var(--surface)}a.wk-d:hover{--cellbg:var(--sunk)}.wk-d.is-bad{--cellbg:var(--bad-bg)}
+.ga-cut{stroke:var(--cellbg);stroke-width:1.6}
+.ic-ring .ga-lab{font:500 6.5px var(--font);fill:var(--ink3)}
+.wk-d{gap:2px!important}
+
+/* the calendar (draw_calendar.py, calendar.css) */
+.cal{margin:0 0 16px}
+.cal-switch{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--sunk)}
+.cal-switch button{border:0;background:transparent;color:var(--ink2);font:12px var(--font);padding:4px 10px;border-radius:6px;cursor:pointer}
+.cal-switch button[aria-pressed=true]{background:var(--surface);color:var(--ink);font-weight:650;box-shadow:var(--shadow)}
+.cal-key{display:flex;flex-wrap:wrap;gap:6px 14px;margin:-4px 0 12px;font-size:12px;color:var(--ink3)}
+.cal-key span{display:inline-flex;align-items:center;gap:5px}
+.cal-key i{display:inline-block;width:10px;height:10px;border-radius:3px}
+.k-done{background:var(--good-s)}
+.k-stop{background:var(--warn-s)}.k-bad{background:var(--bad-s)}
+.k-note{width:6px!important;height:6px!important;border-radius:50%!important;background:var(--warn-s)}
+.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.cal-head{display:contents}
+.cal-head span{font-size:12px;color:var(--ink3);text-align:center;padding-bottom:2px}
+.cal-d{position:relative;min-height:92px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+padding:20px 4px 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:inherit;text-decoration:none;
+font-variant-numeric:tabular-nums}
+a.cal-d:hover{border-color:var(--line2);background:var(--sunk)}
+.cal-d.is-out{border:0;background:transparent}
+.cal-d.is-future{background:transparent;border-style:dashed;opacity:.55}
+.cal-d.is-empty{background:var(--sunk)}
+.cal-d.is-today{box-shadow:inset 0 0 0 2px var(--act)}
+.cal-n{position:absolute;top:6px;left:8px;font-size:12px;color:var(--ink3);font-weight:600}
+.cal-m{font-size:11px;color:var(--ink3);display:inline-flex;gap:8px}.cal-m b{color:var(--ink);font-weight:650}
+.cal-ic svg{display:block}
+.ring-bg{fill:none;stroke:var(--mark2);stroke-width:6}
+.ic-ring .a-done{stroke:var(--good-s)}
+.ic-ring .a-stop{stroke:var(--warn-s)}.ic-ring .a-bad{stroke:var(--bad-s)}.ic-ring .a-none{stroke:transparent}
+.ic-ring text{font:650 10px var(--font);fill:var(--ink);font-variant-numeric:tabular-nums}
+.cal-dash{font-size:16px;line-height:1;color:var(--line2)}
+.cal-dot{position:absolute;top:8px;right:9px;width:8px;height:8px;border-radius:50%;background:var(--warn-s)}
+.ic-wait circle{fill:none;stroke:var(--line2);stroke-width:2.5;stroke-dasharray:4 5}
+.ic-ring .a-run{stroke:var(--good-s);stroke-dasharray:3 4;animation:cal-run 1.6s linear infinite}
+@keyframes cal-run{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){.ic-ring .a-run{animation:none}}
+.cal-d.is-bad{background:var(--bad-bg);border-color:var(--bad-s)}
+a.cal-d.is-bad:hover{background:var(--bad-bg);filter:brightness(1.08)}
+/* + strong, − a step softer; both deeper than the ramp's ends (owner 11-23): one pair a theme */
+.cal{--cal-in:#3d2c9e;--cal-out:#6a61c4}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .cal{--cal-in:#9a90ff;--cal-out:#7068c8}}
+:root[data-theme=dark] .cal{--cal-in:#9a90ff;--cal-out:#7068c8}
+.m-in{color:var(--cal-in);font-weight:700}.m-out{color:var(--cal-out);font-weight:650}
+.cal .v-runs,.cal .t-month{display:none}
+.cal[data-view=month] .v-runs.v-month,.cal[data-view=week] .v-runs.v-week{display:block}
+.cal[data-view=month] .t-month{display:inline}
+.cal-tools{flex-wrap:wrap}
+.wk-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.wk-d{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+border:1px solid var(--line);border-radius:12px;background:var(--surface);color:inherit;text-decoration:none}
+a.wk-d:hover{border-color:var(--line2);background:var(--sunk)}
+.wk-d.is-empty{background:var(--sunk);justify-content:flex-start}.wk-d.is-today{box-shadow:inset 0 0 0 2px var(--act)}
+.wk-d.is-bad{background:var(--bad-bg);border-color:var(--bad-s)}
+.wk-day{display:flex;align-items:center;font-size:12px;color:var(--ink3)}.wk-day b{font-size:14px;color:var(--ink2)}
+.wk-d.is-empty .cal-ic,.wk-d.is-empty .cal-dash{margin:auto 0}
+@media (max-width:640px){.cal-d{min-height:70px;padding:18px 2px 6px}.cal-m{display:none}.cal-grid,.wk-grid{gap:4px}
+.wk-d{padding:6px 2px!important}.wk-day{flex-direction:column!important;align-items:center!important;gap:0}
+.wk-d .ic-ring.ic-gauge{width:100%!important;max-width:92px;height:auto!important}.wk-d .cal-m{display:inline-flex;flex-direction:column;
+gap:0;align-items:center}.cal-ic .ic-wait{width:100%;max-width:56px;height:auto}.cal-dot{top:4px;right:4px;width:6px;height:6px}}
+
+/* the tabs of 待處理 | 日誌 | 已知 (todo_log.py) */
+.lg-head{align-items:center}
+.lg-tabs button{font-size:13px}.lg-tabs button b{margin-left:4px;padding:0 6px;border-radius:999px;background:var(--warn-bg);color:var(--warn-ink);font-size:11px}
+.lg-tabs button[aria-selected=true]{background:var(--surface);color:var(--ink);font-weight:650;box-shadow:var(--shadow)}
+
+/* 日誌 (logview.py) */
+.lv{display:flex;flex-direction:column;gap:10px}
+.lv-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.lv-find{flex:1 1 260px;display:flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;
+background:var(--sunk);color:var(--ink3)}
+.lv-find input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--ink);font:13px var(--font)}
+.lv-chips{display:flex;gap:4px;flex-wrap:wrap}
+.lv-chips button{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;
+background:transparent;color:var(--ink3);font:12px var(--font);cursor:pointer}
+.lv-chips button[aria-pressed=true]{background:var(--surface);color:var(--ink);border-color:var(--line2)}
+.lv-chips button i{width:8px;height:8px;border-radius:50%}
+.lv-chips button small{font-variant-numeric:tabular-nums;color:var(--ink3)}
+.lv-hist{display:flex;align-items:flex-end;gap:1px;height:44px;padding:0 2px;border-bottom:1px solid var(--line)}
+.lv-hist div{flex:1;display:flex;flex-direction:column-reverse;min-width:0;height:100%}
+.lv-hist i{display:block;width:100%}
+.lv-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.lv-list{max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--sunk);
+font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.lv-row{display:grid;padding:2px 10px;border-bottom:1px solid var(--line)}
+.lv-row:hover{background:var(--hover)}
+.lv-t{color:var(--ink3)}.lv-s{color:var(--ink2)}.lv-m{color:var(--ink)}
+.lv-row[data-l=error]{background:color-mix(in srgb,var(--bad-bg) 70%,transparent)}
+.lv-none{padding:8px 10px;color:var(--ink3);font:12px var(--font)}
+.lv-more{align-self:center;height:30px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink2);cursor:pointer}
+@media (max-width:640px){.lv-row .lv-s{display:none}.lv-row{grid-template-columns:62px minmax(0,1fr)!important}}

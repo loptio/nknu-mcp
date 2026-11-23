@@ -17,7 +17,10 @@ research/
 strategy-report.md
 tech-stack-report.md
 
-
-# raw crawl archives hold names and student IDs from school pages: never commit
 /archive/
+# old archive copies (archive-2026-10-24/ etc.) hold full names and student IDs: never commit
 /archive*/
+
+# local tool settings: the desktop app's launch config and the notes app
+.claude/
+.obsidian/
