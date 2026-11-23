@@ -161,6 +161,7 @@ def health():
 def test_the_public_service_is_asked_its_health_only_and_said_plainly(health, tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "gpu_memory", lambda: None)
     monkeypatch.setattr(pipeline, "memory", lambda: None)
+    monkeypatch.setattr(pipeline, "now_tpe", lambda: NOW)  # the log's line is 10 minutes before NOW, not before today
     got = pipeline.ask_service("對外服務（8770）", health, "public")
     assert got["up"] and got["interface"] and "讀的庫 11-21 04:03 建的、88,966 份" in got["words"]
     assert _Health.asked == [("/health", f"127.0.0.1:{health.rsplit(':', 1)[1].split('/')[0]}")]  # its own name
