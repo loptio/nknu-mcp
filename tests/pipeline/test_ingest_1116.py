@@ -194,6 +194,13 @@ def test_a_night_with_new_folders_converts_builds_and_swaps(repo):
     assert ni.FLAG.read_text(encoding="utf-8").strip() == "2026-11-18T03:10:00+08:00"
     history = [json.loads(x) for x in repo.history.read_text(encoding="utf-8").splitlines()]
     assert [h["outcome"] for h in history] == ["swapped"]
+    # 11-23: the swap's numbers by site, in nights/<the day the run started>.json (night_sites.py)
+    nights = json.loads((repo.pipe / "nights" / f"{s['started_at'][:10]}.json").read_text(encoding="utf-8"))
+    (swap,) = nights["swaps"]
+    assert (swap["started_at"], swap["how"], swap["backfilled"]) == (s["started_at"], "run", False)
+    assert (swap["built_at"], swap["prev_built_at"]) == ("2026-11-18T03:10:00+08:00", "2026-11-16T14:56:00+08:00")
+    a = swap["sites"][ACA]
+    assert (a["docs"], a["docs_before"], a["export_changed"], a["export_rows"]) == (44, 40, True, 0)
 
 
 def test_a_night_with_nothing_new_builds_nothing(repo):

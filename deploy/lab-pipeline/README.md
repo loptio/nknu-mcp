@@ -433,6 +433,13 @@ docker compose -f C:\nknu-transfer\build\compose.yaml run --rm ingest status
 - 想让某个网站先不换新资料：在 `/work/research/pipeline_2026-11-02/ingest-hold.txt` 写一行网站键（请 Claude 写）；拿掉那一行就恢复。
 - 白天手动进一次：`docker compose -f C:\nknu-transfer\build\compose.yaml run --rm ingest run`。要先试建、检查过再换：放 `ingest.pause`，建成 `--db research/pipeline_2026-11-02/<名字>.db` 的试建库，检查过用 `... run --rm ingest promote <名字>` 直接换上（Claude 做）。
 
+11-23 起每次换库后，另外写一份逐站纪录，给面板画每一晚：`/work/research/pipeline_2026-11-02/nights/<开跑那天>.json`（程序 `night_sites.py`）。
+- 一天一个档，旧的留着。同一天换了几次库，就依序排在档里的 `swaps`。
+- 每站记：用哪个导出资料夹、换了没有、那份导出几笔（资料夹被爬虫清掉了就是 null）、组装成几笔、转文字各状态几个、库里几份、换掉的那份库里几份、把关说不出原因离开的几份。全库再记一份把关的结果：离开几份、各原因几份。
+- 纪录是在换库结果写定以后才写；写不成只在 `ingest.log` 记一句，换库照旧。
+- 新进、改了、离开逐站几份和原因，是面板自己读两份库算的（`src/nknu/ops/changes.py`），不在这份里。
+- 补历史和手动写：`python deploy/lab-pipeline/night_sites.py backfill`（从 `ingest-history.jsonl` 和 `lab_pc/previous/` 留下的报告补，11-17 起每次换库都补得回来），`... night_sites.py now`（现在这份库的换库）。
+
 ## 12. 换程序（Claude 做）
 
 在 Mac 上，仓库里：

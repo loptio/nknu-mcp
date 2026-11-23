@@ -530,6 +530,21 @@ def say(words: str) -> None:
             f.write(line + "\n")
 
 
+def record_night(paths: Paths, st: Status, how: str) -> None:
+    """The swap's numbers by site into nights/<the day the run started>.json (night_sites.py, 11-23: the panels'
+    nights), once the swap is told. Never undoing it: a failure is only said."""
+    try:
+        if str(PROGRAMS) not in sys.path:
+            sys.path.insert(0, str(PROGRAMS))
+        import night_sites  # deploy/lab-pipeline, beside this file
+
+        out = night_sites.record_now(paths.repo, started_at=st.data["started_at"],
+                                     finished_at=st.data.get("finished_at"), how=how)
+        say(f"每晚逐站纪录写在 {paths.rel(out)}")
+    except Exception as exc:  # noqa: BLE001  the swap stands whatever this does
+        say(f"每晚逐站纪录没写成（换库照旧）：{type(exc).__name__}: {exc}")
+
+
 def _facts(lib: dict | None, changed: set[str]) -> dict | None:
     """A library for the status file: its totals and the documents of the sites that changed."""
     if lib is None:
@@ -808,6 +823,7 @@ def _night(paths: Paths, st: Status, lanes, build, limit: float, disk, gpu, left
         st.data["new_reminders"] = new_reminders(paths.checks, after["built_at"])
         # the swap stands whatever the checks after it did (the owner's third point): their failure is only said
         st.end("swapped", None if rc == 0 else "checks_timeout" if rc == EXIT_TIMEOUT else f"checks_exit_{rc}")
+        record_night(paths, st, "run")
         return 0
     if rc == EXIT_HELD and paths.held_db.is_file() and paths.held_db.stat().st_mtime >= began - 1:
         st.data["held"] = held_detail(paths, told)
@@ -994,6 +1010,7 @@ def _promote(paths: Paths, st: Status, name: str) -> int:
     except Exception as exc:  # noqa: BLE001  said, never undone: the library is already the new one
         error = f"after_swap_{type(exc).__name__}: {exc}"
     st.end("swapped", error)
+    record_night(paths, st, "promote")
     return 0
 
 
