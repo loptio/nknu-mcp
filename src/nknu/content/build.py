@@ -730,6 +730,18 @@ RULE_DECLINED = "规则不抓"
 DECIDED_OUT = {"out:skip_path:teacher_fulltext": "decided_teacher_fulltext",
                "out:skip_path:proceedings": "decided_proceedings",
                "out:skip_path:teaching_materials": "decided_teaching_materials"}
+# 11-23 (the owner through session judge): an album's photos are not collected, and the crawler's export declines them
+# by rule (分类 规则不抓, 原因代码 album: 「相簿页的照片（相簿不收）」). A picture the export still gives a file for at such
+# an address, on a row of its own (fetched before the rule, or linked from a unit's front page as well), is left out
+# too (_leave_declined), so that it leaves the library for that reason and never comes back: 44 thumbnails of
+# /wccafpsfs/case/ were in the library of 11-23, and two of them left it that night for no reason the guard knew.
+# {原因代码: (the excluded-count suffix, the reason's key in LEFT_WORDS)}; another kind declined so is another line.
+DECLINED_OUT = {"album": ("(相簿不收)", "decided_album")}
+# ... but an honor roll's picture stays (the product's rule: honor rolls and name lists are kept as the school wrote
+# them): tecs shows its honor roll pictures in one of its albums as well, so the export declines them as album photos,
+# and of the 14 in the library of 11-23 about half state an honor no text document of the site does. Matched in the
+# picture's own address.
+KEEP_DECLINED = ("/honorroll/",)
 _WIX_PICTURE = re.compile(r"^static\.wixstatic\.com/media/([^/?#]+)")
 LEFT_WORDS = {"no_file": "导出那一行没有档了", "no_row": "导出里没有这一行了", "row_not_read": "有档却没读进来",
               "no_text": "这次读不到字", "kind_not_kept": "页面种类变成不收的", "emptied": "内容被掏空",
@@ -742,12 +754,16 @@ LEFT_WORDS = {"no_file": "导出那一行没有档了", "no_row": "导出里没�
               "same_image": "同一张图留了另一个尺寸", "decided_teacher_fulltext": "定了不收：教师著作全文",
               "decided_proceedings": "定了不收：研讨会论文集",
               "decided_teaching_materials": "定了不收：教材下载区",
+              "decided_album": "定了不收：相簿照片",
               "in_button_rows": "只有选单提示的页（内容在按钮行）",
               "moved": "字都还在库里（换了网址，或并进了网页）"}
 
 
 def _why_left(key: str) -> tuple[str, bool]:
-    """(reason, whether it explains the leaving) of a record build_documents left out under key."""
+    """(reason, whether it explains the leaving) of a record build_documents (or _leave_declined) left out under key."""
+    for suffix, why in DECLINED_OUT.values():
+        if key.endswith(suffix):
+            return why, True
     for suffixes, why in (((marks.GONE_SUFFIX, marks.GONE_FILE_SUFFIX), "school_deleted"),
                           ((marks.MOVED_SUFFIX,), "school_moved"), ((marks.NO_DATA_SUFFIX,), "school_no_data"),
                           ((marks.DELETED,), "school_emptied_notice"), ((marks.PAGER_SUFFIX,), "list_pager"),
@@ -777,6 +793,37 @@ def _export_rows(exports: Sequence[Path]) -> dict[str, dict[str, dict]]:
 def _address(url: str | None) -> str:
     """A document's address to compare two libraries by: without its scheme (ids.location_key's own start)."""
     return ids._SCHEME.sub("", (url or "").strip(), count=1)
+
+
+def _leave_declined(records: list[Record], exports: Sequence[Path]) -> tuple[list[Record], dict[str, str], Counter]:
+    """records without those at an address the inputs' exports decline by a rule DECLINED_OUT names (a row of 分类
+    规则不抓 and that 原因代码, at its 网址), whatever other row of the export gives a file there, unless a page shows
+    it in its text or its attachment area (Record.linked): the same picture in an album and in a notice is the
+    notice's (on the library of 11-23, 35 of the 116 album pictures were, a school paper's page of 3,162 characters
+    among them); the left-out ones' document ids with the key each is counted under (build_documents' left), and the
+    counts by that key."""
+    declined: dict[str, str] = {}
+    for export in exports:
+        try:
+            manifest = json.loads((Path(export) / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for row in manifest.get("项目") or []:
+            if (row.get("分类") == RULE_DECLINED and (code := row.get("原因代码") or "") in DECLINED_OUT
+                    and (address := _address(row.get("网址")))):
+                declined[address] = code
+    if not declined:
+        return records, {}, Counter()
+    kept, left, counted = [], {}, Counter()
+    for r in records:
+        address = _address(r.url)
+        if (code := declined.get(address)) is None or r.linked or any(p in address.lower() for p in KEEP_DECLINED):
+            kept.append(r)
+            continue
+        key = r.kind + DECLINED_OUT[code][0]
+        left["d" + r.id] = key
+        counted[key] += 1
+    return kept, left, counted
 
 
 def _text_kept(old: Path, new: Path, doc_id: str) -> float | None:
@@ -2575,9 +2622,14 @@ def build_sites(inputs: Sequence[tuple[Path, Path]], out: Path, *, server_dates:
     # notices the school had moved (MOVED now). Still on by default 【Claude, 11-16 night】: the tests' made-up exports
     # date and group their notices by the page fields alone, and the night the new export came in was no night to
     # change two things at once; the default turns, and the reading goes, once a library built without it was looked at
+    # 11-23: an album's photos and any other kind the export declines by a rule DECLINED_OUT names, left out first
+    records, declined_left, declined_counts = _leave_declined(records, [inp.export for inp in read])
     metas = read_metas(first.export, records) if page_reread else {}
-    left_out: dict[str, str] = {}  # spec 2026-11-17-ingest-guard-design §二: why each left-out record was left out
+    # spec 2026-11-17-ingest-guard-design §二: why each left-out record was left out
+    left_out: dict[str, str] = dict(declined_left)
     docs, excluded = build_documents(records, metas, events, site=first.info["site"], left=left_out)
+    for kind, n in declined_counts.items():
+        excluded[kind] = excluded.get(kind, 0) + n
     # 11-16 (documents.join_single_lines): the runs of one-character lines put right
     joined = {"on": True, "documents": sum(bool(d.lines_joined or d.marks_dropped) for d in docs),
               "joined": sum(d.lines_joined for d in docs), "dropped": sum(d.marks_dropped for d in docs)}

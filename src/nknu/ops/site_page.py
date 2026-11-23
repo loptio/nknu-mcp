@@ -36,15 +36,16 @@ from nknu.ops.check_sites import home_button, site_section
 from nknu.ops.home_page import CSS as HOME_CSS
 from nknu.ops.home_page import HOME_JS, TONE_PILL, TONE_WORDS, chain_html, mark, split_bar
 from nknu.ops.look import e, icon, s2t
-from nknu.ops.pipeline import BAD, NONE, OK, WARN, open_ro, stamp, worst
+from nknu.ops.names import TITLES, merge, rename
+from nknu.ops.pipeline import BAD, NONE, OK, WARN, left_out_words, open_ro, stamp, worst
 from nknu.ops.pipeline_page import CSS as PIPE_CSS
 from nknu.ops.pipeline_page import (
-    OUTCOME_WORDS,
     SITE_CSS,
     STATE_ICON,
     STATUS_TEXT,
     _bars,
     one_site_changes,
+    outcome_word,
     refill_html,
 )
 from nknu.ops.tonight_page import CSS as TONIGHT_CSS
@@ -225,11 +226,31 @@ def problems_section(rows: list[dict], reading: bool) -> str:
 # ------------------------------------------------------------------------------------------------ 2 流程
 
 
+def export_marks(ex: dict) -> tuple[list[list], dict[str, list]]:
+    """The export's 缺什么 marks of the site as ([[words, count]], {words: [(text, href)]}): each word in the 11-23
+    words (names.rename; the reading gives them so, a reading from before is renamed), two old words that are one new
+    word one row, their examples together, each opening 網頁核查 on that page."""
+    examples = ex.get("missing_examples") or {}
+    counts: dict[str, int] = {}
+    items: dict[str, list] = {}
+    for w, c in (ex.get("missing") or {}).items():
+        word = rename(w)
+        counts[word] = counts.get(word, 0) + int(c or 0)
+        items.setdefault(word, []).extend((s2t(t) or u, f"/check?ref={quote(u, safe='')}") for u, t in examples.get(w) or [])
+    return [[w, c] for w, c in counts.items() if c], items
+
+
+# what the build left out of one site, in 內容's 建庫 words: the build's own keys for a merged copy and for a deleted
+# notice's shell (nknu.content.documents: (副本), (学校删掉)) through pipeline.left_out_words
+COPY_WORD, DELETED_WORD = left_out_words("notice(副本)"), left_out_words("notice(学校删掉)")
+
+
 def site_stages(row: dict | None, detail: dict | None) -> list[dict]:
     """The site's four steps, each on its own terms: {key, name, into, value, drop (into − value), unit, unit_out,
-    in_words, out_words, drop_word, lost: [[words, count]], lost_label, items: {words: [(text, href)]}, tip}. into
-    and value are None where a step has no such count (建庫 has no count of what went in for one site; a site the
-    library does not hold has only the crawl's)."""
+    in_words, out_words, drop_word, lost: [[words, count]], lost_label (the long one, for the hover), lost_title (its
+    short name, names.TITLES), items: {words: [(text, href)]}, tip}. into and value are None where a step has no such
+    count (建庫 has no count of what went in for one site; a site the library does not hold has only the crawl's).
+    Every reason is in the 11-23 words (names.py), the ones 內容 and the drawers say."""
     cells = (row or {}).get("cells") or {}
     detail = detail or {}
     crawl = cells.get("crawl") or {}
@@ -238,12 +259,14 @@ def site_stages(row: dict | None, detail: dict | None) -> list[dict]:
     site = detail.get("site") or {}
 
     def step(key: str, into: int | None, value: int | None, **more) -> dict:
+        label = more.get("lost_label") or ""
         return {"key": key, "name": NODE_NAME[key], "into": into, "value": value,
-                "drop": into - value if into is not None and value is not None else None, **more}
+                "drop": into - value if into is not None and value is not None else None,
+                "lost_title": TITLES.get(label, label), **more}
 
     got, whole = crawl.get("n"), crawl.get("whole")
     files, rows = ex.get("files"), ex.get("rows")
-    examples = ex.get("missing_examples") or {}
+    marks, marked = export_marks(ex)
     status = text.get("status") or {}
     ok = status.get("ok") if status else None
     total = sum(status.values()) if status else None
@@ -251,20 +274,17 @@ def site_stages(row: dict | None, detail: dict | None) -> list[dict]:
     for st, reason, f in text.get("bad") or []:
         bad.setdefault(STATUS_TEXT.get(st, st), []).append((f"{s2t(f)}（{s2t(reason) or '沒寫原因'}）", ""))
     copies = (detail.get("copies") or {}).get("merged") if isinstance(detail.get("copies"), dict) else None
-    built = [x for x in (["別處有一樣的、併成一份", int(copies or 0)],
-                         ["學校刪掉或轉走、沒收的公告", int(site.get("deleted_notices") or 0)]) if x[1]]
+    built = [x for x in ([COPY_WORD, int(copies or 0)], [DELETED_WORD, int(site.get("deleted_notices") or 0)]) if x[1]]
     return [
         step("crawl", whole, got, unit="個網址", unit_out="個網址", drop_word="沒抓到",
              in_words="個這一輪該抓的網址", out_words="個抓到了",
-             lost=[[w, int(c)] for _code, w, c in crawl.get("lost") or [] if c],
+             # the reading's words (pipeline.bucket_words), renamed once more for a reading from before 11-23
+             lost=merge([(w, int(c)) for _code, w, c in crawl.get("lost") or [] if c]),
              lost_label="還沒抓到的（照爬蟲自己的分類）", tip=crawl.get("tip") or "", items={}),
         step("export", rows, files, unit="筆", unit_out="筆", drop_word="沒存檔",
              in_words="筆在導出清單上（每一個網頁、檔案或圖片一筆）", out_words="筆存下了檔案",
-             lost=[[w, int(c)] for w, c in (ex.get("missing") or {}).items() if c],
-             lost_label="清單上註明缺東西的（一筆可能缺好幾樣）",
-             tip="沒存下檔案的多半照規則本來就不存",
-             items={w: [(s2t(t) or u, f"/check?ref={quote(u, safe='')}") for u, t in examples.get(w) or []]
-                    for w in ex.get("missing") or {}}),
+             lost=marks, lost_label="清單上註明缺東西的（一筆可能缺好幾樣）",
+             tip="沒存下檔案的多半照規則本來就不存", items=marked),
         step("totext", total, ok, unit="個檔", unit_out="個檔", drop_word="沒轉成文字",
              in_words="個檔（壓縮檔裡的檔各算一個）", out_words="個轉成文字",
              lost=[[STATUS_TEXT.get(st, st), int(c)] for st, c in status.items() if st != "ok" and c],
@@ -364,7 +384,7 @@ def step_more(key: str, detail: dict | None) -> str:
         others = {k: v for k, v in (ex.get("outcomes") or {}).items() if k != "抓到了"}
         if not others:
             return ""
-        return _fold("庫用的這份導出清單上，沒抓到的各種結果", _bars(others, OUTCOME_WORDS, ex.get("examples")),
+        return _fold("庫用的這份導出清單上，沒抓到的各種結果", _bars(others, outcome_word, ex.get("examples")),
                      f"{sum(others.values()):,}")
     if key == "export" and ex:
         facts = _facts([
@@ -411,7 +431,10 @@ def step_panel(x: dict, detail: dict | None) -> str:
         words = f"<p class='hm-words'>{e(reconcile_words(stage))}</p>"
     tip = f"<p class='hm-words'>{e(stage['tip'])}</p>" if stage["tip"] and stage["key"] != "crawl" else ""
     reasons = reason_list(stage["lost"], stage["items"])
-    reasons = f"<h4>{e(stage['lost_label'])}</h4>{reasons}" if reasons else ""
+    # the list's short name (names.TITLES, as 內容 heads the same list), its long label in the hover
+    title = stage.get("lost_title") or stage["lost_label"]
+    long_ = f" data-tip='{e(stage['lost_label'])}'" if stage["lost_label"] and stage["lost_label"] != title else ""
+    reasons = f"<h4{long_}>{e(title)}</h4>{reasons}" if reasons else ""
     empty = "" if rows else "<p class='v3-empty'>讀不到這一步的數字</p>"
     return (f"<article class='hm-panel' data-panel='{e(x['id'])}'>{head}{io}{bar}{says}{words}{tip}"
             f"{reasons}{step_more(stage['key'], detail)}{empty}</article>")

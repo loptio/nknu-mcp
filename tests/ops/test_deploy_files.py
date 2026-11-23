@@ -506,7 +506,7 @@ def test_a_link_column_shows_a_short_word_and_any_other_cell_renders_as_usual():
     cells = _plugin("cells")
     trace = str(_cell(cells, "http://127.0.0.1:18878/trace?ref=du1", "追蹤"))
     assert trace == ('<a class="go" href="http://127.0.0.1:18878/trace?ref=du1" target="_blank" rel="noopener" '
-                     'data-tip="在檢視台的文件追蹤看這一份：從抓取到搜尋的每一步">追蹤 ↗</a>')
+                     'data-tip="在檢視台的文件追蹤看這一份：從抓取到檢索的每一步">追蹤 ↗</a>')
     listed = str(_cell(cells, "http://127.0.0.1:18001/aca/site_undated?site=s1&why=menu", "看清單"))
     assert listed == ('<a class="go" href="http://127.0.0.1:18001/aca/site_undated?site=s1&amp;why=menu" '
                       'data-tip="列出這個原因的每一份文件">看清單</a>')

@@ -56,7 +56,7 @@ def test_the_build_says_what_went_in_what_came_out_and_what_it_left_out(where):
     step = pipeline.build_step(where)
     assert step.state == OK and "11-16 14:56" in step.say
     # what went in: the documents plus what the build left out (5 + 7 + 2 + 1), two sites
-    assert ("份文件", 5) in step.out and ("個小段（搜尋時比對的單位）", 40) in step.out
+    assert ("份文件", 5) in step.out and ("個小段（檢索時比對的單位）", 40) in step.out
     assert step.into == [("筆整理前的網頁、檔案和行事曆（2 站）", 15)] and step.bar == [5, 15]
     reasons = dict(step.lost)  # the 11-23 words (names.py), each with a key that stays when a word is renamed
     assert reasons["公告列表分頁"] == 7 and reasons["已刪公告空殼"] == 2
@@ -412,9 +412,10 @@ def test_a_steps_list_shows_five_of_each_kind_of_loss_and_folds_the_rest():
     page = pipeline_page.site_steps(detail)
     text = _step(page, "轉文字")
     seen, folded = text.split("<details", 1)
-    assert seen.count("轉文字失敗：") == 2 and seen.count("讀不出文字：") == 5
-    assert seen.index("轉文字失敗：") < seen.index("讀不出文字：")  # failures first
-    assert "<summary>" in folded and "還有 36 個" in folded and folded.count("讀不出文字：") == 23
+    # the 11-23 words (names.py: 轉換失敗, 無文字可讀), pipeline.STATUS_WORDS
+    assert seen.count("轉換失敗：") == 2 and seen.count("無文字可讀：") == 5
+    assert seen.index("轉換失敗：") < seen.index("無文字可讀：")  # failures first
+    assert "<summary>" in folded and "還有 36 個" in folded and folded.count("無文字可讀：") == 23
     assert "其餘 13 個沒有列出來" in folded  # 41 empty, 28 listed by the accounting
     refill = _step(page, "導出")
     seen, folded = refill.split("<details", 1)

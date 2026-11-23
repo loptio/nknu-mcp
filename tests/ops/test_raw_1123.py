@@ -576,7 +576,7 @@ def test_a_document_row_links_to_its_trace_and_shows_its_opening(where):
     assert go["文件頁"] == "/trace?ref=" + made.doc_id(made.NOTICE_URL)
     dl = {k: v for k, v, _o in row["dl"]}
     assert dl["開頭"].startswith("115學年度第1學期停修申請") and dl["單位"] == "教務處"
-    assert ["", "2 小段", "搜尋時比對的單位"] in row["meta"]
+    assert ["", "2 小段", "檢索時比對的單位"] in row["meta"]
 
 
 # ---------------------------------------------------------------- 換庫

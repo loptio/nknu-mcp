@@ -19,6 +19,9 @@ What one night is made of, and where each part comes from:
   the steps' in → out       the latest night: the steps as last read (pipeline.Pipeline); an older night: the steps kept
                             for it after it ended (Store.night_flow), else what the per-night files give (the crawl's
                             coverage line, nights/<day>.json); a night with none of these says so
+  換庫's reasons and 對帳     the swap's comparison (below); without one, the build's own check of the swap
+                            (nights/<day>.json swaps[].departures, in the comparison's words: DEPARTURE_REASON) and
+                            ops.db's 新進 and 改了 (critic CR-02); a swap whose check is not there says so
   the map and side card     the swap's comparison of that night: the live one when it is this night's (by the day
                             history.Recorder files it under: changes_day), else the one kept for it
                             (Store.night_changes); else ops.db's per-site new and left (no 改了, no lists)
@@ -45,6 +48,7 @@ from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 
+from nknu.ops import changes as cmp
 from nknu.ops import logs, nightly, sources
 from nknu.ops import pipeline as pl
 from nknu.ops.names import TITLES, link_name, link_tip, merge, rename
@@ -93,7 +97,23 @@ DOES = {"crawl": "爬蟲照網站清單抓網頁和檔案，存進帳本和存�
 # what an older night lacks, said where its numbers would be (the owner's rule: no silent gaps)
 LACKS = {"kept": "這一晚的檔案和逐筆紀錄只看得到最近一晚的（它們是現在的樣子）",
          "records": "這一晚只留下每一步的輸入、輸出和逐站數字；對帳、檔案和逐筆紀錄只看得到最近一晚的",
+         "records_swap": "這一晚只留下每一步的輸入、輸出、逐站數字和換庫的對帳；其他步的對帳、檔案和逐筆紀錄只看得到最近一晚的",
          "none": "這一晚的輸入、輸出沒留下"}
+# 換庫 on a night with no comparison of its swap (11-17 … 11-23: ops.db keeps one from 11-24 on, history.Recorder): the
+# build's own check of what the swap took out (its guard, nknu.content.build._departures, kept in nights/<day>.json
+# swaps[].departures {left, explained: {code: n}, unexplained: {code: n}}, null when it compared nothing). Each code is
+# said as the comparison says the same leaving (changes.REASONS, in names.py's words) and keyed by that reason (raw.py's
+# left:<reason>), so an older night's 換庫 reads as the latest's (critic CR-02)
+DEPARTURE_REASON = {"merged": "copy", "school_deleted": "gone", "school_moved": "moved", "school_no_data": "no_data",
+                    "school_emptied_notice": "shell", "school_gone": "school_gone", "list_pager": "pager",
+                    "calendar": "calendar_gone", "renumbered": "renumbered", "same_image": "same_image",
+                    "in_button_rows": "menu_only", "moved": "words_kept", "no_file": "not_fetched",
+                    "no_row": "not_exported", "site_not_built": "site_gone", "row_not_read": "unknown",
+                    "no_text": "unknown", "kind_not_kept": "unknown"}
+NO_DEPARTURES = "這一晚的換庫紀錄沒有記下離開的原因"  # departures null: the build compared nothing that night
+NO_SWAP_RECORD = "這一晚沒有換庫紀錄，離開的原因沒留下"  # no nights/<day>.json swap for the night
+NONE_LEFT = "這一晚沒有文件離開庫"
+NEW_WORKED_OUT = "換後 − 換前 + 離開（這一晚沒留下新進的份數）"
 # the latest night while the steps are still being read (a restart: Pipeline.snapshot's first reading has not ended)
 READING = "正在讀每一步的紀錄（第一次要幾秒到幾十秒），讀完自己換上"
 NO_RECORDS = "還沒有紀錄：第一晚跑完以後就有"  # ops.db is on and holds no night yet (the old /tonight's words)
@@ -325,9 +345,86 @@ def flow_step(s: dict) -> dict | None:
             "sides": (s.get("sides") or []) if s.get("key") == "crawl" else []}
 
 
-def swap_flow(before: int | None, after: int | None, ch: dict | None) -> dict | None:
+def _int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _build_words(code: str) -> str:
+    """The build's own words for a departure code (LEFT_WORDS, made Traditional); the code when they are not at hand."""
+    try:
+        from nknu.content.build import LEFT_WORDS
+    except ImportError:  # the content package is not importable in the copy the panels run
+        return code
+    return rename(pl.tw(str(LEFT_WORDS.get(code) or code)))
+
+
+def departure_word(code: str, unexplained: bool) -> tuple[str, str]:
+    """(words, the comparison's reason key or '') of one of the build's departure codes: the comparison's words for the
+    same leaving; 原因不明：<the build's words> where the comparison would say only 原因不明, or has no reason and the
+    build could not explain it; 決定不收：<the kind> for a kind decided out; else the build's own words, so a code the
+    build adds needs no line here."""
+    if code.startswith("decided_"):
+        return f"{cmp.REASONS['decided_out'][0]}：{cmp.decided_words(code)}", "decided_out"
+    key = DEPARTURE_REASON.get(code, "")
+    if key in cmp.REASONS and cmp.REASONS[key][2] != cmp.UNKNOWN:
+        return cmp.REASONS[key][0], key
+    if unexplained or key:
+        return f"{cmp.REASONS['unknown'][0]}：{_build_words(code)}", key
+    return _build_words(code), ""
+
+
+def departure_rows(dep) -> tuple[list[list], int] | None:
+    """The build's departures of a swap as the lost list's rows [[words, n, key]], largest first (rows of the same words
+    summed; explained before unexplained among equals), and how many it could not explain; None when the swap has
+    none (the build compared nothing, or the file is not in the shape written)."""
+    if not isinstance(dep, dict):
+        return None
+    rows: dict[str, list] = {}
+    odd = 0
+    for part, unexplained in (("explained", False), ("unexplained", True)):
+        for code, n in _obj(dep.get(part)).items():
+            if not _int(n) or n <= 0:
+                continue
+            word, key = departure_word(str(code), unexplained)
+            rows.setdefault(word, [word, 0, key])[1] += n
+            odd += n if unexplained else 0
+    return sorted(rows.values(), key=lambda r: -r[1]), odd
+
+
+def _swap_of_records(step: dict, before: int, after: int, swap: dict | None, counts: Mapping) -> None:
+    """換庫's lost list and 對帳 without a comparison (DEPARTURE_REASON): what left by the build's reasons, 離開 its
+    count (else ops.db's), 新進 ops.db's (else worked out: 換後 − 換前 + 離開, said so), 改了 ops.db's; a mismatch is
+    link_left (the page's 還差). A swap whose departures are not there says so (lost_none), on the list and on 離開."""
+    dep = swap.get("departures") if isinstance(swap, dict) else None
+    got = departure_rows(dep)
+    left = dep["left"] if got is not None and _int(dep.get("left")) else counts.get("left")
+    left = left if _int(left) else None
+    if got is None:
+        why = step["lost_none"] = step["lost_tip"] = NO_DEPARTURES if isinstance(swap, dict) else NO_SWAP_RECORD
+    else:
+        rows, odd = got
+        step["lost"] = rows
+        step["lost_tip"] = f"離開庫的（{odd:,} 份說不出原因）" if odd else "離開庫的（都說得出原因）"
+        why = "、".join(f"{w} {n}" for w, n, _k in rows)
+        if not rows:  # nothing left, or a count of leaving with no reasons beside it (a file written by hand)
+            step["lost_none"] = NONE_LEFT if left == 0 else NO_DEPARTURES
+    new, new_tip = counts.get("new"), ""
+    if not _int(new):
+        new, new_tip = (after - before + left, NEW_WORKED_OUT) if left is not None else (None, "")
+    if left is None or new is None:
+        return
+    changed = counts.get("changed")
+    step["link"] = [["", link_name("換前的庫"), before, ""], ["+", "新進", new, new_tip], ["−", "離開", left, why],
+                    ["=", link_name("換後的庫"), after, f"改了 {changed} 份（份數不變）" if _int(changed) else ""]]
+    step["link_left"] = (before + new - left - after) or None
+
+
+def swap_flow(before: int | None, after: int | None, ch: dict | None, swap: dict | None = None,
+              counts: Mapping | None = None) -> dict | None:
     """換庫 as a step (the design's content_night.py): the library before → after, 對帳 換前 + 新進 − 離開 = 換後, and
-    what left by its reasons. None when neither count is known."""
+    what left by its reasons: from the swap's comparison (ch); without one, from the build's own check of the night's
+    swap (swap: chain_swap's, its departures) and the night's counts in ops.db (counts: new, left, changed). None when
+    neither count of documents is known."""
     if ch is not None:
         before = before if before is not None else (ch.get("prev") or {}).get("docs")
         after = after if after is not None else (ch.get("new") or {}).get("docs")
@@ -335,8 +432,11 @@ def swap_flow(before: int | None, after: int | None, ch: dict | None) -> dict | 
         return None
     step = {"does": SWAP_DOES, "into": [["份文件（換前）", int(before)]], "out": [["份文件（換後）", int(after)]],
             "lost": [], "lost_label": TITLES.get("離開庫的（都說得出原因）", "離開庫的原因"),
-            "lost_tip": "離開庫的（都說得出原因）", "link": [], "link_left": None, "share": False, "sides": []}
-    if ch is not None:
+            "lost_tip": "離開庫的（都說得出原因）", "lost_none": "", "link": [], "link_left": None, "share": False,
+            "sides": []}
+    if ch is None:
+        _swap_of_records(step, int(before), int(after), swap, counts or {})
+    else:
         t = ch.get("totals") or {}
         labels = _labels(ch)
         by = sorted((ch.get("by_reason") or {}).items(), key=lambda kv: -kv[1])
@@ -351,15 +451,17 @@ def swap_flow(before: int | None, after: int | None, ch: dict | None) -> dict | 
     return step
 
 
-def flow_of_snapshot(snap: dict, ch: dict | None, swap_out: tuple[int | None, int | None] = (None, None)) -> dict:
-    """The five steps from a reading of the pipeline (live, or the one kept for an older night)."""
+def flow_of_snapshot(snap: dict, ch: dict | None, swap_out: tuple[int | None, int | None] = (None, None),
+                     swap: dict | None = None, counts: Mapping | None = None) -> dict:
+    """The five steps from a reading of the pipeline (live, or the one kept for an older night); 換庫 without a
+    comparison from the night's swap record and counts (swap_flow)."""
     st = {s.get("key"): s for s in snap.get("steps") or [] if isinstance(s, dict)}
     steps = {k: f for k in FLOW_STEPS if (f := flow_step(st.get(k) or {})) is not None}
     nightly_out = (st.get("nightly") or {}).get("out") or []
     before = nightly_out[0][1] if len(nightly_out) > 1 else swap_out[0]
     after = nightly_out[1][1] if len(nightly_out) > 1 else swap_out[1]
-    if (swap := swap_flow(before, after, ch)) is not None:
-        steps["swap"] = swap
+    if (sw := swap_flow(before, after, ch, swap, counts)) is not None:
+        steps["swap"] = sw
     return steps
 
 
@@ -390,9 +492,11 @@ def _sum_sites(swap: dict | None, field: str) -> tuple[int | None, int]:
     return (sum(have) if have else None), len(vals) - len(have)
 
 
-def flow_of_records(cov: dict | None, swap: dict | None, ch: dict | None, does: dict[str, str]) -> dict:
+def flow_of_records(cov: dict | None, swap: dict | None, ch: dict | None, does: dict[str, str],
+                    counts: Mapping | None = None) -> dict:
     """An older night's steps from what the per-night files hold: the crawl's coverage line, the swap's per-site
-    numbers (nights/<day>.json); no 對帳, no notes, no side runs."""
+    numbers and the build's check of what it took out (nights/<day>.json), with the night's counts in ops.db
+    (counts: new, left, changed); 對帳 only for 換庫, no notes, no side runs."""
     steps: dict[str, dict] = {}
 
     def step(key: str, into: list, out: list, lost: list | None = None, label: str = "沒走到下一步的",
@@ -425,7 +529,7 @@ def flow_of_records(cov: dict | None, swap: dict | None, ch: dict | None, does: 
     if records is not None and docs is not None:
         step("build", [["筆記錄", records]], [["份文件", docs]], share=False)
     before, _ = _sum_sites(swap, "docs_before")
-    if (sw := swap_flow(before, docs, ch)) is not None:
+    if (sw := swap_flow(before, docs, ch, swap, counts)) is not None:
         steps["swap"] = sw
     return steps
 
@@ -684,14 +788,15 @@ def data(where: Where, store, run_day_asked: str | None = None, *, flow=None, ch
             log.exception("定时更新：读不到这一晚留下的各步骤")
     docs_before, _ = _sum_sites(swap, "docs_before")
     docs_after, _ = _sum_sites(swap, "docs")
+    counts = {k: n.get(k) for k in ("new", "left", "changed")}  # ops.db's, for 換庫 without a comparison
     if snap and snap.get("steps"):
-        steps, fkind = flow_of_snapshot(snap, ch, (docs_before, docs_after)), "live"
+        steps, fkind = flow_of_snapshot(snap, ch, (docs_before, docs_after), swap, counts), "live"
     elif kept and kept.get("steps"):
-        steps, fkind = flow_of_snapshot(kept, ch, (docs_before, docs_after)), "kept"
+        steps, fkind = flow_of_snapshot(kept, ch, (docs_before, docs_after), swap, counts), "kept"
     else:
         does = {s.get("key"): s.get("does") for s in ((_get(flow, "last") or {}).get("steps") or [])
                 if isinstance(s, dict)}
-        steps = flow_of_records(cov, swap, ch, does)
+        steps = flow_of_records(cov, swap, ch, does, counts)
         fkind = "records" if steps else "none"
     cells_src = (snap or {}).get("sites") if fkind == "live" else (kept or {}).get("sites")
     sites, sites_kind = site_numbers(cov_raw, swap, cells_src, keys, names)
@@ -705,6 +810,8 @@ def data(where: Where, store, run_day_asked: str | None = None, *, flow=None, ch
         note = f"{miss}；{note}" if note else miss
     paused = paused_now(where) if key >= default else []
     lacks = READING if reading else LACKS.get(fkind, "")
+    if fkind == "records" and (steps.get("swap") or {}).get("link"):  # 換庫's 對帳 is this night's own (CR-02)
+        lacks = LACKS["records_swap"]
     extra = f"{cv['kind']}{len(cv['sites'])}{fkind}{reading}{note}{[p[0] for p in paused]}"
     return {"run": run, "night": key.isoformat(), "default": run_day(default), "latest": latest and fkind == "live",
             "nav": nav(first, last), "n": n, "changes": cv,

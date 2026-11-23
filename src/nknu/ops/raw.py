@@ -1097,7 +1097,7 @@ def build_doc_row(d: dict, n_chunks: int, key: str, word: str, sites: Mapping[st
     if d.get("head"):
         dl.append(["開頭", d["head"], {"quote": 1}])
     meta = [[KIND_ICON.get(kind, "網頁"), "", KIND_CLASS.get(kind, kind)], ["", f"{_n(d.get('chars')):,} 字", ""],
-            ["", f"{n_chunks} 小段", "搜尋時比對的單位"]]
+            ["", f"{n_chunks} 小段", "檢索時比對的單位"]]
     go = [["文件", "文件頁", "/trace?ref=" + quote(d["doc_id"], safe=""), ""]]
     if url:
         go.append(["學校", "學校網頁", url, ""])

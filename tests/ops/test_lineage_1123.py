@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -67,6 +69,24 @@ def file(where: Where, key: str, **params) -> dict:
     status, body = lineage.api(where, {"key": key, **params})
     assert status == 200, body
     return body
+
+
+def counts(rows: list) -> tuple[dict, list[str]]:
+    """A database's table rows as {table: (rows, how)}, and its notes."""
+    return {r[0]: (r[1], r[2]) for r in rows if r[2] != "note"}, [r[0] for r in rows if r[2] == "note"]
+
+
+def tips(rows: list) -> dict:
+    return {r[0]: r[3] for r in rows if r[2] != "note"}
+
+
+def ledger(where: Where) -> Path:
+    """A ledger in the crawler's own schema, empty."""
+    path = where.archive / "frontier.db"
+    path.unlink()
+    Frontier(path).conn.close()
+    lineage._tables.clear()
+    return path
 
 
 # ---------------------------------------------------------------- the map
@@ -182,6 +202,39 @@ def test_list_files_name_the_site_of_an_export_folder_and_an_empty_list_says_so(
     assert history["rows"][0]["outcome"] == "swapped" and history["cols"] == ["night", "outcome"]
 
 
+def _run_line(day: int) -> str:
+    """One line of ingest-history.jsonl as long as the lab's (8-10 KB): the sites that came in with their folders, a
+    departure's long address, a key in a log path."""
+    night = f"2026-11-{day:02d}"
+    sites = [{"site": f"site{n}.example", "folder": f"archive-export/sites/site{n}.example-202611{day:02d}-013000"}
+             for n in range(60)]
+    url = "https://x.example/" + "a" * 262 + f"?key={KEY}&next=" + "b" * 300  # the key across where a value is cut
+    return json.dumps({"night": night, "started_at": f"{night}T02:39:12+08:00", "finished_at": f"{night}T03:14:34+08:00",
+                       "outcome": "swapped", "step": "done", "error": None, "sites_new": sites, "sites_held": [],
+                       "departures": {"left": 2, "items": [{"url": url}]}, "log": f"lab_pc/ingest.log?token={KEY}"},
+                      ensure_ascii=False)
+
+
+def test_the_ingest_history_is_a_table_of_the_last_runs_read_from_whole_lines(where):
+    """FD-04 / NV18: each line (~9 KB on the lab) is parsed whole, then its strings masked and cut; the last
+    HISTORY_RUNS runs, newest first; a line being written is said, not dropped in silence."""
+    lines = [_run_line(day) for day in range(1, 26)]
+    assert min(map(len, lines)) > 1500 and sum(map(len, lines)) > lineage.TAIL_BYTES
+    (where.pipe / "ingest-history.jsonl").write_text("\n".join(lines) + '\n{"night": "2026-11-26", "outc',
+                                                    encoding="utf-8")
+    view = file(where, "ingest_history")["look"]["view"]
+    rows = view["rows"]
+    assert len(rows) == lineage.HISTORY_RUNS
+    assert rows[0]["night"] == "2026-11-25" and rows[-1]["night"] == f"2026-11-{26 - lineage.HISTORY_RUNS:02d}"
+    assert view["cols"] == ["night", "outcome", "started_at", "finished_at", "step", "sites_new"]  # none empty
+    assert len(rows[0]["sites_new"]) == 60 and rows[0]["sites_new"][0]["site"] == "site0.example"
+    url = rows[0]["departures"]["items"][0]["url"]
+    assert len(url) == lineage.VALUE_CHARS + 1 and url.endswith("…")
+    said = json.dumps(view, ensure_ascii=False)
+    assert KEY[:12] not in said and "key=（遮掉" in url  # masked before it was cut
+    assert any("1 行" in p for p in view["intro"])  # the line being written
+
+
 def test_a_sites_manifest_shows_its_rows_and_without_a_site_the_folders_to_pick(where):
     body = file(where, "manifest", site=made.SITE, step="totext")
     look = body["look"]
@@ -196,21 +249,138 @@ def test_a_sites_manifest_shows_its_rows_and_without_a_site_the_folders_to_pick(
 
 def test_a_library_shows_its_tables_counted_in_the_background(where):
     body = lineage.file(where, "aca", {}, wait=True)
-    tables = {n: (c, approx) for n, c, approx in body["look"]["tables"]}
-    assert tables["docs"] == (5, False) and tables["sites"] == (2, False)
-    assert tables["chunk_fts"][1] is True  # a search index: its last rowid, said as 約
+    tables, _notes = counts(body["look"]["tables"])
+    assert tables["docs"] == (5, "exact") and tables["sites"] == (2, "exact")
     assert body["writers"] == ["換庫"] and body["readers"] == ["換庫"]
+
+
+def test_a_librarys_index_tables_are_said_by_what_they_hold(where):
+    """FD-06: the keyword index's own tables are not listed (chunk_fts_data's last id is a segment number, never a row
+    count) and a line says why; chunk_fts is counted by its one row a chunk; the vectors are what the build wrote down
+    with them (meta vec_count), never read (kilobytes a row)."""
+    conn = sqlite3.connect(where.db)
+    chunks = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('vec_count', ?)", (str(chunks),))
+    conn.commit()
+    conn.close()
+    lineage._tables.clear()
+    rows = lineage.file(where, "aca", {}, wait=True)["look"]["tables"]
+    tables, notes = counts(rows)
+    assert not [n for n in tables if n.startswith("chunk_fts_")]
+    assert tables["chunk_fts"] == (chunks, "exact") and "chunk_fts_docsize" in tips(rows)["chunk_fts"]
+    assert tables["chunk_vecs"] == (chunks, "exact") and "vec_count" in tips(rows)["chunk_vecs"]
+    assert any("chunk_fts_data" in n and "chunk_fts_idx" in n for n in notes)
+    assert all(n is not None for n, _how in tables.values())
+
+
+def test_a_vector_cache_is_said_by_its_ids_never_read_whole(where, monkeypatch):
+    """FD-06: vec_cache's vecs (a few KB a row, 1.4 million rows on the lab) is said 約 by its id range and a sample."""
+    monkeypatch.setattr(lineage, "ROW_CAP", 10)
+    monkeypatch.setattr(lineage, "SAMPLES", 2)
+    monkeypatch.setattr(lineage, "SAMPLE_IDS", 3)
+    path = where.pipe / "vec_cache.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE vecs (key TEXT PRIMARY KEY, vec BLOB NOT NULL)")
+    conn.executemany("INSERT INTO vecs VALUES (?, ?)", [(f"k{i}", b"\0" * 64) for i in range(20)])
+    conn.commit()
+    conn.close()
+    lineage._tables.clear()
+    rows = lineage.file(where, "vec_cache", {}, wait=True)["look"]["tables"]
+    tables, notes = counts(rows)
+    assert tables == {"vecs": (20, "about")} and "1–20" in tips(rows)["vecs"] and any("約" in n for n in notes)
+
+
+def test_the_ledger_says_every_table_and_never_an_upper_bound_as_a_count(where, monkeypatch):
+    """FD-06: the ledger's small tables are counted (a TEXT key's, as host's, too); a table is read up to ROW_CAP rows
+    only; past it, a table whose ids run on is said 約 by its id range and a sample, any other 超過 the cap. A table
+    whose last id runs far past its rows (action: 69,870 against 19,365 rows) is counted, never said by that id."""
+    monkeypatch.setattr(lineage, "ROW_CAP", 50)
+    monkeypatch.setattr(lineage, "SAMPLES", 4)
+    monkeypatch.setattr(lineage, "SAMPLE_IDS", 5)
+    path = ledger(where)
+    conn = sqlite3.connect(path)
+    conn.executemany("INSERT INTO host(host, queue) VALUES (?, 'q')", [(f"h{i}.example",) for i in range(3)])
+    conn.execute("CREATE TABLE sparse(id INTEGER PRIMARY KEY, x)")  # as action: rows gone, its last id far on
+    conn.executemany("INSERT INTO sparse(id) VALUES (?)", [(i,) for i in [*range(1, 31), *range(1000, 1010)]])
+    conn.execute("CREATE TABLE dense(id INTEGER PRIMARY KEY, x)")  # as url: ids run on
+    conn.executemany("INSERT INTO dense(id) VALUES (?)", [(i,) for i in range(1, 121)])
+    conn.execute("CREATE TABLE keyed(url_id INTEGER PRIMARY KEY)")  # as page_watch: another table's ids
+    conn.executemany("INSERT INTO keyed VALUES (?)", [(i * 7,) for i in range(1, 61)])
+    conn.executemany("INSERT INTO link(src, dst, verdict) VALUES (?, ?, 'ok')",
+                     [(i, f"https://a.example/{i}") for i in range(80)])  # without rowids
+    conn.commit()
+    conn.close()
+    rows = lineage.tables(where, "frontier", path, wait=True)[0]
+    got, notes = counts(rows)
+    assert got["host"] == (3, "exact") and got["sparse"] == (40, "exact") and got["page_res"] == (0, "exact")
+    assert got["dense"] == (120, "about") and "1–120" in tips(rows)["dense"]
+    assert got["link"] == (50, "over") and got["keyed"] == (50, "over")
+    assert all(n is not None for n, _how in got.values())  # every table said
+    assert any(n.startswith("超過") for n in notes) and any(n.startswith("約") for n in notes)
+
+
+def test_a_count_that_takes_too_long_stops_and_says_at_least(where, monkeypatch):
+    monkeypatch.setattr(lineage, "TABLE_SECONDS", 0.0)
+    monkeypatch.setattr(lineage, "FETCH", 10)
+    path = ledger(where)
+    conn = sqlite3.connect(path)
+    conn.executemany("INSERT INTO link(src, dst, verdict) VALUES (?, ?, 'ok')",
+                     [(i, f"https://a.example/{i}") for i in range(80)])
+    conn.commit()
+    conn.close()
+    got, notes = counts(lineage.tables(where, "frontier", path, wait=True)[0])
+    assert got["link"] == (10, "least") and got["host"] == (0, "exact")
+    assert any("至少" in n for n in notes)
+
+
+DRAWERS_JS = Path(lineage.__file__).parent / "theme" / "design" / "drawers.js"
+# a stand-in document for drawers.js in node: every element keeps one element per selector; fetch answers /api/file
+# from RESP by its key (the map without one)
+STUB = r"""
+class El { constructor(t) { this.tag = t; this.dataset = {}; this.style = {}; this.kept = {}; this.innerHTML = '';
+    this.classList = { add() {}, remove() {}, toggle() {} }; }
+  setAttribute() {} appendChild(c) { return c; } before() {} after() {} remove() {} addEventListener() {}
+  querySelector(s) { return (this.kept[s] = this.kept[s] || new El(s)); } querySelectorAll() { return []; } }
+const made = [];
+global.window = globalThis;
+global.addEventListener = () => {};
+global.document = { body: new El('body'), createElement: t => { const e = new El(t); made.push(e); return e; } };
+const RESP = { map: { files: {}, steps: {}, order: [] } };
+global.fetch = async url => { const r = RESP[new URL(url, 'http://panel').searchParams.get('key') || 'map'];
+  return { ok: true, json: async () => r }; };
+"""
+
+
+def test_the_drawer_draws_how_each_count_is_known_and_the_notes_under_the_table():
+    """FD-06 in the browser: exact, 約, 超過 and 至少 as the server says, what a number rests on as a hover, 「—」 with
+    why, and the notes as lines under the table, not as rows of it."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    tables = [["action", 19365, "exact", ""], ["link", 100000, "over", "數到 100,000 筆就停了"],
+              ["url", 191899, "about", "編號 1–191,899"], ["page_res", 42000, "least", "數了 1 秒"],
+              ["odd", None, "", "這一次讀不到"], ["超過、至少：帳本邊抓邊改。", None, "note", ""]]
+    script = ("RESP.frontier = { key: 'frontier', name: 'frontier.db', exists: true, size: 10, look: { kind: 'tables', "
+              f"counted: '11-23 13:40', tables: {json.dumps(tables, ensure_ascii=False)} }} }};\n"
+              "window.FILEOPEN('frontier', 'crawl'); await new Promise(r => setTimeout(r, 50));\n"
+              "console.log(JSON.stringify(made.find(e => e.className === 'rvd rvd-wide').innerHTML));")
+    src = STUB + DRAWERS_JS.read_text(encoding="utf-8") + "\n(async () => {\n" + script + "\n})()"
+    html = json.loads(subprocess.run([node, "-e", src], check=True, capture_output=True, text=True, timeout=60).stdout)
+    cells = dict(re.findall(r"<tr><td>([^<]+)</td><td class='num'>(.*?)</td></tr>", html))
+    assert cells["action"] == "19,365 筆"
+    assert cells["link"] == "<span data-tip='數到 100,000 筆就停了'>超過 100,000 筆</span>"
+    assert cells["url"] == "<span data-tip='編號 1–191,899'>約 191,899 筆</span>"
+    assert cells["page_res"] == "<span data-tip='數了 1 秒'>至少 42,000 筆</span>"
+    assert cells["odd"] == "<span data-tip='這一次讀不到'>—</span>"
+    assert "超過、至少" not in cells and "<p class='fv-note'>超過、至少：帳本邊抓邊改。</p>" in html
 
 
 def test_the_ledgers_table_counts_are_kept_a_while_and_counted_by_one_thread_at_a_time(where, monkeypatch):
     """FD-06: the ledger changes all night; its last count is served (with when it was made) for pipeline.EVERY
     seconds, then counted again by one thread however often the drawer asks, the newer count replacing the older."""
-    path = where.archive / "frontier.db"
-    path.unlink()
-    Frontier(path).conn.close()  # the crawler's own schema
-    lineage._tables.clear()
+    path = ledger(where)  # the crawler's own schema
     first, at = lineage.tables(where, "frontier", path, wait=True)
-    names = [n for n, _c, _a in first]
+    names = [r[0] for r in first]
     assert "url" in names and "zz_new" not in names and re.fullmatch(r"\d\d-\d\d \d\d:\d\d", at)
     look = file(where, "frontier")["look"]
     assert look["kind"] == "tables" and look["counted"] == at and not look["pending"]
@@ -240,14 +410,14 @@ def test_the_ledgers_table_counts_are_kept_a_while_and_counted_by_one_thread_at_
     gate.set()
     while str(path) in lineage._counting and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert ["zz_new", 1, True] in lineage.tables(where, "frontier", path)[0]  # its last rowid: 約
+    assert counts(lineage.tables(where, "frontier", path)[0])[0]["zz_new"] == (1, "exact")
     assert list(lineage._tables) == [str(path)]  # the older count dropped
 
 
-def test_the_live_ledger_is_never_counted_row_by_row(where, monkeypatch):
+def test_the_live_ledger_is_never_read_whole(where, monkeypatch):
     """Review 11-23 #18: a count(*) of the ledger's link table (WITHOUT ROWID) is seconds of one read beside the
-    crawl, every pipeline.EVERY. The ledger's rowid tables are said by their last rowid (約), a table without rowids is
-    not counted and a line says why; no statement counts rows."""
+    crawl, every pipeline.EVERY. Every read of the ledger is bounded: a table read up to ROW_CAP rows (LIMIT), its
+    first and last ids, a count of a range of ids; never a count of a whole table."""
     from nknu.ops import pagecheck
 
     path = where.archive / "frontier.db"
@@ -268,13 +438,14 @@ def test_the_live_ledger_is_never_counted_row_by_row(where, monkeypatch):
 
     monkeypatch.setattr(pagecheck, "open_ledger", spied)
     lineage._tables.clear()
-    got = {n: (c, approx) for n, c, approx in lineage.tables(where, "frontier", path, wait=True)[0]}
-    assert said and not [s for s in said if "count(" in s.lower()]
-    assert got["url"] == (2, True) and got["link"] == (None, False)
-    assert got[lineage.NO_ROWID_NOTE[0]] == (None, False)  # the 「—」 said
+    got, notes = counts(lineage.tables(where, "frontier", path, wait=True)[0])
+    reads = [s for s in said if re.search(r'\bFROM\s+"', s)]
+    assert reads and not [s for s in reads if "count(" in s.lower() and "between" not in s.lower()]
+    assert all("LIMIT" in s for s in reads if s.startswith("SELECT 1 FROM"))
+    assert got["url"] == (2, "exact") and got["link"] == (1, "exact") and notes == []
     # a library is still counted exactly (it changes once a night)
-    exact = {n: (c, approx) for n, c, approx in lineage.file(where, "aca", {}, wait=True)["look"]["tables"]}
-    assert exact["sites"] == (2, False) and lineage.NO_ROWID_NOTE[0] not in exact
+    exact, _notes = counts(lineage.file(where, "aca", {}, wait=True)["look"]["tables"])
+    assert exact["sites"] == (2, "exact")
 
 
 def test_a_table_without_rowids_is_told_by_its_options_not_a_comment():
@@ -295,7 +466,7 @@ def test_a_count_that_fails_is_said_and_tried_again(where, monkeypatch):
     Frontier(path).conn.close()
     assert lineage.tables(where, "frontier", path)[0] == [lineage.UNREAD]  # within pipeline.EVERY
     monkeypatch.setattr(pipeline, "EVERY", 0.0)
-    assert "url" in [n for n, _c, _a in lineage.tables(where, "frontier", path, wait=True)[0]]
+    assert "url" in counts(lineage.tables(where, "frontier", path, wait=True)[0])[0]
 
 
 def test_a_log_reads_through_the_logs_own_masking(where):

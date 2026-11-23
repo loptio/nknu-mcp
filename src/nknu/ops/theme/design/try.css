@@ -2,3 +2,19 @@ ul.tq.pd-grid{display:grid!important;grid-template-columns:repeat(auto-fill,minm
 ul.tq.pd-grid li{margin:0!important;break-inside:avoid}ul.tq.pd-grid a{display:flex;flex-direction:column;gap:3px;height:100%;padding:7px 9px;border:1px solid var(--line);border-radius:9px;background:var(--sunk);text-decoration:none;color:var(--ink2);font-size:12px}
 ul.tq.pd-grid a:hover{border-color:var(--ink3);color:var(--ink)}.pd-qh{display:flex;align-items:center;gap:4px}.pd-qh b{font:600 11px ui-monospace,Menlo,monospace;color:var(--ink)}
 .pd-qt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pd-qh .sd-m{margin:0!important;padding:0 5px!important;font-size:10px!important;line-height:15px}
+.sd-two{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.sd-two{grid-template-columns:minmax(0,1fr)}}
+.sd-h{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}.sd-h h3{margin:0;font-size:14px;font-weight:650;color:var(--ink)}
+.sd-h .sd-at{margin-left:auto;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums;cursor:help}
+.sd-h .sd-n{font-size:20px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}.sd-h .sd-n small{font-size:13px;color:var(--ink3);font-weight:500}
+.sd-two .tq{columns:2 230px;column-gap:20px}.sd-two .tq li{font-size:12px;padding:4px 0}.sd-two .tq-id{min-width:38px}
+.sd-m{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;font-size:11px;line-height:17px;vertical-align:1px;cursor:help}
+.sd-m.also{background:var(--surface);border:1px solid var(--line2);color:var(--ink2)}
+.sd-m.gone{background:var(--bad-bg);color:var(--bad-ink)}.sd-m.old{background:var(--warn-bg);color:var(--warn-ink)}
+.sd-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin:10px 0 0;font-size:11px;color:var(--ink3)}.sd-legend .sd-m{margin:0 4px 0 0;cursor:default}
+.rc-grid{display:grid;grid-template-columns:repeat(11,1fr);gap:4px;margin:4px 0 12px}
+.rc-grid i{aspect-ratio:1;border-radius:4px;background:var(--good-s);opacity:.55;cursor:help;display:flex;align-items:center;justify-content:center;font:600 11px/1 var(--font);font-style:normal;color:var(--on-good)}
+.rc-grid i.f{background:var(--bad);opacity:1;color:var(--on-bad)}
+.rc-fail{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rc-fail li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;font-size:12px;line-height:1.5;color:var(--ink2);cursor:help}
+.rc-fail b{font-variant-numeric:tabular-nums;color:var(--bad-ink);font-weight:650}

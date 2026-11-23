@@ -21,8 +21,13 @@ table, a folder's names) has pipeline._SECRETS masked. A file only the lab PC ho
 it is said to be where no container of the panel looks.
 Folder sizes and a database's table counts cost seconds: they are worked out in a background thread, one a file at a
 time, and kept by the file's identity (the ledger's, which changes all night, for pipeline.EVERY seconds), the last
-count served with its time meanwhile; until there is one a chip shows what is cheap. The ledger is never counted row
-by row (LIVE_DBS): its tables are said by their last rowid, read in a few page reads beside the crawl."""
+count served with its time meanwhile; until there is one a chip shows what is cheap. The ledger is never read whole
+(LIVE_DBS): each table is counted up to ROW_CAP rows and TABLE_SECONDS; past that, a table whose ids run on is said 約
+by its id range and a sample of its ids, any other 超過 (or 至少) what was read; a last id is never said as a row count
+(FD-06). A search index's own tables are not listed (their ids are segment numbers), the index is said by its one row
+a row; a library's vectors by what the build wrote down with them.
+ingest-history.jsonl is read as a table of the last HISTORY_RUNS runs: its lines (~10 KB each) parsed whole, then
+masked and cut (FD-04)."""
 
 from __future__ import annotations
 
@@ -163,8 +168,12 @@ HEADS = {"current": ["網站", "導出資料夾"], "seen": ["網站", "最後看
 JSON_WHOLE, TEXT_WHOLE, HEAD_BYTES, TABLE_LINES = 200_000, 80_000, 4096, 300  # full.py's limits
 TAIL_BYTES, TAIL_LINES = 40_000, 120
 ROWS_SHOWN = 300  # a manifest's rows shown in the drawer 【Claude】
-COUNT_BUDGET = 20.0  # seconds spent counting a database's tables; the rest by max(rowid) 【Claude】
-_BIG = re.compile(r"(?:_content|_data|_idx|_docsize|_config|_chunks|_rowids|_vector_chunks\d*|_info|_auxiliary\d*)$")
+COUNT_BUDGET = 20.0  # seconds spent counting a database's tables; the rest only by their ids 【Claude】
+# ingest-history.jsonl: the runs listed, newest first; read from its end, at most HISTORY_BYTES (a line is ~10 KB); a
+# string in a run cut to VALUE_CHARS after masking 【Claude】
+HISTORY_RUNS, HISTORY_BYTES, VALUE_CHARS = 20, 2_000_000, 300
+HISTORY_COLS = ("night", "outcome", "started_at", "finished_at", "step", "error", "sites_new", "sites_held",
+                "sites_refused", "sites_not_ready", "sites_unlisted")
 _FOLDER = re.compile(r"(?:^|/)([^/]+)-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/?$")
 
 
@@ -482,6 +491,62 @@ def _tail(path: Path) -> list[str]:
     return [str(mask(ln))[:1500] for ln in lines[-TAIL_LINES:]]
 
 
+def last_lines(path: Path, n: int) -> tuple[list[str], bool]:
+    """The last n whole lines of a file, read back from its end a block at a time and at most HISTORY_BYTES (a line
+    cut where reading began is dropped); and whether fewer than n came back because of that limit."""
+    with path.open("rb") as f:
+        end = f.seek(0, 2)
+        pos, blocks, ends = end, [], 0
+        while pos > 0 and ends <= n and end - pos < HISTORY_BYTES:
+            step = min(1 << 16, pos, HISTORY_BYTES - (end - pos))
+            pos -= step
+            f.seek(pos)
+            blocks.append(f.read(step))
+            ends += blocks[-1].count(b"\n")
+    parts = b"".join(reversed(blocks)).split(b"\n")
+    if pos > 0:
+        parts = parts[1:]  # begun inside a line
+    lines = [p.decode("utf-8", errors="replace") for p in parts if p.strip()]
+    return lines[-n:], pos > 0 and len(lines) < n
+
+
+def _short(value, chars: int = VALUE_CHARS):
+    """A parsed value with every string longer than chars cut (…), lists and fields kept whole."""
+    if isinstance(value, str):
+        return value if len(value) <= chars else value[:chars] + "…"
+    if isinstance(value, list):
+        return [_short(v, chars) for v in value]
+    if isinstance(value, dict):
+        return {k: _short(v, chars) for k, v in value.items()}
+    return value
+
+
+def history_view(path: Path) -> dict:
+    """ingest-history.jsonl as a table: a row a run, the last HISTORY_RUNS, newest first. Each line is parsed whole
+    (a line is ~10 KB: the sites that came in, the library before and after by site, what left), then its strings
+    masked and cut; a line that does not parse (one being written) is said in the notes."""
+    lines, limited = last_lines(path, HISTORY_RUNS + 1)  # one more: the last may be being written
+    rows, bad = [], 0
+    for ln in lines:
+        try:
+            got = json.loads(ln)
+        except ValueError:
+            got = None
+        if isinstance(got, dict):
+            rows.append(_short(_mask_all(got)))
+        else:
+            bad += 1
+    rows = rows[-HISTORY_RUNS:][::-1]
+    cols = [c for c in HISTORY_COLS if any(r.get(c) not in (None, "", [], {}) for r in rows)]
+    intro = [(f"每次進庫一行，新的在上，列最後 {HISTORY_RUNS} 次。night 欄是舊記法（開跑時間往前 12 小時的那天），"
+              "開跑那天看 started_at。")]
+    if bad:
+        intro.append(f"有 {bad} 行讀不成（可能正寫到一半），沒有列出。")
+    if limited:
+        intro.append(f"只讀了檔尾 {HISTORY_BYTES // 1_000_000} MB，更早的沒有列出。")
+    return {"intro": intro, "rows": rows, "cols": cols, "empty": "還沒有進庫紀錄"}
+
+
 def _head_lines(path: Path) -> list[str]:
     out = []
     with path.open(encoding="utf-8-sig", errors="replace") as f:
@@ -493,18 +558,31 @@ def _head_lines(path: Path) -> list[str]:
     return out
 
 
-# a database's path -> (its identity when counted, when (monotonic), when (Taipei), [[table, rows, approximate]]): one
-# entry a file, a newer count replacing the one before
+# a database's path -> (its identity when counted, when (monotonic), when (Taipei), [[table, rows, how, why]]): one
+# entry a file, a newer count replacing the one before. how: exact; about (約: by its id range and a sample of ids);
+# over (超過 rows: ROW_CAP were read and there are more); least (至少 rows: what TABLE_SECONDS read); note (a line said
+# under the tables, rows None); "" with rows None (「—」, why says why). why: what a count rests on, for a hover
 _tables: dict[str, tuple[tuple, float, str, list]] = {}
 _tables_lock = threading.Lock()
 _counting: set[str] = set()  # the files being counted: one thread a file at a time
-# databases written all night (the ledger changes every few seconds while the crawl runs): never counted row by row (a
-# count(*) of the ledger's link table alone is seconds of one read beside the crawl); each rowid table is said by its
-# last rowid (約), a table without rowids by sqlite_stat1 when the file has it, else not at all (「—」, a line says
-# why). Their last reading is served for pipeline.EVERY seconds whatever their identity, then read again (FD-06)
+# databases written all night (the ledger changes every few seconds while the crawl runs): never read whole (a
+# count(*) of the ledger's link table alone is seconds of one read beside the crawl, review 11-23 #18). Their last
+# reading is served for pipeline.EVERY seconds whatever their identity, then read again (FD-06)
 LIVE_DBS = ("frontier",)
-UNREAD = ["（這一次讀不到）", None, False]
-NO_ROWID_NOTE = ["（「—」：沒有編號的表，數一次要把整個表讀過；帳本邊抓邊改，不數）", None, False]
+LIBRARIES = ("aca", "aca_prev", "aca_tmp", "aca_held")
+# tables of a few KB a row (a vector each): never read whole either (a count reads the whole file, 3-4 GB on the lab)
+BLOBS = ("chunk_vecs", "vecs")
+# a table of LIVE_DBS or BLOBS is read up to ROW_CAP rows, FETCH at a time, for at most TABLE_SECONDS. On the lab
+# (11-23) 2 of the ledger's 32 tables pass the cap without rowids (link 1.66 M, page_res 1.31 M rows) and 2 with
+# their ids running on (url, request); every other is counted 【Claude】
+ROW_CAP, FETCH, TABLE_SECONDS = 100_000, 2_000, 1.0
+# a rowid table whose ids span more than ROW_CAP: SAMPLES windows of SAMPLE_IDS ids spread over the span are counted;
+# when at least DENSE of those ids are there, the span times that share is its 約, else its last id is an upper bound
+# only and the table is read up to ROW_CAP (action: ids to 69,870 for 19,365 rows) 【Claude】
+SAMPLES, SAMPLE_IDS, DENSE = 32, 128, 0.9
+# a virtual table's own table with one row a row of it (FTS: docsize, content; vec0: rowids), counted in its stead
+ONE_A_ROW = ("_docsize", "_rowids", "_content")
+UNREAD = ["這一次讀不到，過一會再數", None, "note", ""]
 _TAIL = re.compile(r"\bWITHOUT\s+ROWID\b", re.IGNORECASE)
 
 
@@ -514,24 +592,143 @@ def without_rowid(sql: str | None) -> bool:
     return bool(_TAIL.search(str(sql or "").rstrip().rsplit(")", 1)[-1]))
 
 
-def _estimate(conn: sqlite3.Connection, name: str, no_rowid: bool) -> tuple[int | None, bool]:
-    """(rows, approximate) of a table without counting it: its last rowid; for a table without rowids sqlite_stat1's
-    row count when ANALYZE left one, else (None, False)."""
-    if not no_rowid:
-        # max(rowid) only says how many rows there are when the rowid is the table's own sequence: an implicit rowid or
-        # an INTEGER PRIMARY KEY named id. A key that is another table's id (round2_promoted.url_id, list_look.list_id…)
-        # says only the largest id it mentions (review 11-23): no estimate then
-        pk = [r[1] for r in conn.execute(f'PRAGMA table_info("{name}")') if r[5]]
-        if pk and pk != ["id"]:
-            return None, False
-        n = conn.execute(f'SELECT max(rowid) FROM "{name}"').fetchone()[0]
-        return int(n or 0), True
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _known(conn: sqlite3.Connection, key: str) -> dict[str, tuple[int, str]]:
+    """Rows a library wrote down when it was built (table -> (rows, what it rests on)): docs and chunks (meta
+    counts_json), the vectors (vec_count, written in the transaction that wrote them)."""
+    if key not in LIBRARIES:
+        return {}
     try:
-        stats = conn.execute("SELECT stat FROM sqlite_stat1 WHERE tbl = ?", (name,)).fetchall()
-    except sqlite3.Error:  # no ANALYZE ever ran: no sqlite_stat1
-        return None, False
-    got = [int(s[0].split()[0]) for s in stats if s[0] and s[0].split()[0].isdigit()]
-    return (max(got), True) if got else (None, False)
+        meta = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM meta WHERE key IN ('counts_json', 'vec_count')")}
+    except sqlite3.Error:
+        return {}
+    out: dict[str, tuple[int, str]] = {}
+    try:
+        counts = json.loads(meta.get("counts_json") or "{}")
+        total = (counts.get("docs") or {}).get("total")
+        if total is not None:
+            out["docs"] = (int(total), "建庫時記下的（meta 的 counts_json）")
+        if counts.get("chunks") is not None:
+            out["chunks"] = (int(counts["chunks"]), "建庫時記下的（meta 的 counts_json）")
+    except (TypeError, ValueError, AttributeError):
+        pass
+    if str(meta.get("vec_count") or "").isdigit():
+        out["chunk_vecs"] = (int(meta["vec_count"]), "建庫寫向量時一起記下的（meta 的 vec_count）：一列幾 KB，不整個讀")
+    return out
+
+
+def _sample(conn: sqlite3.Connection, q: str, lo: int, span: int) -> tuple[float, int]:
+    """(the share of ids there, ids looked at): SAMPLES windows of consecutive ids, spread evenly over the span and not
+    overlapping; each a count of a range of rowids (a seek and at most SAMPLE_IDS rows)."""
+    width = max(1, min(SAMPLE_IDS, span // SAMPLES))
+    gap = (span - width) / max(1, SAMPLES - 1)
+    hits = 0
+    for i in range(SAMPLES):
+        a = lo + int(i * gap)
+        hits += int(conn.execute(f"SELECT count(*) FROM {q} WHERE rowid BETWEEN ? AND ?", (a, a + width - 1))
+                    .fetchone()[0])
+    return hits / (SAMPLES * width), SAMPLES * width
+
+
+def _bounded(conn: sqlite3.Connection, q: str) -> tuple[int, bool]:
+    """(rows read, whether they are all of them): at most ROW_CAP + 1 rows, FETCH at a time, for at most
+    TABLE_SECONDS. The read ends here, so no read of the live ledger stays open across its tables (a long read holds
+    back the WAL's checkpoints)."""
+    deadline = time.monotonic() + TABLE_SECONDS
+    cur = conn.execute(f"SELECT 1 FROM {q} LIMIT ?", (ROW_CAP + 1,))
+    n = 0
+    try:
+        while True:
+            got = len(cur.fetchmany(FETCH))
+            n += got
+            if got < FETCH:
+                return n, n <= ROW_CAP
+            if n > ROW_CAP or time.monotonic() >= deadline:
+                return n, False
+    finally:
+        cur.close()
+
+
+def rows_in_part(conn: sqlite3.Connection, name: str, no_rowid: bool, *, late: bool = False
+                 ) -> tuple[int | None, str, str]:
+    """(rows, how, why) of a table read only in part (LIVE_DBS, BLOBS, or when COUNT_BUDGET is spent: late). A rowid
+    table whose ids span more than ROW_CAP is said 約 by its span and a sample when its ids run on (DENSE); otherwise a
+    table is read up to ROW_CAP rows and TABLE_SECONDS: all of it (exact), 超過 ROW_CAP, or 至少 what was read. Its last
+    id is never said as its rows: it is only an upper bound. Late, only the sample is made."""
+    q = _quoted(name)
+    if not no_rowid:
+        lo, hi = conn.execute(f"SELECT (SELECT min(rowid) FROM {q}), (SELECT max(rowid) FROM {q})").fetchone()
+        if hi is None:
+            return 0, "exact", ""
+        lo, hi = int(lo), int(hi)
+        if hi - lo + 1 > ROW_CAP:
+            share, looked = _sample(conn, q, lo, hi - lo + 1)
+            if share >= DENSE:
+                return (round(share * (hi - lo + 1)), "about",
+                        f"編號 {lo:,}–{hi:,}，抽查 {looked:,} 個編號，{share:.1%} 在：照這個比例估")
+    if late:
+        return None, "", f"這一次數了 {COUNT_BUDGET:g} 秒，時間用完了，沒數到這個表"
+    n, whole = _bounded(conn, q)
+    if whole:
+        return n, "exact", ""
+    if n > ROW_CAP:
+        return ROW_CAP, "over", f"數到 {ROW_CAP:,} 筆就停了，沒有整個讀"
+    return n, "least", f"數了 {TABLE_SECONDS:g} 秒還沒數完就停了"
+
+
+def table_rows(conn: sqlite3.Connection, key: str) -> list[list]:
+    """A database's tables as [[table, rows, how, why]] (see _tables), then its notes. A library's docs, chunks and
+    vectors are what its build wrote down; a virtual table is counted by its own table with one row a row of it, and
+    its other own tables are not listed (chunk_fts_data's ids are segment numbers, not rows): a note names them. Every
+    other table is counted, except in LIVE_DBS and BLOBS (rows_in_part); after COUNT_BUDGET seconds the rest too."""
+    # read the list whole first: each count is then a read of its own, and no read stays open across them all
+    listed = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall()
+    sqls = {str(n): str(s or "") for n, s in listed if not str(n).startswith("sqlite_")}
+    virtual = [n for n, s in sqls.items() if s.upper().startswith("CREATE VIRTUAL")]
+    own = {v: [n for n in sqls if n.startswith(v + "_") and n not in virtual] for v in virtual}
+    inner = {n for names in own.values() for n in names}
+    known = _known(conn, key)
+    live = key in LIVE_DBS
+    started = time.monotonic()
+    out: list[list] = []
+    for name in sqls:
+        if name in inner:
+            continue
+        if name in known:
+            out.append([name, known[name][0], "exact", known[name][1]])
+            continue
+        target, via = name, ""
+        if name in virtual:
+            target = next((name + s for s in ONE_A_ROW if name + s in sqls), "")
+            if not target:
+                out.append([name, None, "", "虛擬表，沒有一筆一列的表可以數"])
+                continue
+            via = f"照 {target} 數：{name} 每一筆在那裡一列"
+        late = time.monotonic() - started > COUNT_BUDGET
+        try:
+            if live or late or name in BLOBS:
+                n, how, why = rows_in_part(conn, target, without_rowid(sqls[target]), late=late)
+            else:
+                n, how, why = int(conn.execute(f"SELECT count(*) FROM {_quoted(target)}").fetchone()[0]), "exact", ""
+        except sqlite3.Error as exc:
+            n, how, why = None, "", f"這一次讀不到（{type(exc).__name__}）"
+        out.append([name, n, how, "；".join(x for x in (via, why) if x)])
+    notes = []
+    for v, names in own.items():
+        if names:
+            kind = "全文索引" if "USING FTS" in sqls[v].upper() else "虛擬表"
+            notes.append(f"{'、'.join(names)}：{v}（{kind}）自己用的表，不另列；筆數看 {v}。")
+    hows = {r[2] for r in out}
+    if hows & {"over", "least"}:
+        said = "、".join(w for h, w in (("over", "超過"), ("least", "至少")) if h in hows)
+        why = "帳本邊抓邊改，大表不整個讀" if live else "一列幾 KB 的表不整個讀"
+        notes.append(f"{said}：{why}，每個表最多數 {ROW_CAP:,} 筆、{TABLE_SECONDS:g} 秒。")
+    if "about" in hows:
+        notes.append("約：編號連著的大表，照第一個到最後一個編號的範圍，乘上抽查時編號在的比例。")
+    return out + [[n, None, "note", ""] for n in notes]
 
 
 def _count(key: str, path: Path, where: Where, ident: tuple) -> None:
@@ -543,39 +740,7 @@ def _count(key: str, path: Path, where: Where, ident: tuple) -> None:
         else:
             conn = open_ro(path)
         try:
-            known: dict[str, int] = {}
-            if key in ("aca", "aca_prev"):
-                try:
-                    counts = json.loads(conn.execute("SELECT value FROM meta WHERE key = 'counts_json'").fetchone()[0])
-                    docs = counts.get("docs") or {}
-                    known = {"docs": int(docs.get("total") or 0), "chunks": int(counts.get("chunks") or 0)}
-                except (sqlite3.Error, TypeError, ValueError, AttributeError):
-                    known = {}
-            started = time.monotonic()
-            live = key in LIVE_DBS
-            # read the list whole first: each count is then a read of its own, and no read stays open across them all
-            # (on the live ledger a long read holds back the WAL's checkpoints)
-            listed = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall()
-            skipped = False
-            for name, sql in listed:
-                if name.startswith("sqlite_"):
-                    continue
-                virtual = str(sql or "").upper().startswith("CREATE VIRTUAL")
-                if name in known:
-                    out.append([name, known[name], False])
-                    continue
-                late = time.monotonic() - started > COUNT_BUDGET
-                try:
-                    if live or virtual or _BIG.search(name) or late or name in ("chunk_vecs", "vecs"):
-                        n, approx = _estimate(conn, name, without_rowid(sql) and not virtual)
-                        skipped = skipped or n is None
-                        out.append([name, n, approx])
-                    else:
-                        out.append([name, int(conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]), False])
-                except sqlite3.Error:
-                    out.append([name, None, False])
-            if live and skipped:
-                out.append(NO_ROWID_NOTE)
+            out = table_rows(conn, key)
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001  an older ledger, a busy file: the drawer says so, the next ask tries again
@@ -588,10 +753,10 @@ def _count(key: str, path: Path, where: Where, ident: tuple) -> None:
 
 
 def tables(where: Where, key: str, path: Path, *, wait: bool = False) -> tuple[list | None, str]:
-    """(a database's tables with their rows, approximate for the big index tables and every table of a database in
-    LIVE_DBS, which is never counted row by row; when they were counted), counted in a background thread, one a file
-    at a time. A count is kept until the file changes; a database in LIVE_DBS keeps it pipeline.EVERY seconds whatever
-    its changes. Meanwhile the last count is served with its time; (None, '') until there is one."""
+    """(a database's tables with their rows (table_rows: how each is known, and the notes); when they were counted),
+    counted in a background thread, one a file at a time. A count is kept until the file changes; a database in
+    LIVE_DBS keeps it pipeline.EVERY seconds whatever its changes. Meanwhile the last count is served with its time;
+    (None, '') until there is one."""
     try:
         st = path.stat()
     except OSError:
@@ -646,16 +811,7 @@ def look(where: Where, key: str, meta: dict, site: str = "", step: str = "", *, 
         return {"kind": "view", "view": {"intro": intro, "rows": rows, "cols": _cols(rows),
                                          "empty": "" if rows else "空的：現在沒有網站在這裡"}}
     if key == "ingest_history":
-        rows = []
-        for ln in _tail(path):
-            try:
-                got = json.loads(ln)
-            except ValueError:
-                continue  # the tail's first line may be cut
-            if isinstance(got, dict):
-                rows.append(_mask_all(got))
-        cols = [c for c in ("night", "outcome", "started_at", "finished_at", "step", "sites") if any(c in r for r in rows)]
-        return {"kind": "view", "view": {"intro": [], "rows": rows, "cols": cols}}
+        return {"kind": "view", "view": history_view(path)}
     if key in LOGS:
         got = pipeline.log_tail(where, LOGS[key], TAIL_LINES)
         if got is not None:

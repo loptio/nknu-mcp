@@ -62,7 +62,7 @@ def snapshot() -> dict:
         Step("totext", "轉文字", "轉", into=[("個檔和網頁", 110)], out=[("個轉成文字", 104)],
              lost=[("讀不出文字", 5), ("照規則跳過", 1)], sides=[["x", "ok", "not the crawl's"]]),
         Step("build", "建庫", "建", into=[("筆整理前的網頁、檔案和行事曆（3 站）", 104)],
-             out=[("份文件", 70), ("個小段（搜尋時比對的單位）", 600)], share=False,
+             out=[("份文件", 70), ("個小段（檢索時比對的單位）", 600)], share=False,
              lost=[("別處有一模一樣的一份，合併了", 30)], lost_label="沒成為文件的（大多是合併掉的重複）"),
         Step("nightly", "每晚進庫", "進", out=[("份文件（換前）", 68), ("份文件（換後）", 70)])]
     sites = [{"key": "a.example", "name": "甲處", "cells": {"crawl": {"n": 30, "whole": 33, "lost": [
@@ -107,6 +107,11 @@ SWAP_SITES = {"a.example": {"export_rows": 120, "totext": {"ok": 100, "empty": 5
 COVER = {"a.example": {"buckets": {"got": 90, "failed": 4, "review": 6, "rule": 10}, "review": {"thin": 6}},
          "c.example/aca": {"buckets": {"got": 20, "gone": 2}},
          "elsewhere.example": {"buckets": {"got": 999}}}
+# the build's own check of what a swap took out (nknu.content.build._departures, as night_sites.py keeps it)
+DEPARTED = {"left": 5, "explained": {"merged": 2, "school_no_data": 1, "decided_teacher_fulltext": 1},
+            "unexplained": {"kind_not_kept": 1}}
+DEPARTED_ROWS = [["併為副本", 2, "copy"], ["頁面顯示查無資料", 1, "no_data"], ["決定不收：教師著作全文", 1, "decided_out"],
+                 ["原因不明：頁面種類變成不收的", 1, "unknown"]]
 
 
 # ---------------------------------------------------------------- one night: its name, head, steps and problems
@@ -261,7 +266,9 @@ def test_an_older_night_draws_its_steps_from_its_own_files_and_says_what_it_lack
     store.put_night_changes("2026-11-17", comparison())
     got = night_view.data(where, store, "2026-11-17", flow=snapshot(), now=at("2026-11-18T09:00:00"))
     assert not got["latest"] and got["flow"]["kind"] == "records"
-    assert got["flow"]["lacks"] == "這一晚只留下每一步的輸入、輸出和逐站數字；對帳、檔案和逐筆紀錄只看得到最近一晚的"
+    # 換庫 has its 對帳 (from the comparison kept for the night): the lacks line does not deny it (CR-02)
+    assert got["flow"]["lacks"] == ("這一晚只留下每一步的輸入、輸出、逐站數字和換庫的對帳；"
+                                    "其他步的對帳、檔案和逐筆紀錄只看得到最近一晚的")
     st = got["flow"]["steps"]
     # 爬取 from the night's coverage line, over the library's sites only (elsewhere.example is not one)
     assert st["crawl"]["into"] == [["個這一輪該抓的網址（2 站）", 122]] and st["crawl"]["out"] == [["個抓到了", 110]]
@@ -284,6 +291,55 @@ def test_an_older_night_draws_its_steps_from_its_own_files_and_says_what_it_lack
     assert a["labels"] == {pl.review_word("thin"): 6, "連線失敗": 4}  # 待確認 split by its causes
     assert c["export"] is None and c["export_gone"] and c["crawl"] == [22, 20]
     assert "elsewhere.example" not in got["sites"]
+
+
+def test_an_older_night_with_no_comparison_kept_draws_its_swap_from_the_builds_own_check(where, store):
+    """CR-02: the nights before ops.db kept each swap's comparison (11-17 … 11-23) drew 換庫 with no reasons and no 對帳.
+    Their nights/<day>.json holds the build's own check of the swap (swaps[].departures): what left by its reasons,
+    explained and not, said in the comparison's words (names.py), and 換前 + 新進 − 離開 = 換後; a file with no
+    departures says so, never a blank or 「都說得出原因」."""
+    later = at("2026-11-18T09:00:00")
+    night_file(where, "2026-11-17", [{"how": "run", "departures": DEPARTED, "sites": SWAP_SITES},
+                                     {"how": "promote", "departures": None, "sites": SWAP_SITES}])
+    got = night_view.data(where, store, "2026-11-17", now=later)
+    assert got["changes"]["kind"] != "full" and got["flow"]["kind"] == "records"
+    swap = got["flow"]["steps"]["swap"]
+    # the night's own swap (not the hand promote after it), its reasons largest first
+    assert swap["lost"] == DEPARTED_ROWS
+    assert swap["lost_label"] == "離開庫的原因" and swap["lost_tip"] == "離開庫的（1 份說不出原因）"
+    # ops.db holds no 新進 of this night: worked out from the library before and after and the build's 離開, said so
+    assert swap["link"] == [["", "換前", 48, ""], ["+", "新進", 7, night_view.NEW_WORKED_OUT],
+                            ["−", "離開", 5, "併為副本 2、頁面顯示查無資料 1、決定不收：教師著作全文 1、原因不明：頁面種類變成不收的 1"],
+                            ["=", "換後", 50, ""]]
+    assert swap["link_left"] is None and swap["lost_none"] == ""
+    # the head under each step no longer says 對帳 is only the latest night's
+    assert got["flow"]["lacks"] == night_view.LACKS["records_swap"] and "換庫的對帳" in got["flow"]["lacks"]
+    # ops.db's counts of the night when it has them (新進, 改了); sums that do not add up are said (還差), never hidden
+    swap = night_view.chain_swap(night_view.sources.night_record(where.library.parent, "2026-11-17"))
+    sw = night_view.swap_flow(48, 50, None, swap, {"new": 9, "left": 4, "changed": 3})
+    assert sw["link"][1] == ["+", "新進", 9, ""] and sw["link"][2][2] == 5  # 離開: the build's own count
+    assert sw["link"][3] == ["=", "換後", 50, "改了 3 份（份數不變）"] and sw["link_left"] == 2
+    # a build code the comparison has no reason for: its own words, 原因不明 when the build could not explain it
+    odd = {"left": 3, "explained": {"calendar": 1}, "unexplained": {"emptied": 1, "no_file": 1, "x": "many"}}
+    sw = night_view.swap_flow(10, 9, None, {"departures": odd}, {})
+    assert sw["lost"] == [["行事曆已移除", 1, "calendar_gone"], ["原因不明：內容被掏空", 1, ""],
+                          ["本次未取得", 1, "not_fetched"]]
+    assert sw["lost_tip"] == "離開庫的（2 份說不出原因）"
+    # nothing left: said; the night's file with no departures (11-17's: the build compared nothing): said
+    sw = night_view.swap_flow(10, 12, None, {"departures": {"left": 0, "explained": {}, "unexplained": {}}}, {})
+    assert sw["lost"] == [] and sw["lost_none"] == night_view.NONE_LEFT and sw["link"][1][2] == 2
+    night_file(where, "2026-11-18", [{"how": "run", "departures": None, "sites": SWAP_SITES}])
+    got = night_view.data(where, store, "2026-11-18", now=at("2026-11-19T09:00:00"))
+    swap = got["flow"]["steps"]["swap"]
+    assert swap["lost"] == [] and swap["lost_none"] == night_view.NO_DEPARTURES == swap["lost_tip"]
+    assert swap["link"] == [] and got["flow"]["lacks"] == night_view.LACKS["records"]  # no 新進, no 離開: no 對帳
+    sw = night_view.swap_flow(48, 50, None, {"departures": None}, {"new": 7, "left": 5, "changed": None})
+    assert sw["link"][2] == ["−", "離開", 5, night_view.NO_DEPARTURES] and sw["link_left"] is None
+    # a reading of the steps with no swap file for the night (kept or live, its comparison not there)
+    assert night_view.swap_flow(48, 50, None, None, {})["lost_none"] == night_view.NO_SWAP_RECORD
+    # the comparison, when there is one, is still what 換庫 is drawn from
+    assert night_view.swap_flow(68, 70, comparison(), swap, {})["lost"] == [["併為副本", 1, "copy"],
+                                                                         ["原因不明", 1, "unknown"]]
 
 
 def test_an_older_night_with_its_steps_kept_draws_them_and_says_its_drawers_are_todays(where, store):
@@ -616,14 +672,24 @@ STAND_IN = ("<script>window.RAWCALLS=[];window.RAWSHOW=(step,pre)=>RAWCALLS.push
             "</script>")
 
 
-def page_html() -> str:
+def page_html(extra: str = "") -> str:
     return ("<!doctype html><html><head><meta charset='utf-8'>" + design.layer("night") + "</head><body>"
             "<div class='ct-band'></div>" + night_view.band_html() +
             "<h2 id='hMap'></h2><span id='hMapSub'></span><div id='tm'></div><div id='tmKey'></div>"
             "<div id='tmLegend'></div><aside id='insp'><h3 id='iT'></h3><span id='iS'></span></aside>"
             + night_view.log_html() +
             "<script type='application/json' id='data'>" + json.dumps({"groups": GROUPS10}, ensure_ascii=False)
-            + "</script>" + STAND_IN + "</body></html>")
+            + "</script>" + STAND_IN + extra + "</body></html>")
+
+
+def live_check() -> str:
+    """內容's own 60-second check of its data (overview_page.html's watchLive, as written there), with what it calls
+    stood in: the page's data stamp (D), its links, the status line and saveView (which leaves the lens it saved)."""
+    page = (Path(night_view.__file__).parent / "overview_page.html").read_text(encoding="utf-8")
+    start = page.index("function watchLive() {")
+    body = page[start:page.index("\n}\n", start) + 3]
+    return ("<script>const D={stamp:'s1',live:true},LINKS={stamp:'/sites/stamp'};function setLive(){}"
+            "function saveView(){sessionStorage.setItem('saved',String(APP.S.lens))}\n" + body + "watchLive();</script>")
 
 
 # raw.page's answer for 爬取 with a site (DRAWERS: labels [[key, word, n, only]], the key a bucket or review:<code>)
@@ -651,11 +717,13 @@ def chrome():
 
 
 def open_night(browser, address: str, answers: dict, *, logs_answer: dict | None = None, at_time: str = "",
-               clock: str = "", raw_answer: dict | None = None):
+               clock: str = "", raw_answer: dict | None = None, extra: str = "", stamp: dict | None = None,
+               wait: bool = True):
     """A page at PAGE_HOST + address with night.js; answers: /api/night's by ?date= ('' for the default), read at each
     request. at_time: Date.now() fixed there; clock: the page's clock installed there (page.clock.run_for moves it and
-    its timers); raw_answer: /api/raw's (else RAW_SITE). Returns (page, asked: every /api/… address the page asked,
-    errors)."""
+    its timers); raw_answer: /api/raw's (else RAW_SITE); extra: markup after the stand-ins (live_check); stamp:
+    /sites/stamp's answer, read at each request; wait: for the night's time line. Returns (page, asked: every address
+    the page asked, the page itself and /api/…, errors)."""
     page = browser.new_page()
     if at_time:
         page.clock.set_fixed_time(at_time)
@@ -668,13 +736,14 @@ def open_night(browser, address: str, answers: dict, *, logs_answer: dict | None
         url = route.request.url
         path, _, query = url[len(PAGE_HOST):].partition("?")
         params = dict(x.partition("=")[::2] for x in query.split("&") if x)
-        if path == "/sites":
-            return route.fulfill(status=200, content_type="text/html; charset=utf-8", body=page_html())
         asked.append(url[len(PAGE_HOST):])
+        if path == "/sites":
+            return route.fulfill(status=200, content_type="text/html; charset=utf-8", body=page_html(extra))
         body = {"/api/night": lambda: answers.get(params.get("date", ""), answers[""]),
                 "/api/logs": lambda: logs_answer or LOGS_SHORT, "/api/raw": lambda: raw_answer or RAW_SITE,
                 "/api/night/ticks": lambda: {"run": params.get("date"), "site": params.get("site"), "ticks": [],
-                                             "cut": False}}.get(path)
+                                             "cut": False},
+                "/sites/stamp": lambda: stamp or {}}.get(path)
         if body is None:
             return route.fulfill(status=404, body="")
         got = body()
@@ -684,7 +753,8 @@ def open_night(browser, address: str, answers: dict, *, logs_answer: dict | None
 
     page.route(f"{PAGE_HOST}/**", answer)
     page.goto(PAGE_HOST + address)
-    page.wait_for_selector("#ntGantt .gt-l", state="attached", timeout=10000)
+    if wait:
+        page.wait_for_selector("#ntGantt .gt-l", state="attached", timeout=10000)
     return page, asked, errors
 
 
@@ -858,3 +928,74 @@ def test_night_js_keeps_the_rest_of_the_address_and_asks_once_per_pick(where, st
     page.evaluate("NM.set(false)")
     assert page.evaluate("location.search") == "?ck=none&kind=2"
     assert not errors
+
+
+@pytest.mark.browser
+def test_night_js_draws_an_older_nights_swap_from_the_builds_check_and_says_when_its_file_has_none(
+        where, store, chrome):
+    """CR-02 on the page: an older night's 換庫 shows its 對帳 and what left by reason; a night whose file has no
+    departures says so where the reasons would be."""
+    later = at("2026-11-19T09:00:00")
+    night_file(where, "2026-11-17", [{"how": "run", "departures": DEPARTED, "sites": SWAP_SITES}])
+    night_file(where, "2026-11-18", [{"how": "run", "departures": None, "sites": SWAP_SITES}])
+    a = night_view.data(where, store, "2026-11-17", now=later)
+    b = night_view.data(where, store, "2026-11-18", now=later)
+    page, _asked, errors = open_night(chrome, "/sites?date=2026-11-17&step=swap",
+                                      {"": b, "2026-11-17": a, "2026-11-18": b}, at_time="2026-11-23T12:00:00+08:00")
+    assert texts(page, "#ntStep .sd-br .br-l") == ["換前", "新進", "離開", "換後"]
+    assert texts(page, "#ntStep .sd-br b") == ["48", "+7", "−5", "50"] and not page.query_selector("#ntStep .br-off")
+    assert texts(page, "#ntStep .sd-lost li span") == [r[0] for r in DEPARTED_ROWS]
+    assert page.get_attribute("#ntStep .sd-lostbox h5", "data-tip") == "離開庫的（1 份說不出原因）"
+    assert page.text_content("#ntStep .sd-lacks") == night_view.LACKS["records_swap"]
+    page.click("#ntNext")
+    page.wait_for_function("document.getElementById('ntDay').textContent==='11/18'", timeout=5000)
+    page.click("#ntGantt .gt-l[data-k=swap]")
+    assert page.text_content("#ntStep .sd-lostbox .sd-none") == night_view.NO_DEPARTURES
+    assert page.text_content("#ntStep .sd-lostbox h5") == "離開庫的原因" and not page.query_selector("#ntStep .sd-br")
+    assert "都說得出原因" not in (page.get_attribute("#ntStep .sd-lostbox h5", "data-tip") or "")
+    assert not errors
+
+
+@pytest.mark.browser
+def test_new_data_redraws_an_open_night_in_place_and_reloads_only_once_the_night_is_left(where, store, chrome):
+    """CR-15: 內容 reloaded itself whenever its data changed (its 60-second check of /sites/stamp), closing the step and
+    the drawer open in the night view. In the night view the night is now asked again and drawn in place (the page
+    stays: its open step, site and drawers with it), once per new stamp; the page reloads once the night view is left,
+    its view saved as before. In 全部 it reloads at once, as it always did."""
+    later = at("2026-11-18T09:00:00")
+    coverage(where, "2026-11-17", COVER)
+    older = night_view.data(where, store, "2026-11-17", now=later)
+    stamp = {"stamp": "s1", "built": "", "state": "ok", "error": ""}
+    page, asked, errors = open_night(chrome, "/sites?date=2026-11-17&step=crawl", {"": older, "2026-11-17": older},
+                                     clock="2026-11-23T12:00:00+08:00", extra=live_check(), stamp=stamp)
+    nights = lambda: asked.count("/api/night?date=2026-11-17")
+    loads = lambda: sum(a == "/sites" or a.startswith("/sites?") for a in asked)
+    checks = lambda: asked.count("/sites/stamp")
+    page.evaluate("window.MARK=1;APP.S.site='a.example';APP.render()")
+    first = nights()
+    page.clock.run_for(61_000)  # the data unchanged: nothing
+    assert until(page, lambda: checks() == 1)
+    until(page, lambda: False, tries=4)
+    assert nights() == first and loads() == 1
+    stamp["stamp"] = "s2"  # a swap, or the site data rebuilt
+    page.clock.run_for(61_000)
+    assert until(page, lambda: nights() == first + 1)  # the night asked again, fresh
+    until(page, lambda: False, tries=4)
+    assert loads() == 1 and page.evaluate("window.MARK") == 1  # the same page: nothing open was closed
+    assert page.is_visible("#ntStep") and page.evaluate("location.search") == "?date=2026-11-17&step=crawl"
+    assert page.text_content("#ntSite b") == "甲處"
+    page.clock.run_for(61_000)  # the same new data: asked once, not every minute
+    assert until(page, lambda: checks() == 3)
+    until(page, lambda: False, tries=4)
+    assert nights() == first + 1 and loads() == 1
+    page.evaluate("NM.set(false)")  # back to 全部: the page reloads now, its view saved
+    assert until(page, lambda: loads() == 2)
+    page.wait_for_load_state("load")
+    assert page.evaluate("[window.MARK,sessionStorage.getItem('saved'),location.search]") == [None, "null", ""]
+    assert not errors
+    # 全部 from the start: new data reloads the page at once, as before
+    page2, asked2, errors2 = open_night(chrome, "/sites", {"": older}, clock="2026-11-23T12:00:00+08:00",
+                                        extra=live_check(), stamp={"stamp": "s2", "state": "ok"}, wait=False)
+    page2.clock.run_for(61_000)
+    assert until(page2, lambda: sum(a == "/sites" for a in asked2) == 2)
+    assert not errors2

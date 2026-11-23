@@ -15,6 +15,7 @@ import pytest
 from selectolax.lexbor import LexborHTMLParser
 
 from nknu.ops import calendar, design, history, logs, nightly, panorama, sources, standing, todo, visits
+from nknu.ops import pipeline as pl
 from nknu.ops.pipeline import BAD, TAIPEI, WARN
 
 LAYER = Path(design.DIR)
@@ -250,27 +251,103 @@ class Days:
         return [r for r in self.rows if first <= r["day"] <= last]
 
 
-def test_the_month_by_day_joins_the_record_today_and_the_week(tmp_path, monkeypatch):
-    store = Days([{"day": "2026-11-20", "calls": 300, "search": 200, "qpm_peak": 41, "qpm_peak_at": "20:16",
-                   "conc_peak": 5, "load_p95": 0.4, "p90_ms": 3100}, {"day": "2026-10-31", "calls": 9}])
-    measured = {}
+def call(t: str, ms: int = 1500, tool: str = "search", **more) -> dict:
+    return {"t": t, "tool": tool, "ms": ms, "via": "mcp", **more}
 
-    def usage_day(path, day):
-        measured["day"] = day
-        return {"day": day, "calls": 12, "search": 10, "qpm_peak": 3}
 
-    monkeypatch.setattr(visits.pl, "usage_day", usage_day, raising=False)
-    monkeypatch.setattr(visits.pl, "search_slots", lambda: 4, raising=False)
-    log = write_log(tmp_path / "q.jsonl", [])
-    recent = [["2026-11-21", 50, 40], ["2026-11-22", None, None], ["2026-10-30", 1, 1]]
-    data = visits.month(store, log, now=at("2026-11-23T15:00:00"), recent=recent)
-    assert store.asked == ("2026-11-01", "2026-11-22") and measured["day"] == "2026-11-23"
-    assert data["labels"][0] == "11/1" and len(data["dates"]) == 30 and data["today"] == "2026-11-23"
+def test_the_days_are_the_last_thirty_ending_today_and_the_record_fills_what_the_log_no_longer_holds(tmp_path):
+    """Review 11-23: 每日 was this calendar month, so on the 1st it held today alone and opened on today's few morning
+    calls (yesterday, in the record, was cut off with the month), and the days after today were drawn empty. It is the
+    last 30 days ending today; days the log no longer covers come from the record (history.Store.usage_days)."""
+    store = Days([{"day": "2026-11-30", "calls": 1800, "search": 1410, "qpm_peak": 34, "conc_peak": 2,
+                   "load_p95": 0.08, "p90_ms": 3818, "complete": True}])
+    log = write_log(tmp_path / "q.jsonl", [call("2026-12-01T07:59:00+08:00")])  # the log began today
+    data = visits.month(store, log, now=at("2026-12-01T08:00:00"))
+    assert data["dates"][0] == "2026-11-02" and data["dates"][-1] == "2026-12-01" and len(data["dates"]) == 30
+    assert data["labels"][-1] == "12/1" and data["today"] == "2026-12-01"
     calls = dict(zip(data["dates"], data["calls"], strict=True))
-    assert (calls["2026-11-20"], calls["2026-11-21"], calls["2026-11-22"], calls["2026-11-23"]) == (300, 50, None, 12)
-    assert calls["2026-11-24"] is None and "2026-10-31" not in data["days"]  # days to come and other months: none
-    assert data["pick"] == "2026-11-23" and data["slots"] == 4  # the latest day with a load measured
-    assert data["days"]["2026-11-20"]["qpm_peak_at"] == "20:16"
+    assert calls["2026-11-30"] == 1800 and calls["2026-12-01"] == 1 and calls["2026-11-29"] is None
+    assert data["pick"] == "2026-11-30"  # the last day over, though it is last month's
+
+
+def test_every_day_the_log_still_covers_is_read_from_it_so_yesterday_is_whole_right_after_midnight(tmp_path):
+    """Review 11-23: from 00:00 until the Recorder's next round (up to 5 minutes) yesterday came from the 24-hour
+    reading taken before midnight: fewer calls and no five numbers, and the card opened on the day before. Every day
+    the log covers is read from the log (once, cached while it does not change): the record and the week's counts only
+    fill days it no longer holds; the day the log began is marked not whole."""
+    lines = [call("2026-11-21T23:30:00+08:00"), call("2026-11-22T10:00:00+08:00"),
+             *[call(f"2026-11-23T23:58:{s:02d}+08:00", ms=300) for s in range(30)],
+             call("2026-11-23T09:00:00+08:00"), call("2026-11-23T09:01:00+08:00"), call("2026-11-23T09:02:00+08:00")]
+    log = write_log(tmp_path / "q.jsonl", sorted(lines, key=lambda x: x["t"]))
+    store = Days([{"day": "2026-11-22", "calls": 99, "conc_peak": 5, "complete": True}])  # an older reckoning
+    data = visits.month(store, log, now=at("2026-11-24T00:02:00"), recent=[["2026-11-23", 3, 3]])
+    days = data["days"]
+    assert days["2026-11-23"]["calls"] == 33 and days["2026-11-23"]["qpm_peak"] == 30 and days["2026-11-23"]["complete"]
+    assert days["2026-11-22"]["calls"] == 1 and days["2026-11-22"]["conc_peak"] == 1  # the log's, not the record's
+    assert days["2026-11-21"]["complete"] is False and "2026-11-20" not in days  # the log began on the 21st
+    assert days["2026-11-24"]["calls"] == 0 and data["pick"] == "2026-11-23"
+
+
+def test_two_searches_count_as_running_at_once_only_when_they_surely_overlap_at_the_logs_precision():
+    """Review 11-23: the log writes its end time to the second (the fraction cut), so a search that ended at
+    10:00:00.9 and the next that began at 10:00:00.95 looked overlapping. At one-second precision only an overlap that
+    holds whatever the fractions were counts; a time with its fraction is taken as it is."""
+    back_to_back = [call("2026-11-23T10:00:00+08:00", ms=1200), call("2026-11-23T10:00:01+08:00", ms=1900)]
+    assert pl.usage_of(back_to_back, slots=4)["2026-11-23"]["conc_peak"] == 1
+    together = [call("2026-11-23T10:05:00+08:00", ms=4000), call("2026-11-23T10:05:01+08:00", ms=4000)]
+    assert pl.usage_of(together, slots=4)["2026-11-23"]["conc_peak"] == 2
+    exact = [call("2026-11-23T10:00:00.900+08:00", ms=1200), call("2026-11-23T10:00:01.950+08:00", ms=1000)]
+    assert pl.usage_of(exact, slots=4)["2026-11-23"]["conc_peak"] == 1  # 10:00:00.950 starts after 10:00:00.900
+    overlap = [call("2026-11-23T10:00:00.900+08:00", ms=1200), call("2026-11-23T10:00:01.500+08:00", ms=1000)]
+    assert pl.usage_of(overlap, slots=4)["2026-11-23"]["conc_peak"] == 2
+
+
+class Flow:
+    """The app's Pipeline, as visits.live_api reads it: the last reading, never a new one started."""
+
+    def __init__(self, services: list[dict] | None) -> None:
+        self.services = services
+
+    def last(self) -> dict | None:
+        if self.services is None:
+            return None
+        return {"at": "2026-11-23T13:40:05+08:00", "steps": [
+            {"key": "serve", "at": "2026-11-23T13:40:00+08:00", "nums": {"services": self.services}}]}
+
+
+def test_the_live_view_says_the_public_service_is_down_not_that_nobody_called(tmp_path):
+    """Review 11-23: with the public service down the log stops, and 即時 said 「最近 5 分鐘沒有人查」. The last check
+    of the services (查詢服務's reading) says whether it answered; down, the card says so and the numbers are 「—」."""
+    log = write_log(tmp_path / "queries.jsonl", [call("2026-11-23T05:30:38+08:00", tool="fetch", ms=9)])
+    down = [{"name": "對外服務（8770）", "kind": "public", "up": False, "words": "連不上"},
+            {"name": "資料庫", "kind": "datasette", "up": True, "words": "有回應"}]
+    where = SimpleNamespace(public_log=log)
+    got = visits.live_api(where, {}, flow=Flow(down))
+    assert got["serve"] == {"up": False, "at": "2026-11-23T13:40:00+08:00", "words": "連不上", "name": "對外服務（8770）"}
+    assert visits.live_api(where, {}, flow=Flow(None))["serve"] is None  # no reading yet: nothing said
+    assert visits.live_api(where, {})["serve"] is None
+    ids = ["vs-data", "vs-day", "vs-ecg", "vs-ecg-none", "vs-ecg-quiet", "vs-rps", "vs-60", "vs-peak"]
+    data = {"days": {}, "pick": "", "dates": [], "calls": [], "labels": [], "today": "2026-11-23", "slots": 4}
+    out = run_layer(tmp_path, ids=ids, vsData=data, answers={"/api/usage/live": {**got, "per_sec": [0] * 330}})
+    assert out["quiet"] == {"hidden": False, "text": "對外服務沒有回應（11/23 13:40 檢查）：連不上"}
+    assert out["live"] == ["—", "—", "—"]
+
+
+def test_the_days_view_asks_again_when_shown_so_today_and_the_date_follow_the_clock(tmp_path):
+    """Review 11-23: 每日 was drawn once from the page's own data, so today's point and its numbers stayed as they were
+    at load and, past midnight, yesterday was still 「今天」. Shown, it asks GET /api/usage/card (visits.month now) and
+    redraws; a day not whole says so."""
+    old = {"days": {"2026-11-23": {"calls": 9}}, "pick": "2026-11-23", "dates": ["2026-11-22", "2026-11-23"],
+           "labels": ["11/22", "11/23"], "calls": [None, 9], "today": "2026-11-23", "slots": 4}
+    new = {"days": {"2026-11-21": {"calls": 31, "qpm_peak": 10, "complete": False}, "2026-11-24": {"calls": 2}},
+           "pick": "2026-11-21", "dates": ["2026-11-21", "2026-11-24"], "labels": ["11/21", "11/24"], "calls": [31, 2],
+           "today": "2026-11-24", "slots": 4}
+    ids = ["vs-data", "vs-day", "vs-chart", "vs-load", "vs-meter", "vs-qpm", "vs-qpm-at", "vs-conc", "vs-p90",
+           "vs-lat-card", "vs-err"]
+    out = run_layer(tmp_path, ids=ids, vsData=old, echarts=True, tipAt=[0, 1], answers={"/api/usage/card": new})
+    assert "/api/usage/card" in out["asked"]
+    assert out["day"] == "11/23（今天，還沒過完） · 9 次" and out["dayNow"] == "11/21（這天的紀錄不是整天） · 31 次"
+    assert "31 次" in out["dayTips"][0] and "這天的紀錄不是整天" in out["dayTips"][0] and "今天還沒過完" in out["dayTips"][1]
 
 
 def test_the_visits_card_is_the_designs_with_its_renamed_words():
@@ -284,9 +361,9 @@ def test_the_visits_card_is_the_designs_with_its_renamed_words():
     assert labels[3:] == ["負荷率 P95", "峰值 QPM", "最大並發", "P90 延遲", "錯誤率"]
     assert "示意" not in tree.html and "含測試流量" not in tree.html and "RPS" not in tree.html
     assert "每日：每天的查詢次數" in card.css_first("button.hp").attributes["data-tip"]
-    assert "4 個搜尋名額" in card.css_first(".vs-days .vs-main").attributes["data-tip"]
-    assert card.css_first("#vs-chart").attributes["aria-label"] == "11 月每天的查詢次數，可以放大縮小、左右拖"
-    assert json.loads(card.css_first("#vs-data").text())["calls"][22] == 7
+    assert "4 個檢索名額" in card.css_first(".vs-days .vs-main").attributes["data-tip"]
+    assert card.css_first("#vs-chart").attributes["aria-label"] == "最近 30 天每天的查詢次數，可以放大縮小、左右拖"
+    assert json.loads(card.css_first("#vs-data").text())["calls"][-1] == 7
     assert "</script><b>" not in visits.card_html({**data, "pick": "</script><b>"})  # the data never closes its tag
 
 
@@ -550,6 +627,49 @@ def test_the_machine_is_three_pictures_filling_like_water_the_projects_part_in_v
     assert panorama.machine_block({"steps": []}) == ""
 
 
+def probe_file(tmp_path: Path, at_: str, *, nknu: float = 68, docker: float = 180.6, strata: float = 153.8) -> Path:
+    """The lab's measurement (deploy/lab-inspect/machine/probe.ps1) as it writes it: UTF-8 with a BOM, bytes."""
+    gb = 1024 ** 3
+    data = {"at": at_, "drives": {"E": {"total": 1863 * gb, "free": 1376 * gb,
+                                        "parts": {"nknu": nknu * gb, "docker": docker * gb, "strata": strata * gb}}}}
+    path = tmp_path / "machine.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(data).encode())
+    return path
+
+
+def test_a_drive_is_split_into_the_projects_stratas_and_the_rest_from_the_labs_own_measure(tmp_path, monkeypatch):
+    """OV-70/71/84: how much of E: is the project's (the crawler's raw files E:\\nknu, Docker's data disk E:\\DockerData),
+    the test model's (E:\\Strata) and the rest cannot be seen from inside Docker: the lab measures it every 30 minutes
+    (machine/probe.ps1) and the panel draws it while the measure is under 3 hours old; older, the drive is one grey
+    layer again and the tip says when it was last measured."""
+    monkeypatch.setattr(pl, "memory", lambda: None)
+    monkeypatch.setattr(pl, "gpu_memory", lambda: None)
+    gb = 1024 ** 3
+    monkeypatch.setattr(pl.shutil, "disk_usage", lambda p: SimpleNamespace(total=1863 * gb, free=1376 * gb, used=487 * gb))
+    now = datetime(2026, 11, 23, 14, 0, tzinfo=TAIPEI)
+    where = pl.Where(root=tmp_path, db=tmp_path / "aca.db", disks=(("E 槽", str(tmp_path)),),
+                     machine=probe_file(tmp_path, "2026-11-23T13:30:00+08:00"))
+    (row,) = pl.machine_read(where, now=now)
+    assert row["parts"] == [["本專案", 248.6, "p"], ["Strata", 153.8, "s"], ["其他", 84.6, "o"]]
+    assert row["probe"] == {"at": "2026-11-23T13:30:00+08:00", "nknu": 68.0, "docker": 180.6, "strata": 153.8}
+    tile = LexborHTMLParser(panorama.machine_block({"steps": [{"key": "serve", "nums": {"machine": [row]}}]}))
+    disk = tile.css_first(".mc")
+    assert disk.attributes["data-tip-h"] == "E 槽 · 用了 26%，本專案 13%"
+    assert disk.css_first(".mc-legend").text() == "本專案 249 GBStrata 154 GB"
+    tip = disk.attributes["data-tip"]
+    assert "爬蟲原檔 68 GB" in tip and "Docker 的磁碟 181 GB" in tip and "11-23 13:30 在實驗室電腦上量的" in tip
+    assert all(len(line) <= 90 for line in tip.split("\n"))
+    old = pl.Where(root=tmp_path, db=tmp_path / "aca.db", disks=(("E 槽", str(tmp_path)),),
+                   machine=probe_file(tmp_path, "2026-11-23T09:00:00+08:00"))
+    (stale,) = pl.machine_read(old, now=now)
+    assert "parts" not in stale and stale["probe_old"] == "2026-11-23T09:00:00+08:00"
+    tile = LexborHTMLParser(panorama.machine_block({"steps": [{"key": "serve", "nums": {"machine": [stale]}}]}))
+    assert "上次量是 11-23 09:00，太久沒量了" in tile.css_first(".mc").attributes["data-tip"]
+    nothing = pl.Where(root=tmp_path, db=tmp_path / "aca.db", disks=(("E 槽", str(tmp_path)),),
+                       machine=tmp_path / "missing.json")
+    assert "parts" not in pl.machine_read(nothing, now=now)[0]
+
+
 def test_gather_reads_the_months_nights_the_days_and_every_mark(tmp_path, ops_db):
     store = history.Store(ops_db)
     store.put(record("2026-11-05"), at=at("2026-11-06T05:00:00"))
@@ -559,7 +679,7 @@ def test_gather_reads_the_months_nights_the_days_and_every_mark(tmp_path, ops_db
     t = tonight("2026-11-23T09:00:00", nights=[clean("2026-11-22")])
     more = panorama.gather(store, known, SimpleNamespace(public_log=None), t, snap(), {"open": [], "known": []})
     assert "2026-11-06" in more["calendar"]["nights"]  # the month reaches back past the seven readings
-    assert more["visits"]["calls"][22] == 7 and more["known"][0]["seen"] == "11-21 起沒再出現"  # the record's day
+    assert more["visits"]["calls"][-1] == 7 and more["known"][0]["seen"] == "11-21 起沒再出現"  # today, last
     assert more["calendar"]["library"][0] == "11-22 02:22"  # the reading's night that swapped
     page = LexborHTMLParser(front(more=more))
     assert page.css_first("a.cal-d[href='/sites?date=2026-11-06']") is not None
@@ -706,7 +826,8 @@ const vm = require('vm'), fs = require('fs');
 const [rt, hj, cfgJson] = process.argv.slice(2);
 const cfg = JSON.parse(cfgJson);
 const on = {}, frames = [], asked = [], els = {};
-const ctx2d = new Proxy({}, {get: (t, p) => (p in t ? t[p] : () => ({addColorStop() {}}))});
+const texts = [];  // what the live canvas wrote (its axis labels)
+const ctx2d = new Proxy({fillText: t => { texts.push(String(t)); }}, {get: (t, p) => (p in t ? t[p] : () => ({addColorStop() {}}))});
 const el = (id, extra = {}) => {
   if (els[id]) return els[id];
   const attrs = {};
@@ -719,7 +840,10 @@ const el = (id, extra = {}) => {
 const tip = el('tip', {hidden: false, offsetWidth: 100, offsetHeight: 40, querySelector() { return /rt-/.test(this.innerHTML) ? {} : null; }});
 const ids = new Set(cfg.ids || []);
 if (cfg.vsData) el('vs-data').textContent = JSON.stringify(cfg.vsData);
-const vs = cfg.vsData ? el('vs', {dataset: {v: 'live'}, querySelector: () => el('vs-main')}) : null;
+const button = v => el('btn-' + v, {dataset: {v}, addEventListener(t, f) { (this.on ||= {})[t] = f; }});
+const vs = cfg.vsData ? el('vs', {dataset: {v: 'live'}, querySelector: () => el('vs-main'),
+  querySelectorAll: s => (s === '.vs-switch button' ? [button('live'), button('day')] : [])}) : null;
+let option = null;  // what 每日 gave ECharts (cfg.echarts: a stand-in that keeps it)
 const document = {hidden: false, documentElement: {}, activeElement: null,
   body: {classList: {toggle() {}, contains: () => false}},
   getElementById: id => (ids.has(id) ? el(id) : null),
@@ -739,6 +863,8 @@ const g = {document, URLSearchParams, console, setImmediate,
     if (r === 'throw') throw new Error('unreachable');
     return r ? {ok: true, status: 200, json: async () => r} : {ok: false, status: 404, json: async () => ({})};
   }};
+if (cfg.echarts) g.echarts = {init: () => ({setOption(o) { option = o; }, getZr: () => ({off() {}, on() {}}), resize() {}}),
+  graphic: {LinearGradient: class {}}};
 g.window = g;
 vm.createContext(g);
 vm.runInContext(fs.readFileSync(rt, 'utf8'), g);
@@ -756,6 +882,14 @@ const ticks = async () => { for (let i = 0; i < 6; i++) await new Promise(r => s
     frames.slice().forEach(f => f(2000));
     out.live = ['vs-rps', 'vs-60', 'vs-peak'].map(id => String(el(id).textContent));
     out.none = el('vs-ecg-none').hidden;
+    out.texts = texts.slice();
+    out.quiet = {hidden: el('vs-ecg-quiet').hidden, text: String(el('vs-ecg-quiet').textContent)};
+    out.day = String(el('vs-day').textContent);
+    if (cfg.echarts) {
+      els['btn-day'].on.click(); await ticks();
+      out.dayTips = option ? (cfg.tipAt || []).map(i => option.tooltip.formatter([{dataIndex: i}])) : null;
+      out.dayNow = String(el('vs-day').textContent);
+    }
   }
   if (cfg.log) {
     const root = el('lvroot', {dataset: {src: '/api/logs', page: '500'}, querySelector: s => el('lv' + s)});
@@ -812,6 +946,53 @@ def test_the_live_line_says_unread_when_the_address_fails_never_zero(tmp_path):
     assert out["none"] is True and out["live"] == ["2.0", "120", "2"]
     tree = LexborHTMLParser(visits.card_html(data))
     assert [tree.css_first(f"#{i}").text() for i in ("vs-rps", "vs-60", "vs-peak")] == ["—", "—", "—"]  # before it
+
+
+def test_the_day_shown_first_is_the_last_one_over_not_todays_few_calls(tmp_path):
+    """Live 11-23 (owner: 「網站訪問量那個卡片應該有bug」): 每日 opened on today, 9 calls by 05:30, and gave as the day's
+    numbers P90 19.5 s (the first search after a restart loads the models) and 負荷率 23%. The day shown first is the
+    last one that is over; today stays one click away, and is shown first only when no day before it has calls."""
+    log = write_log(tmp_path / "q.jsonl", [call(f"2026-11-23T05:30:{s:02d}+08:00", ms=19503 if s == 0 else 7)
+                                           for s in range(9)])
+    store = Days([{"day": "2026-11-21", "calls": 31, "qpm_peak": 10}, {"day": "2026-11-22", "calls": 1800,
+                  "search": 1410, "qpm_peak": 34, "conc_peak": 2, "load_p95": 0.082, "p90_ms": 3818}])
+    data = visits.month(store, log, now=at("2026-11-23T13:00:00"))
+    assert data["pick"] == "2026-11-22" and data["days"]["2026-11-23"]["calls"] == 9  # today still drawn and pickable
+    assert visits.month(Days([]), log, now=at("2026-11-23T13:00:00"))["pick"] == "2026-11-23"  # nothing before it
+
+
+def test_the_live_axis_says_its_steps_as_they_are_and_a_quiet_window_says_when_the_last_call_was(tmp_path):
+    """Live 11-23: with nobody calling the axis read 0.0 / 0.3 / 0.5 (0.25 rounded to one place), and the card was a
+    flat line with no word of when anyone last called. The steps are said as they are, and a window with no call says
+    so with the last call's time (live(): 'last', from the log's end, also when it is older than the window)."""
+    now = at("2026-11-23T13:00:00")
+    log = write_log(tmp_path / "queries.jsonl", [{"t": "2026-11-23T05:30:38+08:00", "tool": "fetch", "ms": 9}])
+    got = visits.live(log, now)
+    assert sum(got["per_sec"]) == 0 and got["last"] == "2026-11-23T05:30:38+08:00"
+    assert visits.live(tmp_path / "none.jsonl", now)["last"] is None
+    ids = ["vs-data", "vs-day", "vs-ecg", "vs-ecg-none", "vs-ecg-quiet", "vs-rps", "vs-60", "vs-peak"]
+    data = {"days": {}, "pick": "", "dates": [], "calls": [], "labels": [], "today": "2026-11-23", "slots": 4}
+    quiet = {"/api/usage/live": {**got, "per_sec": [0] * 330}}
+    out = run_layer(tmp_path, ids=ids, vsData=data, answers=quiet)
+    assert [t for t in out["texts"] if t[0].isdigit()] == ["0", "0.25", "0.5"]
+    assert out["quiet"] == {"hidden": False, "text": "最近 5 分鐘沒有人查 · 最後一次 11/23 05:30"}
+    busy = {"/api/usage/live": {**got, "per_sec": [2] * 330}}
+    out = run_layer(tmp_path, ids=ids, vsData=data, answers=busy)
+    assert out["quiet"]["hidden"] is True and [t for t in out["texts"] if t[0].isdigit()] == ["0", "1", "2"]
+
+
+def test_a_day_still_to_come_says_so_not_no_record(tmp_path):
+    """每日's hover on a day after today said 「沒有紀錄」 as on a day before the log began; it says 還沒到."""
+    dates = [f"2026-11-{d:02d}" for d in range(20, 26)]
+    data = {"days": {"2026-11-22": {"calls": 1800}}, "pick": "2026-11-22", "dates": dates,
+            "labels": [f"11/{d}" for d in range(20, 26)], "calls": [None, None, 1800, 9, None, None],
+            "today": "2026-11-23", "slots": 4}
+    ids = ["vs-data", "vs-day", "vs-chart", "vs-load", "vs-meter", "vs-qpm", "vs-qpm-at", "vs-conc", "vs-p90",
+           "vs-lat-card", "vs-err"]
+    out = run_layer(tmp_path, ids=ids, vsData=data, echarts=True, tipAt=[0, 2, 3, 4])
+    before, full, today, ahead = out["dayTips"]
+    assert "沒有紀錄" in before and "1,800 次" in full and "今天還沒過完" in today
+    assert "還沒到" in ahead and "沒有紀錄" not in ahead
 
 
 def test_the_log_viewer_asks_with_the_one_handlers_names_and_the_reload_check_asks_brief(tmp_path):

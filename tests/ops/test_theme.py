@@ -98,9 +98,9 @@ def test_the_bar_is_one_row_of_entries_and_tools_and_links_its_own_host_by_path(
     # were two places to look): 總覽 first, the tools in the same row after a thin line, folded into 更多 when narrow;
     # 2026-11-22 evening: three entries by the question each answers, 每晚運行 reached from 總覽, 單位 from 內容
     html = bar.bar("try", "ops", "資料截至 x")
-    assert _entries(html) == ["總覽", "內容", "搜尋"]
+    assert _entries(html) == ["總覽", "內容", "檢索"]
     assert _tools(html) == ["網頁核查", "資料庫"]
-    assert "aria-current='page'>搜尋</a>" in html and html.count("aria-current") == 1
+    assert "aria-current='page'>檢索</a>" in html and html.count("aria-current") == 1
     assert "href='/'" in html and "href='/sites'" in html and "href='/try'" in html  # its own host's: by path
     assert "href='/tonight'" not in html and "href='/units'" not in html  # no entry of their own any more
     assert "18879" not in html  # 內容 (資料總覽) is 檢視台's own page since 2026-11-21
@@ -209,7 +209,7 @@ def test_the_sites_page_carries_the_theme_and_the_bar_as_every_page_of_the_panel
 
     page = overview.render("<p>x</p><script id='links'>__LINKS__</script>", {}).decode("utf-8")
     assert "--k0:" in page and "class='nk-bar'" in page and "aria-current='page'>內容</a>" in page
-    assert _entries(page) == ["總覽", "內容", "搜尋"] and "<details class='nk-more'>" in page
+    assert _entries(page) == ["總覽", "內容", "檢索"] and "<details class='nk-more'>" in page
     assert "<form class='nk-find' role='search' action='/doc'" in page  # the bar's box, as on every page
     # its links to a site's page and to 資料庫 come from panels.json, as the bar's do: a site's page by path (the same
     # service now), 資料庫 by its address, righted on the lab PC's own ports as the bar's are

@@ -42,8 +42,8 @@ def test_the_log_as_it_is_today_says_what_it_has_and_what_it_does_not_keep(tmp_p
                line(120, via="web"), line(90, via="api", query="校園地圖", found=False, ids=[]),
                line(30, tool="fetch", query=None, id="d1"), line(10, query="[MASKED] 的宿舍", found=False, ids=[]))  # as the service logs it
     rows = rows_of(path)
-    assert rows["查詢"] == (OK, "4 次：搜尋 3、讀全文 1（MCP 2、網頁 1、接口 1）；最後一次 11-22 08:50")
-    assert rows["查無資料"] == (OK, "2 次，占搜尋的 67%")
+    assert rows["查詢"] == (OK, "4 次：檢索 3、讀全文 1（MCP 2、網頁 1、接口 1）；最後一次 11-22 08:50")
+    assert rows["查無資料"] == (OK, "2 次，占檢索的 67%")
     assert rows["多慢"] == (NONE, "紀錄還沒記每次花多久")
     assert rows["沒答成"] == (NONE, "紀錄還沒記沒答成的那幾次")  # never 「沒有」 from a log that cannot say
     _, missed = pipeline.public_usage(path, NOW)
@@ -58,12 +58,12 @@ def test_once_the_log_keeps_time_and_failures_they_are_said_and_a_failure_of_our
         line(30, ms=5, error="bad_args", found=False, ids=[]), line(20, ms=15_000))
     rows = rows_of(path)
     assert rows["沒答成"] == (WARN, "2 次：排隊太久 1、參數不對 1")
-    assert rows["查詢"][1].startswith("4 次：搜尋 2")  # a failed call is a call, not a search that found nothing
-    assert rows["查無資料"] == (OK, "0 次，占搜尋的 0%") and rows["多慢"] == (OK, "答完的 2 次各花 12.0、15.0 秒")
+    assert rows["查詢"][1].startswith("4 次：檢索 2")  # a failed call is a call, not a search that found nothing
+    assert rows["查無資料"] == (OK, "0 次，占檢索的 0%") and rows["多慢"] == (OK, "答完的 2 次各花 12.0、15.0 秒")
     # five timed, one slow: most likely the first after a restart (it loads the models): said, not lit
     log(path, *(line(50 - i, ms=1000) for i in range(4)), line(40, ms=16_733))
     once = ("一半在 1.0 秒內答完，最慢的一成要 16.7 秒以上；超過 10 秒的只有 1 次"
-            "（服務重啟後第一次搜尋要先載入模型，約 17 秒）")
+            "（服務重啟後第一次檢索要先載入模型，約 17 秒）")
     assert rows_of(path)["多慢"] == (OK, once)
     log(path, *(line(50 - i, ms=1000) for i in range(3)), line(41, ms=12_000), line(40, ms=16_733))
     assert rows_of(path)["多慢"] == (WARN, "一半在 1.0 秒內答完，最慢的一成要 16.7 秒以上")
@@ -72,7 +72,7 @@ def test_once_the_log_keeps_time_and_failures_they_are_said_and_a_failure_of_our
     assert rows_of(path)["多慢"][1].startswith("一半在 1.1 秒內答完，最慢的一成要 1.1 秒以上")
     log(path, line(30, ms=5, error="bad_args", found=False, ids=[]))  # the caller's own mistake: not lit
     assert rows_of(path)["沒答成"] == (OK, "1 次：參數不對 1")
-    assert rows_of(path)["多慢"] == (NONE, "沒有答完的搜尋可以算")
+    assert rows_of(path)["多慢"] == (NONE, "沒有答完的檢索可以算")
     # only searches that answered are timed: a refusal or a fetch is milliseconds (the lab's log, 11-21 23:02)
     log(path, line(30, ms=1295), line(29, ms=3, error="bad_args", found=False, ids=[]),
         line(28, tool="fetch", query=None, id="x", ms=2, found=False), line(27, ms=1400))
@@ -170,12 +170,15 @@ def test_the_public_service_is_asked_its_health_only_and_said_plainly(health, tm
     step = pipeline.serve_step(where)
     assert step.state == OK and step.usage_label == "對外服務最近 24 小時"
     assert [r[0] for r in step.usage] == ["查詢", "查無資料", "多慢", "沒答成"]
+    (svc,) = step.nums["services"]  # its words carry how long it took to answer: not compared
+    assert {k: svc[k] for k in ("name", "kind", "up")} == {"name": "對外服務（8770）", "kind": "public", "up": True}
     _Health.body = {**_Health.body, "age_hours": 50.2, "stale": True}  # the nights stopped: its library is old
     step = pipeline.serve_step(where)
     assert step.state == WARN and "它說庫已經 50.2 小時沒換" in step.say
     _Health.code = 503
     step = pipeline.serve_step(where)
     assert step.state == BAD and step.fix == pipeline.INTERFACE and "對外服務（8770） 沒有回應" in step.say
+    assert step.nums["services"][0]["up"] is False
     assert step.lost == [("對外服務（8770）：回 503：它讀不到庫", 1)]
 
 

@@ -154,7 +154,7 @@ def test_a_night_with_three_attempts_draws_three_runs_and_says_nothing_special(w
 
 def test_the_search_page_builds_its_controls_from_whatever_tools_are_listed(mcp):
     title, body = TryPage(mcp).page(QueryParams(""))
-    assert title == "搜尋"
+    assert title == "檢索"
     tree = LexborHTMLParser(body)
     form = tree.css_first("form.sr-form")
     assert form.attributes["data-tool"] == "ask"

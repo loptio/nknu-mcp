@@ -48,7 +48,7 @@ databases:
           chars: 字數
           period_ay: 學年度：標題裡寫的學年度。
           period_sem: 學期：標題裡寫的學期（1 或 2）。
-          ident_date: 日期：搜尋結果上顯示的日期。
+          ident_date: 日期：檢索結果上顯示的日期。
           ident_kind: 日期類別：這個日期怎麼來的：公告日期 published、跟所屬公告 inherited、伺服器檔案時間 server。
           doc_type: 背景類別：學報校刊 journal、考題 exam、會議紀錄 minutes；空白＝不是背景。
           text_source: 文字來源：這次轉的 totext、10-29 的舊粗轉 fallback-1029、沒有 none。
@@ -106,7 +106,7 @@ databases:
           start: 開頭：在全文裡的位置（第幾個字）。
           end: 結尾：在全文裡的位置（第幾個字）。
       chunks:
-        description: 一份文件切成的小段；搜尋是一小段一小段比對的。
+        description: 一份文件切成的小段；檢索是一小段一小段比對的。
         hidden: true
         columns:
           chunk_id: 小段編號
@@ -155,14 +155,14 @@ databases:
           key: 項目：記的是什麼，例如 built_at 建庫時間、copies:… 一份文件併掉了哪些副本。
           value: 值
       chunk_fts:
-        description: 關鍵字索引：每一小段切成的兩字詞，搜尋時先用它找候選。一列對小段表的一列（rowid＝小段編號）。
+        description: 關鍵字索引：每一小段切成的兩字詞，檢索時先用它找候選。一列對小段表的一列（rowid＝小段編號）。
         hidden: true
         columns:
           title_tokens: 標題的詞：標題切成的兩字詞。
           body_tokens: 內文的詞：內文切成的兩字詞。
           unit_tokens: 單位的詞：單位、組別、簡稱、適用對象切成的詞。
       chunk_vecs:
-        description: 向量索引：每一小段的向量（bge-m3 算的，意思相近的段落向量也相近），搜尋時和關鍵字一起找候選。
+        description: 向量索引：每一小段的向量（bge-m3 算的，意思相近的段落向量也相近），檢索時和關鍵字一起找候選。
         hidden: true
         columns:
           chunk_id: 小段編號

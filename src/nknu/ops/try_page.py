@@ -368,26 +368,27 @@ def option_tip(description: str, option: object) -> str:
     return description
 
 
-# a parameter's plain name when its description does not open with one (search's sort opens with its first option);
-# only a reading aid: the name the agent sends stays beside it, and a name not here simply has none 【Claude】
-PLAIN_NAMES = {"query": "要找什麼", "sort": "排序", "limit": "幾筆", "detail": "每筆多少原文", "unit": "單位", "id": "哪一份",
+# a parameter's one word (the owner's 11-23 design copy: 原文, 筆數, 單位, 排序); only a reading aid: the name the
+# agent sends floats over it (the label's data-tip-h), and a parameter with no word shows that name instead 【Claude】
+PLAIN_NAMES = {"query": "問題", "sort": "排序", "limit": "筆數", "detail": "原文", "unit": "單位", "id": "哪一份",
                "part": "哪一節"}
-GLOSS_MAX = 12  # characters a description's opening clause may have to stand as the parameter's plain name
+GLOSS_MAX = 4  # characters a description's opening clause may have to stand as a parameter's word when it has none
 
 
 def gloss(f: Field) -> str:
-    """A parameter's name in plain words, for the person reading the form: the opening clause of the service's own
-    description when it is a short one in the reader's language (每筆給多少原文, 要幾筆), else PLAIN_NAMES', else ''."""
+    """A parameter's name as one plain word, for the person reading the form: PLAIN_NAMES', else the opening clause
+    of the service's own description when that is one short word in the reader's language, else ''."""
+    if f.name in PLAIN_NAMES:
+        return PLAIN_NAMES[f.name]
     first = re.split(r"[，。：；、（(]", " ".join((f.description or "").split()), maxsplit=1)[0].strip()
-    if first and not first[0].isascii() and len(first) <= GLOSS_MAX:
-        return first
-    return PLAIN_NAMES.get(f.name, "")
+    return first if first and not first[0].isascii() and len(first) <= GLOSS_MAX else ""
 
 
 def name_html(f: Field) -> str:
-    """A parameter's label: its plain name (gloss) and, beside it, the name the agent sends."""
+    """A parameter's label: its one word (gloss); the name the agent sends only when it has none (the label's
+    data-tip-h always starts with that name)."""
     plain = gloss(f)
-    return (f"<span class='tr-g'>{e(plain)}</span><code>{e(f.name)}</code>" if plain else f"<code>{e(f.name)}</code>")
+    return f"<span class='tr-g'>{e(plain)}</span>" if plain else f"<code>{e(f.name)}</code>"
 
 
 def param_html(f: Field, value: str | None, instructions: str, tool: str) -> str:
@@ -441,7 +442,7 @@ def search_form_html(tool: dict, values: dict[str, str], instructions: str) -> s
     top = (f"<div class='sr-top'><div class='sr-box'><input class='sr-q' type='text' "
            f"name='{e(ARG + asked)}' value='{e(values.get(asked) or '')}' placeholder='{e(hint)}' "
            f"aria-label='{e(asked)}' data-tip-h='{e(asked)}' data-tip='{e(q.description if q else '')}' required "
-           f"autocomplete='off'>{go_button('搜尋', submit=True)}</div></div>")
+           f"autocomplete='off'>{go_button('檢索', submit=True)}</div></div>")
     rest = "".join(param_html(f, values.get(f.name), instructions, name) for f in fs if f.name != asked)
     return (f"<search><form class='sr-form card pad' method='get' action='/try#result' data-tool='{e(name)}'>"
             f"<input type='hidden' name='{CALL}' value='{e(name)}'><fieldset>{top}"
@@ -812,15 +813,15 @@ def result_tabs(query: str, *, current: str = "agent", tool: dict | None = None)
     ('agent' or 'why'), tool the search tool the first tab calls."""
     if current == "why":
         href = agent_href(tool, query)
-        agent = (f"<a href='{e(href)}' data-tip='同一個問題，經搜尋服務送出，agent 實際收到的'>agent 收到的</a>" if href
-                 else "<a aria-disabled='true' data-tip='搜尋服務沒有回應，或沒有搜尋的工具'>agent 收到的</a>")
+        agent = (f"<a href='{e(href)}' data-tip='同一個問題，經檢索服務送出，agent 實際收到的'>agent 收到的</a>" if href
+                 else "<a aria-disabled='true' data-tip='檢索服務沒有回應，或沒有檢索的工具'>agent 收到的</a>")
         return (f"<nav class='tr-tabs' aria-label='結果'>{agent}"
                 "<a aria-current='page' data-seam='why'>為什麼這樣排</a></nav>")
     if query:
         why = (f"<a href='{e(why_href(query))}' data-seam='why' data-tip='同一個問題，每一份的名次和分數怎麼算出來的'>"
                "為什麼這樣排</a>")
     else:
-        why = "<a aria-disabled='true' data-seam='why' data-tip='這一次不是搜尋，沒有排名'>為什麼這樣排</a>"
+        why = "<a aria-disabled='true' data-seam='why' data-tip='這一次不是檢索，沒有排名'>為什麼這樣排</a>"
     return f"<nav class='tr-tabs' aria-label='結果'><a aria-current='page'>agent 收到的</a>{why}</nav>"
 
 
@@ -895,26 +896,26 @@ class TryPage:
         if self.client is None:
             state = ("<section class='card pad tr-state'><span class='pill none'>沒有設定</span>"
                      "<span data-tip='啟動檢視台時加 --mcp-url（實驗室是 http://mcp:8766/mcp）'>"
-                     "檢視台沒有設定搜尋服務的位址</span></section>")
+                     "檢視台沒有設定檢索服務的位址</span></section>")
             return self._without_service(body + state, why, board)
         s = self.client.open()
         if not s.hello.ok:
             raw = raw_block(s.hello.raw, "initialize") if s.hello.raw else ""
             state = (f"<section class='card pad tr-state'><span class='pill bad'>{icon('no', 12)}連不上"
-                     f"</span><span>搜尋服務：{e(s.hello.error)}</span>"
+                     f"</span><span>檢索服務：{e(s.hello.error)}</span>"
                      f"<span class='faint mono small'>{e(self.url)}</span>{raw}</section>")
             return self._without_service(body + state, why, board)
         by_name = {str(t["name"]): t for t in s.tools}
         asker = search_tool(s.tools)
         others = [t for t in s.tools if t is not asker and not reader_key(t)]
         called = (_all(params, CALL) or [""])[-1] if why is None else ""
-        result, values, title, filled = "", {}, "搜尋", called
+        result, values, title, filled = "", {}, "檢索", called
         if why is not None:  # the second tab: the question in its tool's box, the explanation under it
             query, inner = why
             result = why_html(query, inner, asker)
             if asker is not None:
                 values, filled = {query_field(asker): query}, str(asker["name"])
-            title = f"{query} · 搜尋" if query else "搜尋"
+            title = f"{query} · 檢索" if query else "檢索"
         elif called:
             tool = by_name.get(called)
             if tool is None:
@@ -933,12 +934,12 @@ class TryPage:
                         self.busy.release()
                     result = result_html(tool, args, got, s.tools)
                     asked = args.get(query_field(tool)) if query_field(tool) else None
-                    title = f"{asked} · 搜尋" if isinstance(asked, str) and asked else f"{called} · 搜尋"
+                    title = f"{asked} · 檢索" if isinstance(asked, str) and asked else f"{called} · 檢索"
                 else:
                     result = (f"<section id='result' class='tr-result card pad tr-state'><span class='pill warn'>"
                               f"{icon('warn', 12)}正在查</span><span>另一個查詢還沒查完，查完再送一次</span></section>")
         ask = (search_form_html(asker, values if filled == asker["name"] else {}, instructions_of(s))
-               if asker is not None else "<section class='card pad tr-state'><span class='pill none'>沒有搜尋的工具"
+               if asker is not None else "<section class='card pad tr-state'><span class='pill none'>沒有檢索的工具"
                "</span><span>工具清單裡沒有一個只讀、要一段文字的工具</span></section>")
         forms = "".join(form_html(t, values if t["name"] == filled else {}, shown=True) for t in others)
         call = (f"<details class='fold tr-others' id='call'{' open' if filled in {t['name'] for t in others} else ''}>"
@@ -954,10 +955,10 @@ class TryPage:
         query = why[0] if why is not None else ""
         ask = (f"<form class='ask tr-alone' action='/try' method='get'><input type='hidden' name='tab' value='why'>"
                f"<div class='box'><input name='q' value='{e(query)}' "
-               f"placeholder='問一個學生會問的問題，看搜尋怎麼排' aria-label='問題'>{go_button('搜尋')}</div></form>")
+               f"placeholder='問一個學生會問的問題，看檢索怎麼排' aria-label='問題'>{go_button('檢索')}</div></form>")
         if why is not None:
-            return (f"{query} · 搜尋" if query else "搜尋"), top + ask + why_html(query, why[1], None)
-        return "搜尋", top + ask + board
+            return (f"{query} · 檢索" if query else "檢索"), top + ask + why_html(query, why[1], None)
+        return "檢索", top + ask + board
 
 
 def _keys(params: object) -> list[str]:

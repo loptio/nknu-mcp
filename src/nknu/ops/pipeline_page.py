@@ -19,10 +19,12 @@ home: 今晚 answers the owner's questions with charts (tonight_page). The words
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from urllib.parse import quote
 
 from nknu.ops.look import e, icon, s2t
-from nknu.ops.pipeline import BAD, NONE, OK, STATE_WORDS, WARN, stamp
+from nknu.ops.names import link_name
+from nknu.ops.pipeline import BAD, NONE, OK, STATE_WORDS, STATUS_WORDS, WARN, stamp
 
 PILL = {OK: "good", WARN: "warn", BAD: "bad", NONE: "none"}
 STATE_ICON = {OK: "ok", WARN: "warn", BAD: "no", NONE: "dash"}  # look's drawings: the state is never colour alone
@@ -221,23 +223,29 @@ AGAIN = ("const u=new URL(location.href);u.searchParams.delete('fresh');u.hash='
          "setTimeout(()=>location.replace(u.toString()),{ms})")
 
 
-# the crawl's 结果 of an export row in plain words (nknu.archive.export writes them; the ones not here show as written)
-OUTCOME_WORDS = {"抓到了": "抓到了", "学校那边已经不存在": "學校那邊已經不存在",
-                 "应该是档案，回来不是档案（网页、空白或错误说明）": "該是檔案，學校回的卻是網頁或錯誤說明",
-                 "跳到别的网址（目标另算）": "轉到別的網址（另外收）", "看起来像不存在（程序比对的）": "看起來像不存在",
-                 "按规则不抓": "照規則不抓", "还没抓": "還沒抓", "这一轮还没决定怎么处理的写法": "還沒決定怎麼處理"}
+def outcome_word(result: str) -> str:
+    """An export row's 结果 (the crawler's words, nknu.archive.outcome.RESULT_LABEL, as nknu.archive.export writes
+    them) in the 11-23 words (names.py), the same the drawers and 對帳's hovers say: 校方已移除, 連結失效（轉回首頁）,
+    已轉址, 尚未抓取 …; one names.py has no word for in Taiwan usage as written."""
+    return link_name(s2t(result))
 
 
-def _bars(counts: dict[str, int], words: dict[str, str] | None = None, examples: dict | None = None,
+def _bars(counts: dict[str, int], word: Callable[[str], str] = s2t, examples: dict | None = None,
           to: str = "/check?ref=") -> str:
-    """Reasons and their counts, the largest first, each with up to five examples that open 網頁核查 on that page."""
-    rows = []
-    for why, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+    """Reasons and their counts, the largest first, each with up to five examples that open 網頁核查 on that page.
+    word: how a reason is shown (outcome_word for the export's results); reasons it gives one word are one row, their
+    counts summed and their examples together (two old words names.py merged)."""
+    merged: dict[str, list] = {}
+    for why, count in counts.items():
         if not why:
             continue
-        shown = (words or {}).get(why, s2t(why))
+        got = merged.setdefault(word(why), [0, []])
+        got[0] += count
+        got[1].extend((examples or {}).get(why) or [])
+    rows = []
+    for shown, (count, found) in sorted(merged.items(), key=lambda kv: -kv[1][0]):
         eg = ""
-        some = ((examples or {}).get(why) or [])[:5]
+        some = found[:5]
         titles = [t for _u, t in some]
         for url, title in some:
             # a title shared by several examples (a site's own name on every page) says nothing: the address does
@@ -289,8 +297,9 @@ def folded(rows: list[str], total: int | None = None) -> str:
             + "</details>")
 
 
-STATUS_TEXT = {"ok": "轉成文字", "partial": "轉了一部分", "empty": "讀不出文字", "skipped": "照規則跳過", "failed": "轉文字失敗",
-               "pending": "還沒轉"}
+# the to-text statuses in the 11-23 words (已轉文字, 無文字可讀, 依規則略過, 轉換失敗): pipeline's one table, which 內容
+# and the drawers say too
+STATUS_TEXT = STATUS_WORDS
 
 
 def site_steps(detail: dict, *, style: bool = True) -> str:
@@ -311,7 +320,7 @@ def site_steps(detail: dict, *, style: bool = True) -> str:
             "<section class='card pad pl-site-step'><h3>爬取</h3>"
             f"<div class='pl-facts'><span>導出清單 <b>{n(ex['rows'])}</b> 筆</span><span>抓到了 <b>{n(fetched)}</b></span>"
             f"<span>其他結果 <b>{n(ex['rows'] - fetched)}</b>（點例子看那一頁）</span></div>"
-            + _bars({k: v for k, v in ex["outcomes"].items() if k != "抓到了"}, OUTCOME_WORDS, ex.get("examples"))
+            + _bars({k: v for k, v in ex["outcomes"].items() if k != "抓到了"}, outcome_word, ex.get("examples"))
             + "</section>")
         newer = (f"<span>爬蟲有更新的一份 <b class='mono'>{e(detail['newer'])}</b>，庫還沒用</span>"
                  if detail.get("newer") else "")

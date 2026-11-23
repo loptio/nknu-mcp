@@ -15,7 +15,7 @@
 {% block content %}
 <div class="page-header">
     <h1>{{ (zh_tables or {}).get(table) or table }} <code>{{ ', '.join(primary_key_values) }}</code>{% if private %} 🔒{% endif %}</h1>
-    {% if table == "docs" and trace_url %}<a class="btn primary" href="{{ trace_url }}{{ primary_key_values[0]|urlencode }}" target="_blank" rel="noopener" data-tip="在檢視台的文件追蹤看這一份：從抓取到搜尋的每一步">文件追蹤 ↗</a>{% endif %}
+    {% if table == "docs" and trace_url %}<a class="btn primary" href="{{ trace_url }}{{ primary_key_values[0]|urlencode }}" target="_blank" rel="noopener" data-tip="在檢視台的文件追蹤看這一份：從抓取到檢索的每一步">文件追蹤 ↗</a>{% endif %}
 </div>
 
 {% if display_rows %}

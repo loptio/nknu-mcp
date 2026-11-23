@@ -276,9 +276,15 @@ function look(F,k,step){curK=k;onRowNow=null;const X=F.look||{};
   if(X.kind==='host')return `<p class='fv-note'>${esc(X.note||F.absent||'檢視台沒有掛上這個資料夾')}</p>`;
   if(X.kind==='absent'||(!F.exists&&X.kind!=='view'))return `<p class='fv-note'>這個檔現在不在（${esc(X.absent||F.absent||'這一晚沒用到')}）</p>`;
   if(X.kind==='dir')return `<h6>裡面 ${num(F.count)} 項${F.count>15?'，前 15 項':''}</h6><ul class='fv-ls'>${(F.list||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
-  // a count is kept a while (the ledger's for minutes while the crawl writes it): it says when it was made
+  // a count is kept a while (the ledger's for minutes while the crawl writes it): it says when it was made. Each table
+  // [name, rows, how, why]: how exact, about (約: by its ids), over (超過: read up to a cap), least (至少: read for a
+  // while), note (a line under the table); why on hover (what the number rests on, or why there is none)
   if(X.kind==='tables'){if(X.pending||!X.tables)return `<h6>資料表</h6><p class='fv-note'>正在數每個資料表有幾筆…</p>`;
-    return `<h6>資料表${X.counted?` <small data-tip='數一次要幾秒到幾十秒，數好的留著用'>${esc(X.counted)} 數的</small>`:''}</h6><table class='jv-t'>${X.tables.map(([n,c,approx])=>`<tr><td>${esc(n)}</td><td class='num'>${c==null?'—':(approx?'約 ':'')+num(c)+' 筆'}</td></tr>`).join('')}</table>`}
+    const HOW={about:'約 ',over:'超過 ',least:'至少 '},rs=X.tables.filter(t=>t[2]!=='note'),ns=X.tables.filter(t=>t[2]==='note');
+    const n1=([,c,h,why])=>{const t=c==null?'—':(HOW[h]||'')+num(c)+' 筆';return why?`<span data-tip='${esc(why)}'>${t}</span>`:t};
+    return `<h6>資料表${X.counted?` <small data-tip='數一次要幾秒到幾十秒，數好的留著用'>${esc(X.counted)} 數的</small>`:''}</h6>`+
+      (rs.length?`<table class='jv-t'>${rs.map(t=>`<tr><td>${esc(t[0])}</td><td class='num'>${n1(t)}</td></tr>`).join('')}</table>`:'')+
+      (ns.length?`<div class='fv-tnotes'>${ns.map(t=>`<p class='fv-note'>${esc(t[0])}</p>`).join('')}</div>`:'')}
   if(X.kind==='view'){const v=X.view||{};if(v.open==='site')onRowNow=r=>{if(r&&r['網站'])window.FILEOPEN(k,step,r['網站'])};return view(v,k,onRowNow)}
   if(X.kind==='json'){const c=X.cut||{},note=Object.entries(c).map(([a,n])=>`${a} 前 ${num(Math.min(300,n))} 筆（共 ${num(n)} 筆）`).join('；');return (note?`<h6>${esc(note)}</h6>`:'')+jv(X.json,0)}
   if(X.kind==='lines'){const rs=(X.lines||[]).filter(x=>x&&x.trim()).map(r=>r.split(X.sep||','));

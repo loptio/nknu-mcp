@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from nknu.ops import calendar, design, visits
+from nknu.ops import pipeline as pl
 from nknu.ops.charts import ECHARTS
 from nknu.ops.look import CSS as LOOK_CSS
 from nknu.ops.look import TIP_JS, e
@@ -178,11 +179,19 @@ def machine_tiles(snap: dict) -> list[dict]:
             tip = ("本專案：檢視台、對外服務、共用的檢索模型；Windows 讀不到每個程式各用多少，這裡是全部用量；"
                    "Strata 載入時會拿走約 14 GB")
         elif kind == "ram":
-            tip = (f"Docker 虛擬機用了 {used:.1f} GB（它最多能用 {total:.1f} GB），裡面的容器都算，不只本專案的\n"
+            tip = (f"Docker 虛擬機用了 {used:.1f} GB（它最多能用 {total:.1f} GB，百分比照這個算），裡面的容器都算，不只本專案的\n"
                    "Windows 整台的記憶體檢視台讀不到；Strata 載入時另外再用"
                    if read else "Docker 虛擬機的記憶體讀不到")
             if m.get("swap"):
                 tip += f"\n交換區 {m['swap']:.1f} GB"
+        elif read and isinstance(m.get("probe"), dict):  # the lab's own measure (pipeline.drive_parts)
+            pr = m["probe"]
+            tip = (f"本專案：爬蟲原檔 {pr['nknu']:,.0f} GB、Docker 的磁碟 {pr['docker']:,.0f} GB（裡面也有不是我們的 qdrant）\n"
+                   f"Strata：測試用的本地模型 {pr['strata']:,.0f} GB\n其他：{m.get('name')}上別的程式和檔案\n"
+                   f"{pl.stamp(pr['at'])} 在實驗室電腦上量的，每 30 分鐘量一次")
+        elif read and m.get("probe_old"):
+            tip = (f"{m.get('name')}：用了 {used:,.0f} GB；本專案、Strata 和其他各占多少要在實驗室電腦上量，\n"
+                   f"上次量是 {pl.stamp(m['probe_old'])}，太久沒量了（每 30 分鐘量一次），先不分")
         else:
             tip = (f"{m.get('name')}：用了 {used:,.0f} GB；本專案、Strata 和其他各占多少，檢視台讀不到（要在實驗室電腦上量）"
                    if read else f"{m.get('name')}：讀不到（這一槽沒有掛給檢視台）")
