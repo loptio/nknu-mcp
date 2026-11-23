@@ -4,8 +4,7 @@ The crawler's 2989f60 export carries the words of the announcement platform's �
 whose page states its publishing unit stands under that unit (a section of an office as the office with the section as
 its 組別), the platform's files hanging on it follow, and the copy merge takes the statement for who published a text
 among the copies of the nearest kind of owner (an office's own site still comes first): only that unit's copies stand
-for the group. --no-stated-units builds as before. Units, sentences and names are made up;
-no model loads."""
+for the group. Units, sentences and names are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -100,9 +99,9 @@ def notice(rid: str, publisher: str, text: str = tc.LONG, title: str = "公告",
     return tc.rec(rid, "detail:sso_news", tc.NEWS + rid, title, text, tc.NEWS_SITE, day, publisher=publisher)
 
 
-def stated(records, units=TREE, on: bool = True):
+def stated(records, units=TREE):
     docs, _ = build_documents(records, {}, [])
-    report = build._stated_units(docs, units, on)
+    report = build._stated_units(docs, units)
     return {d.doc_id: (d.unit, d.grp, d.unit_stated) for d in docs}, report, docs
 
 
@@ -143,22 +142,20 @@ def test_the_platforms_files_follow_their_notice_and_a_units_own_file_does_not()
     assert got["da4"] == (tr.PLATFORM, "", False) and report["files"] == 2  # hanging on no stated notice
 
 
-def test_switched_off_or_without_a_tree_nothing_changes_and_the_report_still_counts():
-    for units, on in ((TREE, False), (None, True)):
-        got, report, _ = stated([notice("p1", BY_LIFE)], units, on)
-        assert got == {"dp1": (tr.PLATFORM, "", False)}
-        assert report == {"on": False, "stated": 1, "placed": 0, "as_written": {}, "parts_as_written": {},
-                          "changed": 0, "files": 0, "units": {}}
+def test_without_a_tree_nothing_changes_and_the_report_still_counts():
+    got, report, _ = stated([notice("p1", BY_LIFE)], None)
+    assert got == {"dp1": (tr.PLATFORM, "", False)}
+    assert report == {"on": False, "stated": 1, "placed": 0, "as_written": {}, "parts_as_written": {},
+                      "changed": 0, "files": 0, "units": {}}
 
 
 # ---------------------------------------------------------------- whose copy stands for a text
 
-def merged(records, units=TREE, on: bool = True):
+def merged(records, units=TREE):
     docs, excluded = build_documents(records, {}, [])
-    build._stated_units(docs, units, on)
+    build._stated_units(docs, units)
     seen: dict = {}
-    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, build.COPY_TEXT, True,
-                                       units, True, seen)
+    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, units, seen)
     return [r.doc.doc_id for r in kept], {k: [c.doc.doc_id for c in v] for k, v in copies.items()}, seen
 
 
@@ -173,7 +170,6 @@ def dept_copy(rid: str = "p3", day: str = "2026-02-01", text: str = tc.LONG):
 def test_the_platforms_notice_of_an_office_is_kept_before_a_departments_copy():
     # until 11-15 the department's copy stood for the text, the platform's unit being a placeholder
     assert merged([notice("p1", BY_LIFE), dept_copy()])[:2] == (["dp1"], {"dp1": ["dp3"]})
-    assert merged([notice("p1", BY_LIFE), dept_copy()], on=False)[:2] == (["dp3"], {"dp3": ["dp1"]})
     assert merged([notice("p1", ""), dept_copy()])[:2] == (["dp3"], {"dp3": ["dp1"]})  # no statement: as before
 
 
@@ -186,7 +182,6 @@ def test_an_offices_own_copy_still_comes_before_a_department_that_posted_the_tex
     # the statement says who put that notice on the platform: a department posting an office's text there is no more
     # its source than one copying it to its own site, so the kind of owner decides first, as since 11-14
     assert merged([notice("p1", BY_SOFT), office_copy()])[:2] == (["dp2"], {"dp2": ["dp1"]})
-    assert merged([notice("p1", BY_SOFT), office_copy()], on=False)[:2] == (["dp2"], {"dp2": ["dp1"]})
     kept, copies, _ = merged([notice("p1", BY_SOFT), office_copy(), dept_copy()])
     assert kept == ["dp2"] and sorted(copies["dp2"]) == ["dp1", "dp3"]
 
@@ -196,7 +191,7 @@ def test_among_departments_the_one_the_platform_names_stands_for_the_text():
     # 化學系's own site holds the text and the platform says 軟體系 published it: the platform's notice, as 軟體系's
     assert merged([notice("p1", BY_SOFT), other])[:2] == (["dp1"], {"dp1": ["dp4"]})
     # without the statement the platform's copy is a placeholder's, and the department's own site stands for it
-    assert merged([notice("p1", BY_SOFT), other], on=False)[:2] == (["dp4"], {"dp4": ["dp1"]})
+    assert merged([notice("p1", ""), other])[:2] == (["dp4"], {"dp4": ["dp1"]})
     # 軟體系's own site holds it too: that copy, at its own address
     kept, copies, _ = merged([notice("p1", BY_SOFT), other, dept_copy()])
     assert kept == ["dp3"] and sorted(copies["dp3"]) == ["dp1", "dp4"]
@@ -237,7 +232,7 @@ def inputs(root, publisher: str = BY_LIFE):
     return [news, chair]
 
 
-def test_the_build_names_the_publisher_says_so_and_can_leave_it(tmp_path, capsys):
+def test_the_build_names_the_publisher_and_says_so(tmp_path):
     out = tmp_path / "db" / "x.db"
     report = tm.run(tm.tree_files(tmp_path / "tree"), out, inputs=inputs(tmp_path))
     assert report.publishers == {"on": True, "stated": 1, "placed": 1, "as_written": {}, "parts_as_written": {},
@@ -258,16 +253,5 @@ def test_the_build_names_the_publisher_says_so_and_can_leave_it(tmp_path, capsys
         assert line.startswith(build.UNIT_LABEL + AFFAIRS) and LIFE in line
         assert conn.execute("SELECT unit_id FROM doc_scope WHERE doc_id = ? AND relation = 'publisher'",
                             (news,)).fetchone() == (LIFE,)
-    finally:
-        conn.close()
-    # --no-stated-units: the department's copy stands for it, as before, and the report says the switch is off
-    left = tmp_path / "db" / "y.db"
-    report = tm.run(tm.tree_files(tmp_path / "tree2"), left, inputs=inputs(tmp_path / "again"), stated_units=False)
-    assert (report.publishers["on"], report.publishers["stated"], report.publishers["changed"]) == (False, 1, 0)
-    assert any("没照网页写的公告单位定发布单位（--no-stated-units" in part for part in build._v6_words(report))
-    conn = sqlite3.connect(f"file:{left}?mode=ro", uri=True)
-    try:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'stated_units'").fetchone() == ("off",)
-        assert conn.execute("SELECT doc_id, unit FROM docs WHERE kind_class = 'notice'").fetchall() == [(chair, SOFT)]
     finally:
         conn.close()

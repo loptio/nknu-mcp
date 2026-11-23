@@ -43,12 +43,10 @@ kept (the server's note and its 36 KB fit). Everything is compared on letters an
 table pipes and emphasis never decide a match. The 9 no-answer questions are listed with their top 3 and the best
 rerank score of each query, without a threshold (11-01: 先不设门槛). A hybrid run lists the queries whose ranking came
 back "keyword" (every query that finds something when the dense path is on and the database has no usable vectors of
-the pinned bge-m3; otherwise a model failed and hybrid swallowed it) and, unless --no-scope-effect, reruns the
-questions whose text or agent queries name a unit, campus or level without the unit scope (W_SCOPE = W_MENTION = 0;
-addendum F): the others rank the same by construction. Every run reports the database's own numbers (build_stats:
-file-name titles and sections under 40 characters; addendum G4, G7; the series numbers of D and I1 went with the series
-on 11-03); with --totext, the to-text cache's pages per OCR path and numbering marks per 1,000 characters of each text
-source (totext_stats; D, G1). compare puts two run reports side by side in Simplified Chinese.
+the pinned bge-m3; otherwise a model failed and hybrid swallowed it). Every run reports the database's own numbers
+(build_stats: file-name titles and sections under 40 characters; addendum G4, G7; the series numbers of D and I1 went
+with the series on 11-03); with --totext, the to-text cache's pages per OCR path and numbering marks per 1,000
+characters of each text source (totext_stats; D, G1). compare puts two run reports side by side in Simplified Chinese.
 
 gold-diff (build.sh's step 6) lists the questions whose gold documents changed between two golds, each made for its
 own database (the base: the skeleton's gold and database by default). Ids cannot be compared: they moved with every
@@ -771,10 +769,9 @@ def _jsonable(value: object) -> object:
 
 def run_offline(db: Path, *, gold: Path, core: Path, noanswer: Path, runs: Path, today: date = TODAY,
                 rank: object = None, search: Callable = search_docs, deep: int = DEEP, deliver: bool = True,
-                unscoped: Callable | None = None, totext: Path | None = None) -> dict:
+                totext: Path | None = None) -> dict:
     """evaluate() on one database (read-only, aliases from its meta), with what was run, every doc's title, the gold
-    ids the database lacks, the database's numbers (build_stats); with unscoped (the same hybrid search without the
-    unit scope), scope_effect; with totext (the to-text folder), totext_stats."""
+    ids the database lacks, the database's numbers (build_stats); with totext (the to-text folder), totext_stats."""
     gold_map = json.loads(Path(gold).read_text(encoding="utf-8"))
     questions = load_questions(core, noanswer)
     queries = agent_queries(json.loads(Path(runs).read_text(encoding="utf-8")))
@@ -784,9 +781,6 @@ def run_offline(db: Path, *, gold: Path, core: Path, noanswer: Path, runs: Path,
         report = evaluate(conn, questions, gold_map, queries, today=today, aliases=aliases, rank=rank, search=search,
                           deep=deep, deliver=deliver, noanswer=load_noanswer(noanswer))
         report["missing_gold"] = missing_gold(conn, gold_map)
-        if unscoped is not None:
-            report["scope_effect"] = scope_effect(conn, questions, gold_map, queries, report["questions"], today=today,
-                                                  aliases=aliases, rank=rank, search=unscoped, deep=deep)
         report["build"] = build_stats(conn)
         ids = sorted({d for r in report["questions"] for run in (r["question_query"], *r["agent_queries"])
                       for d in (*r["gold"], *r.get("gold_copies", ()), *run["top"])}
@@ -803,78 +797,6 @@ def run_offline(db: Path, *, gold: Path, core: Path, noanswer: Path, runs: Path,
             "db": str(db), "db_built_at": built, "gold_file": str(gold), "runs_file": str(runs),
             "search": _search_info(search), "rank": _jsonable(rank), "deep": deep, "top": TOP}
     return {**head, **report, "titles": titles}
-
-
-# ---------------------------------------------------------------- unit scope (addendum F)
-
-def _scope_names(conn: sqlite3.Connection) -> Callable[[str], str | None]:
-    """text -> what it names below the school (units, campus, levels: units.detect through hybrid.query_scope), joined
-    by 、; None when it names nothing or the database has no unit tables."""
-    from nknu.retrieval.hybrid import query_scope
-
-    def named(text: str) -> str | None:
-        got = query_scope(conn, text)
-        if got is None:
-            return None
-        scope, units = got
-        roots = {k for k, u in units.items() if u.parent_id is None}
-        return "、".join([*sorted(scope.units - roots), *(f"{c}校區" for c in sorted(scope.campus)),
-                         *sorted(scope.levels)]) or None
-
-    return named
-
-
-def _slim(run: dict) -> dict:
-    return {k: run.get(k) for k in ("rank", "doc")}
-
-
-def scope_effect(conn: sqlite3.Connection, questions: list[dict], gold: dict, queries: dict[str, list[str]],
-                 rows: list[dict], *, today: date, aliases: list, rank: object, search: Callable, deep: int,
-                 named: Callable[[str], str | None] | None = None) -> dict:
-    """Addendum F's T10 addition: the gold ranks again without the unit scope (search: the same hybrid settings with
-    w_scope and w_mention 0), from the same database, for the questions whose text or an agent query names a unit,
-    campus or level; the other questions rank the same by construction (a query that names nothing gets no scope).
-    rows: the questions of the run with the scope. Returns the per-question ranks with and without, the questions whose
-    rank changed and the metrics without the scope (the unchanged questions counted as they were)."""
-    from nknu.retrieval.vectors import has_table
-
-    # a unit tree and document scopes (T7d); a build without the site list leaves both tables empty (the schema has
-    # them since T7d), a skeleton has neither: then no query gets a scope
-    tables = all(has_table(conn, t) and conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone() is not None
-                 for t in ("units", "doc_scope"))
-    named = named or _scope_names(conn)
-    by_id = {r["id"]: r for r in rows}
-    picked, names = [], {}
-    for q in questions:
-        if q["id"] not in by_id:
-            continue
-        found = {t: n for t in dict.fromkeys([q["question"], *queries.get(q["id"], [])]) if (n := named(t))}
-        if found:
-            picked.append(q)
-            names[q["id"]] = {"question": found.get(q["question"]),
-                              "agent": sum(t != q["question"] for t in found), "queries": found}
-    again = evaluate(conn, picked, gold, queries, today=today, aliases=aliases, rank=rank, search=search,
-                     deep=deep, deliver=False)["questions"] if picked else []
-    without = {r["id"]: r for r in again}
-    out, changed = [], []
-    for r in rows:
-        if r["id"] not in without:
-            continue
-        w = without[r["id"]]
-        entry = {"id": r["id"], "group": r["group"], "question": r["question"], "named": names[r["id"]],
-                 "with": {"question": _slim(r["question_query"]), "agent": _slim(r["agent_best"])},
-                 "without": {"question": _slim(w["question_query"]), "agent": _slim(w["agent_best"])}}
-        out.append(entry)
-        if entry["with"] != entry["without"]:
-            changed.append(r["id"])
-    merged = [without.get(r["id"], r) for r in rows]
-    table = {mode: {grp: metrics([_as_place(r[field]) for r in merged if grp in ("all", r["group"])])
-                    for grp in (*GROUPS, "all")}
-             for mode, field in (("question", "question_query"), ("agent", "agent_best"))}
-    config = getattr(search, "config", None)
-    return {"scope_tables": tables, "config": dataclasses.asdict(config) if config is not None else None,
-            "questions_named": len(picked), "queries_named": sum(len(v["queries"]) for v in names.values()),
-            "questions": out, "changed": changed, "metrics_without": table}
 
 
 # ---------------------------------------------------------------- the database's numbers (addendum G4, G7)
@@ -1147,30 +1069,6 @@ def _titles(report: dict, ids: list[str], n: int = 3) -> str:
     return "；".join(f"{d} {_md(titles.get(d, '?'))[:24]}" for d in ids[:n]) or "（没有结果）"
 
 
-def _scope_lines(effect: dict | None, where: str = "") -> list[str]:
-    if not effect:
-        return []
-    out = ["", f"## 单位范围的影响{where}（addendum F：同一个资料库，有 / 没有 W_SCOPE、W_MENTION）", ""]
-    if not effect.get("scope_tables"):
-        return out + ["资料库没有单位范围（没有 units、doc_scope 这两张表，或是空的），没有可比的：所有查询都不加减分。"]
-    out.append(f"点名单位、校区或学制的题 {effect['questions_named']} 题（这些题的查询里点名的 {effect['queries_named']} 个）；"
-               f"名次变了的：{'、'.join(effect['changed']) or '没有'}。其余的题一个都不点名，名次本来就一样。")
-    if effect["questions"]:
-        out += ["", "| 题号 | 问题原文点名 | agent 查询里点名的 | 原文 有 → 没有 | agent 有 → 没有 |", "|---|---|---|---|---|"]
-        for q in effect["questions"]:
-            w, wo = q["with"], q["without"]
-            out.append(f"| {q['id']} | {_md(q['named'].get('question') or '—')} | {q['named'].get('agent', 0)} | "
-                       f"{_cell(w['question'])} → {_cell(wo['question'])} | "
-                       f"{_cell(w['agent'])} → {_cell(wo['agent'])} |")
-    m = effect.get("metrics_without") or {}
-    if m:
-        out.append("")
-        out.append("没有单位范围时（没点名的题照原样算）：" + "；".join(
-            f"{name} 前 3 {a['top3']}/{a['n']}、前 10 {a['top10']}/{a['n']}"
-            for mode, name in (("question", "问题原文"), ("agent", "agent")) for a in (m[mode]["all"],)))
-    return out
-
-
 def _build_rows(stats: dict | None) -> dict[str, str]:
     """label -> value of the database's numbers (build_stats), the same labels for every report (an old report's series
     numbers are not shown: no series since 11-03)."""
@@ -1262,8 +1160,7 @@ def _report_blocks(report: dict) -> list[str]:
                 + (f"：{'、'.join(_md(x) for x in fb[:10])}" if fb else "")]
     if report.get("missing_gold"):
         out += ["", f"注意：资料库里没有的标准出处 id（gold 不是给这个资料库做的）：{'、'.join(report['missing_gold'])}"]
-    return out + _scope_lines(report.get("scope_effect")) + _build_lines(report.get("build")) + _totext_lines(
-        report.get("totext"))
+    return out + _build_lines(report.get("build")) + _totext_lines(report.get("totext"))
 
 
 # ---------------------------------------------------------------- compare
@@ -1413,7 +1310,6 @@ def compare_reports(base: dict, new: dict) -> str:
         br = (report.get("metrics") or {}).get("best_rerank")
         for key, group in (("answerable", "有答案"), ("noanswer", "查无")):
             out.append(f"| {name} | {group} | " + " | ".join(_dist_cells(br.get(key) if br else None)) + " |")
-    out += _scope_lines(base.get("scope_effect"), "：基准") + _scope_lines(new.get("scope_effect"), "：新")
     rows_b, rows_n = _build_rows(base.get("build")), _build_rows(new.get("build"))
     if rows_b or rows_n:
         out += ["", "## 资料库的数字（addendum G4、G7）", "", "| 项目 | 基准 | 新 |", "|---|---|---|"]
@@ -1460,8 +1356,6 @@ def _parser() -> argparse.ArgumentParser:
                    help="转文字资料夹（例如 research/pipeline_2026-11-02/totext）：加上各 OCR 路径的页数和编号密度")
     r.add_argument("--allow-missing-gold", action="store_true",
                    help="资料库里没有某些标准出处 id 也照跑（默认先停下，退出码 3）")
-    r.add_argument("--no-scope-effect", action="store_true",
-                   help="hybrid 时不重跑「没有单位范围」那一组（默认重跑点名单位、校区、学制的题）")
     r.add_argument("--out", type=Path, required=True, help="输出 JSON（每组设定一个档，免得互相盖掉）")
     c.add_argument("--base", type=Path, required=True, help="基准的 run JSON")
     c.add_argument("--new", type=Path, required=True, help="新的 run JSON")
@@ -1505,22 +1399,16 @@ def _gold_diff(args: argparse.Namespace) -> int:
     return 0
 
 
-def searches(kind: str, settings: dict | None, *, scope_effect: bool = True) -> tuple[Callable, Callable | None, int]:
-    """(search, the same search without the unit scope or None, results to ask for). keyword: search_docs, DEEP.
-    hybrid: hybrid_fn(HybridConfig(**settings)) with the shared models behind one per-run cache for both searches,
-    POOL_DOCS + 2 x dense_candidates (the keyword pool and the vector pool of each tier, addendum M7); the scope-free
-    twin only when the settings give the scope a weight."""
+def searches(kind: str, settings: dict | None) -> tuple[Callable, int]:
+    """(search, results to ask for). keyword: search_docs, DEEP. hybrid: hybrid_fn(HybridConfig(**settings)) with the
+    shared models behind a per-run cache, POOL_DOCS + 2 x dense_candidates (the keyword pool and the vector pool of
+    each tier, addendum M7)."""
     if kind == "keyword":
-        return search_docs, None, DEEP
+        return search_docs, DEEP
     from nknu.retrieval.hybrid import HybridConfig
 
     config = HybridConfig(**(settings or {}))
-    embedder, reranker = MemoEmbedder(), MemoReranker()
-    unscoped = None
-    if scope_effect and (config.w_scope or config.w_mention):
-        unscoped = hybrid_fn(dataclasses.replace(config, w_scope=0.0, w_mention=0.0), embedder=embedder,
-                             reranker=reranker)
-    return hybrid_fn(config, embedder=embedder, reranker=reranker), unscoped, POOL_DOCS + 2 * config.dense_candidates
+    return hybrid_fn(config, embedder=MemoEmbedder(), reranker=MemoReranker()), POOL_DOCS + 2 * config.dense_candidates
 
 
 def _compare(args: argparse.Namespace) -> int:
@@ -1553,10 +1441,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"资料库 {args.db} 里没有这些标准出处 id：{'、'.join(missing)}；gold 不是给这个资料库做的，先用 gold 子命令重做"
                   "（或加 --allow-missing-gold 照跑）", file=sys.stderr)
             return 3
-    search, unscoped, deep = searches(args.search, args.hybrid, scope_effect=not args.no_scope_effect)
+    search, deep = searches(args.search, args.hybrid)
     report = run_offline(args.db, gold=args.gold, core=args.core, noanswer=args.noanswer, runs=args.runs,
-                         today=args.today, rank=args.rank, search=search, deep=deep, unscoped=unscoped,
-                         totext=args.totext)
+                         today=args.today, rank=args.rank, search=search, deep=deep, totext=args.totext)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(format_table(report))
     if args.rank is not None and not report["rank_applied"]:
@@ -2274,7 +2161,7 @@ def _index_db(path, rows) -> sqlite3.Connection:
 
 
 def _scope_db(path) -> sqlite3.Connection:
-    """Two department rules alike in words; the chemistry one newer (so it leads without the unit scope)."""
+    """Two department rules alike in words, the chemistry one newer, with the unit tree and each one's scope."""
     conn = _index_db(path, [("dsoft", "軟體工程與管理學系碩士班修業規定", "碩士班畢業學分三十學分", "2025-10-01"),
                             ("dchem", "化學系碩士班修業規定", "碩士班畢業學分三十學分", "2026-10-01")])
     conn.executescript(_SCOPE_DDL)
@@ -2294,45 +2181,6 @@ _SCOPE_QUESTIONS = [{"id": "Q35", "group": "core20", "question": "軟工系碩�
                     {"id": "Q08", "group": "core20", "question": "畢業學分幾學分", "sources": []}]
 _SCOPE_GOLD = {"Q35": {"docs": ["dsoft"]}, "Q08": {"docs": ["dchem"]}}
 _SCOPE_QUERIES = {"Q35": ["畢業學分"], "Q08": ["修業規定"]}
-
-
-def test_scope_effect_reruns_the_questions_that_name_a_unit(tmp_path, monkeypatch):
-    from nknu.retrieval.hybrid import HybridConfig
-
-    _no_models(monkeypatch)
-    conn = _scope_db(tmp_path / "u.db")
-    # addendum F's weights (0 since 11-08); scope_factor 1: the audience factor of plan 2026-11-14 off, as it was
-    off = HybridConfig(dense=False, rerank=False, w_scope=0.3, w_mention=0.1, scope_factor=1.0)
-    # 軟工系 brings 軟體工程與管理學系 since 11-08 10:16 (unit names, addendum M9), which puts dsoft first by itself:
-    # off here, so the scope's own effect shows
-    args = {"today": _DAY, "aliases": [], "rank": {"unit_names": False}, "deep": CANDIDATES + 300}
-    rows = evaluate(conn, _SCOPE_QUESTIONS, _SCOPE_GOLD, _SCOPE_QUERIES, search=hybrid_fn(off), **args)["questions"]
-    assert [r["question_query"]["rank"] for r in rows] == [1, 1]  # the scope puts the named department first
-    effect = scope_effect(conn, _SCOPE_QUESTIONS, _SCOPE_GOLD, _SCOPE_QUERIES, rows,
-                          search=hybrid_fn(dataclasses.replace(off, w_scope=0.0, w_mention=0.0)), **args)
-    assert effect["scope_tables"] is True and effect["changed"] == ["Q35"]
-    assert [q["id"] for q in effect["questions"]] == ["Q35"]  # Q08 names nothing: it ranks the same by construction
-    q35 = effect["questions"][0]
-    assert "軟體工程與管理學系" in q35["named"]["question"] and "碩士" in q35["named"]["question"]
-    assert (q35["with"]["question"]["rank"], q35["without"]["question"]["rank"]) == (1, 2)
-    assert q35["named"]["agent"] == 0 and effect["queries_named"] == 1
-    assert effect["metrics_without"]["question"]["all"]["top1"] == 1 and effect["config"]["w_scope"] == 0.0
-    plain = evaluate(conn, _SCOPE_QUESTIONS[:1], _SCOPE_GOLD, _SCOPE_QUERIES, **{**args, "rank": None},
-                     search=hybrid_fn(dataclasses.replace(off, w_scope=0.0, w_mention=0.0)))["questions"]
-    assert plain[0]["question_query"]["rank"] == 1  # with the unit names, without the scope
-
-
-def test_scope_effect_without_scope_tables_compares_nothing(tmp_path, monkeypatch):
-    from nknu.retrieval.hybrid import HybridConfig
-
-    _no_models(monkeypatch)
-    conn = _search_db(tmp_path / "s.db")
-    q = [{"id": "Q01", "group": "core20", "question": "停修申請", "sources": []}]
-    args = {"today": _DAY, "aliases": [], "rank": None, "deep": CANDIDATES + 300}
-    search = hybrid_fn(HybridConfig(dense=False, rerank=False, w_scope=0.0, w_mention=0.0))
-    rows = evaluate(conn, q, {"Q01": {"docs": ["dp1"]}}, {}, search=search, **args)["questions"]
-    effect = scope_effect(conn, q, {"Q01": {"docs": ["dp1"]}}, {}, rows, search=search, **args)
-    assert effect["scope_tables"] is False and effect["questions"] == [] and effect["changed"] == []
 
 
 def _stats_db(path) -> sqlite3.Connection:
@@ -2422,7 +2270,7 @@ def test_totext_stats(tmp_path):
     assert num["text_layer"]["per_1000"] == round(2 * 1000 / num["text_layer"]["chars"], 2)
 
 
-def test_reports_show_scope_build_and_totext(tmp_path, monkeypatch):
+def test_reports_show_build_and_totext(tmp_path, monkeypatch):
     from nknu.retrieval.hybrid import HybridConfig
     from nknu.totext.cache import Cache
 
@@ -2438,21 +2286,18 @@ def test_reports_show_scope_build_and_totext(tmp_path, monkeypatch):
         {"id": k, "calls": [{"name": "mcp__nknu_aca__search", "input": {"query": t}} for t in v]}
         for k, v in _SCOPE_QUERIES.items()])
     gold = _write(tmp_path / "gold.json", _SCOPE_GOLD)
-    # addendum F's weights (0 since 11-08); scope_factor 1: the audience factor of plan 2026-11-14 off, as it was
-    off = HybridConfig(dense=False, rerank=False, w_scope=0.3, w_mention=0.1, scope_factor=1.0)
+    off = HybridConfig(dense=False, rerank=False, scope_factor=1.0)  # keywords alone, no audience factor
     report = run_offline(tmp_path / "u.db", gold=gold, core=core, noanswer=noanswer, runs=runs,
-                         rank={"unit_names": False},  # the scope's own effect (the unit names put dsoft first too)
-                         search=hybrid_fn(off), deep=CANDIDATES + 300,
-                         unscoped=hybrid_fn(dataclasses.replace(off, w_scope=0.0, w_mention=0.0)),
-                         totext=tmp_path / "totext")
-    assert report["scope_effect"]["changed"] == ["Q35"] and report["totext"]["pdf"]["text_layer"] == 1
+                         search=hybrid_fn(off), deep=CANDIDATES + 300, totext=tmp_path / "totext")
+    # 軟工系 brings 軟體工程與管理學系 (the unit names), which puts the department's own rule first
+    assert report["questions"][0]["question_query"]["rank"] == 1 and report["totext"]["pdf"]["text_layer"] == 1
     assert report["search"]["function"] == "nknu.retrieval.hybrid.hybrid_search"
     assert report["search"]["config"]["dense"] is False and len(report["search"]["sha256"]) == 64
     assert report["noanswer"][0]["id"] == "N04" and report["missing_gold"] == []
     text = format_table(report)
-    assert all(s in text for s in ("单位范围", "Q35", "不到 40 字的节", "每千字", "查无题", "送到"))
+    assert all(s in text for s in ("Q35", "不到 40 字的节", "每千字", "查无题", "送到"))
     md = compare_reports(report, report)
-    assert all(s in md for s in ("单位范围", "不到 40 字的节", "每千字", "Q35：1 → 1 ="))
+    assert all(s in md for s in ("不到 40 字的节", "每千字", "Q35：1 → 1 ="))
 
 
 def _cmp(top3: int, q08: int, built: str, delivered: list[bool], score: float | None) -> dict:
@@ -2608,8 +2453,7 @@ def test_main_run_hybrid_names_hybrid_search_and_its_config(tmp_path, monkeypatc
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["search"]["function"] == "nknu.retrieval.hybrid.hybrid_search"
     assert report["search"]["config"]["dense"] is False and report["deep"] == POOL_DOCS + 2 * 300
-    # the unit weights are 0 by default since 11-08 (addendum M5): no scope rerun, so no scope_effect
-    assert "scope_effect" not in report and report["metrics"]["question"]["core20"]["top1"] == 1
+    assert report["metrics"]["question"]["core20"]["top1"] == 1
 
 
 def test_main_rejects_hybrid_settings_without_hybrid_search(tmp_path):

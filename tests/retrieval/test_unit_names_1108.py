@@ -5,14 +5,13 @@ loads; the names are made up."""
 
 from __future__ import annotations
 
-import dataclasses
 import sqlite3
 
 import pytest
 
 from nknu.retrieval.aliases import expand
 from nknu.retrieval.search import unit_names
-from tests.retrieval.test_search import BASE, WITHDRAW, Tiny, _hit, _ids
+from tests.retrieval.test_search import WITHDRAW, Tiny, _hit, _ids
 
 ROOT = "國立高雄師範大學"
 UNITS = [  # unit_id (= name), kind, parent, short names
@@ -74,8 +73,6 @@ def test_search_finds_the_name_by_its_short_name(db):
     result = db.search("事經系 實習")
     assert _ids(result)[0] == "d1" and _hit(result, "d1").coverage == 1.0
     assert result.understood.aliases == ["事經系"]
-    off = db.search("事經系 實習", rank=dataclasses.replace(BASE, unit_names=False))
-    assert _hit(off, "d1").coverage == pytest.approx(1 / 3) and off.understood.aliases == []
 
 
 def test_the_school_brings_nothing(db):

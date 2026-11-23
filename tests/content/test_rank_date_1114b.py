@@ -7,8 +7,8 @@ first rebuild kept the earliest and let search rank it by that earliest date: on
 keyword rank fell from 4 to 26 once its copies were merged into an earlier one (main session, 11-14). The build now
 writes docs.rank_date: the latest identity date among the document kept and the documents merged into it; a document
 without copies has its own date there, and one undated with all its copies NULL. docs.ident_date, what the response
-shows, stays the kept document's own. nknu.retrieval.search reads the column (RankConfig.copy_dates:
-tests/retrieval/test_copy_dates_1114b.py). The sentences are made up; no model loads."""
+shows, stays the kept document's own. nknu.retrieval.search reads the column
+(tests/retrieval/test_copy_dates_1114b.py). The sentences are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ LONG, SHORT, OTHER = tc.LONG, tc.SHORT, tc.OTHER
 ACA, ACA_SITE = tc.ACA, tc.ACA_SITE
 
 
-def ranked(records: list[Record], metas: dict | None = None, rule: str = build.COPY_TEXT) -> tuple[dict, dict]:
+def ranked(records: list[Record], metas: dict | None = None) -> tuple[dict, dict]:
     """({kept doc_id: (its own identity date, its rank date)}, the report) after the build's own steps."""
     docs, excluded = build_documents(records, metas or {}, [])
-    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, rule)
+    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded)
     report = build._rank_dates(kept, copies)
     return {r.doc.doc_id: (r.ident.date if r.ident else None, r.rank_date) for r in kept}, report
 
@@ -99,17 +99,16 @@ def test_copies_that_are_all_undated_give_none():
     assert got == {"dp1": (None, None)} and report == {"dated": 0, "later": 0, "from_copy": 0, "undated_copy": 0}
 
 
-def test_a_group_of_the_rule_of_before_keeps_the_latest_and_so_its_own_date():
-    # one title and a short text: the latest dated one is kept (the choice of before), which is the latest already
+def test_a_group_of_the_title_rule_keeps_the_latest_and_so_its_own_date():
+    # one title and a short text: the latest dated one is kept (the title rule's choice), which is the latest already
     pages = [tc.page("p1", 1, "社團博覽會", "2026-02-01", SHORT), tc.page("p2", 2, "社團博覽會", "2026-05-01", SHORT)]
-    for rule in build.COPY_RULES:
-        got, report = ranked(pages, rule=rule)
-        assert got == {"dp2": (day("2026-05-01"), day("2026-05-01"))}, rule
-        assert report == {"dated": 1, "later": 0, "from_copy": 0, "undated_copy": 0}, rule
+    got, report = ranked(pages)
+    assert got == {"dp2": (day("2026-05-01"), day("2026-05-01"))}
+    assert report == {"dated": 1, "later": 0, "from_copy": 0, "undated_copy": 0}
 
 
 def test_a_file_on_a_notice_ranks_by_a_later_copy_dated_by_the_server_alone():
-    # the rule of before keeps the file on the latest notice; a copy the server dates later still counts for ranking
+    # the title rule keeps the file on the latest notice; a copy the server dates later still counts for ranking
     notice = tc.rec("p1", "newsdetail", ACA + "newsdetail.aspx?nid=1&gi=2", "開館公告", "請見附件", ACA_SITE)
     metas = {"p1": PageMeta("和平教務組", "開館公告", "2026/3/1 上午 09:00:00", day("2026-03-01"), ())}
     hung = tc.rec("a1", tc.PDF, ACA + "f/1/表.pdf", "表.pdf", SHORT, ACA_SITE, linked=(notice.url,))
@@ -121,7 +120,7 @@ def test_a_file_on_a_notice_ranks_by_a_later_copy_dated_by_the_server_alone():
 
 def test_an_undated_document_takes_a_dated_copys_day():
     # the primary file is kept before the archive member (build._merge_copies), undated as it is; the member's day
-    # is the only one the group has. Search never ranks such a document below what no date gives (copy_dates)
+    # is the only one the group has. Search never ranks such a document below what no date gives
     notice = tc.rec("p1", "detail:sso_webidx", tc.WEB + "1", "申請公告", "請見附件", tc.WEB_SITE)  # an undated notice
     member = tc.rec("m1", tc.PDF, ACA + "f/forms.zip#表/申請表.pdf", "申請表.pdf", LONG, ACA_SITE,
                     modified="2026-01-05T01:00:00+08:00")
@@ -168,29 +167,15 @@ def test_search_ranks_by_the_latest_copy_and_the_response_shows_the_kept_ones_ow
         return 0.3 * math.exp(-(today - date.fromisoformat(day)).days / 365)
 
     on = search_docs(conn, "宿舍熱水", today=today, aliases=[])
-    off = search_docs(conn, "宿舍熱水", today=today, aliases=[], rank=RankConfig(copy_dates=False))
-    scores = [next(h.score for h in r.hits if h.doc_id == d["a_notice"]) for r in (on, off)]
-    assert scores[0] - scores[1] == pytest.approx(bonus("2026-03-05") - bonus("2026-03-01")) and scores[0] > scores[1]
-    for result in (on, off):  # either way the answer shows 教务处's notice with its own day, and each copy with its
-        shown = next(r for r in build_response(conn, result, today=today)["results"] if r["id"] == d["a_notice"])
-        assert "2026-03-01" in shown["identity"] and "2026-03-05" not in shown["identity"]
-        assert [(c["id"], c["date"]) for c in shown["copies"]] == [(d["t_notice"], "2026-03-05"),
-                                                                    (d["n_notice"], "2026-03-02")]
-
-
-def test_the_rule_of_before_writes_the_column_too(tmp_path):
-    out = tmp_path / "db" / "old.db"
-    report = tm.run(tm.tree_files(tmp_path / "tree"), out, inputs=tc.copy_inputs(tmp_path), copy_rule=build.COPY_TITLE)
-    conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
-    try:
-        dates = {r[0]: r[1:] for r in conn.execute("SELECT doc_id, ident_date, rank_date FROM docs")}
-    finally:
-        conn.close()
-    d = tc.IDS
-    # nothing of another title is merged: every document ranks by its own date
-    assert dates[d["a_notice"]] == ("2026-03-01", "2026-03-01") and dates[d["t_notice"]] == ("2026-03-05", "2026-03-05")
-    assert all(own == rank for own, rank in dates.values())
-    assert report.dedupe["rank_dates"] == {"dated": 5, "later": 0, "from_copy": 0, "undated_copy": 0}
+    plain = search_docs(conn, "宿舍熱水", today=today, aliases=[], rank=RankConfig(recency=False))  # no date part
+    scores = [next(h.score for h in r.hits if h.doc_id == d["a_notice"]) for r in (on, plain)]
+    # the date part is the latest copy's (03-05), more than the kept document's own day would give
+    assert scores[0] - scores[1] == pytest.approx(bonus("2026-03-05")) and bonus("2026-03-05") > bonus("2026-03-01")
+    # the answer shows 教务处's notice with its own day, and each copy with its
+    shown = next(r for r in build_response(conn, on, today=today)["results"] if r["id"] == d["a_notice"])
+    assert "2026-03-01" in shown["identity"] and "2026-03-05" not in shown["identity"]
+    assert [(c["id"], c["date"]) for c in shown["copies"]] == [(d["t_notice"], "2026-03-05"),
+                                                                (d["n_notice"], "2026-03-02")]
 
 
 def test_an_event_has_no_rank_date(tmp_path):
@@ -215,8 +200,6 @@ def test_the_command_line_says_how_many_rank_by_a_copys_date(tmp_path, capsys):
     assert "按副本里较新的日期排名的 2 份" in capsys.readouterr().out
     saved = json.loads((tmp_path / "cli" / "build_report.json").read_text(encoding="utf-8"))
     assert saved["dedupe"]["rank_dates"] == {"dated": 2, "later": 2, "from_copy": 0, "undated_copy": 0}
-    assert build.main([*pairs, "--out", str(tmp_path / "cli2" / "old.db"), *rest, "--copy-rule", "title"]) == 0
-    assert "按副本里较新的日期排名" not in capsys.readouterr().out  # none does
 
 
 def test_inputs_without_copies_of_another_date_rank_by_their_own(tmp_path):

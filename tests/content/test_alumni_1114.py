@@ -4,8 +4,7 @@ c.nknu template is background material.
 Its pages are told by their page kind, never by their site: on a c.nknu-template host pagetext.page_kind names a page
 by its leaf, so the detail page of one alumnus is student_detail and the directory's list is student (a row a press
 brought: …#翻页/按钮). They stay documents, found by a name as before; search places them after the primary documents.
-build_sites(alumni_background=False) / --no-alumni-background builds as before. The people are O masks; no model
-loads."""
+The people are O masks; no model loads."""
 
 from __future__ import annotations
 
@@ -43,7 +42,6 @@ def test_the_page_kinds_are_the_ones_the_page_reader_gives():
 def test_tier_of_puts_the_alumni_directory_in_the_background_by_its_page_kind():
     for kind in ("student_detail", "student", "student#翻页/按钮", "student_detail#翻页/按钮"):
         assert build.tier_of("du1", "", kind) == BACKGROUND, kind
-        assert build.tier_of("du1", "", kind, alumni=False) == PRIMARY, kind
     for kind in ("teachercorner", "teacher", "forumsview", "students", "student_list", "page", "page:sso_clv2",
                  "newsdetail", "detail:sso_news", "附件:pdf:有文字层", "外站:student", ""):
         assert build.tier_of("du1", "", kind) == PRIMARY, kind
@@ -110,25 +108,12 @@ def test_the_build_marks_the_directorys_pages_background(built):
     assert {r["id"]: r.get("background") for r in shown["results"]} == {doc_id(ALUMNUS): True, doc_id(ROLL): True}
 
 
-def test_without_the_switch_the_directory_is_primary_as_before(built, tmp_path, capsys):
+def test_the_command_line_counts_the_background_pages(built, tmp_path, capsys):
     _, _, inputs = built
     paths = tm.tree_files(tmp_path / "tree2")
-    out = tmp_path / "db" / "off.db"
-    off = tm.run(paths, out, inputs=inputs, alumni_background=False)
-    conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
-    try:
-        assert {t for (t,) in conn.execute("SELECT tier FROM docs")} == {PRIMARY}
-        assert conn.execute("SELECT value FROM meta WHERE key = 'alumni_background'").fetchone() == ("off",)
-    finally:
-        conn.close()
-    assert off.counts["tiers"] == {PRIMARY: 4} and off.dedupe["alumni"] == {"on": False, "background": 0}
-    # the command line
     (corpus, export), = inputs
     rest = ["--input", f"{corpus}::{export}", "--aliases", str(paths["aliases"]), "--server-dates",
             str(paths["server"]), "--site-list", str(paths["sites"]), "--units", str(paths["units"])]
     assert build.main([*rest, "--out", str(tmp_path / "cli" / "on.db")]) == 0
     printed = capsys.readouterr().out
     assert "所友名录 2 份算背景" in printed and "背景资料共 2" in printed
-    assert build.main([*rest, "--out", str(tmp_path / "cli2" / "off.db"), "--no-alumni-background"]) == 0
-    printed = capsys.readouterr().out
-    assert "所友名录没算背景（--no-alumni-background）" in printed and "背景资料共 0" in printed

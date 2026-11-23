@@ -56,15 +56,12 @@ def test_the_rerank_parts_add_up_to_the_final_score(db, query, setting):
         if r["parts"]["date"] is not None:
             adj += r["parts"]["date"]
         assert adj == r["adj"]
-        score = config.w_rerank * r["norm"] + r["adj"]
-        if r["first"] is not None:
-            score += config.w_first * r["first"]
+        score = config.w_rerank * r["rel"] + r["adj"]
         if r["valid"] is not None:
             score *= r["valid"]
         if r["off"]:
             score *= config.scope_factor
-        assert score + r["bonus"] == r["score"] == final[doc_id]
-        assert (r["first"] is not None) == bool(config.w_first)
+        assert score == r["score"] == final[doc_id]
         assert r["rel"] == max(r["chunks"].values()) and r["chunks"]
 
 

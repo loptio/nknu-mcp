@@ -50,11 +50,10 @@ def _db(extra: str = "") -> sqlite3.Connection:
     return conn
 
 
-def test_doc_rows_reads_the_flag_and_copy_dates_off_does_not():
+def test_doc_rows_reads_the_flag():
     conn = _db()
-    assert doc_rows(conn, ["d1"])["d1"].rank_undated is True
-    off = doc_rows(conn, ["d1"], copy_dates=False)["d1"]
-    assert (off.rank_date, off.rank_undated) == (None, False)
+    doc = doc_rows(conn, ["d1"])["d1"]
+    assert (doc.rank_date, doc.rank_undated) == ("2022-03-01", True)
     conn.close()
 
 

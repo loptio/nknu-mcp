@@ -6,9 +6,8 @@ went wrong 【Claude】: a site map writes the site's menu out as a page, so the
 page's (assemble.MENU_PAGES: its links are a menu's); and a name many files of one site take from their pages is a
 label, not a name (documents.own_titles' TITLE_LABEL: such a file is titled by its file name again when that has a
 Han character; off unless the build is asked, --label-titles, since one of the 33 questions fell for it on the 111
-sites). And a merged copy's link names stay findable in the document kept for it (build._take_over; --no-copy-names
-builds as before): without them the first change lost a file's best name. The sentences are made up; no model
-loads."""
+sites). And a merged copy's link names stay findable in the document kept for it (build._take_over): without them
+the first change lost a file's best name. The sentences are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -82,9 +81,9 @@ def labelled_file(n: int, name: str, label: str = "檔案連結", site: str = to
                   linked=(PAGE,), contexts={PAGE: label})
 
 
-def titles(records, on: bool = True, labels: bool = True):
+def titles(records, labels: bool = True):
     docs, _ = build_documents(records, {}, [])
-    report = own_titles(docs, to.SCHOOL, on=on, labels=labels)
+    report = own_titles(docs, to.SCHOOL, labels=labels)
     return {d.doc_id: d for d in docs}, report
 
 
@@ -119,11 +118,10 @@ def test_nineteen_files_or_twenty_over_two_sites_keep_the_name_their_page_gives(
 
 def test_switched_off_the_labels_stay_and_are_still_counted():
     files = [labelled_file(n, f"第{n}次系務會議紀錄.pdf") for n in range(1, 21)]
-    for on, labels in ((True, False), (False, True)):
-        docs, report = titles(files, on=on, labels=labels)
-        assert docs["da1"].title == "檔案連結" and report["labels"] is False
-        assert {k: report["label"][k] for k in ("titles", "documents", "retitled", "kept")} == {
-            "titles": 1, "documents": 20, "retitled": 0, "kept": 20}
+    docs, report = titles(files, labels=False)
+    assert docs["da1"].title == "檔案連結" and report["labels"] is False
+    assert {k: report["label"][k] for k in ("titles", "documents", "retitled", "kept")} == {
+        "titles": 1, "documents": 20, "retitled": 0, "kept": 20}
 
 
 def test_what_the_file_name_says_is_read_again():
@@ -132,7 +130,7 @@ def test_what_the_file_name_says_is_read_again():
     docs, _ = build_documents(files, {}, [])
     rows = build._rows(docs, {}, {})
     assert {(r.ay, r.sem) for r in rows} == {(113, None)}
-    report = build._retitle(rows, True, True)
+    report = build._retitle(rows, True)
     assert report["label"]["retitled"] == 20 and {(r.ay, r.sem) for r in rows} == {(115, 1)}
     assert report["changed"]["period"] == 20
 
@@ -195,12 +193,6 @@ def test_the_kept_document_takes_its_copies_link_names():
     assert kept[0].doc.linktext.split(documents.LINK_SEP) == [
         "fee.pdf", "大學部", "大學部收費.pdf", "日間大學部學雜費各學系學生收費標準"]
     assert seen["names_carried"] == {"on": True, "documents": 1, "names": 1}
-    # switched off: the title and the file name alone, as before
-    docs, excluded = build_documents(fee_copies(), {}, [])
-    seen = {}
-    kept, _ = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, seen=seen, names=False)
-    assert kept[0].doc.linktext.split(documents.LINK_SEP) == ["fee.pdf", "大學部", "大學部收費.pdf"]
-    assert seen["names_carried"] == {"on": False, "documents": 0, "names": 0}
 
 
 def test_the_build_finds_the_kept_document_by_a_copys_menu_name(tmp_path):
@@ -222,13 +214,5 @@ def test_the_build_finds_the_kept_document_by_a_copys_menu_name(tmp_path):
         url, linktext = conn.execute("SELECT url, linktext FROM docs WHERE kind_class = 'attachment'").fetchone()
         assert url.startswith(tc.ACA) and "日間大學部學雜費各學系學生收費標準" in linktext.split(documents.LINK_SEP)
         assert "下載" not in linktext.split(documents.LINK_SEP)  # a link text that names nothing is not carried
-    finally:
-        conn.close()
-    left = tmp_path / "db" / "y.db"
-    report = tm.run(tm.tree_files(tmp_path / "tree2"), left, inputs=inputs(tmp_path / "again"), copy_names=False)
-    assert report.dedupe["copies"]["names_carried"] == {"on": False, "documents": 0, "names": 0}
-    conn = sqlite3.connect(f"file:{left}?mode=ro", uri=True)
-    try:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'copy_names'").fetchone() == ("off",)
     finally:
         conn.close()

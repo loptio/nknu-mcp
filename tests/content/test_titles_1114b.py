@@ -57,7 +57,7 @@ def test_a_file_whose_first_line_holds_a_size_keeps_its_file_name():
              to.file("a3", "643-79-8.odt", "## 學生請假辦法\n檔案大小 146 KB")]  # further down: the title says none
     got, report = to.retitled(files)
     assert got["da1"] == ("file1_718131228.pdf", "") and got["da2"] == ("0627.odt", "")
-    assert got["da3"] == ("學生請假辦法", "643-79-8.odt")
+    assert got["da3"] == ("學生請假辦法", "")
     assert to.counts(report["file"]) == {"documents": 3, "retitled": 1, "kept": 2, "why": {"size": 2}}
     assert report["by_site"] == {to.ACA_SITE: {"file": {"retitled": 1, "kept": 2}}}
 
@@ -66,5 +66,5 @@ def test_pages_that_share_a_title_keep_it_when_their_first_line_holds_a_size():
     pages = [to.page(n, to.SOFT, f"表單下載第{n}項 pdf {20 + n} KB\n請點選下載。") for n in range(1, 4)]
     pages += [to.page(n, to.SOFT, f"課程地圖第{n}版\n修課順序。") for n in range(4, 21)]
     got, report = to.retitled(pages)
-    assert [got[f"dp{n}"] for n in (1, 2, 3)] == [(to.SOFT, "")] * 3 and got["dp4"] == ("課程地圖第4版", to.SOFT)
+    assert [got[f"dp{n}"] for n in (1, 2, 3)] == [(to.SOFT, "")] * 3 and got["dp4"] == ("課程地圖第4版", "")
     assert report["shared"] == {"titles": 1, "documents": 20, "retitled": 17, "kept": 3, "why": {"size": 3}}

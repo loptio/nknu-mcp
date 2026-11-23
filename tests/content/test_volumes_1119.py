@@ -3,7 +3,7 @@ proceedings, a journal, a large report, by default, so that the like is not aske
 students look for stay: handbooks, compiled regulations, admission brochures, course handbooks). An attachment of
 build.VOLUME_CHARS characters or more is background unless its title, the title of the page that links it or its link
 text holds one of build.VOLUME_KEEP; never by its text (a paper's own title says 課程 often enough); never a page or
-a notice. --no-volumes: as before. The sentences are made up; no model loads."""
+a notice. The sentences are made up; no model loads."""
 from __future__ import annotations
 
 import sqlite3
@@ -46,10 +46,10 @@ def test_whole_volumes_by_size_and_by_where_the_school_named_the_file():
             Doc("g", LONG, "系所簡介", kind_class="page"),  # a page is never a volume
             Doc("h", LONG)]  # its text says 課程, the school's names for it do not
     assert build.whole_volumes(docs) == {"a", "e", "h"}
-    assert build.tier_of("a", "", "", True, frozenset({"a"})) == BACKGROUND and build.tier_of("b", "", "") == PRIMARY
+    assert build.tier_of("a", "", "", frozenset({"a"})) == BACKGROUND and build.tier_of("b", "", "") == PRIMARY
 
 
-def test_a_build_makes_the_volume_background_and_the_switch_does_not(tmp_path):
+def test_a_build_makes_the_volume_background(tmp_path):
     rows = [row("proceedings.pdf", "2021學術研討會論文集", LONG), row("handbook.pdf", "學生手冊", LONG + "手冊"),
             row("form.pdf", "請假單", "請假單的說明。")]
     paths, out = tm.tree_files(tmp_path / "tree"), tmp_path / "db" / "x.db"
@@ -59,6 +59,3 @@ def test_a_build_makes_the_volume_background_and_the_switch_does_not(tmp_path):
     assert report.dedupe["volumes"] == {"on": True, "chars": build.VOLUME_CHARS, "background": 1}
     with sqlite3.connect(f"file:{out}?mode=ro", uri=True) as conn:
         assert '"background": 1' in conn.execute("SELECT value FROM meta WHERE key='volumes_json'").fetchone()[0]
-    off = tmp_path / "db" / "off.db"
-    report = tm.run(paths, off, inputs=[tc.site_input(tmp_path / "s2", ACA_SITE, "教务处", rows)], volumes=False)
-    assert set(tiers(off).values()) == {PRIMARY} and report.dedupe["volumes"]["on"] is False

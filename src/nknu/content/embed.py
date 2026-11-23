@@ -3,7 +3,7 @@ retrieval's dense path (T8). A chunk's passage is its document's title, its unit
 unit patch: docs.unit_line, 單位：<unit>（<short names>） <組別>), a calendar event's date line (plan 2026-11-14 T3:
 docs.date_line, 115學年度第2學期 2027-02-15～2027-02-18), parent title and link texts, its section heading, the
 header of the table it starts inside and the chunk itself: what the reranker reads at query time (T8 builds its
-passages with the same passage()) and, without the date line and by default without the unit line, what bge-m3 embeds
+passages with the same passage()) and, without the date line and without the unit line, what bge-m3 embeds
 here. A database without docs.unit_line (built before T4) gets the passages of then, unit line aside, so its vectors
 and its reranking stay as they were. Scores only: no text is generated.
 
@@ -16,9 +16,8 @@ once, like any new text).
 The first rebuild of 11-14 had it in both texts, and the main session measured both databases: in the vectors the line
 dilutes an event's short title (a question that finds the event 「大學學科能力測驗」 only through the vectors fell
 from dense rank 33 to 104 on the 教务处 control and from 24 to 448 on the 111 sites), while the reranker gains from it
-(a question about a deadline rose from rank 3 to 1). A database without the column (pipeline-7 and before) and one
-built without the line (the build's event_dates off: every date_line is '', meta event_dates says off) give the
-reranker the passages of before. PASSAGE_VERSION stays "2": no embedded passage changed.
+(a question about a deadline rose from rank 3 to 1). A database without the column (pipeline-7 and before) gives
+the reranker the passages of before. PASSAGE_VERSION stays "2": no embedded passage changed.
 
 Vectors are float16, little-endian, dim × 2 bytes. A cache file keyed by model, revision and passage text
 (vec_key) makes a rebuild encode only the passages that changed; it is committed after every round, so a run that
@@ -45,8 +44,8 @@ from nknu.content.numbering import strip_decor
 from nknu.core.models import BASE_SEQ, BATCH
 from nknu.core.timeutil import TAIPEI
 
-# meta vec_passage: what passage() writes; changing passage() means a new version. "2" (plan 2026-11-08 T4): the unit
-# line, second; every passage of a database with unit lines changed, so the vector cache misses once ("1" before)
+# What passage() writes for the reranker; changing passage() means a new version. "2" (plan 2026-11-08 T4): the unit
+# line, second ("1" before). The embedded text has no unit line: it is version "1"'s, which meta vec_passage says
 PASSAGE_VERSION = "2"
 LINKTEXT_CHARS = 200  # link texts kept in a passage, whole names only (one longer name is cut)
 EMBED_CHUNK = 512  # passages looked up, encoded, cached and written per round
@@ -58,8 +57,8 @@ PAGE_SIZE = 16_384
 _IN_MAX = 500  # keys or ids per IN (...) query, well under SQLite's variable limit
 _CHUNKS = ("SELECT c.chunk_id, c.doc_id, c.start, c.end, c.head_start, c.head_end, coalesce(s.heading, '')"
            " FROM chunks c LEFT JOIN sections s ON s.doc_id = c.doc_id AND s.sec_id = c.sec_id")
-# unit_line, or '' before plan 2026-11-08 T4 and for the vectors unless asked; date_line, or '' before plan 2026-11-14
-# T3 and for the vectors always (_passages)
+# unit_line, or '' before plan 2026-11-08 T4 and for the vectors; date_line, or '' before plan 2026-11-14 T3 and for
+# the vectors (_passages)
 _DOC = "SELECT title, parent_title, linktext, text, {unit}, {dates} FROM docs WHERE doc_id = ?"
 
 log = logging.getLogger("nknu.content.embed")
@@ -235,11 +234,6 @@ def _doc_columns(conn: sqlite3.Connection) -> set[str]:
     return {r[1] for r in conn.execute("PRAGMA table_info(docs)")}
 
 
-def _has_unit_line(conn: sqlite3.Connection) -> bool:
-    """docs has unit_line (a database built since plan 2026-11-08 T4)."""
-    return "unit_line" in _doc_columns(conn)
-
-
 def _passages(conn: sqlite3.Connection, rows: list[tuple], *, unit: bool = True,
               dates: bool = True) -> Iterator[tuple[int, str]]:
     """(chunk_id, passage) for rows sorted by document; each document's title, unit line (none in a database built
@@ -264,27 +258,26 @@ def _passages(conn: sqlite3.Connection, rows: list[tuple], *, unit: bool = True,
 def chunk_passages(conn: sqlite3.Connection, chunk_ids: list[int]) -> dict[int, str]:
     """chunk_id -> the passage the reranker reads (pipeline-1 databases: parent_title, head offsets; pipeline-4: the
     unit line, always; pipeline-8: an event's date line, plan 2026-11-14 T3). embed_chunks embedded the same text
-    without the date line (the reranker's only: the module docstring) and without the unit line unless the build was
-    asked to put it in the vectors too (11-08, main session: see embed_chunks)."""
+    without the date line (the reranker's only: the module docstring) and without the unit line (11-08, main session:
+    see embed_chunks)."""
     return dict(_passages(conn, _chunk_rows(conn, chunk_ids)))
 
 
 def embed_chunks(conn: sqlite3.Connection, embedder, *, cache: VecCache | None = None,
-                 batch_size: int = BATCH, unit: bool = False) -> EmbedStats:
+                 batch_size: int = BATCH) -> EmbedStats:
     """One vector per chunk in chunk_vecs (chunks without text too: their passage is their document's titles), and the
-    meta keys vec_model, vec_revision, vec_dim, vec_dtype, vec_count, vec_built_at, vec_max_seq and vec_passage (PASSAGE_VERSION;
-    "1" for a database without unit lines, whose passages are version 1's), replacing what was there in one
+    meta keys vec_model, vec_revision, vec_dim, vec_dtype, vec_count, vec_built_at, vec_max_seq and vec_passage ("1":
+    the embedded passages are version 1's, without the unit line), replacing what was there in one
     transaction: a failure leaves the database as it was (conn in Python's default transaction mode), while the cache
     keeps every finished round. Passages go to the embedder in rounds of EMBED_CHUNK, batch_size at a time; progress
     is logged every PROGRESS_EVERY chunks.
-    unit: embed the unit line too (the owner's 11-08 04:08 patch as written). Off by default since the lab-PC
-    measurement of 11-08 (main session 【Claude】, evidence in research/pipeline_2026-11-02/from_lab_pc_1108/e2e/): in
-    the vectors the line makes every document of one 組別 near a query naming it, so on 教务处 the hybrid's question
-    MRR fell 0.615 -> 0.563 (N11 rank 1 -> 54) while the reranker reading the line gained. The keyword index and the
-    reranker keep it either way; vec_passage then says "1", the text the vectors hold.
-    A calendar event's date line (docs.date_line; plan 2026-11-14 T3) is never embedded, whatever unit says: the
-    measurement of 11-14 on the first rebuild went the same way (the module docstring), so every passage embedded here
-    is the one of before T3 and a cache of before serves it."""
+    The unit line is not embedded (the lab-PC measurement of 11-08, main session 【Claude】, evidence in
+    research/pipeline_2026-11-02/from_lab_pc_1108/e2e/): in the vectors the line makes every document of one 組別 near
+    a query naming it, so on 教务处 the hybrid's question MRR fell 0.615 -> 0.563 (N11 rank 1 -> 54) while the reranker
+    reading the line gained. The keyword index and the reranker have it.
+    A calendar event's date line (docs.date_line; plan 2026-11-14 T3) is not embedded either: the measurement of
+    11-14 on the first rebuild went the same way (the module docstring), so every passage embedded here is the one of
+    before T3 and a cache of before serves it."""
     started = time.monotonic()
     tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "chunk_vecs" not in tables:
@@ -293,7 +286,7 @@ def embed_chunks(conn: sqlite3.Connection, embedder, *, cache: VecCache | None =
     done = cached = encoded = 0
     try:
         conn.execute("DELETE FROM chunk_vecs")
-        for part in batched(_passages(conn, rows, unit=unit, dates=False), EMBED_CHUNK):
+        for part in batched(_passages(conn, rows, unit=False, dates=False), EMBED_CHUNK):
             blobs, hit, new = encode_cached(embedder, [text for _, text in part], cache=cache, batch_size=batch_size)
             conn.executemany("INSERT INTO chunk_vecs(chunk_id, vec) VALUES (?, ?)",
                              zip((chunk_id for chunk_id, _ in part), blobs))
@@ -305,7 +298,7 @@ def embed_chunks(conn: sqlite3.Connection, embedder, *, cache: VecCache | None =
         meta = {"vec_model": embedder.model_id, "vec_revision": embedder.revision, "vec_dim": str(int(embedder.dim)),
                 "vec_dtype": "float16", "vec_count": str(done),
                 "vec_built_at": datetime.now(TAIPEI).isoformat(timespec="seconds"),
-                "vec_passage": PASSAGE_VERSION if unit and _has_unit_line(conn) else "1",
+                "vec_passage": "1",
                 # spec 2026-11-16 §三: the tokens the embedder read of each passage (512 in every build before)
                 "vec_max_seq": str(int(getattr(embedder, "max_seq", BASE_SEQ)))}
         conn.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", meta.items())

@@ -281,9 +281,11 @@ def test_the_report_counts_what_expires_and_what_each_clue_kept(built):
 def test_hybrid_reads_what_the_build_wrote(built):
     _, conn = built
     ids = [r[0] for r in conn.execute("SELECT doc_id FROM docs")]
-    # in the 115 academic year: the notice and its file are two years old, the 2024 event three, this year's event none
-    assert validity(conn, ids, TODAY, 0.85) == pytest.approx(
-        {IDS["notice"]: 0.85 ** 2, IDS["table"]: 0.85 ** 2, "eev2": 0.85 ** 3})
+    # in the 115 academic year: the notice and its file fall by their own age (dated 2025-03-01); the 2024 event,
+    # whose term is always known, by three whole years; this year's event by none
+    aged = 0.85 ** ((TODAY - date(2025, 3, 1)).days / 365)
+    assert validity(conn, ids, TODAY, 0.85) == pytest.approx({IDS["notice"]: aged, IDS["table"]: aged,
+                                                              "eev2": 0.85 ** 3})
 
 
 def test_main_prints_how_many_expire(tmp_path, capsys):

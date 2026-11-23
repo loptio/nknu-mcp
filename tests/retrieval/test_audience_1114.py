@@ -3,8 +3,8 @@ whose audience is not the asker's is multiplied by it, in its keyword score befo
 its final score after reranking. A document a college, department or programme published when the query names none
 of those (main session 11-14: by its publisher, as the direction words it; as first written, by its applies_to rows,
 which also took an office's page that merely names a department); a document units.relation gives -1 when the query
-names a unit. Off (1.0) by default. Fake models only; the unit tree is the made-up slice test_hybrid.py uses, the
-sentences are invented."""
+names a unit. 0.9 by default; 1.0 is off. Fake models only; the unit tree is the made-up slice test_hybrid.py uses,
+the sentences are invented."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from nknu.retrieval.hybrid import HybridConfig, off_audience
 from tests.retrieval.test_hybrid import FakeReranker, Tiny
 from tests.retrieval.test_search import _hit, _ids
 
-F = 0.8  # the plan's number 【Claude】; the default is 1.0
+F = 0.8  # the plan's number; the default is 0.9
 KEYWORD = HybridConfig(dense=False, rerank=False, scope_factor=F)
 RERANK = HybridConfig(dense=False, scope_factor=F)
 SCHOOL = "國立高雄師範大學"
@@ -56,7 +56,7 @@ def _rules(db: Tiny) -> list[str]:
 
 
 def test_the_default_is_the_owners():
-    # owner 11-14: 「开关默认值：照你的建议——找候选开、还有效开（0.85 定稿算法）、对口开、第一关名次分不开。」 and 「对口折扣：用你建议的 0.9。」; 1.0 is off
+    # the audience counts by default: 0.9 for a document off the asker's audience; 1.0 is off
     assert HybridConfig().scope_factor == 0.9
 
 
@@ -164,17 +164,6 @@ def test_the_keyword_order_decides_who_is_reranked(db):
     rr = FakeReranker({"畢業": 0.5})
     r = db.hybrid("畢業門檻", reranker=rr, config=HybridConfig(dense=False, rerank_docs=1, scope_factor=F))
     assert _ids(r) == ["dz", "da"] and ["乙" in p for _, ps in rr.calls for p in ps] == [True]
-
-
-def test_with_the_additive_scope_of_addendum_f(db):
-    # the 11-02 weights (0 since 11-08) are added as before, after the factor 【Claude】
-    ids = _rules(db)
-    q = "軟體系 畢業門檻"
-    plain = _scores(db.search(q))
-    config = HybridConfig(dense=False, rerank=False, scope_factor=F, w_scope=0.3)
-    r = _scores(db.hybrid(q, config=config))
-    assert r["other"] == pytest.approx(plain["other"] * F - 0.3) and r["own"] == pytest.approx(plain["own"] + 0.3)
-    assert r["school"] == plain["school"] and len(r) == len(ids)
 
 
 def test_a_database_without_the_unit_tree_or_the_scope_is_as_before(db):

@@ -42,7 +42,7 @@ reranker reads of it (nknu.content.embed.chunk_passages; never of the text embed
 is scored and read as before: hybrid.validity gives None, embed reads no such line.
 Still pipeline-8 (plan 2026-11-14 T2, completed the same day): docs.rank_date, the latest identity date among a
 document and the copies the build merged into it (build._rank_dates), which search ranks by where it reads a date
-(RankConfig.copy_dates) while docs.ident_date, the document's own, is what a response shows. The version stays: it
+while docs.ident_date, the document's own, is what a response shows. The version stays: it
 came in on 11-14 and no database of it is in use yet (the two of that day's first rebuild, aca1114.db and
 sites111v6.db on the lab PC, say pipeline-8 without the column; search reads them, like any database without it, by
 ident_date as before).

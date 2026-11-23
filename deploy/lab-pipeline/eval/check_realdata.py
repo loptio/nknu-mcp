@@ -38,8 +38,7 @@ docs.site (the skeleton, the builds before T4) is read as before.
 Merged recurring events (plan 2026-11-14 T2): a build since then makes one event document of the instances of one
 recurring calendar event ('e' + its recurringEventId), whose text lists every instance's days. Check 22 counts an
 instance as there when it is a document of its own or its series' document carries its title and lists its days
-(events_held, series_days); a database built without the merge (--no-merge-recurring, and every one before) has no
-such document and is checked as before.
+(events_held, series_days); a database built before the merge has no such document and is checked as before.
 """
 
 from __future__ import annotations
@@ -1358,14 +1357,19 @@ def test_the_calendar_check_knows_a_merged_series(tmp_path):
             c.conn.close()
 
     tm.run(paths, tmp_path / "merged.db", inputs=inputs)
-    tm.run(paths, tmp_path / "each.db", inputs=inputs, merge_recurring=False)
+    # a database of before the merge: built from the same calendar without its series ids, which that build did not
+    # read; the export it is checked against is the one above, series ids and all
+    plain = [{k: v for k, v in it.items() if k not in ("recurringEventId", "originalStartTime")} for it in tr.ITEMS]
+    old = tr.calendar_input(tmp_path / "old", tr.ACA_SITE, "教务处", plain)
+    tm.run(paths, tmp_path / "each.db", inputs=[old])
+    (old[1] / tr.CAL_FILE).write_bytes((inputs[0][1] / tr.CAL_FILE).read_bytes())
     merged, each = checked("merged"), checked("each")
     assert merged.ok, merged.detail
     assert "事件 8/8（资料库 5 份，其中重复系列合成的 2 份列了 5 个）" in merged.numbers
     assert ("资料库里的事件 5 份，其中 2 份是重复系列合成的、各次的日期列在文件里，共 5 个；连同各自一份的 3 个，"
             "一共是导出里 2023-01-01 起开始、标题不空的 8 个里的 8 个；少了的 没有；多出来的 没有") in merged.detail
     assert "留下的年份：2026 年 7、2027 年 1" in merged.detail
-    # a database built without the merge is checked as before, to the word
+    # a database built before the merge is checked as before, to the word
     assert each.ok, each.detail
     assert "事件 8/8；" in each.numbers and "重复系列" not in each.numbers + "".join(each.detail)
     assert "资料库里的事件 8 个 = 导出里 2023-01-01 起开始、标题不空的 8 个；少了的 没有；多出来的 没有" in each.detail
@@ -1379,6 +1383,7 @@ def test_the_calendar_check_knows_a_merged_series(tmp_path):
     missing = checked("merged")
     assert not missing.ok and "事件 8/9（" in missing.numbers
     assert any("少了的 ['ewk_20261012']；多出来的 没有" in line for line in missing.detail), missing.detail
+    (old[1] / tr.CAL_FILE).write_bytes(cal.read_bytes())
     assert not checked("each").ok  # nor is it a document of its own there
     # a single event gone from the database, and a document no event of the export stands for
     cal.write_text(json.dumps({"kind": "calendar#events", "items": [
@@ -1425,29 +1430,29 @@ def test_a_file_whose_notice_was_merged_into_its_twin_still_inherits(tmp_path):
         return {"kind": tc.PDF, "url": url, "title": name + ".pdf", "text": text, "linked": notice, "linktext": name,
                 "contexts": {notice: name}, "zones": {notice: "attachments"}}
 
-    def checked(name: str, **kw) -> Check:
+    def checked(name: str, on_platform: str) -> Check:
         root = tmp_path / name
         aca = tc.site_input(root / "aca", tc.ACA_SITE, "教务处", [
             {"kind": "newsdetail", "url": own, "title": title, "text": words, **day("公告時間： 2026-06-20")},
             file(own_file, "開放時間表", "週一至週五上午九時至下午五時", own)])
         news = tc.site_input(root / "news", tc.NEWS_SITE, "全校公告中心", [
-            {"kind": "detail:sso_news", "url": posted, "title": title, "text": words.replace("，", ","),
+            {"kind": "detail:sso_news", "url": posted, "title": title, "text": on_platform,
              **day("2026/6/20 上午 08:31:00")},
             file(posted_file, "借書須知", "借書期限順延至開學後第一週", posted)])
-        tm.run(tm.tree_files(root / "tree"), tmp_path / f"{name}.db", inputs=[aca, news], **kw)
+        tm.run(tm.tree_files(root / "tree"), tmp_path / f"{name}.db", inputs=[aca, news])
         c = Ctx(tmp_path / f"{name}.db", today=tm.TODAY)
         try:
             return check_inherits(c)
         finally:
             c.conn.close()
 
-    merged = checked("merged")
+    merged = checked("merged", words.replace("，", ","))
     assert merged.ok and merged.numbers == "2/2 份", merged.detail
     assert merged.detail[0] == ("不符的：0；继承日期的原文或日期和所属公告不同的：0；所属公告合并过副本、附件改挂到留下的那份，"
                                 "日期同一天、只是原文写法不同的：1（不算不符）")
-    # built without the merge the platform's file hangs on the platform's page, which is not 教务处's to count, and
-    # nothing is said of merged notices
-    apart = checked("apart", platform_twins=False)
+    # two notices the build leaves apart (the platform's names another day): the platform's file hangs on the
+    # platform's page, which is not 教务处's to count, and nothing is said of merged notices
+    apart = checked("apart", words.replace("七月一日", "七月二日"))
     assert apart.ok and apart.numbers == "1/1 份", apart.detail
     assert apart.detail[0] == "不符的：0；继承日期的原文或日期和所属公告不同的：0"
 

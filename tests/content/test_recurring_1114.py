@@ -6,7 +6,7 @@ event carries recurringEventId, and its own id is <that id>_<its start>. documen
 event of the instances of a series that would be documents and share its title: id the series id (so the document is
 'e' + it), the first day and the last, and every instance's days, which the document's text lists (nothing dropped).
 A single event, an instance with a title of its own and the only instance of a series stay as they are.
-build_sites(merge_recurring=False) / --no-merge-recurring builds as before. The titles are made up; no model loads."""
+The titles are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -240,34 +240,16 @@ def test_read_shows_the_days_and_one_span(built):
     assert "2026-09-07～2026-09-22（行事曆）" in resp["identity"]
 
 
-def test_without_the_merge_every_instance_is_a_document_as_before(built, tmp_path, capsys):
-    report, _, inputs = built
+def test_the_command_line_counts_the_series_it_merged(built, tmp_path, capsys):
+    _, _, inputs = built
     paths = tm.tree_files(tmp_path / "tree2")
-    out = tmp_path / "db" / "off.db"
-    off = tm.run(paths, out, inputs=inputs, merge_recurring=False)
-    conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
-    try:
-        events = dict(conn.execute("SELECT doc_id, text FROM docs WHERE kind_class = 'event'"))
-        assert conn.execute("SELECT value FROM meta WHERE key = 'recurring_events'").fetchone() == ("off",)
-    finally:
-        conn.close()
-    assert events == {"es1": "期末考試", "ewk_20260914": "族語課", "ewk_20260907": "族語課", "ewk_20260921": "族語課",
-                      "ewk_20260928": "族語課（停課一次）", "emt_20260910": "系務會議", "etu_20261215T010000Z": "導師會議",
-                      "etu_20270316T010000Z": "導師會議"}
-    assert off.excluded == {EVENT_KIND + BEFORE: 1, EVENT_KIND + BLANK: 1}
-    assert off.dedupe["recurring"] == {"on": False, "series": 0, "instances": 0, "removed": 0, "other_titles": 0,
-                                       "id_taken": 0, "events_before": 8, "events_after": 8, "by_site": {}}
-    assert off.counts["docs"]["event"] == report.dedupe["recurring"]["events_before"]
-    # the command line
     (corpus, export), = inputs
     rest = ["--input", f"{corpus}::{export}", "--aliases", str(paths["aliases"]), "--server-dates",
             str(paths["server"]), "--site-list", str(paths["sites"]), "--units", str(paths["units"])]
     assert build.main([*rest, "--out", str(tmp_path / "cli" / "on.db")]) == 0
     assert "行事历重复系列 2 个各合成一份（原 5 个单次事件；事件 8 → 5 份）" in capsys.readouterr().out
-    assert build.main([*rest, "--out", str(tmp_path / "cli2" / "off.db"), "--no-merge-recurring"]) == 0
-    assert "行事历重复系列没合并（--no-merge-recurring）" in capsys.readouterr().out
-    saved = json.loads((tmp_path / "cli2" / "build_report.json").read_text(encoding="utf-8"))
-    assert saved["dedupe"]["recurring"]["on"] is False
+    saved = json.loads((tmp_path / "cli" / "build_report.json").read_text(encoding="utf-8"))
+    assert saved["dedupe"]["recurring"]["on"] is True and saved["dedupe"]["recurring"]["series"] == 2
 
 
 def test_one_calendar_in_two_exports_is_deduplicated_first_then_merged(tmp_path):

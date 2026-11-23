@@ -4,7 +4,7 @@ could not read. Over half are official letters whose body reads well and whose l
 line (「…裝…訂…線…」), each dot a line of its own; the charts and forms (the table of required courses) have labels
 set vertically, which come out one character a line, in the right order. So no other tool: a run of one-character
 lines loses its leader marks and, where it holds two or more Han characters, becomes one line (documents.
-join_single_lines; the build's --no-single-lines keeps the text as converted). On a trial build of the 111 sites of
+join_single_lines). On a trial build of the 111 sites of
 11-16: 1,031 such files before, 24 after (those left are posters and exam sheets whose pictures the OCR read).
 Sentences here are made up."""
 from __future__ import annotations
@@ -63,13 +63,11 @@ def test_joining_again_changes_nothing():
     assert once == lines("通識科目", "10 學分", "裝") and join_single_lines(once) == (once, 0, 0)
 
 
-def test_the_build_joins_them_and_the_switch_keeps_the_converted_text():
+def test_the_build_joins_them():
     text = lines("選課流程圖", "加", "退", "選", "期", "間", "受理停修申請。")
     rec = tc.rec("a1", PDF, ACA + "f/1/流程圖.pdf", "流程圖.pdf", text, ACA_SITE)
     (doc,), _ = build_documents([rec], {}, [])
     assert doc.text == lines("選課流程圖", "加退選期間", "受理停修申請。") and (doc.lines_joined, doc.marks_dropped) == (4, 0)
-    (plain,), _ = build_documents([rec], {}, [], single_lines=False)
-    assert plain.text == text and (plain.lines_joined, plain.marks_dropped) == (0, 0)
 
 
 def test_the_library_says_how_much_it_joined(tmp_path):
@@ -84,7 +82,3 @@ def test_the_library_says_how_much_it_joined(tmp_path):
         got = dict(conn.execute("SELECT title, text FROM docs"))
         said = json.loads(conn.execute("SELECT value FROM meta WHERE key = 'single_lines_json'").fetchone()[0])
     assert got["流程圖.pdf"] == lines("選課流程圖", "加退選", "受理停修申請。") and said == report.single_lines
-    off = tm.run(paths, tmp_path / "db" / "off.db", inputs=[aca], single_lines=False)
-    assert off.single_lines == {"on": False, "documents": 0, "joined": 0, "dropped": 0}
-    with sqlite3.connect(tmp_path / "db" / "off.db") as conn:
-        assert dict(conn.execute("SELECT title, text FROM docs"))["流程圖.pdf"] == text

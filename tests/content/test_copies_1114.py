@@ -5,8 +5,7 @@ document, and a notice of a detail path never merged. The text rule adds: docume
 whose text, all whitespace removed, is the same and at least 200 characters long are one document, across sites and
 inside one, notices too, whatever their titles. The earliest by its identity date is kept (an undated one after every
 dated one; on a tie the address's own site, then today's order); the others go to doc_alias and to the kept one's
-copies, and their titles stay findable in its link texts. build_sites(copy_rule="title") / --copy-rule title builds as
-before. The sentences are made up; no model loads."""
+copies, and their titles stay findable in its link texts. The sentences are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -61,12 +60,12 @@ def rec(rid: str, kind: str, url: str, title: str, text: str, site: str = "", da
     return Record(rid, kind, url, f"pages/{rid}.html", title, text, **fields)
 
 
-def merged(records: list[Record], metas: dict | None = None, events: tuple[Event, ...] = (),
-           rule: str = build.COPY_TEXT) -> tuple[list[str], dict[str, list[str]], dict[str, int], dict]:
+def merged(records: list[Record], metas: dict | None = None,
+           events: tuple[Event, ...] = ()) -> tuple[list[str], dict[str, list[str]], dict[str, int], dict]:
     """The ids kept after build._merge_copies, the copies under each, the excluded counts and the documents by id."""
     docs, excluded = build_documents(records, metas or {}, list(events))
     rows = build._rows(docs, {"e" + ev.id: ev for ev in events}, {})
-    kept, copies = build._merge_copies(rows, lambda _: None, excluded, rule)
+    kept, copies = build._merge_copies(rows, lambda _: None, excluded)
     return ([r.doc.doc_id for r in kept], {k: [c.doc.doc_id for c in v] for k, v in copies.items()}, excluded,
             {r.doc.doc_id: r.doc for r in kept})
 
@@ -74,7 +73,7 @@ def merged(records: list[Record], metas: dict | None = None, events: tuple[Event
 # ---------------------------------------------------------------- which documents are one
 
 def test_the_rules_and_the_least_length():
-    assert build.COPY_RULES == (build.COPY_TEXT, build.COPY_TITLE) == ("text", "title")
+    assert (build.COPY_TEXT, build.COPY_TITLE) == ("text", "title")  # the two kinds of group, as the report names them
     assert build.COPY_MIN_CHARS == 200
     assert build._bare("甲 乙\n\t丙\u3000丁\xa0戊\r\n己") == "甲乙丙丁戊己"
     assert len(build._bare(LONG)) == 244 and build._bare(SPACED) == build._bare(LONG) and SPACED != LONG
@@ -89,9 +88,6 @@ def test_notices_of_two_sites_with_one_text_are_one_document_whatever_their_titl
     assert (kept, copies) == (["dp1", "dp3", "dp4"], {"dp1": ["dp2"]})
     assert excluded == {"detail:sso_news" + build.COPY: 1}
     assert docs["dp1"].linktext == "【轉知】暑假開館時間"  # the copy's title is still found by search
-    # today's rule: a notice of a detail path never merges, nor do two titles
-    kept, copies, excluded, _ = merged(records, rule=build.COPY_TITLE)
-    assert (kept, copies, excluded) == (["dp1", "dp2", "dp3", "dp4"], {}, {})
 
 
 def test_under_two_hundred_characters_the_titles_must_still_be_one():
@@ -99,14 +95,12 @@ def test_under_two_hundred_characters_the_titles_must_still_be_one():
     pages = [rec("p1", "page:sso_clv2", CHAIR + "1", "開館時間", brief, CHAIR_SITE),
              rec("p2", "page:sso_clv2", CHAIR + "2", "暑假開館", brief, CHAIR_SITE),
              rec("p3", "page:sso_clv2", CHAIR + "3", "開館時間", brief, CHAIR_SITE)]
-    for rule in build.COPY_RULES:
-        kept, copies, excluded, _ = merged(pages, rule=rule)
-        assert (kept, copies) == (["dp1", "dp2"], {"dp1": ["dp3"]}), rule  # one title and text: today's rule
-        assert excluded == {"page:sso_clv2" + build.COPY: 1}
+    kept, copies, excluded, _ = merged(pages)
+    assert (kept, copies) == (["dp1", "dp2"], {"dp1": ["dp3"]})  # one title and text: the title rule
+    assert excluded == {"page:sso_clv2" + build.COPY: 1}
     # one character more and the text rule takes all three
     longer = [rec(p.id, p.kind, p.url, p.title, LONG[:200], CHAIR_SITE) for p in pages]
     assert merged(longer)[:2] == (["dp1"], {"dp1": ["dp2", "dp3"]})
-    assert merged(longer, rule=build.COPY_TITLE)[:2] == (["dp1", "dp2"], {"dp1": ["dp3"]})
 
 
 def test_events_and_files_whose_words_are_not_the_document_are_no_part_of_the_text_rule():
@@ -132,7 +126,6 @@ def test_a_group_of_each_rule_sharing_a_document_is_one_group():
     kept, copies, excluded, docs = merged(files)
     assert (kept, copies) == (["da1", "da4"], {"da1": ["da2", "da3"]})
     assert excluded == {SCAN + build.COPY: 1, PDF + build.COPY: 1} and docs["da1"].linktext == "丙.pdf"
-    assert merged(files, rule=build.COPY_TITLE)[:2] == (["da1", "da3", "da4"], {"da1": ["da2"]})
 
 
 # ---------------------------------------------------------------- which one is kept
@@ -152,14 +145,12 @@ def test_the_earliest_dated_one_is_kept_and_an_undated_one_comes_after_every_dat
 
 
 def test_groups_only_todays_rule_makes_keep_todays_choice():
-    # one title and a text under 200 characters: the latest dated one stays, as before, under either rule 【Claude】
+    # one title and a text under 200 characters: the latest dated one stays, as before 【Claude】
     pages = [page("p1", 1, "社團博覽會", "2026-02-01", SHORT), page("p2", 2, "社團博覽會", "2026-05-01", SHORT)]
-    for rule in build.COPY_RULES:
-        assert merged(pages, rule=rule)[:2] == (["dp2"], {"dp2": ["dp1"]}), rule
+    assert merged(pages)[:2] == (["dp2"], {"dp2": ["dp1"]})
     # the same two with a text the text rule takes: the earliest
     long_pages = [page("p1", 1, "社團博覽會", "2026-02-01"), page("p2", 2, "社團博覽會", "2026-05-01")]
     assert merged(long_pages)[:2] == (["dp1"], {"dp1": ["dp2"]})
-    assert merged(long_pages, rule=build.COPY_TITLE)[:2] == (["dp2"], {"dp2": ["dp1"]})
 
 
 def test_on_one_day_the_address_own_site_comes_before_a_shared_platform_then_todays_order():
@@ -240,10 +231,9 @@ def test_under_todays_rule_a_file_name_is_never_added_twice():
     f1 = rec("a1", PDF, ACA + "uploadfile/news/1/表.pdf", "表.pdf", SHORT, ACA_SITE, linked=(n1.url,),
              contexts={n1.url: "申請表"}, linktext="申請表")
     f2 = rec("a2", PDF, ACA + "uploadfile/news/2/表.pdf", "表.pdf", SHORT, ACA_SITE, linked=(n2.url,), linktext="表.pdf")
-    for rule in build.COPY_RULES:
-        kept, copies, _, docs = merged([n1, n2, f1, f2], {"p1": m1, "p2": m2}, rule=rule)
-        assert (kept, copies) == (["dp1", "dp2", "da2"], {"da2": ["da1"]}), rule  # the latest notice's: today's choice
-        assert docs["da2"].linktext.split(LINK_SEP) == ["表.pdf", "申請表"], rule
+    kept, copies, _, docs = merged([n1, n2, f1, f2], {"p1": m1, "p2": m2})
+    assert (kept, copies) == (["dp1", "dp2", "da2"], {"da2": ["da1"]})  # the latest notice's: today's choice
+    assert docs["da2"].linktext.split(LINK_SEP) == ["表.pdf", "申請表"]
 
 
 # ---------------------------------------------------------------- the build
@@ -366,25 +356,9 @@ def test_a_copys_title_finds_the_kept_document_and_read_resolves_its_id(copied):
     assert read["id"] == d["a_notice"] and read["notes"][0] == f"【系統】這個編號是 {d['a_notice']} 的副本，以下是保留的那份。"
 
 
-def test_rule_title_builds_as_before_and_says_so(tmp_path, capsys):
+def test_the_command_line_prints_the_groups_and_each_sites_share(tmp_path, capsys):
     paths = tm.tree_files(tmp_path / "tree")
     inputs = copy_inputs(tmp_path)
-    out = tmp_path / "db" / "old.db"
-    report = tm.run(paths, out, inputs=inputs, copy_rule=build.COPY_TITLE)
-    assert report.excluded == {"page" + build.COPY: 1}  # the two addresses of one short page, and nothing else
-    assert {k: v for k, v in report.dedupe["copies"].items() if k != "largest"} == {
-        "rule": "title", "min_chars": 200, "groups": 1, "removed": 1, "cross_site": 0,
-        "by_rule": {"text": {"groups": 0, "removed": 0}, "title": {"groups": 1, "removed": 1}, "twin": NO_TWIN},
-        "by_kind": {"page": 1}, "by_site": {ACA_SITE: {"kept": 1, "merged": 1}}, "names_carried": NO_NAMES}
-    conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
-    try:
-        assert conn.execute("SELECT count(*) FROM docs").fetchone() == (7,)
-        assert conn.execute("SELECT value FROM meta WHERE key = 'copy_rule'").fetchone() == ("title",)
-    finally:
-        conn.close()
-    with pytest.raises(ValueError, match="copy_rule"):
-        tm.run(paths, tmp_path / "db" / "bad.db", inputs=inputs, copy_rule="loose")
-    # the command line: the default is the text rule, --copy-rule title the rule of before
     pairs = [arg for corpus, export in inputs for arg in ("--input", f"{corpus}::{export}")]
     rest = ["--aliases", str(paths["aliases"]), "--server-dates", str(paths["server"]), "--site-list",
             str(paths["sites"]), "--units", str(paths["units"])]
@@ -395,32 +369,13 @@ def test_rule_title_builds_as_before_and_says_so(tmp_path, capsys):
     saved = json.loads((tmp_path / "cli" / "build_report.json").read_text(encoding="utf-8"))
     assert saved["dedupe"]["copies"]["groups"] == 3 and saved["dedupe"]["copies"]["by_site"][NEWS_SITE] == {
         "kept": 0, "merged": 1}
-    assert build.main([*pairs, "--out", str(tmp_path / "cli2" / "old.db"), *rest, "--copy-rule", "title"]) == 0
-    printed = capsys.readouterr().out
-    assert "副本合并 1 组、少 1 份" in printed and "--copy-rule title" in printed
-    with pytest.raises(SystemExit) as stop:  # argparse refuses another rule
-        build.main([*pairs, "--out", str(tmp_path / "cli3" / "x.db"), *rest, "--copy-rule", "loose"])
-    assert stop.value.code == 2
 
 
-def test_inputs_without_long_copies_build_the_same_under_both_rules(tmp_path):
-    # test_build's export has copies of today's rule only (a short file under two notices, a scan at two addresses):
-    # the text rule changes nothing there, the documents, their copies and the aliases are those of the rule of before
-    def built(rule: str) -> tuple:
-        paths = tb.make_inputs(tmp_path / rule)
-        report = tb.run(paths, tmp_path / rule / "out" / "aca.db", copy_rule=rule)
-        conn = sqlite3.connect(f"file:{tmp_path / rule / 'out' / 'aca.db'}?mode=ro", uri=True)
-        try:
-            return (conn.execute("SELECT doc_id, title, linktext, parent_id, ident_date, tier FROM docs ORDER BY doc_id"
-                                 ).fetchall(),
-                    conn.execute("SELECT * FROM doc_alias ORDER BY alias").fetchall(),
-                    conn.execute("SELECT key, value FROM meta WHERE key LIKE 'copies:%' ORDER BY key").fetchall(),
-                    conn.execute("SELECT * FROM doc_refs ORDER BY doc_id, ref_id").fetchall(), report.excluded,
-                    {k: v for k, v in report.dedupe["copies"].items() if k != "rule"})
-        finally:
-            conn.close()
-
-    new, old = built(build.COPY_TEXT), built(build.COPY_TITLE)
-    assert new == old and new[4] == tb.COPIES_EXCLUDED
-    assert new[5]["by_rule"] == {"text": {"groups": 0, "removed": 0}, "title": {"groups": 2, "removed": 2},
-                                 "twin": NO_TWIN}
+def test_inputs_without_long_copies_merge_by_the_title_rule_alone(tmp_path):
+    # test_build's export has copies of the title rule only (a short file under two notices, a scan at two addresses):
+    # the text rule finds nothing more there
+    paths = tb.make_inputs(tmp_path / "in")
+    report = tb.run(paths, tmp_path / "in" / "out" / "aca.db")
+    assert report.excluded == tb.COPIES_EXCLUDED
+    assert report.dedupe["copies"]["by_rule"] == {"text": {"groups": 0, "removed": 0},
+                                                 "title": {"groups": 2, "removed": 2}, "twin": NO_TWIN}

@@ -18,7 +18,7 @@ G="$O/gold_$db.json"
   || { echo "gold failed: $O/gold_$db.log" >&2; exit 8; }
 for runs in r3 r4; do
   "$PY" "$E" run --search hybrid --db "$P/$db.db" --gold "$G" --runs "$EV/runs/$runs/summary.json" \
-    --no-scope-effect --out "$O/${db}_final_${runs}.json" > "$O/${db}_final_${runs}.log" 2>&1
+    --out "$O/${db}_final_${runs}.json" > "$O/${db}_final_${runs}.log" 2>&1
   echo "exit $?" >> "$O/${db}_final_${runs}.log"
 done
 "$PY" deploy/lab-pipeline/build_helpers.py check-realdata --db "$P/$db.db" --out "$O/${db}_checks.md" --search hybrid \

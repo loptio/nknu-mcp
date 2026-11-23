@@ -56,7 +56,7 @@ def _fees(db: Tiny) -> None:
 
 
 def test_the_default_is_the_owners():
-    # owner 11-14: 「开关默认值：照你的建议——找候选开、还有效开（0.85 定稿算法）、对口开、第一关名次分不开。」
+    # a candidate needs a topic word by default; the fixtures' BASE is the search of before
     assert RankConfig().topic_required is True and BASE.topic_required is False and ON.topic_required is True
 
 
@@ -146,13 +146,6 @@ def test_a_term_only_document_is_no_candidate_when_a_topic_word_is_there(db):
     assert _hit(db.search("115-1 選課", rank=ON), "pick").bm25 < _hit(db.search("選課", rank=ON), "pick").bm25
     for q in ("115-1", "115學年度", "115-1 什麼時候？", "113學年度入學", "下學期呢？"):  # a term alone: as before
         assert snapshot(db.search(q, rank=ON)) == snapshot(db.search(q)), q
-
-
-def test_the_unit_names_switch_does_not_decide_what_a_unit_name_is(db):
-    # unit_names (11-08) is whether a short name brings the unit's name; a unit's name is no topic word either way
-    _fees(db)
-    on = db.search("軟體系 學雜費", rank=dataclasses.replace(ON, unit_names=False))
-    assert set(_ids(on)) == {"own", "chem", "school"}
 
 
 def test_a_database_without_the_unit_tree_knows_no_unit_names(db):

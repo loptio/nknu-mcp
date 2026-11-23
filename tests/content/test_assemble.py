@@ -661,9 +661,9 @@ def test_assembled_corpus_builds(tmp_path):
         rule = one("SELECT title, parent_id, parent_title, ident_date, ident_kind, linktext FROM docs WHERE doc_id=?",
                    d["a5"])
         # menus only: no parent, the server's date. Changed 11-14 on purpose (plan 2026-11-14 T4): no page names
-        # rule.pdf and the file name has no Han character, so its title is the first line of its own text and the
-        # file name stayed in its link texts (build_db(own_titles=False) keeps 「rule.pdf」: test_own_titles_1114).
-        # Changed 11-16 on purpose (fixes_1116, tests/content/test_fixes_1116.py): the replaced name is no link name
+        # rule.pdf and the file name has no Han character, so its title is the first line of its own text
+        # (test_own_titles_1114). Changed 11-16 on purpose (tests/content/test_fixes_1116.py): the replaced name is
+        # no link name
         assert rule == (BODY, None, "", "2024-02-03", "server", "")
         assert sorted(conn.execute("SELECT ref_id, zone FROM doc_refs WHERE doc_id=?", (d["a5"],)).fetchall()) == (
             sorted([(d["p1"], "nav"), (d["p2"], "nav")]))

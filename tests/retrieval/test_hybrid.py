@@ -1,12 +1,13 @@
-"""T8 (plan 2026-11-02) and addendum F's T8 addition: hybrid retrieval (bigram pool + bge-m3 pool -> document RRF ->
-per-document chunk cap -> rerank -> ranking-v2 adjustments and the unit scope -> the first documents by score; no series
-since the owner's 11-03 decision), on tiny databases with a fake embedder and a fake reranker. tests/conftest.py's guard
-makes any real model load raise here, so a test that leaves reranker None gets no rerank. One real-model test, marked
-models (deselected by default)."""
+"""T8 (plan 2026-11-02): hybrid retrieval (bigram pool + bge-m3 pool -> document RRF -> per-document chunk cap ->
+rerank -> ranking-v2 adjustments -> the first documents by score; no series since the owner's 11-03 decision), on tiny
+databases with a fake embedder and a fake reranker. tests/conftest.py's guard makes any real model load raise here, so
+a test that leaves reranker None gets no rerank. One real-model test, marked models (deselected by default)."""
 
 from __future__ import annotations
 
 import hashlib
+import math
+from datetime import date
 
 import numpy as np
 import pytest
@@ -14,10 +15,11 @@ import pytest
 from nknu.content import embed
 from nknu.core import models
 from nknu.retrieval import vectors
-from nknu.retrieval.hybrid import W_MENTION, W_SCOPE, HybridConfig, hybrid_search, rerank_passages, rrf
+from nknu.retrieval.hybrid import HybridConfig, hybrid_search, rerank_passages, rrf
 from nknu.retrieval.search import (
     CANDIDATES,
     W_BM25,
+    W_COHORT,
     W_COVERAGE,
     W_PERIOD,
     RankConfig,
@@ -32,7 +34,7 @@ from tests.retrieval import test_search
 from tests.retrieval.test_search import BASE, TODAY, _withdrawals
 
 KEYS = {"多益": 0, "TOEIC": 0, "停修": 1, "退選": 1}  # words the fake embedder treats as one meaning, by axis
-# a made-up slice of the unit tree (addendum F; no research data): kinds as nknu.content.units.KINDS writes them
+# a made-up slice of the unit tree (no research data): kinds as nknu.content.units.KINDS writes them
 UNITS = (
     ("國立高雄師範大學", "学校", None, None, ("高師大",)),
     ("教務處", "行政单位", "國立高雄師範大學", None, ()),
@@ -43,7 +45,7 @@ UNITS = (
     ("化學系", "系所", "理學院", "燕巢", ()),
     ("國文學系", "系所", "文學院", "和平", ()),
 )
-# the scope tables of addendum F (T7d adds them to the schema; IF NOT EXISTS keeps these tests working either way)
+# the unit tables (T7d adds them to the schema; IF NOT EXISTS keeps these tests working either way)
 SCOPE_DDL = """
 CREATE TABLE IF NOT EXISTS units (unit_id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, parent_id TEXT,
                                   campus TEXT);
@@ -146,18 +148,13 @@ def _hit(result, doc_id):
     return next(h for h in result.hits if h.doc_id == doc_id)
 
 
-def _scores(result):
-    return {h.doc_id: h.score for h in result.hits}
-
-
 # ---------------------------------------------------------------- config, helpers
 
 def test_hybrid_defaults():
-    # addendum M (owner 11-08): the head split by tier and 50 + 10 documents, raw rerank scores, no unit weights
+    # addendum M (owner 11-08): the head split by tier and 50 + 10 documents
     assert HybridConfig() == HybridConfig(dense=True, rerank=True, rrf_k=60, dense_candidates=300, rerank_docs=50,
-                                          rerank_background=10, chunks_per_doc=2, w_rerank=3.0, rerank_norm="raw")
+                                          rerank_background=10, chunks_per_doc=2, w_rerank=3.0)
     assert HybridConfig().dense_candidates == CANDIDATES and HybridConfig().w_rerank == W_COVERAGE + W_BM25
-    assert (W_SCOPE, W_MENTION) == (0.0, 0.0) and (HybridConfig().w_scope, HybridConfig().w_mention) == (0.0, 0.0)
 
 
 def test_rrf():
@@ -374,16 +371,14 @@ def test_rerank_reorders_and_puts_its_best_chunk_first(db):
     assert r.ranking == "hybrid" and r.best_rerank == 0.9
 
 
-def test_rerank_scores_are_raw_unless_normalised(db):
-    # addendum M4 (11-08): raw by default, so an unsure head stays unsure; "max" is the 11-04 build's setting
+def test_rerank_scores_are_raw(db):
+    # addendum M4 (11-08): the reranker's score as it comes, so an unsure head stays unsure
     db.doc("d1", "停修公告", "甲 停修")
     db.doc("d2", "停修公告", "乙 停修")
     table = {"甲": 0.6, "乙": 0.3}
     r = db.hybrid("停修", reranker=FakeReranker(table), config=HybridConfig(dense=False))
     assert [(h.doc_id, h.score) for h in r.hits] == [("d1", pytest.approx(1.8)), ("d2", pytest.approx(0.9))]
     assert r.best_rerank == 0.6
-    norm = db.hybrid("停修", reranker=FakeReranker(table), config=HybridConfig(dense=False, rerank_norm="max"))
-    assert [(h.doc_id, h.score) for h in norm.hits] == [("d1", pytest.approx(3.0)), ("d2", pytest.approx(1.5))]
 
 
 def test_adjustments_survive_rerank(db):
@@ -394,6 +389,29 @@ def test_adjustments_survive_rerank(db):
     assert _ids(r) == ["da", "dz"]  # no term named: a tie, by doc_id
     r = db.hybrid("115-1 停修", reranker=FakeReranker({"停修": 0.5}), config=HybridConfig(dense=False))
     assert _ids(r) == ["dz", "da"] and _hit(r, "dz").score == pytest.approx(3.0 * 0.5 + W_PERIOD)
+
+
+def test_a_reranked_score_is_the_expression_to_the_bit(db):
+    # w_rerank * relevance + adjustments, in that order: 0.1 and 0.7 are not exact in binary, so any other order of
+    # the same sums, or one more term, would show in the last bits. Nothing here goes out of date and there is no
+    # unit tree, so neither discount applies
+    db.doc("d1", "115學年度第一學期停修公告", "甲 停修", ay=115, sem=1, ident="2026-10-21")
+    db.doc("d2", "停修公告", "乙 停修", ident="2025-03-09")
+    table = {"甲": 0.1, "乙": 0.7}
+    rank = RankConfig(tier=False)
+    rerank = HybridConfig(dense=False)
+    r = db.hybrid("停修", rank=rank, reranker=FakeReranker(table), config=rerank)
+    for doc_id, rel, day in (("d1", 0.1, date(2026, 10, 21)), ("d2", 0.7, date(2025, 3, 9))):
+        adj = W_PERIOD * 0.0 + W_COHORT * False
+        adj += rank.w_recent * math.exp(-max(0, (TODAY - day).days) / rank.tau_days)
+        assert _hit(r, doc_id).score == 3.0 * rel + adj, doc_id
+    r = db.hybrid("115-1 停修", rank=rank, reranker=FakeReranker(table), config=rerank)
+    assert _hit(r, "d1").score == 3.0 * 0.1 + (W_PERIOD * 1.0 + W_COHORT * False)
+    assert _hit(r, "d2").score == 3.0 * 0.7 + (W_PERIOD * 0.0 + W_COHORT * False)
+    for q in ("停修", "115-1 停修"):  # the two discounts named at their off values: the same path
+        named = HybridConfig(dense=False, scope_factor=1.0, valid_decay=1.0)
+        assert db.hybrid(q, rank=rank, reranker=FakeReranker(table), config=named).hits == db.hybrid(
+            q, rank=rank, reranker=FakeReranker(table), config=rerank).hits, q
 
 
 def test_term_spellings_send_one_model_query(db):
@@ -470,102 +488,6 @@ def test_rerank_passage_has_titles_heading_and_table_header(db):
                          text[head_start:head_end], text[start:])
     assert rerank_passages(db.conn, [cid]) == {cid: want}
     assert all(part in want for part in ("115學年度收費公告", "第二條 收費標準", "| 項目 | 金額 |", "| 雜費 | 500 |"))
-
-
-# ---------------------------------------------------------------- the unit scope (addendum F)
-
-# The scope's weights are 0 since 11-08 (addendum M5); the mechanism stays, so these tests give it addendum F's
-# starting values back.
-S_SCOPE, S_MENTION = 0.3, 0.1
-SCOPED_OFF = HybridConfig(dense=False, rerank=False, w_scope=S_SCOPE, w_mention=S_MENTION, scope_factor=1.0)
-SCOPED_RERANK = HybridConfig(dense=False, w_scope=S_SCOPE, w_mention=S_MENTION, scope_factor=1.0)
-
-
-def test_scope_has_no_weight_by_default(db):
-    db.units()
-    db.doc("da", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    db.doc("dz", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    db.scope("da", ["化學系"], levels=["碩士"])
-    db.scope("dz", ["軟體工程與管理學系"], levels=["碩士"], mentions=["軟體工程與管理學系"])
-    q = "軟體系 碩士班 畢業門檻"
-    assert db.hybrid(q, config=OFF).hits == db.search(q).hits
-    assert _ids(db.hybrid(q, config=SCOPED_OFF)) == ["dz", "da"]  # the fixture does reach the scope
-
-def test_scope_boosts_the_named_department(db):
-    db.units()
-    db.doc("da", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    db.doc("dz", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    db.scope("da", ["化學系"], levels=["碩士"])
-    db.scope("dz", ["軟體工程與管理學系"], levels=["碩士"])
-    q = "軟體系 碩士班 畢業門檻"
-    plain = db.search(q)
-    assert _ids(plain) == ["da", "dz"]  # keywords alone: a tie, by doc_id
-    r = db.hybrid(q, config=SCOPED_OFF)
-    assert _ids(r) == ["dz", "da"] and r.ranking == "keyword"
-    assert _scores(r) == pytest.approx({"dz": _scores(plain)["dz"] + S_SCOPE, "da": _scores(plain)["da"] - S_SCOPE})
-    # the rerank path: equal rerank scores, the scope decides
-    r = db.hybrid(q, reranker=FakeReranker({"畢業": 0.5}), config=SCOPED_RERANK)
-    assert _ids(r) == ["dz", "da"] and _hit(r, "dz").score - _hit(r, "da").score == pytest.approx(2 * S_SCOPE)
-    # both weights 0 (T10's comparison from one build): as if the build had no scope
-    assert db.hybrid(q, config=OFF).hits == plain.hits  # OFF: w_scope and w_mention are 0 by default
-
-
-def test_scope_neutral_for_school_wide(db):
-    db.units()
-    for doc_id in ("da", "db", "dc"):
-        db.doc(doc_id, "畢業門檻", "學生須修畢 128 學分")
-    db.scope("da", ["化學系"])  # 化學系's rule
-    db.scope("db")  # the school's (an office's reach)
-    q = "軟體系 畢業門檻"  # dc has no scope rows at all
-    plain, r = _scores(db.search(q)), _scores(db.hybrid(q, config=SCOPED_OFF))
-    assert r["db"] == plain["db"] and r["dc"] == plain["dc"] and r["da"] == pytest.approx(plain["da"] - S_SCOPE)
-    # a query that names nothing, or only the school, changes nothing
-    for q in ("畢業門檻", "115-1 畢業門檻", "高師大 畢業門檻"):
-        assert db.hybrid(q, config=SCOPED_OFF).hits == db.search(q).hits, q
-
-
-def test_campus_named_in_query(db):
-    db.units()
-    db.doc("da", "停車證申請", "汽車停車證請至總務處申請")
-    db.doc("dz", "停車證申請", "汽車停車證請至總務處申請")
-    db.scope("da", campus=["和平"])
-    db.scope("dz", campus=["燕巢"])
-    assert _ids(db.search("燕巢校區 停車證")) == ["da", "dz"]
-    assert _ids(db.hybrid("燕巢校區 停車證", config=SCOPED_OFF)) == ["dz", "da"]
-    assert _ids(db.hybrid("和平校區 停車證", config=SCOPED_OFF)) == ["da", "dz"]
-    assert _ids(db.hybrid("軟體系 停車證", config=SCOPED_OFF)) == ["dz", "da"]  # the unit's campus counts for the query
-    both = "和平與燕巢校區 停車證"  # every campus: the whole school, so nothing
-    assert db.hybrid(both, config=SCOPED_OFF).hits == db.search(both).hits
-
-
-def test_mention_adds_a_little(db):
-    db.units()
-    db.doc("da", "停修公告", "停修申請請洽各系辦公室")
-    db.doc("dz", "停修公告", "停修申請請洽各系辦公室")
-    db.scope("da")
-    db.scope("dz", mentions=["軟體工程與管理學系"])
-    q = "軟體系 停修"
-    plain, r = db.search(q), db.hybrid(q, config=SCOPED_OFF)
-    assert _ids(plain) == ["da", "dz"] and _ids(r) == ["dz", "da"]
-    assert _scores(r) == pytest.approx({"dz": _scores(plain)["dz"] + S_MENTION, "da": _scores(plain)["da"]})
-
-
-def test_db_without_scope_is_neutral(db):
-    db.doc("da", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    db.doc("dz", "碩士班畢業門檻", "碩士班學生須修畢 30 學分")
-    q = "軟體系 碩士班 畢業門檻"
-    for table in ("doc_scope", "units", "unit_aliases"):  # a skeleton or pre-T7d database
-        db.conn.execute(f"DROP TABLE IF EXISTS {table}")
-    assert db.hybrid(q, config=SCOPED_OFF).hits == db.search(q).hits
-    # scope rows but no unit tree to read the query with
-    db.scope("dz", ["軟體工程與管理學系"])
-    assert db.hybrid(q, config=SCOPED_OFF).hits == db.search(q).hits
-    # the unit tree without the scope table
-    db.units()
-    db.conn.execute("DROP TABLE doc_scope")
-    assert db.hybrid(q, config=SCOPED_OFF).hits == db.search(q).hits
-    r = db.hybrid(q, reranker=FakeReranker({"畢業": 0.5}), config=SCOPED_RERANK)
-    assert _ids(r) == ["da", "dz"] and r.hits[0].score == r.hits[1].score
 
 
 # ---------------------------------------------------------------- real models (deselected by default)

@@ -161,8 +161,8 @@ def test_embed_chunks_writes_one_vector_per_chunk(tmp_path):
     assert conn.execute("SELECT count(*) FROM chunks JOIN chunk_vecs USING (chunk_id)").fetchone()[0] == n
     assert {length for (length,) in conn.execute("SELECT length(vec) FROM chunk_vecs")} == {32}
     meta = meta_of(conn)
-    # 11-08 (main session): the vectors hold the passages without their unit lines unless asked (unit=True), so
-    # vec_passage says version 1, the text they hold
+    # 11-08 (main session): the vectors hold the passages without their unit lines, so vec_passage says version 1,
+    # the text they hold
     assert meta == {"vec_model": "fake/embed", "vec_revision": "0" * 40, "vec_dim": "16", "vec_dtype": "float16",
                     "vec_count": str(n), "vec_passage": "1", "vec_built_at": meta["vec_built_at"],
                     "vec_max_seq": "512"}  # spec 2026-11-16 §三: this fake has no max_seq, an embedder of before
@@ -172,24 +172,29 @@ def test_embed_chunks_writes_one_vector_per_chunk(tmp_path):
     conn.close()
 
 
-def test_each_vector_is_its_chunks_passage(tmp_path):
+def test_each_vector_is_its_chunks_passage_without_the_unit_and_the_date_line(tmp_path):
     header = "| 項目 | 金額 |\n| --- | --- |"
     text = header + "\n" + "\n".join(f"| 學費第{i}期 | {i},000 元 |" for i in range(1, 80))
     table = ("a61", "附件:pdf:有文字层", attachment_url("a61", "收費表.pdf"), "收費表.pdf", text, ["p32"])
     conn = sqlite3.connect(built_db(tmp_path, attachments=[table]))
     emb = FakeEmbedder()
-    embed_chunks(conn, emb, unit=True)  # the vectors as the owner's patch reads (--unit-words-in-vectors)
+    embed_chunks(conn, emb)
     vecs = vectors_of(conn)
-    every = chunk_passages(conn, list(vecs))
-    # plan 2026-11-14 T3, corrected the same day: a calendar event's date line is the reranker's only, so the two
-    # events' vectors are their passages without that line; every other chunk's vector is its passage
-    dated = dict(conn.execute("SELECT c.chunk_id, d.date_line FROM chunks c JOIN docs d USING (doc_id)"
-                              " WHERE d.date_line != ''"))
-    embedded = {c: p.replace("\n" + dated[c], "", 1) if c in dated else p for c, p in every.items()}
-    assert len(dated) == 2 and all(dated[c] in every[c] for c in dated)
+    every = chunk_passages(conn, list(vecs))  # what the reranker reads
+    # the unit line (11-08) and a calendar event's date line (plan 2026-11-14 T3, corrected the same day) are the
+    # reranker's only: each chunk's vector is its passage without the two
+    lines = {c: (unit, dated) for c, unit, dated in conn.execute(
+        "SELECT c.chunk_id, d.unit_line, d.date_line FROM chunks c JOIN docs d USING (doc_id)")}
+    embedded = dict(every)
+    for c, own in lines.items():
+        for line in own:
+            if line:
+                assert line in every[c]
+                embedded[c] = embedded[c].replace("\n" + line, "", 1)
+    assert sum(bool(dated) for _, dated in lines.values()) == 2 and sum(bool(unit) for unit, _ in lines.values()) > 20
     assert set(every) == set(vecs) and all(np.allclose(from_blob(vecs[c]), emb.vector(p), atol=1e-3)
                                            for c, p in embedded.items())
-    assert conn.execute("SELECT value FROM meta WHERE key = 'vec_passage'").fetchone() == (embed.PASSAGE_VERSION,)
+    assert conn.execute("SELECT value FROM meta WHERE key = 'vec_passage'").fetchone() == ("1",)
     ids = [c for (c,) in conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ? ORDER BY chunk_id", ("da3",))]
     # plan 2026-11-08 T4 (deliberate, the owner's unit patch): the unit line is every passage's second line; both
     # files hang on 和平教務組's pages (its other name from the made-up unit config)

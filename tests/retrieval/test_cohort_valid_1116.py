@@ -5,7 +5,9 @@ the cohort takes nothing off the documents of that cohort. Only in a library who
 any library built before, every value is the one of before."""
 from __future__ import annotations
 
+import shutil
 import sqlite3
+from contextlib import closing
 from datetime import date
 from types import SimpleNamespace
 
@@ -33,23 +35,25 @@ IDS = {"old": tc.doc_id(OLD_TABLE), "new": tc.doc_id(NEW_TABLE), "notice": tc.do
        "year": tc.doc_id(ACA + "news/2"), "hung": tc.doc_id(ACA + "f/w/list.pdf")}
 
 
-def _built(tmp_path, name, **switches):
-    aca = tc.site_input(tmp_path / name, ACA_SITE, "教务处", ROWS)
-    out = tmp_path / "db" / f"{name}.db"
-    tm.run(tm.tree_files(tmp_path / f"tree-{name}"), out, inputs=[aca], **switches)
-    return sqlite3.connect(f"file:{out}?mode=ro", uri=True)
-
-
 @pytest.fixture
 def on(tmp_path):
-    conn = _built(tmp_path, "on")
+    aca = tc.site_input(tmp_path / "on", ACA_SITE, "教务处", ROWS)
+    out = tmp_path / "db" / "on.db"
+    tm.run(tm.tree_files(tmp_path / "tree-on"), out, inputs=[aca])
+    conn = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
     yield conn
     conn.close()
 
 
 @pytest.fixture
-def before(tmp_path):
-    conn = _built(tmp_path, "before", cohort_expiry=False)
+def before(tmp_path, on):
+    """The same library without the word of the single-cohort rule in its meta, as one built before the rule."""
+    path = tmp_path / "db" / "before.db"
+    shutil.copy(tmp_path / "db" / "on.db", path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DELETE FROM meta WHERE key = 'cohort_expiry'")
+        conn.commit()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     yield conn
     conn.close()
 
@@ -60,7 +64,7 @@ def _pool(cohorts=()):
 
 def test_one_cohort_falls_by_the_years_since_that_cohort_finished(on):
     ids = list(IDS.values())
-    got = validity(on, ids, TODAY, 0.85, smooth=True, named_step=True, cohort_step=4)
+    got = validity(on, ids, TODAY, 0.85, cohort_step=4)
     # 98 + 3 = 101, today the 115 year: fourteen whole years, whatever day its file was put up (2025-10-08)
     assert got[IDS["old"]] == pytest.approx(0.85 ** 14)
     assert IDS["new"] not in got  # 「起入學」: it does not go out of date
@@ -69,16 +73,17 @@ def test_one_cohort_falls_by_the_years_since_that_cohort_finished(on):
 
 
 def test_without_the_step_it_falls_by_its_files_age_as_any_document(on):
-    got = validity(on, list(IDS.values()), TODAY, 0.85, smooth=True, named_step=True)
+    got = validity(on, list(IDS.values()), TODAY, 0.85)
     days = (TODAY - date(2025, 10, 8)).days
     assert got[IDS["old"]] == pytest.approx(0.85 ** (days / 365))
 
 
-def test_the_search_reads_the_switch_from_the_library(on, before):
+def test_the_search_reads_the_rule_from_the_library(on, before):
     head = list(IDS.values())
     assert hybrid._valid(on, head, _pool(), TODAY, HybridConfig())[IDS["old"]] == pytest.approx(0.85 ** 14)
-    # a library built with --no-cohort-expiry (and any built before 11-16): the document does not expire at all
-    assert IDS["old"] not in hybrid._valid(before, head, _pool(), TODAY, HybridConfig())
+    # a library that does not say so (any built before 11-16): no whole steps for a cohort, the file's own age
+    aged = 0.85 ** ((TODAY - date(2025, 10, 8)).days / 365)
+    assert hybrid._valid(before, head, _pool(), TODAY, HybridConfig())[IDS["old"]] == pytest.approx(aged)
 
 
 def test_a_question_naming_the_cohort_takes_nothing_off_its_documents(on):
@@ -102,5 +107,5 @@ def test_a_notice_of_its_year_keeps_its_discount_whatever_cohort_the_question_na
 
 def test_a_library_of_before_scores_to_the_bit_as_before(before):
     ids = list(IDS.values())
-    plain = validity(before, ids, TODAY, 0.85, smooth=True, named_step=True)
-    assert hybrid._valid(before, ids, _pool([98]), TODAY, HybridConfig()) == plain
+    plain = validity(before, ids, TODAY, 0.85)
+    assert IDS["old"] in plain and hybrid._valid(before, ids, _pool([98]), TODAY, HybridConfig()) == plain

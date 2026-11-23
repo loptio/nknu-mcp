@@ -14,9 +14,7 @@ from tests.retrieval.test_valid_1114 import valid
 TABLE = {"線上申請": 0.9, "注意事項": 0.4, "停修": 0.5, "退選": 0.3}  # what the fake reranker gives a passage
 SETTINGS = {
     "the owner's defaults": (HybridConfig(), RankConfig()),
-    "the first-stage place too": (HybridConfig(w_first=0.3), RankConfig()),
     "before 11-14": (HybridConfig(valid_decay=1.0, scope_factor=1.0), RankConfig(topic_required=False)),
-    "a unit bonus": (HybridConfig(w_scope=0.3, w_mention=0.1), RankConfig()),
     "rerank only": (HybridConfig(dense=False), RankConfig()),
     "dense only": (HybridConfig(rerank=False), RankConfig()),
     "keywords only": (HybridConfig(dense=False, rerank=False), RankConfig()),

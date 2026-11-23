@@ -80,8 +80,4 @@ def test_the_build_puts_every_page_of_a_teacher_under_the_department(tmp_path):
     assert units == {"國文學系"} and meta["vita_units"] == "on"
     assert report.vita_units == {"on": True, "teachers": 1, "joint": 0, "documents": 3,
                                  "departments": {"國文學系": 1}}
-    off = tm.run(paths, tmp_path / "db" / "b.db", inputs=[(corpus, export)], vita_units=False)
-    with sqlite3.connect(f"file:{tmp_path / 'db' / 'b.db'}?mode=ro", uri=True) as conn:
-        assert "國文學系" not in {u for (u,) in conn.execute("SELECT unit FROM docs")}
-    assert off.vita_units["documents"] == 3 and off.vita_units["on"] is False
     assert build.BuildReport.__dataclass_fields__["vita_units"]

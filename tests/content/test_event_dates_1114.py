@@ -6,8 +6,8 @@ The build writes the line to docs.date_line (documents.event_line: the term as t
 first and the last, a merged recurring series with how many times it occurs); embed.passage puts it after the unit
 line in the text the reranker reads at query time. Corrected the same day (test_event_dates_1114b.py has the
 measurement and the rest of the tests): the text embedded at build time never holds the line, so an event's vector is
-the one of before. The keyword index does not change. A database without the column (built before) and one built with
-event_dates=False / --no-event-dates are read as before. The titles are made up; no model loads."""
+the one of before. The keyword index does not change. A database without the column (built before) is read as
+before. The titles are made up; no model loads."""
 
 from __future__ import annotations
 
@@ -129,27 +129,6 @@ def test_the_vectors_do_not_embed_the_line(built, tmp_path):
     assert "期末考試" in emb.texts and f"期末考試\n{LINES['es1']}" not in emb.texts
 
 
-def test_the_keyword_index_and_the_texts_do_not_change(built, tmp_path):
-    _, conn, inputs, paths = built
-    out = tmp_path / "db" / "off.db"
-    off = tm.run(paths, out, inputs=inputs, event_dates=False)
-    plain = open_ro(out)
-    docs = "SELECT doc_id, title, text, linktext, unit_line, period_ay, period_sem, expires, valid_ay FROM docs ORDER BY doc_id"
-    try:
-        for sql in ("SELECT rowid, title_tokens, body_tokens, unit_tokens FROM chunk_fts ORDER BY rowid", docs,
-                    "SELECT * FROM chunks ORDER BY chunk_id", "SELECT * FROM dates ORDER BY rowid"):
-            assert conn.execute(sql).fetchall() == plain.execute(sql).fetchall(), sql
-        # without the line: every passage as before, and the database says so
-        assert plain.execute("SELECT DISTINCT date_line FROM docs").fetchall() == [("",)]
-        assert plain.execute("SELECT value FROM meta WHERE key = 'event_dates'").fetchone() == ("off",)
-        assert event_passages(plain) == {"es1": f"期末考試\n{UNIT}", "ewk": f"族語課\n{UNIT}\n{tr.WK_TEXT}",
-                                         "ewk_20260928": f"族語課（停課一次）\n{UNIT}", "emt_20260910": f"系務會議\n{UNIT}",
-                                         "etu": f"導師會議\n{UNIT}\n{tr.TU_TEXT}"}
-    finally:
-        plain.close()
-    assert off.event_dates == {"on": False, "events": 0}
-
-
 def test_a_database_built_before_is_read_as_before(built, tmp_path):
     _, _, inputs, paths = built
     out = tmp_path / "db" / "old.db"
@@ -164,31 +143,17 @@ def test_a_database_built_before_is_read_as_before(built, tmp_path):
     assert got["es1"] == f"期末考試\n{UNIT}" and got["ewk"] == f"族語課\n{UNIT}\n{tr.WK_TEXT}"
 
 
-def test_no_vector_is_computed_again_for_the_line(built, tmp_path):
-    # was test_only_the_events_vectors_are_computed_again (the five events encoded again); changed 11-14 on purpose:
-    # the line is in no embedded text, so the cache of a build without it serves every chunk
-    _, _, inputs, paths = built
-    cache = tmp_path / "cache" / "vec_cache.sqlite"
-    before = tm.run(paths, tmp_path / "db" / "v0.db", inputs=inputs, embed=True, embedder=FakeEmbedder(),
-                    vec_cache=cache, event_dates=False)
-    after = tm.run(paths, tmp_path / "db" / "v1.db", inputs=inputs, embed=True, embedder=FakeEmbedder(), vec_cache=cache)
-    assert before.vectors["cached"] == 0 and before.vectors["chunks"] == after.vectors["chunks"] == 6
-    assert (after.vectors["encoded"], after.vectors["cached"]) == (0, 6)
-
-
-def test_the_command_line_switch(built, tmp_path, capsys):
+def test_the_command_line_counts_the_events_given_a_line(built, tmp_path, capsys):
     _, _, inputs, paths = built
     (corpus, export), = inputs
     rest = ["--input", f"{corpus}::{export}", "--aliases", str(paths["aliases"]), "--server-dates",
             str(paths["server"]), "--site-list", str(paths["sites"]), "--units", str(paths["units"])]
     assert build.main([*rest, "--out", str(tmp_path / "cli" / "on.db")]) == 0
     assert "行事历事件加日期行 5 份" in capsys.readouterr().out
-    assert build.main([*rest, "--out", str(tmp_path / "cli2" / "off.db"), "--no-event-dates"]) == 0
-    assert "行事历事件没加日期行（--no-event-dates）" in capsys.readouterr().out
-    saved = json.loads((tmp_path / "cli2" / "build_report.json").read_text(encoding="utf-8"))
-    assert saved["event_dates"] == {"on": False, "events": 0}
-    conn = open_ro(tmp_path / "cli2" / "off.db")
+    saved = json.loads((tmp_path / "cli" / "build_report.json").read_text(encoding="utf-8"))
+    assert saved["event_dates"] == {"on": True, "events": 5}
+    conn = open_ro(tmp_path / "cli" / "on.db")
     try:
-        assert conn.execute("SELECT count(*) FROM docs WHERE date_line != ''").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM docs WHERE date_line != ''").fetchone() == (5,)
     finally:
         conn.close()

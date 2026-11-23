@@ -50,6 +50,14 @@ def test_a_row_has_every_step_of_its_document(db):
     assert rows["d1"]["rerank"]["valid"] < 1.0 and rows["d1"]["valid_ay"] == 114 and rows["d1"]["expires"] == 1
 
 
+def test_the_report_keeps_the_keys_the_pages_read_for_parts_the_search_no_longer_has(db):
+    # search_page draws a row's 'first' and 'bonus' and the weights' 'first': no first-stage place, no unit bonus
+    report = _explain(db, "化學系 停修")
+    assert report["weights"]["first"] == 0.0
+    reranked = [r["rerank"] for r in report["rows"] if r["rerank"] is not None]
+    assert reranked and {(r["first"], r["bonus"]) for r in reranked} == {(None, 0.0)}
+
+
 def test_the_header_says_how_the_question_was_read_and_what_was_found(db):
     report = _explain(db, "115-1 停修")
     assert report["query"] == "115-1 停修" and report["mode"] == "hybrid"

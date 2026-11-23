@@ -3,8 +3,8 @@
 A notice on a shared platform (the announcement system) and a notice of the same day on a unit's own site are one
 document when, page furniture, punctuation and list numbers aside, every line of one is found in the other
 (build._platform_twins); when one says more, the fuller one is kept (build._join_twins, build._merge_copies); two that
-each hold a line the other lacks stay two documents. --no-platform-twins builds as before. The copies' list says
-which copy's words differ (wording_differs), and respond explains it once.
+each hold a line the other lacks stay two documents. The copies' list says which copy's words differ
+(wording_differs), and respond explains it once.
 The sentences and names are made up; no model loads."""
 
 from __future__ import annotations
@@ -47,12 +47,11 @@ def department(text: str = ON_UNIT, title: str = "轉知：圖書館暑假開放
     return tc.rec(rid, "detail:sso_clv2", D_URL, title, text, tc.CHAIR_SITE, day)
 
 
-def merged(records, twins: bool = True, units=tr.UNITS):
+def merged(records, units=tr.UNITS):
     """The ids kept, the copies under each and what the twins counted (build._merge_copies' seen)."""
     docs, excluded = build_documents(records, {}, [])
     seen: dict = {}
-    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, build.COPY_TEXT, True,
-                                       units, twins, seen)
+    kept, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, units, seen)
     return [r.doc.doc_id for r in kept], {k: [c.doc.doc_id for c in v] for k, v in copies.items()}, seen, excluded
 
 
@@ -81,8 +80,6 @@ def test_one_notice_on_the_platform_and_on_an_offices_site_is_one_document():
     assert {k: seen[k] for k in ("same", "fuller", "groups", "removed", "apart", "department_longer")} == {
         "same": 1, "fuller": {"platform": 0, "unit": 0}, "groups": 1, "removed": 1, "apart": 0, "department_longer": 0}
     assert seen["linked"] == {"dp1", "dp2"} and excluded == {"detail:sso_news" + build.COPY: 1}
-    # --no-platform-twins: two documents, as before (their texts differ, so the text rule leaves them)
-    assert merged([platform(), office()], twins=False)[:3] == (["dp1", "dp2"], {}, {"names_carried": tc.NO_NAMES})
 
 
 def test_a_changed_figure_keeps_two_notices_apart_and_is_listed():
@@ -187,19 +184,19 @@ def test_twins_join_the_copies_of_one_text():
     records = [platform(long_platform), office(long_unit), department(long_platform, day="2026-06-25")]
     docs, excluded = build_documents(records, {}, [])
     seen: dict = {}
-    rows, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, build.COPY_TEXT, True,
-                                       tr.UNITS, True, seen)
+    rows, copies = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, tr.UNITS, seen)
     assert [r.doc.doc_id for r in rows] == ["dp2"] and {c.doc.doc_id for c in copies["dp2"]} == {"dp1", "dp3"}
     assert (seen["groups"], seen["removed"]) == (1, 1)  # the department's copy the text rule removed already
-    report = build._copies_report(rows, copies, build.COPY_TEXT, linked=seen["linked"])
+    report = build._copies_report(rows, copies, linked=seen["linked"])
     assert report["by_rule"] == {"text": {"groups": 0, "removed": 0}, "title": {"groups": 0, "removed": 0},
                                  "twin": {"groups": 1, "removed": 2}}
     listed = json.loads(build._copies_meta(rows, copies)["copies:dp2"])
     assert {c["id"]: c.get("wording_differs") for c in listed} == {"dp1": True, "dp3": True}
-    # without twins the two of one text are a group of the text rule, and neither copy's words differ
-    rows, copies = build._merge_copies(build._rows(build_documents(records, {}, [])[0], {}, {}), lambda _: None, {},
-                                       build.COPY_TEXT, True, tr.UNITS, False)
-    assert sorted(r.doc.doc_id for r in rows) == ["dp2", "dp3"] and [c.doc.doc_id for c in copies["dp3"]] == ["dp1"]
+    # two of one text with no twin between them are a group of the text rule, and neither copy's words differ
+    pair = [platform(long_platform), department(long_platform, day="2026-06-25")]
+    rows, copies = build._merge_copies(build._rows(build_documents(pair, {}, [])[0], {}, {}), lambda _: None, {},
+                                       tr.UNITS)
+    assert [r.doc.doc_id for r in rows] == ["dp3"] and [c.doc.doc_id for c in copies["dp3"]] == ["dp1"]
     assert "wording_differs" not in json.loads(build._copies_meta(rows, copies)["copies:dp3"])[0]
 
 
@@ -219,7 +216,7 @@ def twin_inputs(tmp_path):
     return [aca, news]
 
 
-def test_the_build_merges_them_says_so_and_can_leave_them(tmp_path, capsys):
+def test_the_build_merges_them_says_so(tmp_path):
     out = tmp_path / "db" / "x.db"
     report = tm.run(tm.tree_files(tmp_path / "tree"), out, inputs=twin_inputs(tmp_path))
     twins = report.dedupe["twins"]
@@ -240,18 +237,6 @@ def test_the_build_merges_them_says_so_and_can_leave_them(tmp_path, capsys):
         assert first["copies"] == [{"id": IDS["news"], "url": N_NOTICE, "date": DAY, "date_type": "發布",
                                     "wording_differs": True}]
         assert respond.NOTE_COPIES in resp["notes"] and respond.NOTE_WORDING in resp["notes"]
-    finally:
-        conn.close()
-    # --no-platform-twins: both stay, and the report says the switch is off
-    left = tmp_path / "db" / "y.db"
-    report = tm.run(tm.tree_files(tmp_path / "tree2"), left, inputs=twin_inputs(tmp_path / "again"),
-                    platform_twins=False)
-    assert report.dedupe["twins"] == {"on": False}
-    assert "公告平台和单位网站各一份的公告没合并（--no-platform-twins）" in build._dedupe_words(report.dedupe)
-    conn = sqlite3.connect(f"file:{left}?mode=ro", uri=True)
-    try:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'platform_twins'").fetchone() == ("off",)
-        assert conn.execute("SELECT COUNT(*) FROM docs WHERE kind_class = 'notice'").fetchone() == (2,)
     finally:
         conn.close()
 

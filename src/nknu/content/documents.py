@@ -104,8 +104,8 @@ A document's own title (plan 2026-11-14 T4; direction 2026-11-13 第 4 件: 「�
 用正文第一个标题，没有就用正文第一行。旧标题都留着。」 and 「取到『附件一』『說明』这种的那一类，就留旧标题」): own_titles,
 which the build runs on the documents it keeps (copies merged), gives a document whose title says nothing the title
 its own text gives (text_title), unless that line is no title either (title_flaw; since the first rebuild of 11-14 a
-line that holds a file size, a download list's 「… pdf 146 KB」, is none: _SIZE), and keeps the old title in the
-link texts. Two kinds of titles say nothing: one that SAME_TITLE_MIN or more pages and notices of one site share
+line that holds a file size, a download list's 「… pdf 146 KB」, is none: _SIZE), and keeps the old title in
+Document.old_title. Two kinds of titles say nothing: one that SAME_TITLE_MIN or more pages and notices of one site share
 (TITLE_SHARED: a site name used as every page's title; the crawler's export gives activity pages, forum posts and
 alumni pages their own title cell since d9d8239, so this is for what is left), and an attachment's file name without
 a Han character, 「643-79-8.odt」 (TITLE_FILE) 【Claude, the main session's brief of 11-14: narrower than the plan's
@@ -315,8 +315,8 @@ class Document:
     # attachment, a link) and for an event
     categories: tuple[str, ...] = ()
     # plan 2026-11-14 T4 (own_titles): the title is the one its own text gives, and old_title the title it had until
-    # then (a site's name, a file name; '' when that was empty), kept findable in linktext; False and '' for any other
-    # document, and for every one when the build's own_titles is off
+    # then (a site's name, a file name; '' when that was empty), which the link names do not take; False and '' for
+    # any other document
     title_from_text: bool = False
     old_title: str = ""
     # plan 2026-11-14 T2 (main session, after the review): the units of the copies the build merged into this
@@ -832,8 +832,7 @@ def _note(left: dict[str, str] | None, r: Record, key: str) -> None:
 
 
 def build_documents(records: list[Record], metas: dict[str, PageMeta], events: list[Event],
-                    site: str = "", single_lines: bool = True,
-                    left: dict[str, str] | None = None) -> tuple[list[Document], dict[str, int]]:
+                    site: str = "", left: dict[str, str] | None = None) -> tuple[list[Document], dict[str, int]]:
     """Documents in corpus order, then events; and the count of left-out records by kind. left, when given, is filled
     with each left-out record's document id and the key it is counted under (spec 2026-11-17-ingest-guard-design §二:
     the build says of every document that left the library why it left). records: one per id
@@ -877,8 +876,7 @@ def build_documents(records: list[Record], metas: dict[str, PageMeta], events: l
             continue
         m = metas.get(r.id) if cls == "notice" else None
         title = _one_line(m.title if m and m.title else r.title)
-        # 11-16: runs of one-character lines put right (single_lines; the build's --no-single-lines)
-        text, marks, joined = join_single_lines(clean_text(r.text)) if single_lines else (clean_text(r.text), 0, 0)
+        text, marks, joined = join_single_lines(clean_text(r.text))  # 11-16: runs of one-character lines put right
         if not title and not text:
             excluded[r.kind + BLANK] += 1
             _note(left, r, r.kind + BLANK)
@@ -1138,14 +1136,13 @@ def _labels(docs: list[Document], on: bool) -> dict:
             "examples": _spread(retitled, TITLE_EXAMPLES)}
 
 
-def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: bool = False,
-               keep_old: bool = True) -> dict:
+def own_titles(docs: list[Document], school: str = "", labels: bool = False) -> dict:
     """Give each document whose title says nothing the title its own text gives (plan 2026-11-14 T4; the module
     docstring), in place, and report it. docs: the documents the build keeps, copies merged, so that 20 addresses of
     one page are one document 【Claude: the plan does not say when to count】. school: the school's name
     (sites.table().school), no title for any document. labels (11-15, the build's label_titles; off unless asked):
     first, an attachment whose page-given title is a label many files of its site carry takes its file name back
-    (_labels: TITLE_LABEL in the report, with 'by_site' and 'examples' of its own); never without on. Off by default
+    (_labels: TITLE_LABEL in the report, with 'by_site' and 'examples' of its own). Off by default
     【Claude, after measuring it on the 111 sites of 11-15】: 894 files got a title that says what they are, and of the
     33 questions the answer to 「學號」 went from the 4th place to the 15th, eight of 師培處's certificate forms taking
     the places before it once their file names (「…教育學程生-學號-學系-姓名-證明書.docx」) were their titles
@@ -1159,21 +1156,18 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
     Each takes text_title of its text, unless its text gives none (title_unread), the line is no title (title_flaw,
     with the school's name and the document's unit as names), or SAME_TITLE_MIN or more documents of its site would
     then carry that title, those that have it already counted in ('shared': a site's header on every page's first
-    line). The old title goes to old_title and, when it is not there yet, to the end of linktext, so the keyword
-    index's title column still holds its words; title_from_text is set. Not with keep_old False (the build's
-    fixes_1116; the owner 11-16 on another session's audit, 「听你的」 to the grouping that batches it: the title
-    judged to say nothing, a site's name on every page or a file name of digits, stayed in the link names, which
-    the index weighs as a title, three times a body word: 1,831 documents of the 111 sites): old_title keeps it,
-    for the term and the cohort it may name, and the link names do not take it. Nothing else of the document changes here: the
-    build reads again what a title gives (the term, the cohort, the doc type: build._retitle). on=False (the build's
-    own_titles off) changes no document and still counts whose title says nothing.
+    line). The old title goes to old_title, for the term and the cohort it may name, and title_from_text is set. The
+    link names do not take it: a title judged to say nothing, a site's name on every page or a file name of digits,
+    would stay in what the index weighs as a title, three times a body word (1,831 documents of the 111 sites on
+    11-16). Nothing else of the document changes here: the build reads again what a title gives (the term, the
+    cohort, the doc type: build._retitle).
 
-    Returns {'on', 'same_min', 'max_chars', TITLE_SHARED: {'titles': the shared titles (site and title), 'documents',
-    'retitled', 'kept', 'why': {reason: documents kept for it}}, TITLE_FILE: the same without 'titles', 'by_site':
-    {site: {kind: {'retitled', 'kept'}}} (the sites and kinds with such documents; {} when off), 'examples': {kind:
-    up to TITLE_EXAMPLES of the retitled, spread over them: id, site, old, new}}, the plan's 「建库报告记换了几份、没换
-    几份」 and what the direction's 「抽看几十份」 looks at."""
-    labelled = _labels(docs, on and labels)
+    Returns {'on': True, 'labels', 'same_min', 'max_chars', TITLE_SHARED: {'titles': the shared titles (site and
+    title), 'documents', 'retitled', 'kept', 'why': {reason: documents kept for it}}, TITLE_FILE: the same without
+    'titles', 'by_site': {site: {kind: {'retitled', 'kept'}}} (the sites and kinds with such documents), 'examples':
+    {kind: up to TITLE_EXAMPLES of the retitled, spread over them: id, site, old, new}}, the plan's 「建库报告记换了几
+    份、没换几份」 and what the direction's 「抽看几十份」 looks at."""
+    labelled = _labels(docs, labels)
     same = Counter((d.site, d.title) for d in docs if d.kind_class in ("page", "notice"))
     targets: list[tuple[Document, str]] = []
     for d in docs:
@@ -1186,7 +1180,7 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
     kinds = (TITLE_SHARED, TITLE_FILE)
     why: dict[str, Counter[str]] = {kind: Counter() for kind in kinds}
     found: list[tuple[Document, str, str]] = []  # (document, kind, the line that may be its title)
-    for d, kind in targets if on else ():
+    for d, kind in targets:
         candidate = text_title(d.text)
         if flaw := title_unread(d) or title_flaw(candidate, d.title, (school, d.unit)):
             why[kind][flaw] += 1
@@ -1203,15 +1197,13 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
             new[id(d)] = candidate
     retitled: dict[str, list[dict]] = {kind: [] for kind in kinds}
     by_site: dict[str, dict[str, dict[str, int]]] = {}
-    for d, kind in targets if on else ():
+    for d, kind in targets:
         count = by_site.setdefault(d.site, {}).setdefault(kind, {"retitled": 0, "kept": 0})
         if id(d) not in new:
             count["kept"] += 1
             continue
         count["retitled"] += 1
         d.old_title, d.title, d.title_from_text = d.title, new[id(d)], True
-        if keep_old and d.old_title and d.old_title not in d.linktext.split(LINK_SEP):
-            d.linktext = LINK_SEP.join(part for part in (d.linktext, d.old_title) if part)
         retitled[kind].append({"id": d.doc_id, "site": d.site, "old": d.old_title[:TITLE_SHOWN], "new": d.title})
 
     def part(kind: str) -> dict:
@@ -1219,7 +1211,7 @@ def own_titles(docs: list[Document], school: str = "", on: bool = True, labels: 
         return {"documents": n, "retitled": len(retitled[kind]), "kept": n - len(retitled[kind]),
                 "why": dict(why[kind])}
 
-    return {"on": on, "labels": on and labels, "same_min": SAME_TITLE_MIN, "max_chars": TITLE_MAX_CHARS,
+    return {"on": True, "labels": labels, "same_min": SAME_TITLE_MIN, "max_chars": TITLE_MAX_CHARS,
             TITLE_SHARED: {"titles": sum(n >= SAME_TITLE_MIN for n in same.values()), **part(TITLE_SHARED)},
             TITLE_FILE: part(TITLE_FILE), TITLE_LABEL: labelled, "by_site": by_site,
             "examples": {kind: _spread(retitled[kind], TITLE_EXAMPLES) for kind in kinds}}

@@ -1,5 +1,5 @@
 """spec 2026-11-16 §二 (plan 2026-11-16 T3; the owner 11-16: 「可以，先写程序」 on the design), three rules on a
-document's date, each with a switch that builds as before:
+document's date:
 - a file the export dates by the row of a file table it was downloaded from (日期来源 列表上的日期 on a file's own
   row: the crawler session's finding of 11-16, 966 rows of 36 SSO unit and department sites) takes that date, ahead
   of its notice's and of the server's time;
@@ -27,14 +27,14 @@ DAY = "2026-10-22T03:00:00+08:00"  # the day a server's files were copied
 LONG_AGO = "2021-08-24T03:00:00+08:00"  # the day a site moved platforms, five years before
 
 
-def spikes(days: int = 0, documents: int = 0, by_site: dict | None = None, on: bool = True, old: tuple = (0, 0)) -> dict:
-    return {"on": on, "min": 20, "recent_days": 253, "days": days, "documents": documents, "by_site": by_site or {},
+def spikes(days: int = 0, documents: int = 0, by_site: dict | None = None, old: tuple = (0, 0)) -> dict:
+    return {"on": True, "min": 20, "recent_days": 253, "days": days, "documents": documents, "by_site": by_site or {},
             "old_days": old[0], "old_documents": old[1]}
 
 
-def rows_of(records, **switches):
+def rows_of(records):
     docs, _ = build_documents(records, {}, [])
-    return build._rows(docs, {}, {}, **switches)
+    return build._rows(docs, {}, {})
 
 
 def ident(rows) -> dict:
@@ -51,7 +51,6 @@ def test_a_file_takes_the_date_of_its_row_on_a_file_table():
     got = ident(rows_of([posted, listed, plain]))
     assert got["da1"] == ("published", "2024-05-31", LIST_SOURCE)  # ahead of its notice's date and the server's time
     assert got["da2"] == ("inherited", "2025-03-01", "所屬公告")
-    assert ident(rows_of([posted, listed, plain], row_dates=False))["da1"] == ("inherited", "2025-03-01", "所屬公告")
 
 
 def test_only_a_list_row_dates_a_file_never_the_words_of_a_page():
@@ -101,12 +100,6 @@ def test_a_file_dated_otherwise_is_neither_counted_nor_touched():
     assert ident(rows)["dh0"] == ("inherited", "2025-03-01", "所屬公告")
 
 
-def test_switched_off_nothing_moves():
-    rows = rows_of(many(21))
-    assert build._date_spikes(rows, on=False) == spikes(on=False)
-    assert all(v is not None for v in ident(rows).values())
-
-
 def test_a_shared_day_long_ago_keeps_its_files_dated():
     """Left undated they would gain the undated share over what an old date gives: 教务处's 1,247 files of the day
     its site moved platforms in 2021 did, on the first trial build, and two forms passed the rule that answers N10."""
@@ -130,11 +123,11 @@ def test_recent_is_what_would_outrank_an_undated_file():
 
 # ---------------------------------------------------------------- one entry cohort alone
 
-def judged(records, **switches):
+def judged(records):
     docs, excluded = build_documents(records, {}, [])
     rows = build._rows(docs, {}, {})
     kept, copies = build._merge_copies(rows, lambda _: None, excluded)
-    report = build._validity(kept, copies, **switches)
+    report = build._validity(kept, copies)
     return {r.doc.doc_id: (r.expires, r.valid_ay) for r in kept}, report
 
 
@@ -159,12 +152,6 @@ def test_a_title_naming_its_year_still_goes_by_that_year():
     posted = page("p1", 1, "114學年度第1學期課程表", "2025-09-01", text="113學年度入學學生適用的課程。")
     got, report = judged([posted])
     assert got == {"dp1": (True, 114)} and report["why"]["page"] == {"title_year": 1}
-
-
-def test_switched_off_a_cohort_keeps_every_document_as_before():
-    one = file("a1", "校定共同必修科目表(98學年度入學新生適用).pdf", modified=OLD)
-    got, report = judged([one], cohort_expiry=False)
-    assert got == {"da1": (False, 112)} and report["why"]["attachment"] == {"cohort": 1}
 
 
 def test_today_is_in_the_115_year():
@@ -195,14 +182,3 @@ def test_the_build_applies_the_three_rules_and_says_so(tmp_path):
     assert got["舊檔0.pdf"] == (None, None, 0, None)
     assert got["校定共同必修科目表(98學年度入學新生適用).pdf"] == ("2023-10-02", "server", 1, 101)
     assert got["場地借用申請表.pdf"][:2] == ("2024-05-31", "published")
-
-    off = tm.run(paths, tmp_path / "db" / "off.db", inputs=[aca], date_spikes=False, cohort_expiry=False,
-                 file_row_dates=False)
-    assert off.date_spikes == spikes(on=False)
-    with sqlite3.connect(tmp_path / "db" / "off.db") as conn:
-        meta = dict(conn.execute("SELECT key, value FROM meta"))
-        got = _docs(conn)
-    assert (meta["cohort_expiry"], meta["file_row_dates"]) == ("off", "off")
-    assert got["舊檔0.pdf"][:2] == ("2026-10-22", "server")
-    assert got["校定共同必修科目表(98學年度入學新生適用).pdf"] == ("2023-10-02", "server", 0, 112)
-    assert got["場地借用申請表.pdf"][:2] == (None, None)

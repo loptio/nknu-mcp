@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from nknu.content import build, ids, sites
-from nknu.content.build import UNIT_LABEL, BuildError, UnitWords, build_db, build_sites, unit_words
+from nknu.content.build import BuildError, UnitWords, build_db, build_sites, unit_words
 from nknu.content.corpus import Event, Record, load_calendar
 from nknu.content.documents import Document, one_event_per_id, one_per_id
 from nknu.content.embed import PASSAGE_VERSION, VecCache, chunk_passages, embed_chunks, passage
@@ -655,10 +655,8 @@ def test_a_database_without_unit_lines_keeps_its_passages(tmp_path):
     try:
         new.execute("UPDATE docs SET unit_line = '單位：教務處 和平教務組'")
         assert chunk_passages(new, [1]) == {1: "停修公告\n單位：教務處 和平教務組\n停修申請"}
-        embed_chunks(new, FakeEmbedder())  # 11-08: the vectors hold the text without the unit line by default
+        embed_chunks(new, FakeEmbedder())  # 11-08: the vectors hold the text without the unit line
         assert new.execute("SELECT value FROM meta WHERE key = 'vec_passage'").fetchone() == ("1",)
-        embed_chunks(new, FakeEmbedder(), unit=True)
-        assert new.execute("SELECT value FROM meta WHERE key = 'vec_passage'").fetchone() == (PASSAGE_VERSION,)
     finally:
         new.close()
 
@@ -753,9 +751,9 @@ def test_the_report_says_every_passage_changed(departments):
     report, _, _ = departments
     assert report.passage == {"version": PASSAGE_VERSION, "unit_words": True, "unit_in_vectors": False,
                               "note": build.PASSAGE_NOTE}
-    # 11-08 (main session): the note says the vectors leave the unit line out unless asked, and what asking costs
-    assert PASSAGE_VERSION == "2" and "單位" in report.passage["note"] and "--unit-words-in-vectors" in report.passage[
-        "note"] and "都要重算" in report.passage["note"]
+    # 11-08 (main session): the note says the vectors leave the unit line out, so the vector cache still serves
+    assert PASSAGE_VERSION == "2" and "單位" in report.passage["note"] and "向量不放单位行" in report.passage["note"]
+    assert "向量快取照常能用" in report.passage["note"]
 
 
 def test_a_sections_page_is_found_by_its_offices_short_name(tmp_path):
@@ -816,52 +814,9 @@ def test_the_shipped_short_names_of_the_site_tables_units():
     assert left and not set(shorts.values()) & set(left) and all(not tree[u].aliases for u in left)
 
 
-def test_without_unit_words_the_build_leaves_the_whole_patch_out(tmp_path, capsys):
-    # review of T4 (11-08), Review Focus 5: the patch was always on, so a move of 教务处's offline_eval on the lab PC
-    # could not be told from a regression. build_sites(unit_words=False) / --no-unit-words: no unit line, no unit
-    # tokens, passages as version 1's; two builds of one set of inputs measure the patch alone
-    inputs = department_inputs(tmp_path)
-    paths = tree_files(tmp_path / "tree")
-    on, off = tmp_path / "on.db", tmp_path / "off.db"
-    run(paths, on, inputs=inputs)
-    report = run(paths, off, inputs=inputs, unit_words=False)
-    assert report.passage == {"version": PASSAGE_VERSION, "unit_words": False, "unit_in_vectors": False,
-                              "note": build.PASSAGE_NOTE_OFF}
-    with_words = sqlite3.connect(f"file:{on}?mode=ro", uri=True)
-    without = sqlite3.connect(f"file:{off}?mode=ro", uri=True)
-    try:
-        assert [dict(c.execute("SELECT key, value FROM meta").fetchall())["unit_words"]
-                for c in (with_words, without)] == ["on", "off"]
-        assert without.execute("SELECT DISTINCT unit_line FROM docs").fetchall() == [("",)]
-        chunks = [c for (c,) in with_words.execute("SELECT chunk_id FROM chunks ORDER BY chunk_id")]
-        assert chunks == [c for (c,) in without.execute("SELECT chunk_id FROM chunks ORDER BY chunk_id")]
-        lines = dict(with_words.execute("SELECT c.chunk_id, d.unit_line FROM chunks c JOIN docs d USING (doc_id)"))
-        a, b = chunk_passages(with_words, chunks), chunk_passages(without, chunks)
-        # each passage is the one with words less its unit line: version 1's
-        assert all(lines[c] and b[c] == a[c].replace("\n" + lines[c], "", 1) for c in chunks)
-        assert not any(UNIT_LABEL in p for p in b.values())
-        title, unit = (t.split() for t in without.execute(
-            "SELECT f.title_tokens, f.unit_tokens FROM chunk_fts f JOIN chunks c ON c.chunk_id = f.rowid"
-            " WHERE c.doc_id = ?", (DEPARTMENT_IDS["soft"],)).fetchone())
-        assert not {"软体", "体系", "软工", "工系"} & set(title) and unit == []  # unit_tokens since 11-08 10:16
-        # without the patch 化學系's page leads 「軟體系 師資」 by its own words (with it, 軟體系's: the test above)
-        assert search_docs(without, "軟體系 師資", today=TODAY, aliases=[]).hits[0].doc_id == DEPARTMENT_IDS["chem"]
-    finally:
-        with_words.close()
-        without.close()
-    # the command line
-    out = tmp_path / "cli" / "aca.db"
-    pairs = [arg for corpus, export in inputs for arg in ("--input", f"{corpus}::{export}")]
-    assert build.main([*pairs, "--out", str(out), "--aliases", str(paths["aliases"]), "--server-dates",
-                       str(paths["server"]), "--site-list", str(paths["sites"]), "--units", str(paths["units"]),
-                       "--no-unit-words"]) == 0
-    assert "没加单位词（--no-unit-words）" in capsys.readouterr().out
-    assert json.loads(out.with_name("build_report.json").read_text(encoding="utf-8"))["passage"]["unit_words"] is False
-
-
-def test_without_unit_words_the_vectors_of_a_build_before_serve_every_passage(tmp_path):
-    # review of T4 (11-08): with no unit lines the passages are version 1's, so the lab PC's vector cache of the 11-08
-    # build (before T4) serves a build with --no-unit-words whole, and only the build with the patch encodes again
+def test_the_vectors_of_a_build_before_the_unit_line_serve_every_passage(tmp_path):
+    # review of T4 (11-08): the unit words are in the keyword index and the reranker's passages only, so the embedded
+    # passages are version 1's and the lab PC's vector cache of the 11-08 build (before T4) serves a build whole
     from tests.content.test_embed import FakeEmbedder
 
     inputs = department_inputs(tmp_path)
@@ -876,16 +831,8 @@ def test_without_unit_words_the_vectors_of_a_build_before_serve_every_passage(tm
             first = embed_chunks(conn, FakeEmbedder(), cache=vc)
     finally:
         conn.close()
-    off = run(paths, tmp_path / "off.db", inputs=inputs, unit_words=False, embed=True, embedder=FakeEmbedder(),
-              vec_cache=cache)
-    assert (off.vectors["chunks"], off.vectors["cached"], off.vectors["encoded"]) == (first.chunks, first.chunks, 0)
-    # 11-08 (main session): with the unit words in the keyword index and the reranker only, the vectors are version
-    # 1's too, so the same cache serves them; only --unit-words-in-vectors misses once in full
     on = run(paths, tmp_path / "on.db", inputs=inputs, embed=True, embedder=FakeEmbedder(), vec_cache=cache)
-    assert (on.vectors["cached"], on.vectors["encoded"]) == (first.chunks, 0)
-    inside = run(paths, tmp_path / "in.db", inputs=inputs, embed=True, embedder=FakeEmbedder(), vec_cache=cache,
-                 unit_in_vectors=True)
-    assert (inside.vectors["cached"], inside.vectors["encoded"]) == (0, first.encoded)
+    assert (on.vectors["chunks"], on.vectors["cached"], on.vectors["encoded"]) == (first.chunks, first.chunks, 0)
 
 
 def test_one_pair_form_still_builds(tmp_path):

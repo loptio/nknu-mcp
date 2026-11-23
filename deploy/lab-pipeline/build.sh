@@ -475,11 +475,9 @@ fi
 # ---- 9. constants (optional) --------------------------------------------------------------------------------------
 
 if step 9 "排序常数（可选）"; then
-  NEW=(--db "$DB" --gold "$O/gold_docs.json" --search hybrid --no-scope-effect)
+  NEW=(--db "$DB" --gold "$O/gold_docs.json" --search hybrid)
   offline offline_const_w_rerank2_r3.json "${NEW[@]}" --hybrid '{"w_rerank": 2.0}'
   offline offline_const_w_rerank4_r3.json "${NEW[@]}" --hybrid '{"w_rerank": 4.0}'
-  offline offline_const_rerank_docs50_r3.json "${NEW[@]}" --hybrid '{"rerank_docs": 50}'
-  offline offline_const_rerank_norm_raw_r3.json "${NEW[@]}" --hybrid '{"rerank_norm": "raw"}'
 fi
 
 # ---- done ---------------------------------------------------------------------------------------------------------

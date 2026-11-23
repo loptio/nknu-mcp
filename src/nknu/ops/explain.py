@@ -5,9 +5,11 @@ asks about, where it stopped. Nothing is scored here: every number is the search
 that they add up to the scores), so what the owner sees is what a student's AI got.
 
 A reranked document's score (hybrid.py, step 6):
-    (w_rerank x relevance + period + cohort + date [+ w_first x place]) x valid x scope + unit bonus
+    (w_rerank x relevance + period + cohort + date) x valid x scope
 对题 is the relevance, 还有效 the valid factor, 对口 the scope factor (direction 2026-11-13 第一节). A document the
-reranker did not read keeps its keyword score: coverage, bm25, period, cohort and date, times the scope factor."""
+reranker did not read keeps its keyword score: coverage, bm25, period, cohort and date, times the scope factor.
+The report still carries a row's 'first' (None) and 'bonus' (0.0) and the weights' 'first' (0.0): the search has no
+first-stage place and no unit bonus to add, and the pages that draw the report read those keys."""
 
 from __future__ import annotations
 
@@ -113,10 +115,10 @@ class _View:
 
     def score(self, doc_id: str) -> float:
         """The document's final score, as hybrid_search left it: the reranked one; else its keyword score after the
-        audience factor and the unit bonus; else, for one only the vectors found, its unit bonus."""
+        audience factor; else, for one only the vectors found, 0."""
         if doc_id in self.reranked:
             return self.reranked[doc_id]["score"]
-        return self.raw["kw_scores"].get(doc_id, self.raw["bonus"].get(doc_id, 0.0))
+        return self.raw["kw_scores"].get(doc_id, 0.0)
 
     def row(self, doc_id: str) -> dict:
         raw, config = self.raw, self.config
@@ -131,11 +133,10 @@ class _View:
         dense = {"rank": self.dense_place[doc_id], "sim": self.sim[doc_id]} if doc_id in self.dense_place else None
         rerank = None
         if (r := self.reranked.get(doc_id)) is not None:
-            rerank = {"rel": r["rel"], "weighted": config.w_rerank * r["norm"], "period": r["parts"]["period"],
-                      "cohort": r["parts"]["cohort"], "date": r["parts"]["date"],
-                      "first": None if r["first"] is None else config.w_first * r["first"],
+            rerank = {"rel": r["rel"], "weighted": config.w_rerank * r["rel"], "period": r["parts"]["period"],
+                      "cohort": r["parts"]["cohort"], "date": r["parts"]["date"], "first": None,
                       "valid": r["valid"] if r["valid"] is not None else (1.0 if self.valid_applies else None),
-                      "scope": config.scope_factor if r["off"] else 1.0, "bonus": r["bonus"],
+                      "scope": config.scope_factor if r["off"] else 1.0, "bonus": 0.0,
                       "chunks": sorted(([int(c), s] for c, s in r["chunks"].items()), key=lambda cs: (-cs[1], cs[0]))}
         return {"rank": self.place.get(doc_id), "doc_id": doc_id, **self.about.get(doc_id, {}), "background": back,
                 "keyword": keyword, "dense": dense, "fused": self.fused.get(doc_id),
@@ -234,7 +235,7 @@ def explain_search(conn: sqlite3.Connection, query: str, *, today: date, aliases
                    "fused": [len(t) for t in raw["tiers"]], "head": [len(h) for h in view.heads],
                    "final": len(raw["final"])},
         "weights": {"coverage": W_COVERAGE, "bm25": W_BM25, "period": W_PERIOD, "cohort": W_COHORT,
-                    "rerank": config.w_rerank, "first": config.w_first, "valid_decay": config.valid_decay,
+                    "rerank": config.w_rerank, "first": 0.0, "valid_decay": config.valid_decay,
                     "scope_factor": config.scope_factor, "background_factor": config.background_factor,
                     "background_slots": BACKGROUND_SLOTS, "top_n": TOP_N, "rerank_docs": config.rerank_docs,
                     "rerank_background": config.rerank_background, "topic_required": rank.topic_required},
@@ -263,10 +264,9 @@ def _line(row: dict) -> str:
     tier = "【背景】" if row["background"] else ""
     tail = f"{places:<11} {row.get('date') or '无日期':<10}  {tier}{row.get('title', '')}  [{row['doc_id']}]"
     if (r := row["rerank"]) is not None:
-        first = f" 第一关{_plus(r['first'])}" if r["first"] is not None else ""
         return (f"{rank}  {row['score']:6.2f}  {r['rel']:.2f}→{r['weighted']:.2f}  {_plus(r['period'])}  "
                 f"{_plus(r['cohort'])}  {_plus(r['date'])}  {_times(r['valid'])}  {_times(r['scope'])}  "
-                f"{_plus(r['bonus'])}{first}  {tail}")
+                f"{_plus(r['bonus'])}  {tail}")
     if (k := row["keyword"]) is not None:
         return (f"{rank}  {row['score']:6.2f}  （未重排）涵盖 {k['coverage']:.2f} 关键词分 {k['bm25_norm']:.2f} "
                 f"学期 {k['period']:.1f} 新旧 {_plus(k['date'])} 对口 {_times(k['scope'])}  {tail}")

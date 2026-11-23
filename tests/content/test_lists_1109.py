@@ -26,8 +26,6 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-import pytest
-
 from nknu.archive import export as archive_export
 from nknu.archive import postback
 from nknu.content import build, ids
@@ -295,9 +293,6 @@ def test_the_build_puts_the_categories_on_the_unit_line_and_counts_them(tmp_path
     assert matched == {first}  # the keyword index: a word only its category has
     assert passage[1] == lines[0]  # the reranker reads the line
     assert embedder.texts and not any("活動公告" in t or CATEGORY_LABEL in t for t in embedder.texts)  # the vectors not
-    # --no-unit-words leaves the whole unit line out, the categories too
-    off = tm.run(paths, tmp_path / "db" / "off.db", inputs=inputs, unit_words=False)
-    assert off.scope["unit_line_categories"] == {"docs": 0}
 
 
 def test_main_says_how_many_unit_lines_name_categories(tmp_path, capsys):
@@ -314,13 +309,9 @@ def test_main_says_how_many_unit_lines_name_categories(tmp_path, capsys):
     assert "列表类别" not in capsys.readouterr().out
 
 
-def test_the_report_and_the_help_say_the_unit_line_holds_the_categories(capsys):
-    # review 11-09: a school's page can have a line of 類別 alone, and --no-unit-words leaves them out with the rest
+def test_the_report_says_the_unit_line_holds_the_categories():
+    # review 11-09: a school's page can have a line of 類別 alone
     assert "「類別：" in build.PASSAGE_NOTE and "只有「適用：…」或「類別：…」" in build.PASSAGE_NOTE
-    assert "适用单位和列表类别" in build.PASSAGE_NOTE_OFF
-    with pytest.raises(SystemExit):
-        build.main(["--help"])
-    assert "简称、适用单位、列表类别）" in "".join(capsys.readouterr().out.split())  # the help's lines joined
 
 
 # ---------------------------------------------------------------- the merges keep every category (review 11-09)

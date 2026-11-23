@@ -39,7 +39,7 @@ UNITS = {u.unit_id: u for u in (unit(SCHOOL, "学校", None), unit("學生事務
 def kept(records, units=UNITS):
     docs, excluded = build_documents(records, {}, [])
     rows = build._rows(docs, {}, {})
-    left, copies = build._merge_copies(rows, lambda _: None, excluded, build.COPY_TEXT, True, units)
+    left, copies = build._merge_copies(rows, lambda _: None, excluded, units)
     return [r.doc.doc_id for r in left], {k: [c.doc.doc_id for c in v] for k, v in copies.items()}
 
 
@@ -135,7 +135,7 @@ def _two_departments(office: bool = False):
     if office:
         records.append(tc.rec("p3", "detail:sso_webidx", tc.WEB + "1", "公告", tc.LONG, tc.WEB_SITE, "2026-06-01"))
     docs, excluded = build_documents(records, {}, [])
-    left, _ = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, build.COPY_TEXT, True, TREE)
+    left, _ = build._merge_copies(build._rows(docs, {}, {}), lambda _: None, excluded, TREE)
     return [r.doc for r in left]
 
 
