@@ -28,6 +28,7 @@ numbers into verdicts are 【Claude】; each sits beside the probe that uses it.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -45,6 +46,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from nknu.core.timeutil import TAIPEI
+from nknu.ops.names import TITLES, link_name, link_tip, rename
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +88,16 @@ class Step:
     notes: list[str] = field(default_factory=list)
     more: list[tuple[str, str]] = field(default_factory=list)
     lost_label: str = "沒走到下一步的"  # what lost is, in this step's own words
+    # 11-23 (the design's port): lost is every kind, never cut (a page cuts when it draws: 「其餘 N 項 · total」), in the
+    # names.py words. lost_keys: [key, word, n] a row of lost, in its order, with a key that stays when a word is
+    # renamed (crawl: the bucket or review:<result code>; export: the 缺什么 mark; totext: the status; build:
+    # build_left_keys: alias:<why> or left:<the build's first key with that word>, the raw drawer's own labels), what a
+    # drawer filters by. lost_buckets (crawl only): [bucket, word, n]
+    # a row, the crawler's category of it (review, failed, queued: 要處理; gone, login: 學校那邊). lost_title: the
+    # heading's short name (names.TITLES; lost_label stays the long one, for its hover)
+    lost_keys: list[list] = field(default_factory=list)
+    lost_buckets: list[list] = field(default_factory=list)
+    lost_title: str = ""
     figure: str = ""  # the step's one number on the flow map (with unit): what it put out, or its state in two words
     unit: str = ""
     bar: list[int] = field(default_factory=list)  # [what came out, what went in], one unit: the step's bar; [] none
@@ -95,7 +107,9 @@ class Step:
     # how what came in follows from what the step before put out, a line a term: [sign ('' the start, '+', '−', '='),
     # words, count, more words floating over it]; link_left: what the terms leave unaccounted (0: they add up; None:
     # nothing to add up). 2026-11-21, owner: 「上一步出的和下一步进的对不上」: the steps counted in different units
-    # (addresses, rows, files, records) and a stage between two of them (assemble) was on no panel 【Claude】
+    # (addresses, rows, files, records) and a stage between two of them (assemble) was on no panel 【Claude】. Since
+    # 11-23 (NV38) guarded() gives every row the names.py words (link_name; its hover through link_tip), so each page
+    # that draws a link shows the design's words without renaming it again
     link: list[list] = field(default_factory=list)
     link_left: int | None = None
     # what runs inside the step on its own schedule: [name, tone (ok, warn, bad, none), words] (the crawl's weekly
@@ -785,9 +799,19 @@ PLAIN_BUCKET = {"要人看": "待確認"}
 def bucket_words() -> dict[str, str]:
     _outcome, progress = _crawler()
     # Taiwan usage; the crawler's 要人看 (fetched but maybe incomplete or wrong, or left alone by its own limits: a
-    # dozen causes in one bucket) is 待確認 here: the owner (11-16) named 要人看 among the names that say nothing
-    return {k: PLAIN_BUCKET.get(tw(v), tw(v)).replace("登錄", "登入")
+    # dozen causes in one bucket) is 待確認 here: the owner (11-16) named 要人看 among the names that say nothing; then
+    # the 11-23 words (names.py: 已取得, 連線失敗, 校方已移除 …), so every page and drawer says one word
+    return {k: rename(PLAIN_BUCKET.get(tw(v), tw(v)).replace("登錄", "登入"))
             for k, v in getattr(progress, "BUCKET_ZH", {}).items()}
+
+
+@functools.lru_cache(maxsize=512)
+def review_word(code: str) -> str:
+    """One 待確認 cause (a review result code) in the panel's words: 「待確認：」 and the crawler's label of it
+    (outcome.RESULT_LABEL, its first clause), renamed (names.py: 待確認：內容過少 …). The crawl step's lost list, the
+    coverage per night (nknu.ops.sources) and the drawer's labels all use it."""
+    labels = getattr(_crawler()[0], "RESULT_LABEL", {})
+    return rename(f"待確認：{tw(str(labels.get(code) or code)).split('；')[0]}")
 
 
 def crawl_step(where: Where) -> Step:
@@ -833,15 +857,19 @@ def crawl_step(where: Where) -> Step:
     step.out = [("個抓到了", totals.get("got", 0))]
     step.figure, step.unit = f"{totals.get('got', 0):,}", "個抓到了"
     step.bar = [totals.get("got", 0), meant] if meant else []
-    step.lost = [(words.get(b, b), n) for b, n in sorted(totals.items(), key=lambda bn: -bn[1])
-                 if b != "got" and b not in NOT_MEANT and n]
+    # every row keeps its bucket (lost_buckets) and a stable key (lost_keys: the bucket, or review:<result code>), so a
+    # page splits 要處理 from 學校那邊 and a drawer filters by key, not by a word a later rename would change (11-23)
+    rows = [(b, b, words.get(b, b), n) for b, n in sorted(totals.items(), key=lambda bn: -bn[1])
+            if b != "got" and b not in NOT_MEANT and n]
     # 待確認 (the crawler's 要人看) is a dozen causes in one bucket: each cause on its own line, in the crawler's own
     # words of the result (owner 11-21: a bucket that cannot say why says nothing)
     if review and sum(review.values()) == totals.get("review"):
-        labels = getattr(_crawler()[0], "RESULT_LABEL", {})
-        split = [(f"待確認：{tw(str(labels.get(code) or code)).split('；')[0]}", n)
+        split = [(f"review:{code}", "review", review_word(code), n)
                  for code, n in sorted(review.items(), key=lambda kv: -kv[1])]
-        step.lost = sorted([row for row in step.lost if row[0] != words.get("review")] + split, key=lambda r: -r[1])
+        rows = sorted([r for r in rows if r[0] != "review"] + split, key=lambda r: -r[3])
+    step.lost = [(w, n) for _k, _b, w, n in rows]
+    step.lost_buckets = [[b, w, n] for _k, b, w, n in rows]
+    step.lost_keys = [[k, w, n] for k, _b, w, n in rows]
     step.lost_label = "還沒抓到的（照爬蟲自己的分類）"
     if left_aside:
         step.notes.insert(0, "不算在內：" + "、".join(f"{words.get(b, b)} {n:,}" for b, n in left_aside.items()))
@@ -999,14 +1027,17 @@ def manifest_ids(folder: Path) -> tuple[frozenset[int], dict[int, str]]:
 
 # what 缺什么 can say, by the words a part holds (nknu.archive.export: progress's reasons, then the export's own marks;
 # a part can hold 「、」 itself, so it is never split on it), in the order they are looked for
-MISSING_WORDS = (("学校回答没有资料", "學校回答「沒有資料」"), ("内文区是空的", "內文區是空的"),
-                 ("找不到内文区", "找不到內文區"), ("列表没翻完", "列表沒翻完"), ("待判定", "待判定"),
-                 ("缺内嵌页或按钮", "頁面裡的內嵌頁或按鈕沒抓到"), ("学校那边已不存在", "連到的資源學校已不存在或要登入"),
-                 ("连接失败", "連線失敗"), ("缺附件", "附件沒抓到"), ("缺图片", "圖片沒抓到"), ("下一轮", "留到下一輪補抓"),
-                 ("要人看：页面几乎是空的", "這一頁幾乎是空的"),
-                 ("要人看（", "頁面連到的東西裡有待確認的"), ("要人看", "待確認"))
-EMBED_MISSING, REVIEW_LINKED, REVIEW_PLAIN = "頁面裡的內嵌頁或按鈕沒抓到", "頁面連到的東西裡有待確認的", "待確認"
-REVIEW_SAID = ("這一頁幾乎是空的", REVIEW_LINKED)  # 要人看 with what it is about: the bare word says nothing beside them
+# (the names are the 11-23 words, names.py: the old sentence each replaced is renamed here once)
+MISSING_WORDS = tuple((mark, rename(name)) for mark, name in (
+    ("学校回答没有资料", "學校回答「沒有資料」"), ("内文区是空的", "內文區是空的"),
+    ("找不到内文区", "找不到內文區"), ("列表没翻完", "列表沒翻完"), ("待判定", "待判定"),
+    ("缺内嵌页或按钮", "頁面裡的內嵌頁或按鈕沒抓到"), ("学校那边已不存在", "連到的資源學校已不存在或要登入"),
+    ("连接失败", "連線失敗"), ("缺附件", "附件沒抓到"), ("缺图片", "圖片沒抓到"), ("下一轮", "留到下一輪補抓"),
+    ("要人看：页面几乎是空的", "這一頁幾乎是空的"),
+    ("要人看（", "頁面連到的東西裡有待確認的"), ("要人看", "待確認")))
+MISSING_KEYS = {name: mark for mark, name in MISSING_WORDS}  # a kind's word -> its mark in 缺什么 (its stable key)
+EMBED_MISSING, REVIEW_LINKED, REVIEW_PLAIN = rename("頁面裡的內嵌頁或按鈕沒抓到"), rename("頁面連到的東西裡有待確認的"), "待確認"
+REVIEW_SAID = (rename("這一頁幾乎是空的"), REVIEW_LINKED)  # 要人看 with what it is about: the bare word says nothing beside them
 
 
 # 来源 of a row whose file is an older answer than this round's (nknu.archive.export ORIGIN_OLD, ORIGIN_PREV): this
@@ -1034,7 +1065,7 @@ def missing_parts(words: str) -> list[str]:
         found.remove(REVIEW_PLAIN)  # 「要人看：…」 and 「要人看（N 个）」 are each one kind, not 待確認 as well
     if not found and RULE_MARK in words:  # left out by rule: nothing is missing (no kind of its own, no gap drawn)
         return []
-    return found or [tw(words.split("（", 1)[0])]
+    return found or [rename(tw(words.split("（", 1)[0]))]
 
 
 def current_exports(root: Path) -> dict[str, Path]:
@@ -1146,13 +1177,15 @@ def export_link(where: Where, step: Step, fetched: int, got_ids: set[int], else_
 
 # a fetched address no export in use holds: the kinds that have no row by design (the ledger's coalesce(kind0, kind)),
 # the landing of a redirect, and the names of the other kinds
-_DRIVE = "Google 雲端硬碟的檔案資訊和資料夾清單（檔案本身那一筆在清單上）"
-OFF_BY_DESIGN = {"script": "網站的程式檔（.js：是網頁的零件，不是內容）", "drive": _DRIVE, "drive_list": _DRIVE}
-OFF_LANDING = "跳轉後的落點（清單記在原來那個網址上）"
+# (the 11-23 words, names.LINKS / NOTES: 網站程式檔（.js）, 雲端硬碟檔案資訊, 轉址落點; the long sentences they replace
+# are the keys there: 網站的程式檔是網頁的零件不是內容, 檔案本身那一筆在清單上, 清單記在原來那個網址上)
+_DRIVE = link_name("Google 雲端硬碟的檔案資訊和資料夾清單（檔案本身那一筆在清單上）")
+OFF_BY_DESIGN = {"script": link_name("網站的程式檔（.js：是網頁的零件，不是內容）"), "drive": _DRIVE, "drive_list": _DRIVE}
+OFF_LANDING = link_name("跳轉後的落點（清單記在原來那個網址上）")
 # what the count does not prove (the crawler session, 11-21): the kinds are the ledger's, so a landing whose first
 # address has no row, or a Drive record whose file has none, would still be counted here. Its own scripts look each
 # one up in the manifests (research/crawler_design_2026-11-19/day/off_manifest_1121.py, off_manifest_drive_1121.py)
-OFF_LIMIT = "\n這是照帳本裡的種類分的，沒有逐個到清單裡核對它記在哪一筆上；要逐個核對，請爬蟲跑它的核對腳本"
+OFF_LIMIT = "\n" + link_tip("這是照帳本裡的種類分的，沒有逐個到清單裡核對它記在哪一筆上；要逐個核對，請爬蟲跑它的核對腳本")
 OFF_KIND = {"file": "檔案", "image": "圖片", "embed": "內嵌頁", "page": "網頁"}
 
 
@@ -1261,7 +1294,10 @@ def export_step(where: Where) -> Step:
     if file_rows > with_files:
         step.flow_words += f"（{file_rows - with_files:,} 筆和別筆共用同一個檔，不同的檔 {with_files:,} 個）"
     step.out = [("筆存下了檔案", file_rows)]
-    step.lost = [(k, v) for k, v in sorted(missing.items(), key=lambda kv: -kv[1])][:8]
+    # every kind (the critic's CR-10, 11-23: cut to 8 here, the night's 「其餘 N 項 · total」 understated and the kinds
+    # past the eighth could not reach the drawer); a page cuts when it draws
+    step.lost = [(k, v) for k, v in sorted(missing.items(), key=lambda kv: -kv[1])]
+    step.lost_keys = [[MISSING_KEYS.get(k, k), k, v] for k, v in step.lost]
     step.lost_label = "清單上註明缺東西的（一筆可能缺好幾樣）"
     if both:
         step.notes.append(f"「{REVIEW_LINKED}」和「{EMBED_MISSING}」有 {both:,} 筆是同一批網頁：一筆算了兩樣")
@@ -1312,8 +1348,9 @@ def export_step(where: Where) -> Step:
 
 # ------------------------------------------------------------------------------------------------ 轉文字
 
-STATUS_WORDS = {"ok": "轉成文字", "partial": "轉了一部分", "empty": "讀不出文字", "skipped": "照規則跳過", "failed": "轉文字失敗",
-                "pending": "還沒轉"}
+STATUS_WORDS = {k: rename(v) for k, v in {  # the 11-23 words (names.py: 已轉文字, 無文字可讀, 依規則略過, 轉換失敗)
+    "ok": "轉成文字", "partial": "轉了一部分", "empty": "讀不出文字", "skipped": "照規則跳過", "failed": "轉文字失敗",
+    "pending": "還沒轉"}.items()}
 LANES = (("A", "轉 PDF 和 Office 檔的程序"), ("B", "轉網頁和圖片的程序"), ("C", "轉壓縮檔的程序"))
 _accounts: dict[tuple[str, int], dict] = {}
 
@@ -1413,8 +1450,9 @@ def totext_step(where: Where) -> Step:
     step.out = [("個轉成文字", int(by_status.get("ok") or 0))]
     step.figure, step.unit = f"{int(by_status.get('ok') or 0):,}", "個轉成文字"
     step.bar = [int(by_status.get("ok") or 0), total] if total else []
-    step.lost = [(STATUS_WORDS[s], int(by_status.get(s) or 0)) for s in ("empty", "skipped", "partial", "failed",
-                                                                        "pending") if by_status.get(s)]
+    shown = [s for s in ("empty", "skipped", "partial", "failed", "pending") if by_status.get(s)]
+    step.lost = [(STATUS_WORDS[s], int(by_status.get(s) or 0)) for s in shown]
+    step.lost_keys = [[s, STATUS_WORDS[s], int(by_status.get(s) or 0)] for s in shown]
     for item in summary.get("top_reasons") or []:
         if isinstance(item, dict) and item.get("status") in ("failed", "empty"):
             step.notes.append(f"{STATUS_WORDS.get(item['status'], item['status'])}：{tw(str(item.get('reason')))} "
@@ -1440,8 +1478,8 @@ def totext_step(where: Where) -> Step:
         tip = [f"{STATUS_WORDS.get(s, s)}：{n:,}" for s, n in sorted(others, key=lambda sn: -sn[1])]
         tip += [f"{STATUS_WORDS.get(s, s)}：{f}（{tw(r)}）" for s, r, f in per["bad"][:5] if s != "empty"]
         empty = status.get("empty", 0)
-        cell(where, site["site"], "text", status.get("ok", 0), tip="\n".join(tip) or "全部轉成文字了",
-             sub=f"讀不出字 {empty:,}" if empty else "", name=site.get("name") or "")
+        cell(where, site["site"], "text", status.get("ok", 0), tip="\n".join(tip) or f"全部{STATUS_WORDS['ok']}",
+             sub=f"{STATUS_WORDS['empty']} {empty:,}" if empty else "", name=site.get("name") or "")
     running = [ln for ln in lanes if ln["state"] == "running"]
     stale = [ln for ln in lanes if ln["state"] == "stale"]
     pending = int(by_status.get("pending") or summary.get("pending") or 0)
@@ -1465,24 +1503,71 @@ def totext_step(where: Where) -> Step:
 
 # the build's keys for what it left out (documents.build_documents, build._merge_copies, the events' series), grouped as
 # the survey of 11-16 found them, in the order they are tried: a series of events before a plain repeat
-LEFT_OUT = ((lambda k: k.endswith("(重复系列)"), "每週重複的行事曆，合成一個系列"),
-            (lambda k: k.endswith("(副本)"), "別處有一模一樣的一份，合併了"),
-            (lambda k: k.endswith("(重复)"), "同一網址重複導出，只留一份"),
-            (lambda k: "(列表翻页)" in k or "#翻页" in k, "公告列表的分頁（各則另外收了）"),
-            (lambda k: "2023" in k, "2023 年以前的行事曆"),
-            (lambda k: "学校回答没有资料" in k, "學校這頁回答「沒有資料」"),
-            (lambda k: "选单" in k, "只在選單出現的圖片"),
-            (lambda k: "学校删掉" in k or "学校已删除" in k, "學校刪掉的公告，只剩空殼"),
-            (lambda k: k.endswith("(其他格式)"), "同一個檔的其他格式"),
-            (lambda k: k.endswith("(空白)"), "沒標題也沒讀到字"),
-            (lambda k: "(" not in k, "列表、相簿、網站地圖這類導覽頁（照種類不收）"))
+LEFT_OUT = tuple((test, rename(words)) for test, words in (  # the 11-23 words (names.py)
+    (lambda k: k.endswith("(重复系列)"), "每週重複的行事曆，合成一個系列"),
+    (lambda k: k.endswith("(副本)"), "別處有一模一樣的一份，合併了"),
+    (lambda k: k.endswith("(重复)"), "同一網址重複導出，只留一份"),
+    (lambda k: "(列表翻页)" in k or "#翻页" in k, "公告列表的分頁（各則另外收了）"),
+    (lambda k: "2023" in k, "2023 年以前的行事曆"),
+    (lambda k: "学校回答没有资料" in k, "學校這頁回答「沒有資料」"),
+    (lambda k: "选单" in k, "只在選單出現的圖片"),
+    (lambda k: "学校删掉" in k or "学校已删除" in k, "學校刪掉的公告，只剩空殼"),
+    (lambda k: k.endswith("(其他格式)"), "同一個檔的其他格式"),
+    (lambda k: k.endswith("(空白)"), "沒標題也沒讀到字"),
+    (lambda k: "(" not in k, "列表、相簿、網站地圖這類導覽頁（照種類不收）")))
+# a merge the library lists one by one (its doc_alias table, by why) as the build's own key for it
+ALIAS_SAID = {"copy": "x(副本)", "format": "x(其他格式)", "duplicate": "x(重复)"}
+_whys: dict[tuple, frozenset] = {}
 
 
 def left_out_words(key: str) -> str:
     for test, words in LEFT_OUT:
         if test(key):
             return words
-    return tw(key)
+    return rename(tw(key))
+
+
+def alias_word(why: str) -> str:
+    """A doc_alias why in the words of what the build left out (重複內容，已合併 …); the why itself for another."""
+    return rename(left_out_words(ALIAS_SAID[why])) if why in ALIAS_SAID else why
+
+
+def alias_whys(db: Path) -> frozenset[str]:
+    """The whys the library's doc_alias table holds (a merge it lists one by one), read once per version of the file;
+    empty for a library without the table."""
+    try:
+        st = db.stat()
+    except OSError:
+        return frozenset()
+    key = (str(db), st.st_ino, st.st_size, st.st_mtime_ns)
+    got = _whys.get(key)
+    if got is None:
+        try:
+            conn = open_ro(db)
+            try:
+                got = frozenset(str(r[0]) for r in conn.execute("SELECT DISTINCT why FROM doc_alias") if r[0])
+            finally:
+                conn.close()
+        except sqlite3.Error:  # a library built before doc_alias
+            got = frozenset()
+        _whys.clear()
+        _whys[key] = got
+    return got
+
+
+def build_left_keys(excluded: object, whys: frozenset[str] | set[str] = frozenset()) -> dict[str, str]:
+    """{word: key}: each word of what the build left out with the key the raw drawer labels it by (nknu.ops.raw
+    _build_build, critic RD-02: one scheme on both sides, so a preset passing the step's key finds its rows): a merge
+    the library lists one by one is alias:<why>; any other is left:<the first of the build's own keys with that word>,
+    in the order the library's excluded_json lists them (the build's key stays when a word is renamed)."""
+    out: dict[str, str] = {}
+    for why in sorted(whys):
+        if why in ALIAS_SAID:
+            out.setdefault(alias_word(why), f"alias:{why}")
+    for key, n in (excluded if isinstance(excluded, dict) else {}).items():
+        if isinstance(n, int) and n:
+            out.setdefault(rename(left_out_words(key)), f"left:{key}")
+    return out
 
 
 # site_report.FLAG_WORDS's keys, in the words 資料總覽 shows them (src/nknu/ops/overview_page.html's CK; one concept, one
@@ -1520,12 +1605,14 @@ def build_status(kit: Path) -> dict:
 
 
 _assembled: dict[tuple[str, int], dict] = {}  # (report path, its time of change) -> its counts
-# what assemble takes of the to-text run's files and gives no record of its own (AssembleReport), in plain words
-ASSEMBLE_OUT = (("images_inlined", "圖的字併進了顯示它的網頁", "網頁上的圖讀出來的字放進那一頁，圖自己不另成一筆"),
-                ("images_no_text", "圖沒讀出夠多的字，也沒有收進庫的網頁顯示它", ""),
-                ("containers_dropped", "壓縮檔本身（裡面的檔各成一筆）", ""),
-                ("data_rows", "不用轉文字的資料（行事曆由建庫直接讀、雲端硬碟資料夾的清單）", ""),
-                ("format_merged", "同一份文件的另一種格式（併成一筆）", "同一份文件有 PDF 也有 Word：留字多的那份"))
+# what assemble takes of the to-text run's files and gives no record of its own (AssembleReport), in the 11-23 words
+# (names.LINKS: 圖片文字併入網頁 …; the hover's sentence through names.NOTES)
+ASSEMBLE_OUT = tuple((k, link_name(words), link_tip(tip)) for k, words, tip in (
+    ("images_inlined", "圖的字併進了顯示它的網頁", "網頁上的圖讀出來的字放進那一頁，圖自己不另成一筆"),
+    ("images_no_text", "圖沒讀出夠多的字，也沒有收進庫的網頁顯示它", ""),
+    ("containers_dropped", "壓縮檔本身（裡面的檔各成一筆）", ""),
+    ("data_rows", "不用轉文字的資料（行事曆由建庫直接讀、雲端硬碟資料夾的清單）", ""),
+    ("format_merged", "同一份文件的另一種格式（併成一筆）", "同一份文件有 PDF 也有 Word：留字多的那份")))
 
 
 def assembled(where: Where, inputs: object) -> dict[str, int] | None:
@@ -1581,8 +1668,8 @@ def build_link(where: Where, step: Step, facts: dict, left: dict[str, int]) -> N
     step.link_left = abs(records - (handled - sum(row[2] for row in taken))) + abs(whole - (records + events + formats))
 
 
-EVENT_LEFT = ("每週重複的行事曆，合成一個系列", "2023 年以前的行事曆")  # LEFT_OUT's words of the events left out
-FORMAT_LEFT = "同一個檔的其他格式"
+EVENT_LEFT = (rename("每週重複的行事曆，合成一個系列"), rename("2023 年以前的行事曆"))  # LEFT_OUT's words of the events left out
+FORMAT_LEFT = rename("同一個檔的其他格式")
 
 
 def build_step(where: Where) -> Step:
@@ -1597,6 +1684,8 @@ def build_step(where: Where) -> Step:
             words = left_out_words(key)
             left[words] = left.get(words, 0) + n
     step.lost = sorted(left.items(), key=lambda kv: -kv[1])
+    keys = build_left_keys(facts["excluded"], alias_whys(db))
+    step.lost_keys = [[keys.get(rename(w), f"left:{w}"), w, n] for w, n in step.lost]
     step.lost_label = "沒成為文件的（大多是合併掉的重複）"
     sites = len(facts["inputs"]) if isinstance(facts["inputs"], list) else len(facts["sites"])
     # what went in: the documents plus what the build left out or merged (an approximation the survey of 11-16 found
@@ -2092,6 +2181,111 @@ def public_usage(path: Path, now: datetime | None = None,
     return rows, shown
 
 
+def search_slots() -> int:
+    """How many searches the public service runs at once (nknu.retrieval.public.MAX_SEARCHES, a BoundedSemaphore only
+    searches take): read from the module when it is loaded, else from its source (importing it would load the service's
+    whole stack), else 4."""
+    import sys
+
+    mod = sys.modules.get("nknu.retrieval.public")
+    if mod is not None and isinstance(getattr(mod, "MAX_SEARCHES", None), int):
+        return int(mod.MAX_SEARCHES)
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("nknu.retrieval.public")
+        text = Path(spec.origin).read_text(encoding="utf-8") if spec and spec.origin else ""
+    except (ImportError, OSError, ValueError):
+        text = ""
+    m = re.search(r"^MAX_SEARCHES\s*=\s*(\d+)", text, re.MULTILINE)
+    return int(m.group(1)) if m else 4
+
+
+def _pick(sorted_values: list, q: float):
+    return sorted_values[min(len(sorted_values) - 1, int(len(sorted_values) * q))] if sorted_values else None
+
+
+def usage_of(lines: list[dict], slots: int | None = None) -> dict[str, dict]:
+    """The public service's use per Taipei day, from its query log's lines (lines_since's, with '_at': the call's end;
+    'ms' how long it took): the design's 網站訪問量 · 每日 (research/design_2026-11-23/scripts/load2.py), with the
+    critic's correction (CR-12, 11-23): how busy the service was and how many ran at once are over the searches only,
+    the calls that hold one of the `slots` (search_slots()). Per day:
+
+      calls, search        every call; the searches among them
+      qpm_peak, _at        the busiest minute's calls and its HH:MM
+      conc_peak            the most searches running at once (their spans t − ms .. t, swept)
+      load_p95, load_max   per minute with a search running: the share of the slots its searches held (busy seconds
+                           / (60 × slots)), the 95th percentile and the most (over 1: searches waited); active_min:
+                           the minutes counted
+      p50_ms, p90_ms, p99_ms   how long a call took, every call with a time (waiting included)
+      errors, err_rate     the calls that failed for the service's reasons (busy, unavailable, internal: not
+                           bad_args, the caller's own), over every call
+    """
+    slots = slots or search_slots()
+    days: dict[str, list[tuple[datetime, object, object, object]]] = {}
+    for x in lines:
+        at = x.get("_at")
+        if not isinstance(at, datetime):
+            at = when_of(x.get("t"))
+            if at is None:
+                continue
+        at = at.astimezone(TAIPEI)
+        days.setdefault(at.date().isoformat(), []).append((at, x.get("ms"), x.get("error"), x.get("tool")))
+    out: dict[str, dict] = {}
+    for day, rs in sorted(days.items()):
+        per_min: dict[datetime, int] = {}
+        busy: dict[datetime, float] = {}
+        spans: list[tuple[datetime, datetime]] = []
+        for at, ms, _err, tool in rs:
+            minute = at.replace(second=0, microsecond=0)
+            per_min[minute] = per_min.get(minute, 0) + 1
+            if tool != "search" or not isinstance(ms, (int, float)) or ms < 0:
+                continue
+            a, b = at - timedelta(milliseconds=ms), at
+            spans.append((a, b))
+            m = a.replace(second=0, microsecond=0)
+            while m < b:
+                n = m + timedelta(minutes=1)
+                busy[m] = busy.get(m, 0.0) + (min(b, n) - max(a, m)).total_seconds()
+                m = n
+        loads = sorted(v / (60 * slots) for v in busy.values())
+        events = sorted([(a, 1) for a, _b in spans] + [(b, -1) for _a, b in spans])
+        cur = top = 0
+        for _t, k in events:
+            cur += k
+            top = max(top, cur)
+        ms_all = sorted(r[1] for r in rs if isinstance(r[1], (int, float)))
+        errors = sum(1 for r in rs if r[2] and r[2] != "bad_args")
+        peak_m, peak_n = max(per_min.items(), key=lambda kv: (kv[1], -kv[0].timestamp())) if per_min else (None, 0)
+        out[day] = {"calls": len(rs), "search": sum(1 for r in rs if r[3] == "search"), "qpm_peak": peak_n,
+                    "qpm_peak_at": peak_m.strftime("%H:%M") if peak_m else "", "conc_peak": top,
+                    "load_p95": round(_pick(loads, 0.95) or 0, 3), "load_max": round(loads[-1], 3) if loads else 0,
+                    "active_min": len(busy), "p50_ms": _pick(ms_all, 0.5), "p90_ms": _pick(ms_all, 0.9),
+                    "p99_ms": _pick(ms_all, 0.99), "errors": errors,
+                    "err_rate": round(errors / len(rs), 4) if rs else 0, "slots": slots}
+    return out
+
+
+def usage_empty() -> dict:
+    """usage_of's numbers of a day nobody called."""
+    return {"calls": 0, "search": 0, "qpm_peak": 0, "qpm_peak_at": "", "conc_peak": 0, "load_p95": 0, "load_max": 0,
+            "active_min": 0, "p50_ms": None, "p90_ms": None, "p99_ms": None, "errors": 0, "err_rate": 0,
+            "slots": search_slots()}
+
+
+def usage_day(public_log: Path | None, day: str) -> dict:
+    """One Taipei day's use of the public service (usage_of's numbers; zeros for a day nobody called), and whether the
+    log reaches back to the day's start ('complete': False when it began, or was rotated away, after it)."""
+    start = datetime.combine(date.fromisoformat(day), datetime.min.time(), TAIPEI)
+    empty = usage_empty()
+    if public_log is None:
+        return {"day": day, **empty, "complete": False}
+    lines, whole = lines_since(public_log, start)
+    end = start + timedelta(days=1)
+    mine = [x for x in lines if start <= x["_at"] < end]
+    return {"day": day, **(usage_of(mine).get(day) or empty), "complete": bool(whole)}
+
+
 def serve_step(where: Where) -> Step:
     step = Step("serve", "查詢服務", "給學生和他們的 AI 用的對外服務（MCP、網頁、接口），檢視台「測試」用的 MCP，和資料庫")
     box = machine_read(where)
@@ -2268,6 +2462,17 @@ def site_detail(where: Where, key: str) -> dict | None:
 # ------------------------------------------------------------------------------------------------ the reading
 
 
+def link_words(rows: list[list]) -> list[list]:
+    """對帳 rows in the 11-23 words (NV38, the design's content_night.py: [sign, link_name(words), n,
+    link_tip(hover)]): 爬取已取得, 依設計不單列, 清單已取得 …; each 「name：n」 of a hover renamed, an explaining
+    sentence shortened (names.NOTES). Renaming twice changes nothing."""
+    out = []
+    for row in rows or []:
+        sign, words, n, tip = (list(row) + ["", "", 0, ""])[:4]
+        out.append([sign, link_name(str(words)), n, link_tip(str(tip or ""))])
+    return out
+
+
 def guarded(probe: Callable[[Where], Step], where: Where, key: str, name: str) -> Step:
     """probe's step, or a step saying the panel could not read it (the panel's own problem, never the step's)."""
     started = time.monotonic()
@@ -2278,6 +2483,11 @@ def guarded(probe: Callable[[Where], Step], where: Where, key: str, name: str) -
         step = Step(key, name, "", state=WARN, fix=PANEL,
                     say=f"檢視台讀不到這一步的紀錄（{type(exc).__name__}: {exc}）")
     step.notes.append(f"讀這一步花了 {span(time.monotonic() - started)}")
+    step.link = link_words(step.link)
+    if not step.lost_title:
+        step.lost_title = TITLES.get(step.lost_label, step.lost_label.split("（")[0])
+    if step.lost and not step.lost_keys:  # a step that names no keys: its words are its keys
+        step.lost_keys = [[w, w, n] for w, n in step.lost]
     return step
 
 

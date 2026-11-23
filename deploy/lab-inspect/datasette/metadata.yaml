@@ -342,3 +342,51 @@ databases:
                       when 'duplicate' then '重複的紀錄' else a.why end as "原因",
                  'http://127.0.0.1:18878/trace?ref=' || a.doc_id as "追蹤"
           from doc_alias a join docs d on d.doc_id = a.doc_id where a.alias = :alias
+  # 11-23 爬蟲帳本（用戶：「frontier.db 為什麼沒有在資料庫頁面看的」「加，用每晚備份」）：D 槽每晚備份裡最新的一份，
+  # 是那一晚爬取開跑前存的（比正在寫的帳本晚一晚）。這裡只說常用的三張表；其他表照帳本原樣列著。
+  frontier:
+    title: 爬蟲帳本（每晚備份）
+    description: 爬蟲記的每一個網址、每一次請求；這是每晚爬取開跑前存的那一份，不是正在寫的帳本。
+    tables:
+      url:
+        description: 一列一個網址：從哪裡找到、抓了沒有、結果怎樣、存在哪個原檔。
+        label_column: url
+        facets: [state, kind, site]
+        columns:
+          url: 網址
+          site: 網站：這個網址算在哪個網站
+          kind: 種類：page 網頁、file 檔案、image 圖片、drive 雲端硬碟、shortlink 短網址、embed 內嵌、calendar 行事曆
+          found_via: 怎麼找到：link 頁面連結、old_frontier 舊帳本、commoncrawl Common Crawl 索引、drive 雲端硬碟、redirect 跳轉、seed 網站清單起點、click 按按鈕
+          state: 狀態：done 抓到了、failed 失敗、skipped 照規則不抓、later 留到第二輪、held 壓著、pending 還在排
+          reason: 原因：爬蟲寫的原因代碼，例如 http_404、out:skip_path、round2:offsite
+          status: HTTP：伺服器回的狀態碼
+          fetched_at: 抓的時間：最後一次抓到的時間（UTC）
+          warc: 原檔：存在哪一個 .warc.gz
+      request:
+        description: 一列一次請求：爬蟲對學校伺服器送出的每一個請求，什麼時候、用什麼方法、回了什麼。
+        facets: [purpose, method, campus]
+        columns:
+          url: 網址
+          purpose: 用途：page 直接抓、postback 按按鈕、jsfetch 用瀏覽器開、robots 讀 robots.txt、probe 檢查
+          method: 方法：GET 或 POST
+          status: HTTP：伺服器回的狀態碼
+          error: 錯誤：沒回應時的錯誤
+          campus: 校內：on 在校內發的、off 在校外發的
+      event:
+        description: 一列一件事：爬蟲記下的警告和狀況。
+        facets: [level, code]
+    queries:
+      reasons:
+        title: 各狀態、各原因的網址數
+        sql: select state as "狀態", reason as "原因", count(*) as "網址數" from url group by 1, 2 order by 3 desc
+      site_urls:
+        title: 一個網站的網址
+        sql: |-
+          select url as "網址", kind as "種類", found_via as "怎麼找到", state as "狀態", reason as "原因",
+                 status as "HTTP", fetched_at as "抓的時間" from url where site = :site order by state, url limit 1000
+      url_requests:
+        title: 一個網址的每一次請求
+        sql: |-
+          select datetime(started, 'unixepoch', '+8 hours') as "時間（台北）", purpose as "用途", method as "方法",
+                 status as "HTTP", error as "錯誤", round((ended - started) * 1000) as "毫秒", bytes as "大小",
+                 campus as "校內" from request where url = :url order by started desc

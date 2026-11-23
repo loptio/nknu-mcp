@@ -10,7 +10,15 @@
 - **搜尋**：空着的时候列出 33 题，点一题看它的标准答案排第几、为什么这样排（手动测，不会自己跑）。题库（278 题加 33 题）只拿来偶尔检测整个项目，不进每晚流程，面板不读它的成绩（用户 11-22 夜：「拿这些题目和答案做质量检查其实没什么意义……删了这个流程吧」）。品質檢查只看建库的 22 项真资料检查。
 - **存在 ops.db 的**（`nknu-ops` 磁碟区，面板唯一可写的地方）：每晚纪录；網頁核查的结果（`sweep_*` 表，`sweep_store.py`）；各步骤最后一次读到的、上次换库的比较、內容的统计（`kept` 表，`keep.py`）；标成已知的问题（`known`）。**重启不再重算**：这些重启后直接读出来；網頁核查只在帐本变了以后重查（帐本静 5 分钟后、每晚抓取时不动），读网页的程序改了才整轮重读（约 13 分钟）。
 - **打包带的检索程序不是 git 里的**：`retrieval/hybrid.py`、`search.py` 带着内容那边没提交的「删掉不再用的开关」（真资料比过结果一样）。那批改动若丢掉，要用 git 里的这两个档重打包、重装（内容2 11-22 23:30 提醒）。`server.py`、`respond.py` 和 git 一致（b6f2701）。
-- **还没清的**：实验室上 11-22 夜的预览：容器 `nknu-inspect-next-ops-next-1`（已停）、磁碟区 `nknu-ops-next`、`/work/inspect-next`、`C:\nknu-transfer\inspect-next`；删要先问用户。旧零件（`tonight_page.funnel_html`、`nightbars_table`，`pipeline_page.site_steps`、`stage_html`，`charts.py` 的 ECharts）还在。
+- **compose 改挂 E 槽**：实验室 11-23 04:03 由 judge session 换上，用的是仓库这份 `compose.yaml`：
+  - 原档改从 `E:/nknu/warc` 只读挂进来；
+  - 不再挂 `/host-c`；
+  - `--disk` 只留「E 槽」。
+
+  旧的那份存成 `compose.yaml.prev-20261123-warc`。这次只跑了 `up -d --no-deps ops`，程序还是上面 11-22 那版：`web.py`、`panorama.py` 里 E 槽的短名要等下次换程序才会装上。核对过三个 11-23 新抓的页，网页核查打得开；首页只显示 E 槽。
+- **資料庫也开爬虫帐本**（11-23 用户：「加，用每晚备份」）：datasette 多挂 `D:/nknu-backup/crawler-nightly:/ledger:ro`。启动时 `datasette/ledger_copy.py` 把最新一份每晚备份拷到容器的 `/tmp/frontier.db`（约 10 秒），拿掉帐本的四个检视后再开，名字叫 `frontier`（「爬蟲帳本（每晚備份）」）；表名、栏位和三条查询的说明在 `metadata.yaml`，`url`、`request` 两张表默认显示的栏位在 `plugins/columns.py`。要拿掉检视，是因为这个映像的 SQLite 3.40 读不了 `page_resource`（parser stack overflow），读不了 datasette 就整个起不来：11-23 05:17 第一次直接开，資料庫停了约 3 分钟，已经退回再重装。帐本是每晚开跑前的状态，比正在写的晚一晚；换库后 datasette 重启时换成当晚那份。11-23 05:4x 装上（只换了这三个档和 compose，`up -d --no-deps datasette`）；旧 compose 留成 `compose.yaml.prev-20261123-ledger`，旧的两个档在卷里留成 `.prev-1123`。
+- **11-22 夜的预览已经清掉**（11-23 用户说「删掉」）：容器 `nknu-inspect-next-ops-next-1`、磁碟区 `nknu-ops-next`、`/work/inspect-next`、`C:\nknu-transfer\inspect-next` 都删了。之后改设计用 Mac 上的设计稿（`design.py`），不再在实验室开预览。
+- **还没清的**：旧零件（`tonight_page.funnel_html`、`nightbars_table`，`pipeline_page.site_steps`、`stage_html`，`charts.py` 的 ECharts）还在。
 - **建库或爬虫的程序在 `/work/src` 更新以后**要照「换程序」重装一次；01:00～04:00 每晚更新在跑，不重启检视台；只重启面板用 `restart ops datasette`。
 
 ## 经过（新的在前）
@@ -53,7 +61,7 @@
   - **转文字三条线的纪录标签改对了（11-21 22:29 装）**：侧栏「紀錄最後 50 行」原先手写成「轉網頁」「認圖片的字」，其实 B 线转网页和图片、C 线转压缩档（`deploy/lab-pipeline/lanes.sh` 的 ROUTES）；另一个 agent 复查时看出来的。现在标签直接取 `pipeline.LANES`，测试同时对着 `lanes.sh` 的分工，哪条线改了工作测试会先红。
   - **隧道**：`scripts/inspect-tunnel.sh` 只开 18001、18766、18878。
   - **每一步的纪录最后 50 行**（同一晚，用户看了另一个 agent 的评价后挑的）：首页每个步骤的侧栏底下有「紀錄最後 50 行」，点开才去读（`/api/log?name=`，名字只能是 `pipeline.LOG_FILES` 里的七个：update、export、laneA/B/C、build、ingest，不收路径；金钥样子的字会遮掉）。以前出错只说「細節在存檔的 update.log」，得连 SSH 去翻。容器自己的输出（`docker logs`）面板读不到，没做。
-  - **这台电脑**（首页「查詢服務」那一格）：C 槽、D 槽还剩多少，显卡内存用了多少（`pipeline.machine`；`--disk 名字=资料夹` 给要量的硬盘；显卡问 `nvidia-smi`）。剩不到 15% 或 50 GB 亮「留意」，不到 5% 或 15 GB 亮红。C 槽要另外挂一个 C 槽上的资料夹才量得到（compose 里 `C:/nknu-transfer/inspect:/host-c:ro`）：磁碟区在 Docker 的虚拟硬盘里，从里面量到的是虚拟硬盘，不是 C 槽。
+  - **这台电脑**（首页「查詢服務」那一格）：E 槽还剩多少，显卡内存用了多少（`pipeline.machine`；`--disk 名字=资料夹` 给要量的硬盘；显卡问 `nvidia-smi`）。剩不到 15% 或 50 GB 亮「留意」，不到 5% 或 15 GB 亮红。11-23 起只量 E 槽（借 WARC 那个挂载）：工作资料都在 E 槽，C 槽只剩 Windows，D 槽只放备份（爬虫账本每晚一份、只留 7 份，其余是一次性的备份），不会一直变大，用户说不用显示。要量别的槽得另外挂一个它上面的资料夹：磁碟区在 Docker 的虚拟硬盘里，从里面量到的是虚拟硬盘。
   - **网页核查的图例和记号（同一晚，用户用选取元素指出图标看不懂）**：图例每一行是一条纯色短线（实线或虚线），连结和图片在页面上怎么标，在表格上面用实物示范一次（`check_page.LEGEND_HOW`）。细线用的颜色另外定了一组（`theme.css` 的 `--good-s`、`--warn-s`、`--bad-s`、`--mute-s`；存档页白底上的记号用浅色那一组，写在 `pagecheck.MARK_CSS`），每个对底色都有 3.5:1 以上，用 dataviz 的 `validate_palette.js` 连灰色一起验过每两个颜色。色块和标签的颜色没动。
 - **11-21 19:40 装的一版**（`INSTALLED` 2026-11-21T19:40:59 bb405eb3；没提交）：补上面板上看不到的四样，都只读现成的档。
   - **每一步和上一步对帐**（首页每个步骤的侧栏「和上一步對帳」，`Step.link`、`link_left`）。以前上一步出的和下一步进的对不上，是因为各步数的单位不一样，中间还有一步没画：
@@ -170,7 +178,7 @@ http://127.0.0.1:18878/try 像学生的 AI 一样搜索：最上面是一个大�
 贴一个网址（或文件编号），左边是存档里的这一页（学校的 CSS、JavaScript 不跑，所以是素的），会进库的正文区有虚线框、选单等不进库的盖一层灰；每个链接、图片、按钮按账本的状态上色（绿＝抓到了，绿加橙点＝內容可疑，灰＝照规则不抓，橙＝下一轮，橙色虚线＝還沒決定，红＝失败，红色虚线＝账本里根本没有）。右边最上面一行是结论（这一页漏了没有、漏在哪、谁来补），下面分「沒抓到的」「要查的」两张清单，正文区的排前面；点一条左边会闪一下它的位置。
 
 - 点「開真實網頁」，学校现在的这一页开在萤幕右半边的另一个视窗；之后在左边点链接，两边一起跳。浏览器只在「点一下」的时候准开视窗，所以直接贴网址打开 `/check?url=…` 时要先点一次这个按钮。
-- 只读：检视台只读挂载爬虫的磁碟区 `nknu-crawl`（账本）和 `D:\nknu-crawl\warc`（WARC），不连学校的服务器。账本的 `-wal`、`-shm` 不在、又因为唯读打不开时，才改用 `immutable=1` 读（页面「要注意」会写「帳本用唯讀快照讀」）：爬虫没在跑时这样读是对的；`-wal` 里还有纪录、或是别的错误（忙、锁住）时不这样读，页面说「帳本正在寫入」，过一下再试（只读挂载下没在爬的时候测过，爬的时候没测过）。
+- 只读：检视台只读挂载爬虫的磁碟区 `nknu-crawl`（账本）和 `E:\nknu\warc`（WARC，11-23 从 `D:\nknu-crawl\warc` 搬来），不连学校的服务器。账本的 `-wal`、`-shm` 不在、又因为唯读打不开时，才改用 `immutable=1` 读（页面「要注意」会写「帳本用唯讀快照讀」）：爬虫没在跑时这样读是对的；`-wal` 里还有纪录、或是别的错误（忙、锁住）时不这样读，页面说「帳本正在寫入」，过一下再试（只读挂载下没在爬的时候测过，爬的时候没测过）。
 - 设计：`docs/superpowers/specs/2026-11-16-page-check-design.md`（不用记网址的入口是第六节）；程序：`src/nknu/ops/pagecheck.py`（一页的资料）、`check_page.py`（一页的页面）、`sweep.py`（背景逐页核查、网站和网页清单的资料）、`check_sites.py`（入口和网站页）。
 
 ## 换程序

@@ -42,10 +42,11 @@ def swap_kind(key: str) -> bool:
 
 def age_words(nights: int, open_: bool) -> tuple[str, str]:
     """(the chip, its floating card) of a problem listed `nights` nights in a row counting this one; open_: the list
-    goes no further back (it was there on the first night kept, or a night between was not kept)."""
+    goes no further back (it was there on the first night kept, or a night between was not kept). Days, not nights,
+    since a night is named by the day it runs (owner 11-23: 「≥N 天」 on 總覽's 待處理)."""
     if open_:
-        return f"至少 {nights} 晚", "從開始記問題清單的那一晚就在；更早有沒有，檢視台沒有紀錄"
-    return f"第 {nights} 晚", f"連續 {nights} 晚都列在這裡"
+        return f"≥{nights} 天", "從開始記問題清單的那一晚就在；更早有沒有，檢視台沒有紀錄"
+    return f"第 {nights} 天", f"連續 {nights} 天都列在這裡"
 
 
 def split(rows: list[dict], base: dict | None, *, reading: bool = False, swap_known: bool = True) -> dict | None:

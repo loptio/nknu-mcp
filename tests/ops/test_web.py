@@ -280,7 +280,7 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
     # since 11-17 every panel shows nknu/ops/theme/bar.py's bar: 檢視台's own pages by path, the others by address
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
-        pages = {path: client.get(path).text for path in ("/", "/tonight", "/try", "/doc", "/trace?ref=d3")}
+        pages = {path: client.get(path).text for path in ("/", "/try", "/doc", "/trace?ref=d3")}
     for path, page in pages.items():
         assert "href='/sites'" in page and "href='http://127.0.0.1:18001/'" in page, path
         assert "href='/'" in page and "href='/try'" in page, path
@@ -291,10 +291,9 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
         assert ">資料庫<svg" in page and "class='nk-mode'" in page and "翻庫" not in page, path
     bars = {path: page.split("<header class='nk-bar'>", 1)[1].split("</header>", 1)[0] for path, page in pages.items()}
     marked = {path: re.findall(r"aria-current='(?:page|true)'>([^<]+)<", b)[:1] for path, b in bars.items()}
-    assert marked == {"/": ["總覽"], "/tonight": ["總覽"], "/try": ["搜尋"], "/doc": [], "/trace?ref=d3": []}
-    assert "aria-current='true'>總覽</a>" in bars["/tonight"]  # a night is reached from 總覽: marked, not as its page
+    assert marked == {"/": ["總覽"], "/try": ["搜尋"], "/doc": [], "/trace?ref=d3": []}
     assert all(("class='nk-find nk-on'" in b) == (path in ("/doc", "/trace?ref=d3")) for path, b in bars.items())
-    assert "data-tip='收了什麼、缺什麼" in pages["/tonight"]  # what each entry is floats over its name
+    assert "data-tip='收了什麼、缺什麼" in pages["/try"]  # what each entry is floats over its name
 
 
 def test_a_trace_opens_with_the_five_steps_state(site):
@@ -328,7 +327,7 @@ def test_the_search_page_says_what_ran_when_no_rerank_did(db, tmp_path):
     from nknu.retrieval.hybrid import HybridConfig
 
     with _client(tmp_path / "t.db", tmp_path, config=HybridConfig(rerank=False)) as client:
-        page = client.get("/search", params={"q": "停修", "doc": "dx"}).text
+        page = client.get("/search", params={"q": "停修", "doc": "dx"}).text.split("<style id='design-")[0]  # not the layer
     assert "沒有重排" in page and "對題×" not in page and "進重排" not in page and "None" not in page
 
 
@@ -415,12 +414,13 @@ def test_the_pages_warn_when_the_installed_copy_lags_the_pipelines_code(db, tmp_
         page = client.get("/search").text
         doc = client.get("/doc").text
         elsewhere = [client.get(path).text for path in ("/", "/tonight", "/units")]
-    assert "建庫的程式不一樣" in page and "nknu/content/build.py" in page and "重裝" in page  # the files float
-    # since 2026-11-22 evening only where the panel's own copy computes what is shown: 搜尋's scores, 文件's reasons
-    assert "建庫的程式不一樣" in doc and not any("建庫的程式不一樣" in x for x in elsewhere)
+    # 11-23 design: no yellow line on any page; on the pages the shell draws, the top bar's 庫建於 says it on hover
+    for text in (page, doc, *elsewhere):
+        assert "建庫的程式不一樣" not in text
+    assert "建庫的程式有 1 個檔不一樣" in page and "建庫的程式有 1 個檔不一樣" in doc
     fresh = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(fresh, base_url=BASE) as client:
-        assert "建庫的程式不一樣" not in client.get("/search").text
+        assert "個檔不一樣" not in client.get("/search").text
 
 
 def test_a_file_the_pack_replaced_is_fine_once_the_pipeline_has_the_packs_own_version(tmp_path):
@@ -500,21 +500,25 @@ def test_the_sites_overview_is_a_page_of_the_panel_itself(lib):
         assert "正在統計" in first.text and lib.get("/sites/data.json").status_code == 404
     with state.lock:
         state.page, state.page_gz, state.data = b"<p>sites</p>", __import__("gzip").compress(b"<p>sites</p>"), {"k": 1}
-    assert lib.get("/sites").text == "<p>sites</p>" and lib.get("/sites/data.json").json() == {"k": 1}
+    assert lib.get("/sites").text.startswith("<p>sites</p>") and lib.get("/sites/data.json").json() == {"k": 1}
     assert lib.get("/sites", headers={"Accept-Encoding": "gzip"}).headers["content-encoding"] == "gzip"
-    # 2026-11-22 evening: 內容's band (content_band: the crawler, what holds no document, the switch to 單位) is drawn
-    # at each request and put first in the kept page's main; the page is compressed after
+    # 11-23 design: 內容's band is 抓取覆蓋 (content_band.band_for), the night's band and log sit in their places
+    # (night_view, filled by overview.fill), the layers content, night and drawers come once; the page is
+    # compressed after; ?embed=1 is 總覽's frame, without the band
     with state.lock:
-        state.page = b'<header>bar</header><main class="app"><p>sites</p></main>'
+        state.page = (b'<header>bar</header><main class="app"><!--NIGHT-BAND--><p>sites</p><!--NIGHT-LOG--></main>'
+                      b'</body>')
     page = lib.get("/sites", headers={"Accept-Encoding": "gzip"})
-    assert page.headers["content-encoding"] == "gzip" and page.text.count("class='ct-band'") == 1
-    head, main = page.text.split('<main class="app">', 1)
-    assert head == "<header>bar</header>" and main.startswith("<style>") and main.endswith("<p>sites</p></main>")
-    assert "<h1>內容</h1>" in main and "aria-current=page>按網站</a>" in main and "href='/units'" in main
+    assert page.headers["content-encoding"] == "gzip" and page.text.count("id='csCard'") == 1
+    assert "id='nightBand'" in page.text and "<!--NIGHT-BAND-->" not in page.text and "<!--NIGHT-LOG-->" not in page.text
+    # the layers ride the kept page (overview.render puts them in once); a request adds none (review 11-23: twice
+    # registered content.js's clicks, two /api/raw and /api/night computations a click)
+    assert "<style id='design-" not in page.text and "href='/units'" not in page.text
     assert lib.get("/sites").text == page.text  # the same page uncompressed
-    units = lib.get("/units").text
-    assert "aria-current=page>按單位</a>" in units and "aria-current='true'>內容</a>" in units  # 單位 is 內容's
-    assert "<title>單位 · 內容 · 檢視台</title>" in units
+    frame = lib.get("/sites", params={"embed": "1"}).text
+    assert "id='csCard'" not in frame and "id='nightBand'" not in frame
+    units = lib.get("/units", follow_redirects=False)
+    assert units.status_code == 307 and units.headers["location"] == "/sites"  # 單位 went into 內容
 
 
 def test_the_log_route_answers_a_known_name_and_nothing_else(lib):

@@ -41,7 +41,9 @@ WAIT, RUN, DONE, STOP = "wait", "run", "done", "stop"  # the four states a part 
 CELLS = (("crawl", "爬取"), ("export", "導出"), ("totext", "轉文字"), ("build", "建庫"), ("swap", "換庫"))
 NIGHTS = 7
 PICKABLE = 60  # ?night= further back than this many days, or after tomorrow, is ignored (review 2026-11-17) 【Claude】
-TONIGHT = "/tonight"  # 每晚運行's address since 2026-11-22 (總覽 is the front page, /) 【Claude】
+TONIGHT = "/tonight"  # 每晚運行's address since 2026-11-22 (總覽 is the front page, /) 【Claude】; since 11-23 it only
+#                       sends on to the night view (NIGHT_VIEW, night_href)
+NIGHT_VIEW = "/sites"  # 定時更新: a night is 內容 in night mode, /sites?date=<run day> (owner 11-23, nknu.ops.night_view)
 START = dtime(1, 0)  # the Windows task's hour (nightly_update.cmd, scheduled 01:00)
 MISSED = dtime(2, 0)  # nothing started by then: 沒跑 (the lead's brief, 11-17)
 QUIET = 30 * 60  # update.log silent this long while the latest night has not ended: it may be stuck 【Claude】
@@ -53,8 +55,9 @@ INGEST_WAIT = 30 * 60  # the ingest follows the crawler at once (nightly_update.
 #                        start 【Claude】
 INGEST_LONG = pl.INGEST_LONG  # a run still marked running after this long was cut off (the container stopped)
 STATE_WORDS = {WAIT: "還沒開始", RUN: "跑中", DONE: "完成", STOP: "停了"}
-# a night's mark: ok, warn, bad, run (going on), wait (not yet due), missed (沒跑), off (before the chain went live)
-NIGHT_WORDS = {OK: "正常", WARN: "停了", BAD: "出錯", "run": "跑中", "wait": "還沒開始", "missed": "沒跑",
+# a night's mark: ok, warn, bad, run (going on), wait (not yet due), missed (沒跑), off (before the chain went live).
+# A warn night is 留意 (the 11-23 design's word, map NV04): 停了 read as stopped on 11-22, whose five parts all finished
+NIGHT_WORDS = {OK: "正常", WARN: "留意", BAD: "出錯", "run": "跑中", "wait": "還沒開始", "missed": "沒跑",
                "off": "還沒上線"}
 # build.sh's steps (its header), in plain words; the library takes the old one's place at the end of step 5
 BUILD_STEPS = {"3": "轉文字記帳", "4": "組裝", "5": "建庫和算向量", "6": "找標準答案", "7": "33 題測試", "8": "真資料檢查",
@@ -82,6 +85,27 @@ def label_of(night: date, now: datetime | None = None) -> str:
     """A night named by its evening, 「11-16 夜」, whatever the time now (今晚 and 昨晚, which changed at 06:00, until
     the owner's 「一个页面叫"今晚"你觉得合理吗」, 11-17; the name picked with a cold reader)."""
     return f"{night:%m-%d} 夜"
+
+
+def run_day(night: date | str) -> str:
+    """The day a night's 01:00 run starts (its name on the pages since 11-23: 「名字按开跑那天」), YYYY-MM-DD: the one
+    mapping (CR-03), re-exported by nknu.ops.sources beside its inverse night_of_run (sources imports this module, so
+    it is defined here)."""
+    day = night if isinstance(night, date) else date.fromisoformat(str(night)[:10])
+    return (day + timedelta(days=1)).isoformat()
+
+
+# the steps of 流水線 (pipeline.PROBES) that are parts of the night, by the night view's step key
+NIGHT_STEP = {"crawl": "crawl", "export": "export", "totext": "totext", "build": "build", "swap": "swap",
+              "nightly": "swap"}
+
+
+def night_href(night: date | str, step: str | None = None) -> str:
+    """The night view of a night (its key, as night_of gives it): /sites?date=<run day>, with &step=<key> when one of
+    its five steps (or the pipeline's nightly) is meant: the page opens that step's detail."""
+    href = f"{NIGHT_VIEW}?date={run_day(night)}"
+    key = NIGHT_STEP.get(step or "")
+    return f"{href}&step={key}" if key else href
 
 
 def starts_at(night: date) -> str:
@@ -996,7 +1020,8 @@ def _with_changes(label: str, night: dict, changes: dict | None) -> dict:
 def tonight(where: Where, *, night: str | None = None, changes: dict | None = None,
             now: datetime | None = None) -> dict:
     """The home page's top: {'now', 'default', 'shown' (a night: label, state, word, cells), 'nights' (the last
-    NIGHTS, oldest first: night, date, label, state, word, href), 'sentence' (of the default night), 'crawler' (the
+    NIGHTS, oldest first: night, date, label, state, word, run (its run day), href (its night view, night_href)),
+    'sentence' (of the default night), 'crawler' (the
     crawler's own counts of its last night), 'sig' (changes when anything shown changes: the page reloads then),
     'live' (something runs)}. night: the night to show (YYYY-MM-DD, at most PICKABLE days back and not after
     tomorrow), else the default one."""
@@ -1021,8 +1046,8 @@ def tonight(where: Where, *, night: str | None = None, changes: dict | None = No
         nights[shown_day] = one_night(r, shown_day)
     if base not in nights:
         nights[base] = one_night(r, base)
-    for d, n in nights.items():
-        n["href"] = TONIGHT if d == base else f"{TONIGHT}?night={d.isoformat()}"
+    for d, n in nights.items():  # a night opens in the night view, named by its run day (owner 11-23)
+        n["href"], n["run"] = night_href(d), run_day(d)
     sentence = first_sentence(nights[base], changes)
     # what the last swap's comparison found (查不出原因, ours to look at) marks that night too, not only the sentence
     rank = {OK: 0, WARN: 1, BAD: 2}

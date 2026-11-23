@@ -297,15 +297,17 @@ def test_a_tile_names_its_site_only_where_the_name_reads_whole() -> None:
 
 
 def test_the_build_s_reminders_say_what_is_wrong_in_plain_words() -> None:
-    """diagnosis.md 資料總覽 ③ and the owner's rule of 11-16 for new names (tried on a cold reader first)."""
-    names = {"none": "沒有文件進庫", "self": "用標題找不回文件", "empty": "網頁沒文字", "same_title": "多份文件同一標題",
-             "same_opening": "選單混進正文", "fragments": "附件一字一行"}
+    """diagnosis.md 資料總覽 ③ and the owner's rule of 11-16 for new names (tried on a cold reader first); 11-23 (owner:
+    「整个内容页有哪些名字和词需要换的，你换一下」) the design's shorter names, the site page's word for empty pages."""
+    names = {"none": "無文件", "self": "標題搜不到", "empty": "網頁無文字", "same_title": "標題重複",
+             "same_opening": "選單混入正文", "fragments": "附件逐字斷行"}
     for key, name in names.items():
         assert f"{key}: ['{name}', " in PAGE, key
-    assert "const CK_SPIKE = ['檔案時間整批相同', " in PAGE
+    assert "const CK_SPIKE = ['檔案時間雷同', " in PAGE
     assert set(names) == set(data_mod.CHECK_KINDS)  # every reminder the data carries has its name
     code = PAGE.split("<script", 1)[1]
-    for old in ("'用標題搜不到'", "'同名標題'", "'開頭相同'", "'碎字附件'", "'整批檔案時間'"):
+    for old in ("'用標題搜不到'", "'同名標題'", "'開頭相同'", "'碎字附件'", "'整批檔案時間'", "'沒有文件進庫'", "'用標題找不回文件'",
+                "'網頁沒文字'", "'多份文件同一標題'", "'選單混進正文'", "'附件一字一行'", "'檔案時間整批相同'"):
         assert old not in code, old
     assert 'class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' in PAGE  # 新 says since when
     assert "新出現 ' + n + ' 項</span>" in PAGE and "'新出現 ' + c.nw.length" not in PAGE
@@ -317,7 +319,8 @@ def test_every_site_leads_to_its_page_in_the_inspection_panel() -> None:
     The address comes from panels.json through nknu.ops.overview (__LINKS__), not written in the page twice."""
     assert '<script id="links" type="application/json">__LINKS__</script>' in PAGE
     assert "const SITE_PAGE = LINKS.site ||" in PAGE and "const TABLES = LINKS.tables ||" in PAGE
-    assert '<a class="nm-a" href="\' + esc(SITE_PAGE + encodeURIComponent(s.k)) + \'"' in PAGE
+    # 11-23: with a reminder of 品質提醒 picked as the filter, the site's page opens on it (&ck=)
+    assert '<a class="nm-a" href="\' + esc(SITE_PAGE + encodeURIComponent(s.k) + (S.ck ? \'&ck=\' + S.ck : \'\')) + \'"' in PAGE
     assert 'id="iGo" hidden' in PAGE and "這個網站的詳情 →" in PAGE
-    assert "go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k);" in PAGE
+    assert "go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k) + (S.ck ? '&ck=' + S.ck : '');" in PAGE
     assert "if (ev.target.closest('a[href]')) return;" in PAGE  # a name's link goes, it does not only pick the row

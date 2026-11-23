@@ -15,7 +15,7 @@ from pathlib import Path
 from selectolax.lexbor import LexborHTMLParser
 from starlette.testclient import TestClient
 
-from nknu.ops import charts, history, home_page, panorama, site_page, todo, tonight_page, web
+from nknu.ops import charts, history, home_page, night_view, panorama, site_page, todo, tonight_page, web
 from nknu.ops.pipeline import BAD, CRAWLER, OK, WARN, Step
 from nknu.ops.theme import bar
 from tests.ops.library import models
@@ -202,22 +202,23 @@ def front_todo(s: dict, t: dict | None = None) -> LexborHTMLParser:
 
 def test_every_problem_is_listed_once_where_it_is():
     tree = front_todo(snap())
-    items = tree.css("#todo > .pn-tlist li")
-    rows = [li.css_first(".pn-twhat").text() for li in items]
+    items = tree.css("#todo li[data-sev]")  # 總覽's 待處理 (its 11-23 markup: panorama.todo_card)
+    rows = [li.css_first(".td-what").text() for li in items]
     # 流水線's export step and the site it names: one row each, where · what the source says (spec 八.5), on 總覽
     assert len(rows) == 2 and rows[0].startswith("導出有 1 站") and rows[1].startswith("甲處新導出")
     assert [li.attributes["data-sev"] for li in items] == [WARN, WARN]
-    assert not any("交給" in r for r in rows) and tree.css_first("#todo .pn-tcount").text() == "2"
-    step, site = (li.css_first("a") for li in items)
+    assert not any("交給" in r for r in rows) and tree.css_first("#tab-todo b").text() == "2"
+    step, site = (li.css_first(".td-what a") for li in items)
     assert site.attributes["href"] == "/site?site=a.example" and site.text() == "甲處"
-    assert step.attributes["href"] == "/tonight#step-export"  # a step opens its panel on 每晚運行
+    # a step of the night opens its detail in the night view (11-23: 內容 at /sites?date=<run day>&step=<key>)
+    assert step.attributes["href"] == "/sites?date=2026-11-17&step=export"
     # 每晚運行 counts them in its sentence and sends there
     say = LexborHTMLParser(page()).css_first(".v3-say")
     assert say.css_first("a").attributes["href"] == "/#todo" and say.text().endswith("有 2 個問題 列在總覽的要處理")
     calm = front_todo({**snap(), "steps": [], "sites": []})
-    assert calm.css_first(".pn-tnone") is None and "正在讀各步驟的紀錄" in calm.css_first("#todo").text()
+    assert "正在讀各步驟的紀錄" in calm.css_first("#todo .td-none").text()
     none = front_todo({**snap(), "steps": [snap()["steps"][0]], "sites": []})
-    assert "沒有要處理的" in none.css_first("#todo .pn-tnone").text() and none.css_first("#todo .pn-tcount") is None
+    assert "沒有要處理的" in none.css_first("#todo .td-none").text() and none.css_first("#tab-todo b") is None
     assert LexborHTMLParser(home_page.home_body({**snap(), "steps": [snap()["steps"][0]], "sites": []}, tonight(), None,
                                                 hist(), {})).css_first(".v3-say a") is None  # nothing to send to
 
@@ -440,14 +441,25 @@ def test_the_app_keeps_the_record_where_it_is_told_and_says_when_it_cannot(db, t
     assert app.state.store.enabled and ops.exists()
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         got = client.get("/api/history").json()
-        home = client.get("/tonight").text
-    assert got["enabled"] and len(got["days"]) == 14 and got["file"] == str(ops)
-    assert "還沒有紀錄：第一晚跑完以後就有" in home
+    assert got["enabled"] and len(got["days"]) == 14 and got["file"] == str(ops) and got["why"] == ""
+    assert not any(got["nights"])  # none yet: the first night's run writes the first
+    # the night view (/tonight sends on to it since 11-23) says it under its head, from the app's own store: the
+    # answer /api/night gives the page, which night.js draws in #ntNote (test_night_view_1123's page test)
+    night = night_view.api(app.state.recorder.where, app.state.store, {}, now=at("2026-11-17T09:00:00"))
+    assert night["store"] == {"on": True, "why": "還沒有紀錄：第一晚跑完以後就有"}
+    assert night["note"] == "還沒有紀錄：第一晚跑完以後就有"
     inside = web.create_app(where_db, tmp_path, models=models(), today_fn=lambda: TODAY, ops_db=tmp_path / "o.db",
                             record=False)
     assert not inside.state.store.enabled and not (tmp_path / "o.db").exists()  # never under --root (/work)
+    # the night view and the API say why nothing is kept
+    why = "紀錄檔不能放在資料或爬蟲存檔的資料夾裡（" + str(tmp_path / "o.db") + "）"
     with TestClient(inside, base_url="http://127.0.0.1:8878") as client:
-        assert "紀錄檔不能放在資料或爬蟲存檔的資料夾裡" in client.get("/tonight").text
+        assert client.get("/api/history").json()["why"] == why
+    night = night_view.api(inside.state.recorder.where, inside.state.store, {}, now=at("2026-11-17T09:00:00"))
+    assert night["store"] == {"on": False, "why": why}
+    assert night["note"] == f"每晚的紀錄沒有存：{why}；前幾晚的數字看不到"
+    band = LexborHTMLParser(night_view.band_html())  # the place it is said: under the head, hidden until there is one
+    assert band.css_first(".nt-head #ntNote") is not None and "hidden" in band.css_first("#ntNote").attributes
 
 
 def test_the_recorder_writes_a_finished_night_the_home_then_draws(db, tmp_path, tmp_path_factory):

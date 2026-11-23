@@ -33,6 +33,7 @@ import html
 
 from starlette.responses import HTMLResponse
 
+from nknu.ops import design
 from nknu.ops.theme import bar as theme
 
 FONT = 'system-ui,-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans CJK TC",sans-serif'
@@ -536,26 +537,22 @@ def kind_tag(kind: str | None, words: dict[str, str]) -> str:
     return f"<span class='kind'>{icon(KIND_ICON.get(kind, 'page'), 13)}{e(words.get(kind, kind))}</span>"
 
 
-def shell(title: str, body: str, db: dict, status: int = 200, *, tab: str = "") -> HTMLResponse:
+def shell(title: str, body: str, db: dict, status: int = 200, *, tab: str = "", layer: str = "") -> HTMLResponse:
     """The page around body: the panels' one top bar (nknu.ops.theme.bar, with when the library was built at its end)
-    and, when the installed copy lags the pipeline's code, a note saying so (review 11-15: nothing showed it)."""
+    and the page's 11-23 design layers (nknu.ops.design; several names comma-separated) after everything else."""
     built = (db.get("built_at") or "")[:16].replace("T", " ")
     state = db.get("install")
+    # the installed copy lagging the pipeline's code is said on the top bar's hover; the yellow line it had on 搜尋 and
+    # 文件搜尋 went with the 11-23 design (owner: the cut list, 「照清单做」)
+    drift = (f"檢視台的程式和建庫的程式有 {len(state['drift'])} 個檔不一樣：分數和「沒進庫的原因」可能不是現在的規則"
+             if state and state["drift"] else "")
     hover = "\n".join(x for x in (
         f"正式庫 {built} 建好" + (f"（{db['schema']}）" if db.get("schema") else ""),
-        f"檢視台的程式 {state['installed'][:16].replace('T', ' ')} 裝" if state else "") if x)
+        f"檢視台的程式 {state['installed'][:16].replace('T', ' ')} 裝" if state else "", drift) if x)
     # 庫建於, not 資料截至: beside a section's 「頁面更新」 a cold reader took two times for one (the lab, 11-17)
-    meta = f"<span data-tip='{e(hover)}'>庫建於 {e(built[5:])}</span>" if built else ""
-    note = ""
-    # only where the panel's own copy of the content code computes what is shown (a search's scores, why a document
-    # is not in the library): on every page it was a line nobody read after the first day (2026-11-22 evening)
-    if state and state["drift"] and tab in ("try", "doc"):
-        some = "、".join(state["drift"][:3]) + (" 等" if len(state["drift"]) > 3 else "")
-        note = (f"<div class='note'>{icon('warn', 16)}<div data-tip='{len(state['drift'])} 個檔不一樣：{e(some)}\n"
-                "照 deploy/lab-inspect/README.md「換程序」重裝一次就一致了'>檢視台的程式和建庫的程式不一樣："
-                "分數和「沒進庫的原因」可能不是現在的規則</div></div>")
+    meta = f"<span data-tip='{e(hover)}'>庫建於 {e(built[5:] or '—')}</span>" if built or drift else ""
     page = ("<!doctype html><html lang='zh-Hant-TW'><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<style>{THEME}{CSS}</style>{theme.bar(tab, 'ops', meta)}"
-            f"<main>{note}{body}</main><script>{JS}</script><script>{TIP_JS}</script></html>")
+            f"<main>{body}</main><script>{JS}</script><script>{TIP_JS}</script>{design.layer(*layer.split(","))}</html>")
     return HTMLResponse(page, status_code=status, headers={"Cache-Control": "no-store"})

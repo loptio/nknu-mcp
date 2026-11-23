@@ -376,9 +376,9 @@ def test_the_schools_page_check_is_its_own_page_and_the_doc_search_opens_on_what
     tree = LexborHTMLParser(page.text)
     assert not tree.css("a.srow") and tree.css_first("form#chk-ask input[name=url]") is not None
     empty = LexborHTMLParser(client.get("/doc").text)
-    assert empty.css_first("#doc-list .dc-empty h2").text() == "可以打什麼" and len(empty.css(".dc-hints li")) == 4
-    assert empty.css_first(".dc-try a").attributes["href"].startswith("/doc?q=") and not empty.css("#doc-list .lists")
-    assert empty.css_first("a.dc-more").attributes["href"] == "/check" and "已核查" not in empty.text()
+    # 11-23 design: what the box takes is the ? beside it, not a card under it
+    assert not empty.css("#doc-list .dc-empty") and "可以打" in empty.css_first("form.dc-ask .pd-hp").attributes["data-tip"]
+    assert not empty.css("#doc-list .lists") and "已核查" not in empty.text()
     assert "dc-empty" in client.get("/doc/find").json()["html"]
     assert "已核查 8 頁" in page.text and "爬蟲能補" in page.text and "選單裡沒抓到" in page.text
     assert "帳本裡沒有這個網址" not in page.text and "<iframe" not in page.text
@@ -864,8 +864,9 @@ def test_one_sites_page_holds_everything_about_it_in_order(client):
     # normal, the documents, the nights, the last swap; then 網頁核查 across the page
     assert tree.css_first("header.st-head").attributes["data-q"] == "1"
     secs = [(x.attributes["id"], x.attributes["data-q"], x.css_first("h2").text().strip()) for x in tree.css("section.st-q")]
-    assert secs == [("flow", "2", "流程"), ("problems", "3", "問題"), ("docs", "4", "文件"), ("nights", "5", "每晚紀錄"),
-                    ("changes", "6", "上次換庫的變動")]
+    # 11-23 design: 每晚紀錄 went (the nights are on 內容); the layer then folds 文件 and 上次換庫 into the head
+    assert secs == [("flow", "2", "流程"), ("problems", "3", "問題"), ("docs", "4", "文件"), ("changes", "6", "上次換庫的變動")]
+    assert tree.css_first("#quality") is not None and tree.css_first("a#sqBack").attributes["href"] == "/sites"
     text = page.text
     assert text.index("id='changes'") < text.index("<h2 class='sec st-sec st-check' id='check'>網頁核查")
     assert "各步驟細節" not in text and "echarts" not in text  # a step's facts are in its panel; no chart library

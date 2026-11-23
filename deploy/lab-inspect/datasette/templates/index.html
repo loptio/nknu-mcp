@@ -1,13 +1,12 @@
 {% extends "base.html" %}
 {#- The home page. Owner 11-15: 「连有几个表 怎么连的 每个表和字段代表什么都还不知道」, then of the panels 「字太雜了…沒有很
     人性化的讓人看到」, then of this round 「頁面廢話太多了」「我想看原始數據長什麼樣子，有幾個欄位」「找網站的時候有點費勁」. So,
-    【Claude】: first what one comes here to do, with no sentence around it: find a site (one box over every site,
-    templates/_sitefind.html), find a document by its title, open a table as it is; then the official library as a
+    【Claude】: first what one comes here to do, with no sentence around it: open a table as it is (finding a site and a
+    document by its title moved to the panel on 11-23); then the official library as a
     map (its tables as boxes in four framed groups, the joins as lines, a bar in each box for how many rows it
     holds) with one panel beside it for the table that was clicked: its columns by name, each one's meaning floating
     over it (owner 11-15: 「想缩短文字 但又想保留细节导致不上不下的」, and 資料總覽's floating words as the way). The data
     comes from plugins/guide.py, the meanings from metadata.yaml, the look from static/tc.css. -#}
-{% from "_sitefind.html" import finder %}
 
 {% block title %}{{ metadata.title or "Datasette" }}{% endblock %}
 
@@ -17,16 +16,10 @@
 <div class="home">
 {% if guide %}
 {%- set base = urls.database(guide.database) %}
-<div class="start">
-  <section class="card find">
-    <h3>網站<span>{{ guide.sites|length }} 個</span><a href="{{ base }}/sites_overview" data-tip="每個網站的文件數、資料截至、沒抓到的網頁和檔案">明細</a></h3>
-    {{ finder(guide.sites, base ~ "/site_docs?site=", base ~ "/site_undated_why?site=", name_go=site_page) }}
-  </section>
+{#- 2026-11-23 owner: the sites list and the title search left this page; the panel's 內容 lists the sites, its top bar
+    finds documents. The raw tables stay, the reason one comes here. -#}
+<div class="start solo">
   <div class="side">
-    <form class="card do" action="{{ base }}/find_title" method="get">
-      <h3>用標題找文件</h3>
-      <div class="row"><input type="text" name="words" placeholder="標題裡的字，繁體簡體都可以" aria-label="標題裡的字" required><button class="go" aria-label="搜尋" data-tip="搜尋"><svg class="ic" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.3"/><path d="m10.3 10.3 3.2 3.2"/></svg></button></div>
-    </form>
     <section class="card do raw">
       <h3>原始資料<a href="{{ base }}?_show_hidden=1#tables" data-tip="連同章節、小段、索引這些平常用不到的表">全部 {{ guide.tables|length }} 張</a></h3>
       <div class="tbls">
@@ -132,5 +125,4 @@
   fromHash();
 })();
 </script>
-<script src="{{ urls.path('/static/sitefind.js') }}"></script>
 {% endblock %}

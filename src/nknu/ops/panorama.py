@@ -1,91 +1,83 @@
-"""總覽 (/), 檢視台's front page: first what needs a look, then the whole project.
+"""總覽 (/), 檢視台's front page, as the owner designed it on 11-23 (research/design_2026-11-23/index.html, 「照这个改」;
+the scripts beside it say how each part came about):
 
-2026-11-22 the owner picked 「项目全景」 (scale, where the documents come from, how students use it, how right the search
-is, the nights and the crawler, as charts with few words). The same evening, after the review that the panels showed one
-thing in several places and lit standing problems like new ones (owner: 「你先全部做」), the page answers two questions
-in turn: the first screen 「現在正不正常？要處理什麼？」 (one sentence, three figures, 要處理 from nknu.ops.todo, the
-last seven nights, each opening its night), and below 全景 (the documents by year and by source, the public service's
-use, this machine, the AI test). The crawler lives on 內容. How right the search is has no figure here: the question
-bank checks the whole project now and then, never the night (owner, 2026-11-22 night: 「拿这些题目和答案做质量检查其实
-没什么意义……删了这个流程吧」); the 33 test questions are tried by hand on 搜尋.
+  1. the calendar (nknu.ops.calendar): one cell a night under the day it runs, the week first, each opening its night
+     on 內容 (/sites?date=<run day>)
+  2. 網站訪問量 (nknu.ops.visits) on the left, beside one card of three tabs: 待處理 (nknu.ops.todo: one alert a line
+     in the source's own words, the new first, each with its age and 標成已知 with six reasons to pick), 日誌 (every
+     line of the night's logs: nknu.ops.logs, read a page at a time through GET /api/logs, logs.api_window, the one
+     handler 內容's night log asks too) and 已知 (every mark, kept until taken off, with where its problem stands)
+  3. one card: 內容's 文件日期分佈 and 全部網站 (the page of every site in a frame, /sites?embed=1, drawn by 內容) with
+     這台電腦 under the donut (machine_block, put there by web.py through overview.fill's embed side; the page puts
+     it there itself when the frame came without it)
 
-Every number is read as a number: the pipeline's steps carry them (Step.nums: the services' use and the machine), the
-sites' data and the nights' record are numbers already. Nothing is read back out of
-a sentence.
+Gone with the design: the visible title (kept for screen readers), the night's sentence and the 要處理 pill, the three
+figures on top (學生搜到的庫, the old 對外查詢 card, 該抓的抓到: moved to 內容), 最近 7 晚 (the calendar has every
+night), 全景 with 收錄網站 and AI 實測, 文件年份分佈 and 文件從哪裡來 (the frame). The browser's side (the switches,
+the countdown, the live line and the day chart, the tabs, the log viewer, the reasons to pick, the hover cards read
+for the eye) is the layer theme/design/home.js and home.css.
 """
 
 from __future__ import annotations
 
-import datetime as dt
-import math
-from urllib.parse import quote
+from datetime import datetime
 
+from nknu.ops import calendar, design, visits
+from nknu.ops.charts import ECHARTS
 from nknu.ops.look import CSS as LOOK_CSS
-from nknu.ops.look import TIP_JS, e, icon
-from nknu.ops.nightly import TONIGHT
+from nknu.ops.look import TIP_JS, e
 from nknu.ops.pipeline_page import AGAIN
+from nknu.ops.sources import night_of_run
 from nknu.ops.theme import bar as themebar
-from nknu.ops.tonight_page import night_word
+from nknu.ops.todo import known_rows, sightings
+
+# What web.py wires for 總覽 (the integration adds them; this module and visits draw):
+# - GET /: front() keeps what it reads and passes it whole:
+#     todo_res = todo_now(snap, night, changes)
+#     panorama.page(snap, {**night, "changes": changes}, data or {}, hist, built=built, todo=todo_res,
+#                   more=panorama.gather(store, known, where, {**night, "changes": changes}, snap, todo_res))
+#   (aitest is no longer read: AI 實測 left 總覽.)
+# - todo_now: one list with the nights' record (todo.night_rows: the night's problems and the WARC backup's row), and
+#   the night the rows are of, so a row's anchor leads to its place (todo.link):
+#     rows = todo.night_rows(night, snap, [] if reading else handle_rows(snap, changes), where.archive)
+#     ... todo.collect(parts, rows, panorama.machine_meters(snap), known.load(), night=night["default"])
+#   history.Recorder.keep_problems keeps the same list (DATA's file), or the backup's row never ages and its mark is
+#   never seen on 已知:  rows = todo.night_rows(t, snap, tonight_page.handle_rows(snap, changes), self.where.archive, now)
+# - GET /api/logs: nknu.ops.logs.api_window (DATA's ROUTES_TO_WIRE; 日誌 here sends its names: date, lv, src, q, n,
+#   before). This module has no handler of its own for it.
+# - GET /sites?embed=1 (總覽's frame): overview.fill(page, embed_side=panorama.machine_block(flow.snapshot())), the
+#   machine's tiles under the donut (home.js puts the same block there itself when the frame came without it).
+# - POST /todo/known: back to "/#known" when off=1 (a mark taken off on the 已知 tab), else "/#todo"; the layer opens
+#   the tab the address names.
+ROUTES_TO_WIRE = [
+    {"path": "/api/usage/live", "method": "GET", "handler": "nknu.ops.visits.live_api", "args": "where",
+     "returns": "JSON {now, end (epoch second), per_sec (330 counts, oldest first), read, poll_ms}; "
+                "Cache-Control: no-store (網站訪問量 · 即時 asks every 3 s)"},
+]
 
 TIP_CSS = LOOK_CSS[LOOK_CSS.index(".tip{") :]
-
-EPOCH = dt.date(1970, 1, 1)
-KINDS = (
-    ("notice", "公告", "var(--k0)"),
-    ("page", "一般網頁", "var(--k1)"),
-    ("attachment", "附件", "var(--k2)"),
-    ("event", "行事曆", "var(--k3)"),
-    ("link", "校外連結", "var(--k4)"),
-)
-# The nights' steps: the violet ramp, dark and light taking turns so two steps side by side never look alike, and the
-# build neutral; not the kinds' colours (a document's kind on the same page) nor the states' (green is "fine")
-GANTT_STEPS = (
-    ("crawl", "爬取", "var(--q5)"),
-    ("export", "導出", "var(--q2)"),
-    ("totext", "轉文字", "var(--q4)"),
-    ("build", "建庫", "var(--mute-s)"),
-    ("swap", "換庫＋檢查", "var(--q3)"),
-)
-VIA = (("mcp", "MCP", "var(--q5)"), ("api", "接口", "var(--q3)"), ("web", "網頁", "var(--q1)"))
-VERDICTS = (("right", "答對", "var(--good-s)"), ("partly", "部分對", "var(--warn-s)"), ("wrong", "答錯", "var(--bad-s)"),
-            ("none", "沒答", "var(--mute-s)"))
-STEP_MAP = {k: (w, c) for k, w, c in GANTT_STEPS}
-MARK = {"ok": "ok", "done": "ok", "warn": "warn", "stop": "warn", "bad": "no", "none": "dash", "wait": "dash"}
-SEV = {"done": "ok", "stop": "warn", "wait": "none"}
-FIRST_YEAR = 2004
-NIGHT_FROM, NIGHT_HOURS = 1, 9
-NIGHTS = 7
-TODO_SHOWN = 8  # rows of 要處理 in sight; the rest folded, never dropped 【Claude】
-
-
-def n(value: float) -> str:
-    return f"{value:,}"
-
-
-def pcts(values: list[int]) -> list[int]:
-    """Integer percentages summing to 100 via largest-remainder rounding."""
-    total = sum(values)
-    if total <= 0:
-        return [0] * len(values)
-    exact = [v * 100 / total for v in values]
-    floors = [int(x) for x in exact]
-    rem = 100 - sum(floors)
-    order = sorted(range(len(values)), key=lambda i: (-(exact[i] - floors[i]), -values[i]))
-    for i in order[:rem]:
-        floors[i] += 1
-    return floors
+LAYERS = ("richtip", "home")  # 內容's hover card read for the eye, then this page's own
+LOG_PAGE = 500  # log lines asked for at a time (the design's 「再顯示 500 行」)
+# 標成已知's reasons to pick (owner 11-23: 「加一些比较笼统通用的选项」): a pick fills the note, which can still be typed
+REASONS = ("校外網站，不歸我們", "學校本來就沒放內容", "網站已停用", "要登入才看得到", "照規則不收", "暫時的，過幾天再看")
+TODO_HELP = ("待處理：每晚流程停了或出錯、某個網站的數字不對、硬碟或記憶體過了警戒線，一件一行，照來源寫的原文。"
+             "「新出現」是前一晚沒有的。清單每 5 分鐘重算，好了就消失。標成已知的移到「已知」，按取消才回來。"
+             "日誌：爬取、導出、轉文字、建庫、進庫的每一行紀錄，可以搜尋，按等級和來源篩選。")
+WAITING = "網站的統計還在算（檢視台剛重啟時要幾分鐘），文件日期分佈和全部網站等它算好再出現。"
+TD_SVG = {"warn": "<path d='M8 3.2v5.6'/><circle cx='8' cy='11.8' r='.5' fill='currentColor'/>",
+          "bad": "<path d='M5 5l6 6M11 5l-6 6'/>"}
+FIND = ("<label class='lv-find'><svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' "
+        "stroke-width='1.6' aria-hidden='true'><circle cx='7' cy='7' r='4.5'/><path d='M10.5 10.5 14 14'/></svg>"
+        "<input id='lv-q' type='search' placeholder='搜尋紀錄（網址、站名、字詞）' aria-label='搜尋紀錄' autocomplete='off'>"
+        "</label>")
+MAX_BTN = ("<button type='button' class='lv-max-btn' aria-label='放大紀錄' data-tip='放大看紀錄（Esc 關閉）'>"
+           "<svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.6' "
+           "stroke-linecap='round' aria-hidden='true'><path d='M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9'/>"
+           "</svg></button>")
 
 
 def steps(snap: dict) -> dict:
     return {s["key"]: s for s in snap.get("steps") or []}
-
-
-def mark(state: str, word: str = "") -> str:
-    sev = SEV.get(state, state)
-    return f"<span class='pn-mark pn-{e(sev)}'>{icon(MARK.get(state, 'dash'), 13)}{e(word)}</span>"
-
-
-# -------------------------------------------------------------------------------------------- data shaping
 
 
 def nums_of(snap: dict, key: str) -> dict:
@@ -94,7 +86,8 @@ def nums_of(snap: dict, key: str) -> dict:
 
 
 def machine_meters(snap: dict) -> list[dict]:
-    """The machine's drives and memories as meters: {label, tone, pct, detail, sub, tip}; one unread is said so."""
+    """The machine's drives and memories as meters: {label, tone, pct, detail, sub, tip}; one unread is said so
+    (todo.machine_rows makes a 待處理 row of one past its warning line)."""
     serve = steps(snap).get("serve") or {}
     words = {r[0]: r[2] for r in serve.get("sides") or [] if len(r) >= 3}
     short = {"D 槽（爬蟲存檔）": "D 槽", "顯示卡記憶體": "顯示卡"}
@@ -115,701 +108,340 @@ def machine_meters(snap: dict) -> list[dict]:
     return out
 
 
-def warn_sites(snap: dict) -> list[dict]:
-    """Sites marked warn or bad in the latest pipeline snapshot."""
+# -------------------------------------------------------------------------------------------- 這台電腦
+
+
+# the three pictures (research/design_2026-11-23/scripts/machine.py): an outline, what is drawn inside, the band the
+# water fills (top, bottom), the view box and the width
+SHAPES = {
+    "disk": ("M14 10 h92 a8 8 0 0 1 8 8 v44 a8 8 0 0 1 -8 8 h-92 a8 8 0 0 1 -8 -8 v-44 a8 8 0 0 1 8 -8 Z", ""),
+    "ram": ("M4 22 h112 v34 h-3 v6 h-48 v-5 h-6 v5 h-55 v-6 h0 Z",
+            "".join(f"<rect x='{12 + i * 26}' y='28' width='18' height='20' rx='2' class='mc-chip'/>" for i in range(4))),
+    "gpu": ("M8 14 h102 a5 5 0 0 1 5 5 v38 a5 5 0 0 1 -5 5 h-102 Z",
+            ("<circle cx='38' cy='38' r='15' class='mc-fan'/><circle cx='84' cy='38' r='15' class='mc-fan'/>"
+             "<rect x='4' y='10' width='4' height='58' rx='1' class='mc-bracket'/>")),
+}
+INSIDE = {"disk": (10, 70), "ram": (22, 56), "gpu": (14, 62)}
+VIEW = {"disk": "4 8 112 64", "ram": "2 20 116 44", "gpu": "2 8 115 62"}
+WIDTH = {"disk": 54, "ram": 84, "gpu": 76}
+WAVE = "M-120 0 q15 -4 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 V80 H-120 Z"
+MC_CSS = """<style id='mc-css'>
+.mc-card .pn-chd{display:flex;align-items:center;justify-content:space-between}
+.mc-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
+.mc{display:grid;grid-template-columns:84px minmax(0,1fr);align-items:center;gap:12px;padding:7px 12px;border-radius:10px;
+background:var(--sunk);border:1px solid var(--line);cursor:help;min-width:0}
+.mc[data-tone=warn]{border-color:var(--warn-s)}.mc[data-tone=bad]{border-color:var(--bad-s)}
+.mc-svg{height:auto;justify-self:center}
+.mc-body{fill:var(--surface)}
+.mc-edge{fill:none;stroke:var(--line2);stroke-width:2.5}
+.mc-water{transition:transform .8s ease}
+.mc-water path{animation:mc-flow 5s linear infinite}
+.mc-p path{fill:var(--q4)}.mc-s path{fill:var(--q2);animation-duration:7s}
+.mc-o path{fill:var(--line2);animation-duration:6s;animation-direction:reverse}
+@keyframes mc-flow{to{transform:translateX(60px)}}
+@media (prefers-reduced-motion:reduce){.mc-water path{animation:none}}
+.mc-chip,.mc-fan{fill:none;stroke:var(--line2);stroke-width:2}.mc-fan{stroke-dasharray:5 4}.mc-bracket{fill:var(--line2)}
+.mc-txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.mc-line{display:flex;align-items:baseline;gap:6px}
+.mc-name{font-size:12px;color:var(--ink2);font-weight:650;white-space:nowrap}
+.mc-pct{font-size:17px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.15}
+.mc-pct small{font-size:11px;color:var(--ink3)}
+.mc-legend{display:flex;flex-wrap:wrap;gap:0 8px;font-size:11px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.mc-k::before{content:'';display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px}
+.mc-lp::before{background:var(--q4)}.mc-ls::before{background:var(--q2)}
+.mc-det{font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
+</style>"""
+
+
+def shape_of(name: str) -> str:
+    return "disk" if "槽" in name else "gpu" if "顯示卡" in name else "ram"
+
+
+def machine_tiles(snap: dict) -> list[dict]:
+    """The machine's parts as pictures: {name, kind, total, parts [(word, GB, class)], tip, tone, read}. What the
+    panel can measure is drawn as what it is: the graphics card's whole use (Windows cannot split it per program: the
+    design's 本專案); the memory of the Docker machine the containers run in (named so, never 本專案: qdrant, which is
+    not ours, runs there too, and the machine's own limit is the whole, not Windows' 127.6 GB, OV-72); a drive one grey
+    layer (how much of it is the project's, Strata's or another's is measured on the lab PC by hand, OV-71: a part list
+    from the reading, when it gives one, is drawn as it is). Each tip line stays short: 內容's hover card in the frame
+    cuts a long one."""
     out = []
-    for r in snap.get("sites") or []:
-        if r.get("worst") in ("warn", "bad"):
-            why = "；".join(r.get("why") or []) or "要留意"
-            key = r.get("key") or ""
-            out.append({
-                "key": key,
-                "name": r.get("name") or key,
-                "state": r["worst"],
-                "why": why,
-                "href": r.get("href") or f"/site?site={quote(key, safe='')}",
-            })
+    for m in nums_of(snap, "serve").get("machine") or []:
+        name = {"顯示卡記憶體": "顯示卡", "D 槽（爬蟲存檔）": "D 槽"}.get(m.get("name") or "", m.get("name") or "")
+        kind, used, total = shape_of(name), m.get("used"), m.get("total")
+        read = used is not None and bool(total)
+        parts = [tuple(p) for p in m.get("parts") or [] if len(p) == 3]
+        if not parts and read:
+            parts = {"disk": [("用了", float(used), "o")], "ram": [("Docker 虛擬機", float(used), "p")]}.get(
+                kind, [("本專案", float(used), "p")])
+        if kind == "gpu":
+            tip = ("本專案：檢視台、對外服務、共用的檢索模型；Windows 讀不到每個程式各用多少，這裡是全部用量；"
+                   "Strata 載入時會拿走約 14 GB")
+        elif kind == "ram":
+            tip = (f"Docker 虛擬機用了 {used:.1f} GB（它最多能用 {total:.1f} GB），裡面的容器都算，不只本專案的\n"
+                   "Windows 整台的記憶體檢視台讀不到；Strata 載入時另外再用"
+                   if read else "Docker 虛擬機的記憶體讀不到")
+            if m.get("swap"):
+                tip += f"\n交換區 {m['swap']:.1f} GB"
+        else:
+            tip = (f"{m.get('name')}：用了 {used:,.0f} GB；本專案、Strata 和其他各占多少，檢視台讀不到（要在實驗室電腦上量）"
+                   if read else f"{m.get('name')}：讀不到（這一槽沒有掛給檢視台）")
+        out.append({"name": name, "kind": kind, "used": used, "total": total, "parts": parts, "tip": tip,
+                    "tone": m.get("tone") or "", "read": read})
     return out
 
 
-def by_group(sites: dict) -> tuple[list[dict], list[int]]:
-    """Documents per school group (largest first) and overall 5-kind totals."""
-    groups = sites.get("groups") or []
-    out = {g: {"name": g, "kinds": [0] * len(KINDS), "sites": 0} for g in groups}
-    totals = [0] * len(KINDS)
-    for s in sites.get("sites") or []:
-        g = out[groups[s["g"]]]
-        g["sites"] += 1
-        for i, v in enumerate(s.get("t") or []):
-            if i < len(KINDS):
-                g["kinds"][i] += v
-                totals[i] += v
-    rows = [dict(g, total=sum(g["kinds"])) for g in out.values()]
-    return sorted((r for r in rows if r["total"]), key=lambda r: -r["total"]), totals
+def machine_tile(i: int, t: dict) -> str:
+    kind, total = t["kind"], t["total"] or 0
+    outline, deco = SHAPES[kind]
+    top, bot = INSIDE[kind]
+    disk = kind == "disk"
+    fmt = (lambda g: f"{g:,.0f}") if disk else (lambda g: f"{g:.1f}")
+    layers = []
+    if t["read"]:
+        acc = sum(g for _w, g, _c in t["parts"])
+        for _w, g, cls in t["parts"][::-1]:  # the top layer first, so the project's own part is drawn last, at the bottom
+            if acc > 0:
+                level = bot - (bot - top) * min(acc, total) / total
+                layers.append(f"<g class='mc-water mc-{e(cls)}' style='transform:translateY({level:.1f}px)'>"
+                              f"<path d='{WAVE}'/></g>")
+            acc -= g
+        used = t["used"]
+        pct = f"{used / total * 100:.0f}"
+        own = next((g for w, g, c in t["parts"] if c == "p" and w == "本專案"), None)  # only a part said to be ours
+        head = f"{t['name']} · 用了 {pct}%" + (f"，本專案 {own / total * 100:.0f}%" if own is not None else "")
+        legend = "".join(f"<span class='mc-k mc-l{e(c)}'>{e(w)} {fmt(g)} GB</span>" for w, g, c in t["parts"]
+                         if g > 0 and c != "o")
+        rest = f"剩 {fmt(total - used)} / {fmt(total)} GB"
+    else:
+        pct, head, legend, rest = "—", f"{t['name']} · 讀不到", "", "讀不到"
+    tone = f" data-tone='{e(t['tone'])}'" if t["tone"] in ("warn", "bad") else ""
+    return (f"<div class='mc' tabindex='0'{tone} data-tip-h='{e(head)}' data-tip='{e(t['tip'])}'>"
+            f"<svg viewBox='{VIEW[kind]}' class='mc-svg' style='width:{WIDTH[kind]}px;flex-basis:{WIDTH[kind]}px' "
+            f"aria-hidden='true'><defs><clipPath id='mc-c{i}'><path d='{outline}'/></clipPath></defs>"
+            f"<path d='{outline}' class='mc-body'/><g clip-path='url(#mc-c{i})'>{''.join(layers)}</g>"
+            f"{deco}<path d='{outline}' class='mc-edge'/></svg>"
+            f"<div class='mc-txt'><div class='mc-line'><span class='mc-name'>{e(t['name'])}</span>"
+            f"<span class='mc-pct'>{pct}<small>%</small></span></div>"
+            f"<div class='mc-legend'>{legend}</div><div class='mc-det'>{e(rest)}</div></div></div>")
 
 
-def by_year(sites: dict) -> dict:
-    """Announcements, pages, and attachments by year (excluding calendar events)."""
-    today = dt.date.fromisoformat(sites.get("today") or dt.date.today().isoformat())
-    years = {y: [0, 0, 0] for y in range(FIRST_YEAR, today.year + 1)}
-    since = today.replace(year=today.year - 1)
-    older = later = recent = 0
-    for rows in (sites.get("daily") or {}).values():
-        for r in rows:
-            got = r[1:4]
-            if not any(got):
-                continue
-            day = EPOCH + dt.timedelta(days=r[0])
-            if day > today:
-                later += sum(got)
-                continue
-            if day > since:
-                recent += sum(got)
-            if day.year in years:
-                years[day.year] = [a + b for a, b in zip(years[day.year], got)]
-            else:
-                older += sum(got)
-    undated = sum(s.get("ud") or 0 for s in sites.get("sites") or [])
-    dated = sum(sum(v) for v in years.values()) + older
-    return {"years": list(years.items()), "older": older, "later": later, "undated": undated, "recent": recent,
-            "dated": dated, "today": today}
-
-
-def night_rows(tonight: dict, history: dict) -> list[dict]:
-    """Recent nightly runs with normalized Gantt coordinates and accurate completion labels."""
-    record = {r["night"]: r for r in history.get("nights") or [] if r}
-    rows = []
-    for night in tonight.get("nights") or []:
-        cells = [c for c in night.get("cells") or [] if c.get("since")]
-        if not cells:
-            continue
-        first = dt.datetime.fromisoformat(cells[0]["since"])
-        start = first.replace(hour=NIGHT_FROM, minute=0, second=0, microsecond=0)
-        span = NIGHT_HOURS * 60
-        parts, end, swap_at = [], None, ""
-        for c in cells:
-            a = dt.datetime.fromisoformat(c["since"])
-            b = dt.datetime.fromisoformat(c["until"]) if c.get("until") else a
-            end = max(end or b, b)
-            if c["key"] == "swap" and c["state"] != "stop":
-                swap_at = a.strftime("%H:%M")
-            left = max(0.0, (a - start).total_seconds() / 60)
-            width = max(0.0, (b - a).total_seconds() / 60)
-            label, colour = STEP_MAP.get(c["key"], (c.get("name") or c["key"], "var(--mute-s)"))
-            parts.append({
-                "key": c["key"],
-                "name": label,
-                "colour": colour,
-                "state": c["state"],
-                "left": min(left, span) / span * 100,
-                "width": min(width, span - min(left, span)) / span * 100,
-                "since": a.strftime("%H:%M"),
-                "until": b.strftime("%H:%M"),
-                "took": c.get("took") or "",
-                "say": c.get("say") or "",
-            })
-        rec = record.get(night["night"]) or {}
-        rows.append({
-            "night": night["night"],
-            "label": night.get("label") or night["night"],
-            "state": night["state"],
-            "word": night.get("word") or "",
-            "parts": parts,
-            "end": end.strftime("%H:%M") if end else "",
-            "swap_at": swap_at,
-            "swapped": bool(rec.get("swapped")),
-            "new": rec.get("new"),
-            "left": rec.get("left"),
-            "changed": rec.get("changed"),
-            "docs": rec.get("docs"),
-            "tip": night.get("tip") or "",
-        })
-    return list(reversed(rows))[:NIGHTS]
-
-
-def last_swap(history: dict) -> dict:
-    """The nights' record of the last night that swapped the library ({} when none)."""
-    return next((r for r in reversed(history.get("nights") or []) if r and r.get("swapped")), {})
-
-
-def short_day(day: str) -> str:
-    return f"{int(day[5:7])}/{int(day[8:10])}" if len(day) >= 10 else day
-
-
-def split_bar(parts: list[tuple[str, int, str]], unit: str, cls: str = "pn-split") -> str:
-    """One bar cut into its parts (name, count, colour), a 2px gap between, each part's count floating over it."""
-    whole = sum(v for _, v, _ in parts) or 1
-    segs = "".join(
-        f"<i style='flex-grow:{v};background:{c}' tabindex='0' data-tip-h='{e(w)}' "
-        f"data-tip='{n(v)} {e(unit)}（{v / whole:.0%}）'></i>"
-        for w, v, c in parts if v
-    )
-    return f"<div class='{cls}'>{segs}</div>"
-
-
-def key_line(parts: list[tuple[str, int, str]], *, share: bool = True) -> str:
-    """The parts' names, counts and shares under a split bar (identity never by colour alone)."""
-    shares = pcts([v for _, v, _ in parts])
-    return "<div class='pn-ckeys'>" + "".join(
-        f"<span><i style='background:{c}'></i>{e(w)} <b>{n(v)}</b>{f'<em>{p}%</em>' if share else ''}</span>"
-        for (w, v, c), p in zip(parts, shares)
-    ) + "</div>"
-
-
-def day_columns(days: list[list], *, width: int = 520, height: int = 104, labels: bool = True) -> str:
-    """The calls of each day as columns, today last; a day before the log began is a dashed stub (no record is no
-    quiet day). labels: the count over each column and the day under it (the tile's small copy has none)."""
-    if not days:
+def machine_block(snap: dict) -> str:
+    """這台電腦 as the design puts it under the donut (sitemap.py, machine_block.html): its own styles with it, so the
+    frame's page (/sites?embed=1, overview.fill's embed side) draws it as 總覽 does; '' when nothing is read."""
+    tiles = machine_tiles(snap)
+    if not tiles:
         return ""
-    top = max((d[1] or 0 for d in days), default=0) or 1
-    pt, pb = (16, 18) if labels else (2, 2)
-    ph = height - pt - pb
-    slot = width / len(days)
-    bw = min(34.0, slot * 0.56)
+    return (f"{MC_CSS}<section class='pn-card mc-card side-mc' aria-label='這台電腦'><div class='pn-chd'><h2>這台電腦</h2>"
+            f"</div><div class='mc-grid'>{''.join(machine_tile(i, t) for i, t in enumerate(tiles))}</div></section>")
+
+
+# -------------------------------------------------------------------------------------------- 待處理 | 日誌 | 已知
+
+
+def td_mark(sev: str) -> str:
+    sev = "bad" if sev == "bad" else "warn"
+    word = "出錯" if sev == "bad" else "留意"
+    return (f"<span class='td-mark td-{sev}' role='img' aria-label='{word}'><svg viewBox='0 0 16 16' width='12' "
+            f"height='12' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' aria-hidden='true'>"
+            f"{TD_SVG[sev]}</svg></span>")
+
+
+def known_form(keys: str) -> str:
+    """標成已知 (always shown, owner 11-23: 「这个隐身了」): the six reasons to pick, then the note and 確定. One field
+    holds every key of the row, space-joined (web.mark_known reads it so)."""
+    chips = "".join(f"<button type='button' aria-pressed='false'>{e(r)}</button>" for r in REASONS)
+    return (f"<details class='td-known'><summary>標成已知</summary><form method='post' action='/todo/known'>"
+            f"<div class='tk-opts' role='group' aria-label='常見的原因'>{chips}</div>"
+            f"<input type='hidden' name='keys' value='{e(keys)}'><input name='note' maxlength='200' "
+            f"placeholder='為什麼不用管（可不寫）' aria-label='為什麼不用管'><button>確定</button></form></details>")
+
+
+def todo_row(x: dict) -> str:
+    """One alert, one line, in the words it was raised with; nothing added (owner: 「原样提醒…不要出错 文字要干练」).
+    The source's own code and 沒見過 for a code no dictionary knows stay (spec 2026-11-17-panels-v3 八: never read as
+    normal)."""
+    where = (f"<a href='{e(x['href'])}'>{e(x.get('where'))}</a>" if x.get("href") else f"<b>{e(x.get('where'))}</b>")
+    reason = x.get("reason") or ""
+    # cut with … on its line, read whole on hover (data-tip-full: the hover card never cuts the source's words)
+    issue = f"<span class='td-issue' data-tip='{e(reason)}' data-tip-full>{e(reason)}</span>" if reason else ""
+    code = f"<span class='td-code'>{e(x['code'])}</span>" if x.get("code") else ""
+    unknown = ("<span class='td-unk' tabindex='0' data-tip='這個代碼面板沒見過：照原樣列出，不當成正常'>沒見過</span>"
+               if x.get("unknown") else "")
+    tag = x.get("tag") or ""
+    if tag == "新出現":
+        age = "<span class='td-age td-new'>新出現</span>"
+    elif tag:
+        age = f"<span class='td-age' tabindex='0' data-tip='{e(x.get('age_tip') or '')}'>{e(tag)}</span>"
+    else:
+        age = "<span></span>"
+    keys = " ".join(it.get("key") or "" for it in x.get("issues") or [] if it.get("key"))
+    act = known_form(keys) if keys else "<span></span>"
+    return (f"<li data-sev='{e(x.get('sev') or '')}'>{td_mark(x.get('sev') or '')}"
+            f"<span class='td-kind'>{e(x.get('kind') or '')}</span>"
+            f"<span class='td-what'>{where}{issue}{code}{unknown}</span>{age}{act}</li>")
+
+
+def marks_of(todo: dict) -> list[dict]:
+    """已知's rows from what collect folded (when the page was given no marks: an older web.py): each still listed."""
+    return [{"key": " ".join(it.get("key") or "" for it in x.get("issues") or []), "kind": x.get("kind") or "",
+             "name": x.get("where") or "", "issue": x.get("reason") or "", "note": x.get("note") or "", "at": "",
+             "here": True, "seen": "今晚還在"} for x in todo.get("known") or []]
+
+
+def known_row(k: dict) -> str:
+    note = (f"<span class='kn-note'>{e(k['note'])}</span>" if k.get("note")
+            else "<span class='kn-note kn-empty'>沒寫原因</span>")
+    issue = f"<span>{e(k['issue'])}</span>" if k.get("issue") else ""
+    when = f"<span>{e(k['at'])} 標的</span>" if k.get("at") else ""
+    off = (f"<form class='kn-offf' method='post' action='/todo/known'><input type='hidden' name='keys' "
+           f"value='{e(k['key'])}'><input type='hidden' name='off' value='1'>"
+           f"<button class='kn-off'>取消已知</button></form>")
+    return (f"<li class='kn-row'{'' if k.get('here') else ' data-gone'}><span class='kn-kind'>{e(k.get('kind'))}</span>"
+            f"<span class='kn-what'><b>{e(k.get('name'))}</b>{issue}{note}</span>"
+            f"<span class='kn-when'>{when}<span class='kn-seen'>{e(k.get('seen'))}</span></span>{off}</li>")
+
+
+def known_pane(marks: list[dict]) -> str:
+    """已知 (owner 11-23: every mark, kept until 取消, no automatic clearing): 還在出現 first, then 沒再出現 greyed."""
+    if not marks:
+        return "<p class='td-none kn-none'>沒有標成已知的</p>"
+    here = [k for k in marks if k.get("here")]
+    gone = [k for k in marks if not k.get("here")]
     out = []
-    for i, (day, calls, searches) in enumerate(days):
-        x = i * slot + (slot - bw) / 2
-        cx = x + bw / 2
-        last = i == len(days) - 1
-        name = "今天" if last else short_day(day)
-        if calls is None:
-            out.append(f"<rect x='{x:.1f}' y='{pt + ph - 3:.1f}' width='{bw:.1f}' height='3' rx='1.5' "
-                       f"fill='none' stroke='var(--line2)' stroke-dasharray='3 2'/>"
-                       f"<rect class='pn-hit' x='{i * slot:.1f}' y='0' width='{slot:.1f}' height='{height}' "
-                       f"fill='transparent' tabindex='0' data-tip-h='{e(day)}' data-tip='查詢紀錄從這天以後才有'/>")
-        else:
-            h = max(2.0, ph * calls / top) if calls else 0.0
-            y = pt + ph - h
-            bar = (f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw:.1f}' height='{h:.1f}' rx='3' fill='var(--amt)'/>"
-                   if calls else f"<rect x='{x:.1f}' y='{pt + ph - 1:.1f}' width='{bw:.1f}' height='1' fill='var(--line2)'/>")
-            val = (f"<text x='{cx:.1f}' y='{y - 5:.1f}' class='pn-peak' text-anchor='middle'>{n(calls)}</text>"
-                   if labels else "")
-            out.append(bar + val + f"<rect class='pn-hit' x='{i * slot:.1f}' y='0' width='{slot:.1f}' "
-                       f"height='{height}' fill='transparent' tabindex='0' data-tip-h='{e(day)}{'（到現在）' if last else ''}' "
-                       f"data-tip='{n(calls)} 次查詢，其中搜尋 {n(searches or 0)} 次'/>")
-        if labels:
-            out.append(f"<text x='{cx:.1f}' y='{height - 4}' class='pn-ax' text-anchor='middle'>{e(name)}</text>")
-    base = f"<line x1='0' y1='{pt + ph:.1f}' x2='{width}' y2='{pt + ph:.1f}' stroke='var(--line)'/>" if labels else ""
-    return (f"<svg class='pn-svg pn-days' viewBox='0 0 {width} {height}' role='img' "
-            f"aria-label='最近 {len(days)} 天每天的查詢次數'>{base}{''.join(out)}</svg>")
+    for title, rows in (("還在出現", here), ("沒再出現", gone)):
+        if rows:
+            out.append(f"<h3 class='kn-h'>{title} <span>{len(rows)}</span></h3>"
+                       f"<ul class='kn-list'>{''.join(known_row(k) for k in rows)}</ul>")
+    return f"<div class='kn'>{''.join(out)}</div>"
 
 
-# -------------------------------------------------------------------------------------------- SVG primitives
+LOG_PANE = ("<div class='lv' id='lv' data-src='/api/logs' data-page='" + str(LOG_PAGE) + "'>"
+            "<div class='lv-bar'><div class='lv-chips' id='lv-lv' role='group' aria-label='等級'></div>"
+            "<div class='lv-chips' id='lv-src' role='group' aria-label='來源'></div></div>"
+            "<div class='lv-hist' id='lv-hist'></div><div class='lv-meta' id='lv-meta'></div>"
+            "<div class='lv-list' id='lv-list' role='log' tabindex='0' aria-label='日誌'></div>"
+            f"<button type='button' class='lv-more' id='lv-more' hidden>再顯示 {LOG_PAGE} 行</button></div>")
 
 
-def svg_sparkline(points: list[tuple[str, int]], *, width: int = 92, height: int = 34, label: str = "") -> str:
-    """Smooth area sparkline SVG for KPI trend."""
-    if len(points) < 2:
-        return ""
-    vals = [v for _, v in points]
-    lo, hi = min(vals), max(vals)
-    span = (hi - lo) or 1
-    pad_x, pad_y = 3.0, 4.0
-    usable_w = width - pad_x * 2
-    usable_h = height - pad_y * 2
-    coords = []
-    for i, (_d, v) in enumerate(points):
-        x = pad_x + usable_w * i / (len(points) - 1)
-        y = pad_y + usable_h * (1 - (v - lo) / span)
-        coords.append((x, y))
-    line = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(coords))
-    area = f"{line} L{coords[-1][0]:.1f},{height:.1f} L{coords[0][0]:.1f},{height:.1f} Z"
-    lx, ly = coords[-1]
-    return (f"<svg class='pn-spark' width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
-            f"role='img' aria-label='{e(label)}'><title>{e(label)}</title>"
-            f"<defs><linearGradient id='pn-sp-g' x1='0' y1='0' x2='0' y2='1'>"
-            f"<stop offset='0%' stop-color='var(--amt)' stop-opacity='.28'/>"
-            f"<stop offset='100%' stop-color='var(--amt)' stop-opacity='0'/></linearGradient></defs>"
-            f"<path d='{area}' fill='url(#pn-sp-g)'/>"
-            f"<path d='{line}' fill='none' stroke='var(--amt)' stroke-width='2' stroke-linecap='round' "
-            f"stroke-linejoin='round'/>"
-            f"<circle cx='{lx:.1f}' cy='{ly:.1f}' r='3' fill='var(--amt)'/></svg>")
-
-
-def toggletip(tip_id: str, aria_label: str, body_html: str) -> str:
-    """Accessible native toggletip button + hint popover (WCAG 1.4.13 compliant)."""
-    return (f"<span class='pn-tt'>"
-            f"<button type='button' class='pn-ibtn' interestfor='{e(tip_id)}' popovertarget='{e(tip_id)}' "
-            f"popovertargetaction='show' aria-label='{e(aria_label)}'>i</button>"
-            f"<div id='{e(tip_id)}' popover='hint' class='pn-pop pn-hint'>{body_html}</div></span>")
-
-
-# -------------------------------------------------------------------------------------------- page sections
-
-
-def night_sentence(tonight: dict, history: dict) -> tuple[str, str]:
-    """(the state of the night shown, one sentence about it and the library students get): 「11-21 夜正常，03:09 換上
-    新庫」, 「11-17 夜停了（建庫），沒換庫：學生搜到的還是前一晚的庫」."""
-    night = next((x for x in tonight.get("nights") or [] if x.get("night") == tonight.get("default")), None) or {}
-    if not night:
-        return "none", "還沒有每晚的紀錄"
-    word, at = night_word(night)
-    row = next((r for r in night_rows(tonight, history) if r["night"] == night.get("night")), None) or {}
-    head = (night.get("label") or night.get("night") or "") + ("正常" if word == "完成" else word) + (f"（{at}）" if at else "")
-    if row.get("swapped") and row.get("swap_at"):
-        return night.get("state") or "ok", f"{head}，{row['swap_at']} 換上新庫"
-    if word in ("停了", "出錯", "沒見過", "沒跑"):
-        return night.get("state") or "warn", f"{head}，沒換庫：學生搜到的還是前一晚的庫"
-    return night.get("state") or "none", head
-
-
-def header_bar(snap: dict, tonight: dict, history: dict, todo: dict | None) -> str:
-    state, sentence = night_sentence(tonight, history)
-    if not snap.get("steps"):  # just restarted: nothing read of the steps yet, so nothing to call normal
-        count = f"<span class='pn-pill'>{icon('dash', 13)}正在讀各步驟</span>"
-    else:
-        open_ = (todo or {}).get("open") or []
-        tone = "bad" if any(x.get("sev") == "bad" for x in open_) else "warn" if open_ else "ok"
-        words = f"要處理 {len(open_)} 件" if open_ else "沒有要處理的"
-        count = (f"<a class='pn-pill pn-pill-{tone}' href='#todo'>{icon(MARK.get(tone, 'dash'), 13)}"
-                 f"<span>{e(words)}</span></a>")
-    return (
-        f"<header class='pn-top'>"
-        f"<div class='pn-title'><h1 id='main-title' tabindex='-1'>總覽</h1>"
-        f"<a class='pn-say' href='{TONIGHT}'>{mark(state)}<span>{e(sentence)}</span></a></div>"
-        f"<div class='pn-status'>{count}</div></header>"
-    )
-
-
-def hero_kpis(snap: dict, tonight: dict, sites: dict, history: dict,
-              usage: dict | None, aitest: dict | None) -> str:
-    """The three figures of the first screen: the library students get, the public service's last day, how much of
-    what should be crawled was got."""
-    st = steps(snap)
-    changes = tonight.get("changes") or {}
-    docs = ((changes.get("new") or {}).get("docs")) or next(
-        (v for w, v in (st.get("build") or {}).get("out") or [] if w == "份文件"), 0
-    )
-    before = (changes.get("prev") or {}).get("docs")
-    delta = f"{docs - before:+,}" if before else ""
-    rec = last_swap(history)
-    moved = f"新進 {n(rec['new'])} · 離開 {n(rec.get('left') or 0)}" if rec.get("new") is not None else ""
-    hist_pts = [(r["night"][5:], int(r["docs"])) for r in history.get("nights") or [] if r and r.get("docs")]
-    spark = svg_sparkline(hist_pts[-7:], label="近幾晚庫裡的文件數")
-    spark_tip = "近幾晚庫裡的文件數：\n" + "\n".join(f"{d} 夜 {n(v)}" for d, v in hist_pts[-7:])
-
-    cards = [("學生搜到的庫", n(docs), f"<span class='pn-delta'>{e(delta)}</span>" if delta else "", moved, spark,
-              spark_tip, TONIGHT)]
-
-    if usage:
-        days = usage.get("days") or []
-        ours = usage.get("failed_ours") or 0
-        cards.append((
-            "對外查詢 · 24 小時", n(usage.get("calls") or 0), "<span class='pn-unit'>次</span>",
-            f"我們沒答成 {n(ours)} 次 · 搜了沒找到 {n(usage.get('missed') or 0)} 次",
-            day_columns(days, width=84, height=36, labels=False) if days else "",
-            "最近 7 天：\n" + "\n".join(f"{d} {'沒紀錄' if c is None else f'{n(c)} 次'}" for d, c, _ in days)
-            if days else "", "#usage",
-        ))
-
-    crawl = st.get("crawl") or {}
-    got = crawl.get("bar") or []
-    if len(got) == 2 and got[1]:
-        cards.append(("該抓的抓到", f"{got[0] / got[1] * 100:.1f}%", "",
-                      f"{n(got[0])} / {n(got[1])} 個網址 · 沒抓到 {n(got[1] - got[0])}", "",
-                      "這一輪該抓的網址抓到幾成；沒抓到的是什麼、為什麼，在「內容」最上面", "/sites#crawl"))
-
-    return tiles(cards, "第一眼", three=len(cards) == 3)
-
-
-def scale_kpis(sites: dict, aitest: dict | None) -> str:
-    """全景's figures: how many sites the library holds and whose, and the last real-AI test."""
-    site_n = len(sites.get("sites") or [])
-    units = len({s.get("u") for s in sites.get("sites") or []})
-    cards = []
-    if site_n:
-        cards.append(("收錄網站", n(site_n), "<span class='pn-unit'>站</span>", f"分屬 {units} 個單位", "",
-                      "學校和校外單位的網站，每晚更新", "/sites"))
-    if aitest and aitest.get("n"):
-        verdicts = [(w, aitest.get(k) or 0, c) for k, w, c in VERDICTS]
-        cards.append((
-            "AI 實測答對", f"{aitest['right']}/{aitest['n']}", "<span class='pn-unit'>題</span>",
-            " · ".join(f"{w} {v}" for w, v, _ in verdicts[1:]) + f" · {(aitest.get('date') or '')[-5:]}",
-            split_bar(verdicts, "題", "pn-split pn-tsplit"),
-            (f"{aitest.get('date', '')} 實驗室的 AI 只用我們的 search 和 fetch，答學生角度的 {aitest['n']} 題\n"
-             f"出處 {aitest.get('source', '')}"), "",
-        ))
-    return tiles(cards, "規模") if cards else ""
-
-
-def tiles(cards: list[tuple], label: str, three: bool = False) -> str:
-    """A row of figures: (title, big, suffix markup, sub, drawing markup, floating card, link)."""
-    html = []
-    for title, big, suffix, sub, viz, tip, href in cards:
-        inner = (
-            f"<div class='pn-khead'>{e(title)}</div>"
-            f"<div class='pn-kbody'><div class='pn-knum'><div class='pn-big'>{e(big)}{suffix}</div>"
-            f"<div class='pn-ksub'>{e(sub)}</div></div><div class='pn-kviz'>{viz}</div></div>"
-        )
-        if href:
-            html.append(f"<a class='pn-kpi pn-kpi-link' href='{e(href)}' aria-label='{e(title)} {e(big)}' "
-                        f"data-tip='{e(tip)}'>{inner}</a>")
-        else:
-            html.append(f"<div class='pn-kpi' tabindex='0' data-tip='{e(tip)}'>{inner}</div>")
-    k3 = " pn-k3" if three else ""
-    return f"<section class='pn-kpis{k3}' aria-label='{e(label)}'>{''.join(html)}</section>"
-
-
-def freshness_card(sites: dict) -> str:
-    """SVG stacked vertical column chart of document years (2004-today) with gridlines."""
-    d = by_year(sites)
-    years = d["years"]
-    max_y = max((sum(v) for _, v in years), default=1) or 1
-    # Clean rounded top gridline (nearest 2,000)
-    step_y = 2000 if max_y > 4000 else 1000 if max_y > 1500 else 500
-    ceil_y = max(step_y, int(math.ceil(max_y / step_y) * step_y))
-
-    w, h = 620, 290
-    pl, pr, pt, pb = 38, 12, 22, 26
-    pw, ph = w - pl - pr, h - pt - pb
-
-    grid = []
-    for val in range(0, ceil_y + 1, step_y):
-        y = pt + ph * (1 - val / ceil_y)
-        lbl = f"{val // 1000}k" if val >= 1000 else "0"
-        dash = "" if val == 0 else " stroke-dasharray='3 3'"
-        grid.append(
-            f"<line x1='{pl}' y1='{y:.1f}' x2='{w - pr}' y2='{y:.1f}' stroke='var(--line)'{dash}/>"
-            f"<text x='{pl - 7}' y='{y:.1f}' class='pn-ax' text-anchor='end' dominant-baseline='central'>{lbl}</text>"
-        )
-
-    bar_slot = pw / max(1, len(years))
-    bw = max(6.0, bar_slot * 0.68)
-    cols = []
-    last_yr = years[-1][0] if years else 0
-    peak_val = max((sum(v) for _, v in years), default=0)
-    kind_colors = ("var(--k0)", "var(--k1)", "var(--k2)")
-
-    for i, (yr, vals) in enumerate(years):
-        tot = sum(vals)
-        x = pl + i * bar_slot + (bar_slot - bw) / 2
-        cx = x + bw / 2
-        tip = f"公告 {n(vals[0])} · 一般網頁 {n(vals[1])} · 附件 {n(vals[2])}"
-        if yr == last_yr:
-            tip += f"\n截至 {d['today']:%m-%d}"
-
-        y_cur = pt + ph
-        rects = []
-        for seg_v, col in zip(vals, kind_colors):
-            if seg_v <= 0:
-                continue
-            sh = max(1.2, ph * seg_v / ceil_y)
-            y_cur -= sh
-            rects.append(f"<rect x='{x:.1f}' y='{y_cur:.1f}' width='{bw:.1f}' height='{sh:.1f}' rx='1.5' fill='{col}'/>")
-        # Invisible full-column hit zone for effortless hovering & focus
-        hit = (f"<rect class='pn-hit' x='{pl + i * bar_slot:.1f}' y='{pt}' width='{bar_slot:.1f}' height='{ph}' "
-               f"fill='transparent' tabindex='0' data-tip-h='{yr} 年 · {n(tot)} 份' data-tip='{e(tip)}'/>")
-        peak_lbl = ""
-        if tot == peak_val and tot > 0:
-            peak_lbl = (f"<text x='{cx:.1f}' y='{max(10.0, y_cur - 6):.1f}' class='pn-peak' "
-                        f"text-anchor='middle'>{n(tot)}</text>")
-        tick = ""
-        if yr % 4 == 0 or yr == last_yr:
-            tick = f"<text x='{cx:.1f}' y='{h - 8}' class='pn-ax' text-anchor='middle'>{yr}</text>"
-        cols.append(f"<g class='pn-col'>{''.join(rects)}{peak_lbl}{hit}{tick}</g>")
-
-    share = f"{d['recent'] / d['dated'] * 100:.0f}%" if d["dated"] else "—"
-    leg = "".join(f"<span><i style='background:{c}'></i>{w_}</span>" for _, w_, c in KINDS[:3])
-    chips = [f"近 12 月 <b>{n(d['recent'])}</b>（{share}）", f"無日期 <b>{n(d['undated'])}</b>",
-             f"2004 前 <b>{n(d['older'])}</b>"]
-    if d["later"]:
-        chips.append(f"未來日期 <b>{n(d['later'])}</b>")
-    foot = "".join(f"<span class='pn-mchip'>{c}</span>" for c in chips)
-    svg = (f"<svg class='pn-svg' viewBox='0 0 {w} {h}' role='img' aria-label='各年份文件分佈'>"
-           f"<title>2004 至 {last_yr} 年文件分佈</title>{''.join(grid)}{''.join(cols)}</svg>")
-    return (
-        f"<section class='pn-card pn-span7'>"
-        f"<div class='pn-chd'><h2>文件年份分佈</h2><div class='pn-leg'>{leg}</div></div>"
-        f"{svg}<div class='pn-mchips'>{foot}</div></section>"
-    )
-
-
-def sources_card(sites: dict) -> str:
-    """Donut chart of overall 5 document kinds + compact ranked org stacked bars."""
-    rows, totals = by_group(sites)
-    kinds = [(w, totals[i], c) for i, (_, w, c) in enumerate(KINDS) if totals[i]]
-
-    top = max((r["total"] for r in rows), default=1)
-    bars = []
-    for r in rows:
-        bsegs = "".join(
-            f"<i style='flex-grow:{v};background:{c}' data-tip-h='{e(r['name'])} · {e(w)}' data-tip='{n(v)} 份'></i>"
-            for v, (_, w, c) in zip(r["kinds"], KINDS) if v
-        )
-        tip = "\n".join(f"{w} {n(v)}" for v, (_, w, _) in zip(r["kinds"], KINDS) if v)
-        bars.append(
-            f"<div class='pn-orow'>"
-            f"<span class='pn-oname' tabindex='0' data-tip-h='{e(r['name'])}（{r['sites']} 站）' data-tip='{e(tip)}'>"
-            f"{e(r['name'])}</span>"
-            f"<span class='pn-otrack'><span class='pn-ostack' style='width:{r['total'] / top * 100:.1f}%'>{bsegs}"
-            f"</span></span>"
-            f"<span class='pn-oval'>{n(r['total'])}</span></div>"
-        )
-    return (
-        f"<section class='pn-card pn-span5'>"
-        f"<div class='pn-chd'><h2>文件從哪裡來</h2><a class='pn-link' href='/sites'>全部網站 →</a></div>"
-        f"{split_bar(kinds, '份')}{key_line(kinds)}"
-        f"<div class='pn-obars'>{''.join(bars)}</div></section>"
-    )
-
-
-def usage_card(snap: dict, usage: dict | None) -> str:
-    """The public service: its calls a day over the last week, where the last day's came from and how they went."""
-    if usage and usage.get("calls") is not None:
-        days = usage.get("days") or []
-        via = [(w, (usage.get("via") or {}).get(k, 0), c) for k, w, c in VIA]
-        mid, slow = usage.get("mid_ms"), usage.get("slow_ms")
-        speed = (f"<b>{mid / 1000:.1f}</b> 秒" if mid is not None else "<b>—</b>")
-        speed_tip = (f"一半在 {mid / 1000:.1f} 秒內答完，最慢的一成要 {slow / 1000:.1f} 秒以上"
-                     if mid is not None and slow is not None else "答完的搜尋太少，還算不出")
-        ours, theirs = usage.get("failed_ours") or 0, (usage.get("failed") or 0) - (usage.get("failed_ours") or 0)
-        fail_tip = (f"排隊太久、庫讀不到或程式出錯：{ours} 次"
-                    + (f"\n另有 {theirs} 次是呼叫的參數不對（對方的錯，不算我們的）" if theirs else ""))
-        fail_mark = mark("warn" if ours else "ok", f"{ours} 次")
-        last = (usage.get("last") or "")[5:16].replace("T", " ")
-        stats = (
-            f"<div class='pn-ustats'>"
-            f"<div class='pn-ustat' tabindex='0' data-tip='{e(speed_tip)}'><span>一半在幾秒內答完</span>"
-            f"<b>{speed}</b></div>"
-            f"<div class='pn-ustat'><span>搜了沒找到</span><b>{n(usage.get('missed') or 0)} 次</b></div>"
-            f"<div class='pn-ustat' tabindex='0' data-tip='{e(fail_tip)}'>"
-            f"<span>我們沒答成</span><b>{fail_mark}</b></div>"
-            f"<div class='pn-ustat'><span>最後一次</span><b>{e(last or '—')}</b></div>"
-            f"</div>"
-        )
-        week = (f"<div class='pn-subhd'><span>最近 {len(days)} 天，每天幾次</span></div>{day_columns(days)}"
-                if days else "")
-        usage_html = (
-            f"{week}<div class='pn-subhd{' pn-subhd-sep' if days else ''}'><span>最近 24 小時從哪裡來</span></div>"
-            f"{split_bar(via, '次')}{key_line(via)}{stats}"
-        )
-    else:
-        usage_html = "<p class='pn-empty'>讀不到對外服務的查詢紀錄</p>"
-
-    who = toggletip("pn-tip-who", "這些查詢是誰查的",
-                    "紀錄分不出是學生還是我們自己在測試（跑題庫、AI 實測都走同一個服務），"
-                    "有測試的那幾天會特別高。")
-    return (
-        f"<section class='pn-card pn-span6' id='usage'>"
-        f"<div class='pn-chd'><h2>對外查詢</h2>{who}</div>"
-        f"{usage_html}</section>"
-    )
-
-
-def machine_card(snap: dict) -> str:
-    """The machine everything runs on: its drives, Docker's memory, the graphics card's, as meters."""
-    m_html = []
-    for m in machine_meters(snap):
-        bar_col = "var(--bad-s)" if m["tone"] == "bad" else "var(--warn-s)" if m["tone"] == "warn" else "var(--amt)"
-        state = mark(m["tone"]) if m["tone"] in ("warn", "bad") else ""
-        sub = f" · {m['sub']}" if m["sub"] else ""
-        m_html.append(
-            f"<div class='pn-meterbox' tabindex='0' data-tip='{e(m['tip'])}'>"
-            f"<div class='pn-mtop'><b>{e(m['label'])}{state}</b><span>{m['pct']:.0f}%</span></div>"
-            f"<div class='pn-mtrack'><i style='width:{max(2.0, m['pct']):.1f}%;background:{bar_col}'></i></div>"
-            f"<div class='pn-mbot'>{e(m['detail'])}{e(sub)}</div></div>"
-        )
-    if not m_html:
-        return ""
-    return (f"<section class='pn-card'><div class='pn-chd'><h2>這台電腦</h2></div>"
-            f"<div class='pn-mgrid'>{''.join(m_html)}</div></section>")
-
-
-def todo_card(todo: dict | None, reading: bool) -> str:
-    """要處理 (nknu.ops.todo.collect): what to look at, the new first, each with what it is, where and since when; the
-    known ones folded with the owner's note; nothing to handle said in one line."""
-    if reading:
-        return ("<section class='pn-card pn-span5' id='todo'><div class='pn-chd'><h2>要處理</h2></div>"
-                "<p class='pn-empty'>正在讀各步驟的紀錄</p></section>")
+def todo_card(todo: dict | None, reading: bool, known: list[dict] | None = None) -> str:
+    """待處理 | 日誌 | 已知 (section#todo): the tabs in the head (待處理 with its count, 已知 with every mark's), the log's
+    search and 放大 there too (shown on 日誌), a ?; under it the three panes, each scrolling inside the card. reading:
+    the steps are being read (just restarted): nothing is called normal yet. known: 已知's rows (todo.known_rows)."""
     todo = todo or {}
-    open_, known = todo.get("open") or [], todo.get("known") or []
-
-    def row(x: dict) -> str:
-        where = (f"<a href='{e(x['href'])}'>{e(x['where'])}</a>" if x.get("href") else f"<b>{e(x['where'])}</b>")
-        tag = x.get("tag") or ""
-        chip = (f"<span class='pn-tnew'>{e(tag)}</span>" if tag == "新出現"
-                else f"<span class='pn-tage' data-tip='{e(x.get('age_tip') or '')}'>{e(tag)}</span>" if tag else "")
-        note = f"<span class='pn-tnote'>已知：{e(x['note'])}</span>" if x.get("note") else ""
-        # the source's own code as it is, and 沒見過 for a code no dictionary knows (spec 2026-11-17-panels-v3 八: never
-        # read as normal), as 每晚運行's list said them: such a row's reason may be empty
-        code = f"<span class='pn-tcode'>{e(x['code'])}</span>" if x.get("code") else ""
-        seen = ("<span class='pn-tnote' data-tip='這個代碼面板沒見過：照原樣列出，不當成正常'>沒見過</span>"
-                if x.get("unknown") else "")
-        keys = " ".join(it.get("key") or "" for it in x.get("issues") or [] if it.get("key"))
-        # marked known on the row itself (POST /todo/known, ops.db: nknu.ops.todo.Known), or taken off again
-        if not keys:
-            act = ""
-        elif x.get("note") is not None and x in known:
-            act = (f"<form class='pn-tact' method='post' action='/todo/known'><input type='hidden' name='keys' "
-                   f"value='{e(keys)}'><input type='hidden' name='off' value='1'><button>取消已知</button></form>")
-        else:
-            act = (f"<details class='pn-tact'><summary>標成已知</summary><form method='post' action='/todo/known'>"
-                   f"<input type='hidden' name='keys' value='{e(keys)}'><input name='note' maxlength='200' "
-                   f"placeholder='為什麼不用管（可不寫）' aria-label='為什麼不用管'><button>確定</button></form></details>")
-        return (f"<li data-sev='{e(x.get('sev') or '')}'>{mark(x.get('sev') or 'none')}"
-                f"<span class='pn-tkind'>{e(x.get('kind') or '')}</span>"
-                f"<span class='pn-twhat'>{where}<span>{e(x.get('reason') or '')}</span>{code}{seen}{note}{act}</span>"
-                f"{chip}</li>")
-
-    since = f"<span class='pn-tsub'>新出現：和 {e(todo['night'][5:])} 夜比</span>" if todo.get("night") else ""
-    if open_:
-        body = f"<ul class='pn-tlist'>{''.join(row(x) for x in open_[:TODO_SHOWN])}</ul>"
-        if len(open_) > TODO_SHOWN:
-            body += (f"<details class='pn-tmore'><summary>還有 {len(open_) - TODO_SHOWN} 件</summary>"
-                     f"<ul class='pn-tlist'>{''.join(row(x) for x in open_[TODO_SHOWN:])}</ul></details>")
+    open_ = todo.get("open") or []
+    marks = known if known is not None else marks_of(todo)
+    count = f" <b>{len(open_)}</b>" if open_ and not reading else ""
+    tabs = (
+        "<div class='cal-switch lg-tabs' role='tablist' aria-label='待處理、日誌、已知'>"
+        f"<button type='button' role='tab' id='tab-todo' data-p='todo' aria-selected='true' aria-controls='pane-todo'>"
+        f"待處理{count}</button>"
+        "<button type='button' role='tab' id='tab-log' data-p='log' aria-selected='false' aria-controls='pane-log' "
+        "tabindex='-1'>日誌</button>"
+        "<button type='button' role='tab' id='tab-known' data-p='known' aria-selected='false' aria-controls='pane-known' "
+        f"tabindex='-1'>已知 <i class='kn-n'>{len(marks)}</i></button></div>")
+    helpb = (f"<button type='button' class='hp' data-hp='td' aria-label='這張卡片在說什麼' data-tip-h='待處理 · 日誌 · 已知' "
+             f"data-tip='{e(TODO_HELP)}' data-tip-full>?</button>")
+    if reading:
+        body = "<p class='td-none td-wait'>正在讀各步驟的紀錄</p>"
+    elif open_:
+        body = f"<ul class='td'>{''.join(todo_row(x) for x in open_)}</ul>"
     else:
-        body = f"<p class='pn-tnone'>{mark('ok')}<span>沒有要處理的</span></p>"
-    if known:
-        body += (f"<details class='pn-tmore pn-tknown'><summary>已知 {len(known)} 件，不算在裡面</summary>"
-                 f"<ul class='pn-tlist'>{''.join(row(x) for x in known)}</ul></details>")
-    count = f"<span class='pn-tcount'>{len(open_)}</span>" if open_ else ""
-    tip = toggletip("pn-tip-known", "什麼算要處理",
-                    "每晚流程停了或出錯、某一步不正常、網站的數字不對、換庫後說不出原因的離開、"
-                    "這台電腦的硬碟或記憶體快滿、學生題掉出前 10。哪一件不用管，按它的「標成已知」（可以寫一句為什麼），"
-                    "之後就不算在這裡，只折在下面；按「取消已知」再算回來。")
-    return (f"<section class='pn-card pn-span5' id='todo'><div class='pn-chd'><h2>要處理{count}</h2>"
-            f"<span class='pn-thead'>{since}{tip}</span></div>{body}</section>")
+        body = "<p class='td-none'>沒有要處理的</p>"
+    return (f"<section class='pn-card' id='todo' data-tab='todo'>"
+            f"<div class='pn-chd lg-head'>{tabs}{FIND}{MAX_BTN}{helpb}</div>"
+            f"<div class='lg-pane' data-p='todo' id='pane-todo' role='tabpanel' aria-labelledby='tab-todo'>{body}</div>"
+            f"<div class='lg-pane' data-p='known' id='pane-known' role='tabpanel' aria-labelledby='tab-known' hidden>"
+            f"{known_pane(marks)}</div>"
+            f"<div class='lg-pane' data-p='log' id='pane-log' role='tabpanel' aria-labelledby='tab-log' hidden>"
+            f"{LOG_PANE}</div></section>")
 
 
-def nights_card(tonight: dict, history: dict) -> str:
-    """Color-coded 5-stage nightly Gantt timeline with clean stop markers and consistent finish times."""
-    rows = night_rows(tonight, history)
-    if not rows:
-        return "<section class='pn-card pn-span7'><h2>每晚運行</h2><p class='pn-empty'>尚無紀錄</p></section>"
-
-    leg = "".join(f"<span><i style='background:{c}'></i>{e(w)}</span>" for _, w, c in GANTT_STEPS)
-    hours = "".join(
-        f"<span style='left:{h / NIGHT_HOURS * 100:.2f}%'>{NIGHT_FROM + h:02d}:00</span>"
-        for h in range(0, NIGHT_HOURS, 2)
-    )
-
-    body = []
-    for r in rows:
-        segs = []
-        for p in r["parts"]:
-            if p["state"] == "stop":
-                # Place stop icon cleanly AFTER the last completed bar (no overlap!)
-                segs.append(
-                    f"<b class='pn-stop' style='left:calc({p['left']:.2f}% + 9px)' tabindex='0' "
-                    f"data-tip-h='{e(p['name'])}停在 {e(p['since'])}' data-tip='{e(p['say'])}'>"
-                    f"{icon('warn', 11)}</b>"
-                )
-                continue
-            tip_body = f"{p['since']}–{p['until']}" + (f"（{p['took']}）" if p["took"] else "")
-            if p["say"]:
-                tip_body += f"\n{p['say']}"
-            segs.append(
-                f"<i class='pn-gseg' style='left:{p['left']:.2f}%;width:{max(0.5, p['width']):.2f}%;"
-                f"background:{p['colour']}' tabindex='0' data-tip-h='{e(p['name'])}' data-tip='{e(tip_body)}'></i>"
-            )
-        if r["swapped"] and r["swap_at"]:
-            end_lbl, end_tip = f"{r['swap_at']} 換上", f"學生從 {r['swap_at']} 起搜到新庫；換庫後的檢查到 {r['end']} 跑完"
-        else:
-            end_lbl, end_tip = f"{r['end']} 停", "這一晚沒有換庫，學生搜到的還是前一晚的庫"
-        end = f"<span class='pn-gend' tabindex='0' data-tip='{e(end_tip)}'>{e(end_lbl)}</span>"
-        if r["new"] is None:
-            moved = "<span class='pn-gdelta'>—</span>"
-        elif not r["swapped"]:
-            moved = f"<span class='pn-gdelta pn-gmuted' data-tip='庫維持 {n(r['docs'] or 0)} 份'>沒換庫</span>"
-        else:
-            moved = (
-                f"<span class='pn-gdelta' tabindex='0' data-tip='新進 {r['new']} · 異動 {r['changed'] or 0} · "
-                f"離開 {r['left'] or 0}\n庫共 {n(r['docs'] or 0)} 份'>"
-                f"<b class='pn-pos'>+{n(r['new'])}</b> <span class='pn-neg'>−{n(r['left'] or 0)}</span></span>"
-            )
-        body.append(
-            f"<div class='pn-grow'><a class='pn-glbl' href='{TONIGHT}?night={e(r['night'])}' "
-            f"data-tip='{e(r['tip'] or '看這一晚的每一步')}'>{e(r['label'])}</a>"
-            f"{mark(r['state'], r['word'])}<span class='pn-gtrack'>{''.join(segs)}</span>{end}{moved}</div>"
-        )
-
-    return (
-        f"<section class='pn-card pn-span7'>"
-        f"<div class='pn-chd'><h2>最近 {len(rows)} 晚</h2><a class='pn-link' href='{TONIGHT}'>最近一晚的每一步 →</a></div>"
-        f"<div class='pn-leg pn-gleg'>{leg}</div>"
-        f"<div class='pn-gantt'>"
-        f"<div class='pn-grow pn-ghours'><span></span><span></span>"
-        f"<span class='pn-gtrack'>{hours}</span><span></span><span></span></div>"
-        f"{''.join(body)}</div></section>"
-    )
+# -------------------------------------------------------------------------------------------- the page
 
 
-def crawler_card(snap: dict, tonight: dict) -> str:
-    """Compact crawler pulse: nightly delta bar + coverage breakdown + 3 branch status dots."""
-    crawl = steps(snap).get("crawl") or {}
-    cr = tonight.get("crawler") or {}
-    counts = dict(cr.get("counts") or [])
-    order = (
-        ("新的", "var(--q5)"),
-        ("改了", "var(--q3)"),
-        ("沒變", "var(--line2)"),
-        ("沒抓到", "var(--bad-s)"),
-        ("沒看到", "var(--mute-s)"),
-    )
-    parts = [(w, counts.get(w, 0), c) for w, c in order if w in counts]
-    seen = sum(v for _, v, _ in parts)
-    night = (cr.get("night") or "")[5:]
+def now_of(tonight: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat(tonight["now"]) if tonight.get("now") else None
+    except ValueError:
+        return None
 
-    nightly_html = ""
-    if parts:
-        segs = "".join(
-            f"<i style='flex-grow:{v};background:{c}' data-tip-h='{e(w)}' data-tip='{n(v)} 個網址'></i>"
-            for w, v, c in parts if v
-        )
-        p_vals = pcts([v for _, v, _ in parts])
-        keys = "".join(
-            f"<span><i style='background:{c}'></i>{e(w)} <b>{n(v)}</b><em>{p}%</em></span>"
-            for (w, v, c), p in zip(parts, p_vals)
-        )
-        nightly_html = (
-            f"<div class='pn-subhd'><span>{e(night)} 夜的每晚更新：看了 {n(seen)} 個網址，{cr.get('sites_changed', 0)} 個網站有變</span></div>"
-            f"<div class='pn-cbar'>{segs}</div><div class='pn-ckeys'>{keys}</div>"
-        )
 
-    got = crawl.get("bar") or [0, 0]
-    lost = crawl.get("lost") or []
-    top_v = max((v for _, v in lost[:4]), default=1) or 1
-    reasons = []
-    for w, v in lost[:4]:
-        short_w = (w.replace("學校那邊已經不存在", "校方已刪除 / 404")
-                   .replace("待確認：Google API 讀不到（不公開或已刪除，分不出）", "Google 權限/已刪")
-                   .replace("待確認：", ""))
-        is_ext = "不存在" in w or "連接失敗" in w or "Google" in w
-        tag = "<em class='pn-rtag'>校方</em>" if is_ext else "<em class='pn-rtag pn-rtag-w'>待確認</em>"
-        reasons.append(
-            f"<div class='pn-rrow'><span class='pn-rname' data-tip='{e(w)}'>{tag}{e(short_w)}</span>"
-            f"<span class='pn-rtrack'><i style='width:{v / top_v * 100:.1f}%'></i></span>"
-            f"<span class='pn-rval'>{n(v)}</span></div>"
-        )
-    rest = sum(v for _, v in lost[4:])
-    cov_pct = (got[0] / got[1] * 100) if len(got) == 2 and got[1] else 0.0
-    cover_html = ""
-    if len(got) == 2 and got[1]:
-        cov_tip = toggletip("pn-tip-cov", "這些沒抓到的是什麼",
-                            "這一輪該抓的網址裡沒抓到的，大多是學校那邊刪了頁、連不上或不公開，"
-                            "不是昨晚才壞的；「待確認」的要人看一眼。")
-        more = f"<div class='pn-rmore'>其餘 {len(lost) - 4} 種原因共 {n(rest)}</div>" if rest else ""
-        cover_html = (
-            f"<div class='pn-subhd pn-subhd-sep'><span>這一輪該抓的網址抓到 {cov_pct:.1f}%"
-            f"（{n(got[0])} / {n(got[1])}），沒抓到的原因</span>{cov_tip}</div>"
-            f"<div class='pn-rbars'>{''.join(reasons)}</div>{more}"
-        )
+def gather(store, known, where, tonight: dict, snap: dict, todo: dict | None, now: datetime | None = None) -> dict:
+    """What 總覽 reads besides the reading and 待處理 (web.py's front passes it as page(more=…)): {'calendar' (its
+    month and week of nights: the nights' record and tonight's readings), 'visits' (this month a day: the record's
+    days, today read now, the week's calls), 'known' (every mark with where its problem stands: the store's
+    sightings)}. store: history.Store; known: todo.Known; where: the pipeline's Where (its public_log)."""
+    now = now or now_of(tonight)
+    today = calendar.today_of(tonight, now)
+    first, last = calendar.span_for(today)
+    enabled = store is not None and getattr(store, "enabled", False)
+    records = store.nights(first, last) if enabled else []
+    # the library's crawl time when no night of the month or the week swapped (OV-18)
+    reader = getattr(store, "last_swapped", None) if enabled else None
+    last_swap = reader(night_of_run(today)) if callable(reader) else None
+    usage = nums_of(snap, "serve").get("usage") or {}
+    marks = known.marks() if known is not None else []
+    seen = sightings(store if enabled else None, [m["key"] for m in marks])
+    return {"calendar": calendar.build(tonight, records, now=now, last_swap=last_swap),
+            "visits": visits.month(store, getattr(where, "public_log", None), now=now, recent=usage.get("days")),
+            "known": known_rows(marks, todo, seen, tonight.get("default") or "")}
 
-    sides = "".join(
-        f"<div class='pn-sidepill' tabindex='0' data-tip='{e(t)}'>{mark(s)}<span>{e(w)}</span></div>"
-        for w, s, t in crawl.get("sides") or []
+
+def sites_part(sites: dict, snap: dict) -> str:
+    """文件日期分佈 + 全部網站 as one card (內容's page in a frame) with 這台電腦 under the donut; while the sites'
+    numbers are still being counted, a line saying so and the machine's tiles alone. Alone, the block is its own card
+    with its title 這台電腦 (no donut beside it to say what it is); the wrapper only places it (no card in a card)."""
+    block = machine_block(snap)
+    if not sites.get("sites"):
+        alone = f"<div class='mc-alone'>{block}</div>" if block else ""
+        return f"<p class='pn-wait'>{WAITING}</p>{alone}"
+    return ("<iframe class='sx-frame' id='sxFrame' src='/sites?embed=1' title='文件日期分佈' loading='lazy'></iframe>"
+            f"<template id='mcBlock'>{block}</template><div class='mc-alone' id='mcHere' hidden></div>")
+
+
+def page(snap: dict, tonight: dict, sites: dict, history: dict | None = None, *, aitest: dict | None = None,
+         built: str = "", todo: dict | None = None, more: dict | None = None) -> str:
+    """總覽 as a whole page. tonight: nightly.tonight with the last swap's comparison as 'changes'; sites: 內容's data
+    (only whether it is ready: the frame draws it); history: home_history (the calendar's nights when more has none);
+    built: when the library in use was built (the bar's right end); todo: todo.collect; more: gather's answer.
+    aitest is no longer drawn (AI 實測 left 總覽 with 全景)."""
+    more = more or {}
+    reading = not snap.get("steps")
+    model = more.get("calendar") or calendar.build(tonight, (history or {}).get("nights") or [])
+    usage = nums_of(snap, "serve").get("usage") or {}
+    vis = more.get("visits") or visits.month(None, None, now=now_of(tonight), recent=usage.get("days"))
+    # read again in a few seconds while the steps are being read; after that the layer asks for the night's
+    # signature and reloads only when it changed and nothing is being done on the page (OV-82)
+    again = f"<script>{AGAIN.replace('{ms}', '5000')}</script>" if reading else ""
+    stamp = built[:16].replace("T", " ")
+    meta = f"<span data-tip='正式庫 {e(stamp)} 建好'>庫建於 {e(stamp[5:])}</span>" if stamp else ""
+    content = (
+        "<h1 id='main-title' tabindex='-1' class='visually-hidden'>總覽</h1>"
+        f"{calendar.card_html(model)}"
+        f"<div class='mid-row'>{visits.card_html(vis)}{todo_card(todo, reading, more.get('known'))}</div>"
+        f"{sites_part(sites, snap)}"
     )
     return (
-        f"<section class='pn-card pn-span5'>"
-        f"<div class='pn-chd'><h2>爬蟲狀態</h2><a class='pn-link' href='/check'>網頁核查 →</a></div>"
-        f"{nightly_html}{cover_html}"
-        f"<div class='pn-sidepills'>{sides}</div></section>"
+        "<!doctype html><html lang='zh-Hant-TW'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta name='color-scheme' content='light dark'>"
+        "<title>總覽 · 檢視台</title>"
+        f"<style>{themebar.theme_css()}{TIP_CSS}{CSS}</style></head>"
+        f"<body><a href='#main-title' class='visually-hidden pn-skip'>跳至主要內容</a>"
+        f"{themebar.bar('home', 'ops', meta)}<main id='main' data-sig='{e(tonight.get('sig') or '')}'>{content}</main>"
+        f"<script>{TIP_JS}</script>{again}"
+        f"<script id='echarts-lib' src='{ECHARTS}' async crossorigin='anonymous' referrerpolicy='no-referrer'></script>"
+        f"{design.layer(*LAYERS)}</body></html>"
     )
 
 
-# -------------------------------------------------------------------------------------------- styles & script
+# -------------------------------------------------------------------------------------------- styles
 
-
+# The card shell, all that is left of 總覽's styles before the 11-23 design (its first style block in the copy): the
+# page's own frame (the skip link, main, the waiting line), a card and its head, the tile 網站訪問量 sits in. 內容's
+# band and the night view use the same shell (content_band reads CSS). The 11-23 parts are theme/design/home.css;
+# the parts of the removed cards (the Gantt, the KPI row, the meters, the old list, the popovers) went with them.
 CSS = """
 :root{color-scheme:light dark}
 .visually-hidden:where(:not(:focus-within,:active)){position:absolute!important;clip-path:inset(50%)!important;
@@ -822,329 +454,19 @@ background:var(--act);color:var(--on-act);text-decoration:none;font-weight:650}
 main{max-width:var(--page);margin:0 auto;padding:18px var(--gutter) 44px}
 .pn-wait{margin:0 0 14px;padding:9px 13px;border-radius:10px;background:var(--sunk);color:var(--ink2);font-size:13px}
 
-/* Top header strip */
-.pn-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;margin:0 0 18px}
-.pn-title{display:flex;align-items:baseline;gap:12px}
-.pn-title h1{margin:0;font-size:20px;font-weight:700;letter-spacing:-.02em}
-.pn-status{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-.pn-pill{display:inline-flex;align-items:center;gap:5px;min-block-size:30px;padding:4px 11px;border-radius:999px;
-border:1px solid var(--line);background:var(--surface);color:var(--ink2);font:600 12px/1 var(--font);
-text-decoration:none;cursor:pointer;white-space:nowrap;transition:border-color .12s,background .12s}
-.pn-pill:hover{border-color:var(--line2);color:var(--ink)}
-.pn-pill-ok{background:var(--good-bg);border-color:transparent;color:var(--good-ink)}
-.pn-pill-warn{background:var(--warn-bg);border-color:transparent;color:var(--warn-ink)}
-.pn-pill-bad{background:var(--bad-bg);border-color:transparent;color:var(--bad-ink)}
-
-/* Hero KPI row: 4-up desktop, clean 2x2 medium, 1-up small (no 3+1 orphan!) */
-.pn-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}
-@media (max-width:1040px){.pn-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:520px){.pn-kpis{grid-template-columns:minmax(0,1fr)}}
+/* a tile (網站訪問量) */
 .pn-kpi{display:flex;flex-direction:column;justify-content:space-between;gap:8px;padding:16px 18px;
 border:1px solid var(--line);border-radius:16px;background:var(--surface);box-shadow:var(--shadow);
-text-decoration:none;color:inherit;transition:border-color .15s,transform .15s}
-.pn-kpi-link:hover{border-color:var(--line2);transform:translateY(-1px)}
+text-decoration:none;color:inherit}
 .pn-khead{font-size:12px;font-weight:600;color:var(--ink3);letter-spacing:.01em}
-.pn-kbody{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
-.pn-knum{min-width:0}
-.pn-big{font-size:26px;font-weight:700;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
-display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
-.pn-unit{font-size:13px;font-weight:500;color:var(--ink3)}
-.pn-delta{font-size:12px;font-weight:650;padding:2px 6px;border-radius:999px;background:var(--good-bg);
-color:var(--good-ink)}
-.pn-ksub{margin-top:6px;font-size:12px;line-height:1.4;color:var(--ink3);font-variant-numeric:tabular-nums}
-.pn-kviz{flex:none;display:flex;align-items:center}
 
-/* Bento grid (12 columns on desktop) */
+/* Bento grid (內容's band) */
 .pn-bento{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
-.pn-span7{grid-column:span 7}.pn-span5{grid-column:span 5}.pn-span6{grid-column:span 6}
-.pn-stack{display:flex;flex-direction:column;gap:16px;min-width:0}
-@media (max-width:1100px){.pn-span7,.pn-span5,.pn-span6{grid-column:1/-1}}
 
 /* Card shell */
 .pn-card{container-type:inline-size;min-width:0;padding:18px 20px;border:1px solid var(--line);border-radius:16px;
 background:var(--surface);box-shadow:var(--shadow);display:flex;flex-direction:column}
 .pn-chd{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:0 0 14px}
 .pn-chd h2{margin:0;font-size:16px;font-weight:700;letter-spacing:-.01em}
-.pn-link{font-size:12px;font-weight:600;color:var(--ink3);text-decoration:none;min-block-size:24px;
-display:inline-flex;align-items:center}
-.pn-link:hover{color:var(--ink)}
-.pn-leg{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:11px;color:var(--ink2)}
-.pn-leg span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.pn-leg i{width:8px;height:8px;border-radius:2px;flex:none}
-.pn-subhd{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:650;color:var(--ink2);margin:0 0 10px}
-.pn-subhd-sep{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
 .pn-empty{margin:4px 0;font-size:13px;color:var(--ink3)}
-
-/* Freshness SVG stacked column chart */
-.pn-svg{width:100%;height:auto;display:block;overflow:visible}
-.pn-ax{font-size:11px;fill:var(--ink3);font-variant-numeric:tabular-nums}
-.pn-peak{font-size:11px;font-weight:700;fill:var(--ink);font-variant-numeric:tabular-nums}
-.pn-col rect:not(.pn-hit){transition:opacity .12s}
-.pn-svg:has(.pn-col:hover) .pn-col:not(:hover) rect:not(.pn-hit){opacity:.42}
-.pn-hit{cursor:pointer}
-.pn-mchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto;padding-top:14px}
-.pn-mchip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:var(--sunk);
-font-size:11px;color:var(--ink2);font-variant-numeric:tabular-nums}
-.pn-mchip b{color:var(--ink);font-weight:650}
-
-/* where the documents come from: groups as stacked bars */
-.pn-obars{display:flex;flex-direction:column;gap:6px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
-.pn-orow{display:grid;grid-template-columns:64px minmax(0,1fr) 50px;align-items:center;gap:8px;font-size:12px}
-.pn-oname{color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
-.pn-otrack{display:block;height:10px;border-radius:4px;background:var(--sunk);overflow:hidden}
-.pn-ostack{display:flex;gap:1.5px;height:100%;min-width:3px}
-.pn-ostack i{display:block;min-width:2px;height:100%}
-.pn-ostack i:first-child{border-radius:4px 0 0 4px}.pn-ostack i:last-child{border-radius:0 4px 4px 0}
-.pn-oval{text-align:right;color:var(--ink3);font-variant-numeric:tabular-nums}
-
-/* Quality card: AI ring + unified percentage ladders */
-.pn-lhead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;font-size:12px;
-font-weight:650;color:var(--ink2);margin-bottom:10px}
-.pn-ladders{display:flex;flex-direction:column;gap:11px}
-.pn-lrow{display:grid;grid-template-columns:118px minmax(0,1fr) 54px;align-items:center;gap:10px;cursor:default}
-.pn-llbl{display:flex;flex-direction:column;line-height:1.25}
-.pn-llbl b{font-size:13px;font-weight:650;color:var(--ink)}
-.pn-llbl span{font-size:11px;color:var(--ink3)}
-.pn-ltrack{position:relative;height:16px;border-radius:6px;background:var(--qx);overflow:hidden}
-.pn-ltrack i{position:absolute;left:0;top:0;bottom:0;border-radius:6px}
-.pn-l10{background:var(--q1)}.pn-l3{background:var(--q3)}.pn-l1{background:var(--q5)}
-.pn-lnum{text-align:right;font-variant-numeric:tabular-nums;line-height:1.2}
-.pn-lnum b{display:block;font-size:13px;color:var(--ink)}
-.pn-lnum span{font-size:11px;color:var(--ink3)}
-
-/* Usage + Host 2x2 meters */
-.pn-ustats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
-.pn-ustat{padding:7px 10px;border-radius:10px;background:var(--sunk);display:flex;flex-direction:column;gap:2px}
-.pn-ustat span{font-size:11px;color:var(--ink3);white-space:nowrap}
-.pn-ustat b{font-size:13px;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
-.pn-mgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-@container (max-width:440px){.pn-ustats{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@container (max-width:360px){.pn-mgrid{grid-template-columns:minmax(0,1fr)}}
-.pn-meterbox{padding:10px 12px;border-radius:11px;background:var(--sunk);display:flex;flex-direction:column;gap:6px}
-.pn-mtop{display:flex;justify-content:space-between;align-items:baseline;font-size:12px}
-.pn-mtop b{color:var(--ink);font-weight:650}.pn-mtop span{color:var(--ink2);font-weight:650;font-variant-numeric:tabular-nums}
-.pn-mtrack{height:7px;border-radius:999px;background:var(--line);overflow:hidden}
-.pn-mtrack i{display:block;height:100%;border-radius:999px}
-.pn-mbot{font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums}
-
-/* Nightly color-coded Gantt */
-.pn-gleg{margin-bottom:12px}
-.pn-gantt{display:flex;flex-direction:column;gap:10px}
-.pn-grow{display:grid;grid-template-columns:56px 56px minmax(0,1fr) 64px 78px;align-items:center;gap:10px;font-size:12px}
-.pn-glbl{color:var(--ink);font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
-.pn-gtrack{position:relative;height:18px;border-radius:5px;background:repeating-linear-gradient(90deg,transparent 0,
-transparent calc(22.222% - 1px),var(--line) calc(22.222% - 1px),var(--line) 22.222%)}
-.pn-ghours .pn-gtrack{height:14px;background:none}
-.pn-ghours .pn-gtrack span{position:absolute;transform:translateX(-50%);font-size:11px;color:var(--ink3);
-font-variant-numeric:tabular-nums;white-space:nowrap}
-.pn-ghours .pn-gtrack span:first-child{transform:none}
-.pn-gseg{position:absolute;top:2px;bottom:2px;min-width:4px;border-radius:4px;box-shadow:0 0 0 1px var(--surface);
-cursor:pointer;transition:filter .12s,transform .12s}
-.pn-gseg:hover{filter:brightness(1.12);transform:scaleY(1.18);z-index:2}
-.pn-stop{position:absolute;top:1px;z-index:3;display:flex;align-items:center;justify-content:center;
-width:16px;height:16px;border-radius:50%;background:var(--warn-bg);color:var(--warn-ink);
-box-shadow:0 0 0 2px var(--surface);cursor:pointer}
-.pn-gend{color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
-.pn-gdelta{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.pn-pos{color:var(--ink);font-weight:650}.pn-neg{color:var(--ink3)}.pn-gmuted{color:var(--ink3)}
-@container (max-width:560px){
-  .pn-grow{grid-template-columns:auto auto minmax(0,1fr) auto;row-gap:4px}
-  .pn-grow>.pn-gtrack{grid-column:1/-1;grid-row:2}
-  .pn-ghours>span:not(.pn-gtrack){display:none}.pn-ghours>.pn-gtrack{grid-row:1}
-}
-
-/* a bar cut into its parts; the days' columns */
-.pn-split{display:flex;gap:2px;height:12px;margin:0 0 8px}
-.pn-split i{display:block;min-width:3px;height:100%;cursor:pointer;transition:opacity .12s}
-.pn-split i:first-child{border-radius:4px 0 0 4px}.pn-split i:last-child{border-radius:0 4px 4px 0}
-.pn-split i:only-child{border-radius:4px}
-.pn-split:has(i:hover) i:not(:hover){opacity:.45}
-.pn-tsplit{width:84px;height:8px;margin:0 0 4px}
-.pn-kviz .pn-days{width:84px;height:36px}
-.pn-days .pn-hit{cursor:pointer}
-.pn-ckeys{margin-bottom:2px}
-
-/* Crawler pulse */
-.pn-cbar{display:flex;gap:2px;height:12px;margin-bottom:8px}
-.pn-cbar i{display:block;min-width:3px;height:100%}
-.pn-cbar i:first-child{border-radius:4px 0 0 4px}.pn-cbar i:last-child{border-radius:0 4px 4px 0}
-.pn-ckeys{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
-.pn-ckeys span{display:inline-flex;align-items:center;gap:5px}
-.pn-ckeys i{width:8px;height:8px;border-radius:2px;flex:none}
-.pn-ckeys b{color:var(--ink);font-weight:650}.pn-ckeys em{font-style:normal;color:var(--ink3);font-size:11px}
-.pn-rbars{display:flex;flex-direction:column;gap:7px}
-.pn-rrow{display:grid;grid-template-columns:minmax(0,148px) minmax(0,1fr) 44px;align-items:center;gap:8px;font-size:12px}
-.pn-rname{display:inline-flex;align-items:center;gap:5px;color:var(--ink2);white-space:nowrap;overflow:hidden;
-text-overflow:ellipsis}
-.pn-rtag{font-style:normal;font-size:11px;padding:1px 5px;border-radius:4px;background:var(--sunk);color:var(--ink3);
-flex:none}
-.pn-rtag-w{background:var(--warn-bg);color:var(--warn-ink)}
-.pn-rtrack{display:block;height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}
-.pn-rtrack i{display:block;height:100%;border-radius:4px;background:var(--line2)}
-.pn-rval{text-align:right;color:var(--ink2);font-variant-numeric:tabular-nums}
-.pn-rmore{margin-top:6px;font-size:11px;color:var(--ink3)}
-.pn-sidepills{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
-.pn-sidepill{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--line);
-border-radius:999px;background:var(--sunk);font-size:11px;color:var(--ink2);cursor:default}
-
-/* Status marks */
-.pn-mark{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:650;white-space:nowrap}
-.pn-mark .ic{flex:none;border-radius:50%;padding:1px}
-.pn-ok{color:var(--good-ink)}.pn-ok .ic{background:var(--good-bg)}
-.pn-warn{color:var(--warn-ink)}.pn-warn .ic{background:var(--warn-bg)}
-.pn-bad{color:var(--bad-ink)}.pn-bad .ic{background:var(--bad-bg)}
-.pn-none{color:var(--ink3)}
-
-/* Native Popovers & Toggletips (anchor positioning gated by @supports) */
-.pn-tt{display:inline-flex;align-items:center}
-.pn-ibtn{display:inline-grid;place-items:center;min-inline-size:24px;min-block-size:24px;padding:0;
-border:1px solid var(--line2);border-radius:50%;background:var(--surface);color:var(--ink3);
-font:700 11px/1 var(--font);cursor:pointer}
-.pn-ibtn:hover{border-color:var(--ink3);color:var(--ink)}
-[popover].pn-pop{border:1px solid var(--line2);border-radius:12px;background:var(--surface);color:var(--ink);
-box-shadow:var(--pop);padding:10px 12px;max-width:min(320px,90vw);font-size:12px;line-height:1.5}
-.pn-hint{color:var(--ink2)}
-.pn-warnlist{padding:12px 14px;width:min(340px,92vw)}
-.pn-pophd{font-size:12px;font-weight:700;color:var(--ink);margin-bottom:8px}
-.pn-warnlist ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
-.pn-warnlist li a{display:flex;flex-direction:column;gap:1px;padding:6px 8px;border-radius:8px;text-decoration:none}
-.pn-warnlist li a:hover{background:var(--hover)}
-.pn-warnlist li b{font-size:13px;color:var(--ink);font-weight:600}
-.pn-warnlist li span{font-size:11px;color:var(--ink3)}
-.pn-popfoot{display:inline-block;margin-top:8px;padding-top:8px;border-top:1px solid var(--line);width:100%;
-font-size:12px;font-weight:600;color:var(--amt);text-decoration:none}
-.pn-popfoot:hover{text-decoration:underline}
-@supports (position-area:block-end){
-  [popover].pn-pop{inset:auto;margin:6px 0 0;position-area:block-end span-inline-end;
-  position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline}
-}
-
-@media (prefers-reduced-motion:reduce){
-  .pn-kpi,.pn-gseg,.pn-col rect,.pn-split i{transition:none}
-}
-
-/* 2026-11-22 evening: the first screen (the night in a sentence, 要處理, the nights) and 全景 under a divider */
-.pn-say{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--ink);text-decoration:none;font-size:15px;
-font-weight:600}
-.pn-say:hover span{text-decoration:underline;text-underline-offset:3px}
-.pn-mini10{display:block;position:relative;width:84px;height:8px;border-radius:999px;background:var(--mark2);
-overflow:hidden}
-.pn-mini10 i{position:absolute;inset:0 auto 0 0;border-radius:999px;background:var(--q2)}
-.pn-mini10 i.pn-mini1{background:var(--q5)}
-.pn-kpis.pn-k3{grid-template-columns:repeat(3,minmax(0,1fr))}
-@media (max-width:1040px){.pn-kpis.pn-k3{grid-template-columns:minmax(0,1fr)}}
-.pn-divider{display:flex;align-items:center;gap:12px;margin:34px 0 14px;font-size:15px;font-weight:700;color:var(--ink2)}
-.pn-divider::after{content:"";flex:1;height:1px;background:var(--line)}
-.pn-tcount{margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn-ink);
-font-size:13px;font-variant-numeric:tabular-nums}
-.pn-thead{display:inline-flex;align-items:center;gap:8px}
-.pn-tsub{font-size:12px;color:var(--ink3)}
-.pn-tlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.pn-tlist li{display:grid;grid-template-columns:auto 64px minmax(0,1fr) auto;align-items:start;gap:4px 10px;
-padding:9px 0;border-top:1px solid var(--line)}
-.pn-tlist li:first-child{border-top:0}
-.pn-tkind{font-size:12px;color:var(--ink3);padding-top:2px;white-space:nowrap}
-.pn-twhat{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:13px}
-.pn-twhat a,.pn-twhat b{font-weight:650;color:var(--ink);text-decoration:none}
-.pn-twhat a:hover{text-decoration:underline;text-underline-offset:3px}
-.pn-twhat span{color:var(--ink2);overflow-wrap:anywhere}
-.pn-twhat .pn-tnote{color:var(--ink3);font-size:12px}
-.pn-twhat .pn-tcode{color:var(--ink3);font:12px/1.4 var(--mono)}
-.pn-tnew,.pn-tage{font-size:12px;white-space:nowrap;padding:1px 7px;border-radius:999px}
-.pn-tnew{background:var(--warn-bg);color:var(--warn-ink);font-weight:650}
-.pn-tage{color:var(--ink3);border:1px solid var(--line)}
-.pn-tnone{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px;color:var(--ink2)}
-.pn-tmore{margin-top:6px;font-size:13px;color:var(--ink2)}
-.pn-tmore>summary{cursor:pointer;padding:6px 0;color:var(--ink3)}
-.pn-tknown li{opacity:.75}
-.pn-tact{margin-top:4px;font-size:12px}
-.pn-tact summary{display:inline;cursor:pointer;color:var(--ink3);list-style:none}
-.pn-tact summary::-webkit-details-marker{display:none}
-.pn-tact summary:hover{color:var(--ink2);text-decoration:underline;text-underline-offset:3px}
-.pn-tact form,form.pn-tact{display:flex;gap:6px;align-items:center;margin-top:4px}
-.pn-tact input[name=note]{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
-background:var(--sunk);color:var(--ink);font:12px var(--font)}
-.pn-tact button{height:28px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);
-color:var(--ink2);font:12px var(--font);cursor:pointer}
-.pn-tact button:hover{border-color:var(--line2);color:var(--ink)}
-form.pn-tact{margin-top:2px}
-a.pn-glbl{color:inherit;text-decoration:none}
-a.pn-glbl:hover{text-decoration:underline;text-underline-offset:3px}
-@media (max-width:520px){.pn-tlist li{grid-template-columns:auto minmax(0,1fr) auto}.pn-tkind{display:none}}
 """
-
-PAGE_JS = r"""
-(() => {
-  // the toggletips (interestfor / popover="hint"): their ARIA, and a plain popover where hint is not known (Safari)
-  const owned = new Set();
-  for (const trig of document.querySelectorAll('[interestfor]')) {
-    const target = document.getElementById(trig.getAttribute('interestfor'));
-    if (!target || target.getAttribute('popover') !== 'hint') continue;
-    if (!target.hasAttribute('role')) target.setAttribute('role', 'tooltip');
-    if (trig.hasAttribute('popovertarget') && !trig.hasAttribute('aria-expanded')) {
-      trig.setAttribute('aria-expanded', target.matches(':popover-open') ? 'true' : 'false');
-      owned.add(trig);
-    }
-  }
-  document.addEventListener('toggle', (ev) => {
-    const id = ev.target && ev.target.id;
-    if (!id) return;
-    const isOpen = ev.newState === 'open' ? 'true' : 'false';
-    for (const trig of owned) {
-      if (trig.getAttribute('interestfor') === id) trig.setAttribute('aria-expanded', isOpen);
-    }
-    for (const btn of document.querySelectorAll(`[popovertarget="${CSS.escape(id)}"][aria-expanded]`)) {
-      btn.setAttribute('aria-expanded', isOpen);
-    }
-  }, true);
-  const probe = document.createElement('div');
-  probe.popover = 'hint';
-  if (probe.popover !== 'hint') {
-    document.addEventListener('beforetoggle', ({ target, newState }) => {
-      if (newState === 'open' && target.getAttribute('popover') === 'hint'
-          && document.querySelector(`[popovertarget="${CSS.escape(target.id)}"]`)) {
-        target.popover = 'auto';
-      }
-    }, true);
-  }
-})();
-"""
-
-
-def page(snap: dict, tonight: dict, sites: dict, history: dict, *, aitest: dict | None = None, built: str = "",
-         todo: dict | None = None) -> str:
-    """總覽 as a whole page: the bar every page has; the first screen (the night in one sentence, four figures, 要處理,
-    the last nights); then 全景. built: when the library in use was built (the bar's right end, as on every page);
-    todo: nknu.ops.todo.collect."""
-    usage = nums_of(snap, "serve").get("usage")
-    reading = not snap.get("steps")
-    # read again in a few seconds while the steps are being read (as 每晚運行 does after a restart)
-    again = AGAIN.replace("{ms}", "5000") if reading or snap.get("running") else ""
-    stamp = built[:16].replace("T", " ")
-    meta = f"<span data-tip='正式庫 {e(stamp)} 建好'>庫建於 {e(stamp[5:])}</span>" if stamp else ""
-    waiting = "" if sites.get("sites") else (
-        "<p class='pn-wait'>網站的統計還在算（檢視台剛重啟時要幾分鐘），全景的兩張圖等它算好再出現。</p>")
-
-    content = (
-        f"{header_bar(snap, tonight, history, todo)}"
-        f"{hero_kpis(snap, tonight, sites, history, usage, aitest)}"
-        f"<div class='pn-bento'>{todo_card(todo, reading)}{nights_card(tonight, history)}</div>"
-        f"<h2 class='pn-divider' id='whole'>全景</h2>{waiting}"
-        f"{scale_kpis(sites, aitest)}"
-        f"<div class='pn-bento'>"
-        f"{freshness_card(sites)}"
-        f"{sources_card(sites)}"
-        f"{usage_card(snap, usage)}"
-        f"<div class='pn-stack pn-span6'>{machine_card(snap)}</div>"
-        f"</div>"
-    )
-    return (
-        "<!doctype html><html lang='zh-Hant-TW'><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<meta name='color-scheme' content='light dark'>"
-        "<title>總覽 · 檢視台</title>"
-        f"<style>{themebar.theme_css()}{TIP_CSS}{CSS}</style></head>"
-        f"<body><a href='#main-title' class='visually-hidden pn-skip'>跳至主要內容</a>"
-        f"{themebar.bar('home', 'ops', meta)}<main id='main'>{content}</main>"
-        f"<script>{TIP_JS}{PAGE_JS}{again}</script></body></html>"
-    )

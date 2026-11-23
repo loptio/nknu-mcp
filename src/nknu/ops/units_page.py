@@ -7,6 +7,9 @@ A unit's own count is what doc_scope names it the publisher of; a parent's line 
 departments: a sum of their counts, so a document two of them published is counted twice). The newest date is the
 latest published or inherited date (nknu.content.dates) not after today. Read only: four queries over units,
 doc_scope, docs and dates. 【Claude】
+
+11-23 (owner: 「把单位页面拿掉」): /units is no page any more; an old link lands on 內容 (moved). The tree stays here, read by
+nothing on the panel now (the 沒有文件的 card that showed its counts went with the same design).
 """
 
 from __future__ import annotations
@@ -17,6 +20,9 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from urllib.parse import quote
 
+from starlette.requests import Request
+from starlette.responses import RedirectResponse
+
 from nknu.ops.look import e, tw
 
 STALE_DAYS = 365  # a unit whose newest document is older than this is marked 一年沒更新
@@ -24,6 +30,12 @@ OPEN_DEPTH = 1  # the school and its first level start unfolded; deeper levels f
 SITES_SHOWN = 3
 # siblings in the order the school lists them: offices, their sections, colleges, departments, programmes, centres
 KIND_ORDER = {"学校": 0, "行政单位": 1, "行政组别": 2, "学院": 3, "系所": 4, "学程": 5, "中心": 6}
+SITES = "/sites"  # 內容 (nknu.ops.overview.PATH)
+
+
+def moved(_request: Request) -> RedirectResponse:
+    """GET /units: 單位 is gone (11-23); 內容, where every site is, instead (not cached: the address may serve again)."""
+    return RedirectResponse(SITES, status_code=307, headers={"Cache-Control": "no-store"})
 
 
 @dataclass

@@ -5,6 +5,7 @@ and never hides the others."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import date, datetime, timedelta
@@ -57,8 +58,12 @@ def test_the_build_says_what_went_in_what_came_out_and_what_it_left_out(where):
     # what went in: the documents plus what the build left out (5 + 7 + 2 + 1), two sites
     assert ("份文件", 5) in step.out and ("個小段（搜尋時比對的單位）", 40) in step.out
     assert step.into == [("筆整理前的網頁、檔案和行事曆（2 站）", 15)] and step.bar == [5, 15]
-    reasons = dict(step.lost)
-    assert reasons["公告列表的分頁（各則另外收了）"] == 7 and reasons["學校刪掉的公告，只剩空殼"] == 2
+    reasons = dict(step.lost)  # the 11-23 words (names.py), each with a key that stays when a word is renamed
+    assert reasons["公告列表分頁"] == 7 and reasons["已刪公告空殼"] == 2
+    # keyed as the raw drawer labels them (RD-02): left:<the build's own key>; no doc_alias table here
+    keys = {k: (w, n) for k, w, n in step.lost_keys}
+    assert keys["left:网页(列表翻页)"] == ("公告列表分頁", 7) and keys["left:公告(学校删掉)"] == ("已刪公告空殼", 2)
+    assert keys["left:附件(副本)"] == ("重複內容，已合併", 1)
 
 
 def test_a_held_library_newer_than_the_one_in_use_is_for_the_content_session(where):
@@ -298,7 +303,9 @@ def test_the_page_draws_every_step_and_escapes_what_it_prints(where):
     assert "data-state='warn'" in page and "data-tone='warn'" in page  # the top and the step's node are amber
     # a step not normal is a problem: a row of 總覽's 要處理 (since 2026-11-22 evening), opening its node's panel here
     front = panorama.todo_card(todo.collect(None, tonight_page.problems(TONIGHT, snap, []), [], {}), False)
-    assert "href='/tonight#step-x'>某一步</a>" in front and "&lt;b&gt;壞&lt;/b&gt;" in front and "<b>壞</b>" not in front
+    # (where the row points is HOME's, critic CR-05: the night page, with or without the step's anchor)
+    assert re.search(r"href='/tonight(#step-x)?'>某一步</a>", front)
+    assert "&lt;b&gt;壞&lt;/b&gt;" in front and "<b>壞</b>" not in front
     # a step the page has no node for is still a node with its panel (nothing a probe reports is left out)
     assert "data-pick='step-x'" in page and "data-panel='step-x'" in page and "repeat(8,minmax(0,1fr))" in page
     reading = home_page.home_body({"steps": [], "running": True}, TONIGHT, None, {"enabled": False}, {})
@@ -417,12 +424,12 @@ def test_a_steps_list_shows_five_of_each_kind_of_loss_and_folds_the_rest():
 
 
 def test_what_an_export_says_is_missing_is_counted_by_the_words_it_holds():
-    assert pipeline.missing_parts("连接失败（1 个）、缺图片（1 个）") == ["連線失敗", "圖片沒抓到"]
+    assert pipeline.missing_parts("连接失败（1 个）、缺图片（1 个）") == ["連線失敗", "圖片未取得"]  # names.py words
     # a part with its own 「、」 is one kind, never split on it
-    assert pipeline.missing_parts("要人看、内文区是空的（公告的标题栏和内文栏都没有内容）") == ["內文區是空的", "待確認"]
+    assert pipeline.missing_parts("要人看、内文区是空的（公告的标题栏和内文栏都没有内容）") == ["正文區空白", "待確認"]
     # a page left out by rule (the crawler of 11-18) is no kind of what is missing; with a real lack beside it, only that
     assert pipeline.missing_parts("按规则不抓：整页跳到校外页（用户 11-17 决定不抓）") == []
-    assert pipeline.missing_parts("缺附件（2 个）、按规则不抓：整页跳到校外页（用户 11-17 决定不抓）") == ["附件沒抓到"]
+    assert pipeline.missing_parts("缺附件（2 个）、按规则不抓：整页跳到校外页（用户 11-17 决定不抓）") == ["附件未取得"]
     assert pipeline.missing_parts("") == []
 
 
@@ -586,10 +593,12 @@ def _totext(where: Where, *, pending: int = 0, inflight: str = "") -> None:
 def test_the_to_text_step_counts_what_the_library_used(where):
     _totext(where)
     step = pipeline.totext_step(where)
-    assert step.state == OK and step.out == [("個轉成文字", 7)] and ("轉文字失敗", 1) in step.lost
+    assert step.state == OK and step.out == [("個轉成文字", 7)] and ("轉換失敗", 1) in step.lost
+    assert ["failed", "轉換失敗", 1] in step.lost_keys and ["empty", "無文字可讀", 2] in step.lost_keys
     assert "轉 PDF 和 Office 檔的程序 11-16 19:00 走完了" in step.notes[0] and step.say == "建庫時文字都已轉完"
     text = where.sites["school.example"]["cells"]["text"]
-    assert text["n"] == 7 and text["sub"] == "讀不出字 2" and "LibreOffice" in text["tip"]
+    assert text["n"] == 7 and text["sub"] == "無文字可讀 2" and "LibreOffice" in text["tip"]  # the step's own words
+    assert text["tip"].startswith("無文字可讀：2") and "轉換失敗：1" in text["tip"]
 
 
 def test_files_left_unconverted_while_every_lane_stopped_are_for_the_content_session(where):
@@ -650,7 +659,9 @@ def test_what_the_rules_leave_or_keep_for_round_two_is_no_loss_of_the_crawl(wher
     ledger(_ledger(events, {}, results))
     step = pipeline.crawl_step(where)
     assert step.bar == [6, 8] and step.into == [("個這一輪該抓的網址（1 站）", 8)]
-    assert [why for why, _n in step.lost] == ["連接失敗"] and step.notes[0].startswith("不算在內：")
+    assert [why for why, _n in step.lost] == ["連線失敗"] and step.notes[0].startswith("不算在內：")
+    assert step.lost_buckets == [["failed", "連線失敗", 2]] and step.lost_keys == [["failed", "連線失敗", 2]]
+    assert "依規則不抓 30" in step.notes[0] and "延至下一輪 2" in step.notes[0]
 
 
 def test_the_nightly_export_read_from_the_status_file_as_the_crawler_reads_it(where, ledger, monkeypatch):
@@ -954,8 +965,8 @@ def test_an_export_counts_a_file_several_rows_share_once(tmp_path):
 
 def test_what_needs_a_look_says_what_it_is_about():
     parts = pipeline.missing_parts
-    assert parts("要人看：页面几乎是空的") == ["這一頁幾乎是空的"]
-    assert parts("要人看（2 个）、缺内嵌页或按钮（1 个）") == ["頁面裡的內嵌頁或按鈕沒抓到", "頁面連到的東西裡有待確認的"]
+    assert parts("要人看：页面几乎是空的") == ["內容過少"]
+    assert parts("要人看（2 个）、缺内嵌页或按钮（1 个）") == ["內嵌頁或按鈕未取得", "連結資源待確認"]
     assert parts("要人看") == ["待確認"]
 
 
@@ -1001,28 +1012,47 @@ def test_the_export_follows_from_the_crawl_term_by_term(where, ledger):
     step = Step("export", "導出", "")
     # the exports' fetched rows: u1, u1 again in a second export, u5, and a button's row
     assert pipeline.export_link(where, step, 4, {1, 5}, {2: "按规则不抓"}, 1) == 0
-    by_words = {words: (sign, n, tip) for sign, words, n, tip in step.link}
-    assert step.link[0][:3] == ["", "爬取抓到的網址", 5] and step.link[-1][:3] == ["=", "清單上「抓到了」的", 4]
-    off = by_words["抓到了、照設計不另開一筆的（不是內容，或記在別的筆上）"]
-    assert off[:2] == ("−", 3) and "程式檔（.js：是網頁的零件，不是內容）：1" in off[2] and "跳轉後的落點" in off[2]
-    assert "Google 雲端硬碟的檔案資訊和資料夾清單（檔案本身那一筆在清單上）：1" in off[2]
-    assert by_words["抓到了、清單上沒有，也說不出原因的"][1] == 0
-    assert by_words["清單上有，記的是別的結果"][:2] == ("−", 1) and "按規則不抓：1" in by_words["清單上有，記的是別的結果"][2]
-    assert by_words["同一個網址在清單上不只一筆（幾個網站都連到它）"][1] == 1
-    assert by_words["按鈕按出來的內容（清單一筆，爬蟲不算網址）"][1] == 1 and step.link_left == 0
+    from nknu.ops import names
+
+    assert all(words in names.LINKS for _s, words, _n, _t in step.link)  # every term has its 11-23 word
+    link = pipeline.link_words(step.link)  # as guarded() gives it to every page (NV38)
+    by_words = {words: (sign, n, tip) for sign, words, n, tip in link}
+    assert link[0][:3] == ["", "爬取已取得", 5] and link[-1][:3] == ["=", "清單已取得", 4]
+    off = by_words["依設計不單列"]
+    assert off[:2] == ("−", 3) and "網站程式檔（.js）：1" in off[2] and "轉址落點：1" in off[2]
+    assert "雲端硬碟檔案資訊：1" in off[2] and off[2].endswith("依帳本種類歸類，未逐筆核對清單")
+    assert by_words["清單漏列（原因不明）"][1] == 0
+    assert by_words["清單另記結果"][:2] == ("−", 1) and "依規則不抓：1" in by_words["清單另記結果"][2]
+    assert by_words["同址多筆"][1] == 1
+    assert by_words["按鈕內容"][1] == 1 and step.link_left == 0
+    assert pipeline.link_words(link) == link  # renaming twice changes nothing (a page may rename again)
     # a fetched file on no export that is none of those kinds may be content left out: counted apart and returned
     ledger(_address_ledger([(1, site, "page", None, "link", "ok"), (8, site, "file", None, "link", "ok")]))
     step = Step("export", "導出", "")
     assert pipeline.export_link(where, step, 1, {1}, {}, 0) == 1 and step.link_left == 0
-    stray = {words: (n, tip) for _s, words, n, tip in step.link}["抓到了、清單上沒有，也說不出原因的"]
+    stray = {words: (n, tip) for _s, words, n, tip in pipeline.link_words(step.link)}["清單漏列（原因不明）"]
     assert stray == (1, "檔案：1")
     # round two's open batch is not in the crawl step's own figure: the link starts at that figure and adds the batch
     where.sites = {site: {"cells": {"crawl": {"n": 3}}}}
     ledger(_address_ledger([(i, site, "page", None, "link", "ok") for i in range(1, 5)]))
     step = Step("export", "導出", "")
     pipeline.export_link(where, step, 4, {1, 2, 3, 4}, {}, 0)
-    assert [row[:3] for row in step.link[:2]] == [["", "爬取抓到的網址", 3], ["+", "第二輪這一批抓到的（爬取那一步另外算）", 1]]
+    assert [row[:3] for row in pipeline.link_words(step.link)[:2]] == [["", "爬取已取得", 3], ["+", "第二輪補抓", 1]]
     assert step.link_left == 0
+
+
+def test_every_page_gets_the_links_in_the_designs_words(where):
+    """NV38: guarded() renames every 對帳 row (names.link_name, the hover through link_tip), so 總覽, the site page
+    and the night page all draw the same short words without renaming them themselves."""
+    def probe(_w: Where) -> Step:
+        return Step("x", "某步", "", link=[["", "轉文字經手的（讀不出字的也往下走，文件只剩標題）", 9, ""],
+                                          ["−", "圖的字併進了顯示它的網頁", 2, "網頁上的圖讀出來的字放進那一頁，圖自己不另成一筆"],
+                                          ["=", "整理成的記錄", 7, "跳到別的網址：2\n還沒抓：1"]])
+    step = pipeline.guarded(probe, where, "x", "某步")
+    assert step.link == [["", "轉文字經手", 9, ""], ["−", "圖片文字併入網頁", 2, ""],
+                         ["=", "整理後記錄", 7, "已轉址：2\n尚未抓取：1"]]
+    assert pipeline.OFF_LANDING == "轉址落點" and pipeline.OFF_BY_DESIGN["drive"] == "雲端硬碟檔案資訊"
+    assert [w for _k, w, _t in pipeline.ASSEMBLE_OUT][:2] == ["圖片文字併入網頁", "圖片字少且無網頁引用"]
 
 
 def test_the_to_text_run_takes_the_exports_rows_with_a_file_and_the_files_inside_archives(where):
@@ -1058,7 +1088,8 @@ def test_the_build_follows_from_the_to_text_run_through_the_records(where):
     step = pipeline.build_step(where)
     assert step.into[0] == ("筆記錄（轉文字的結果整理成的）", 15) and step.link_left == 0
     words = [row[1] for row in step.link]
-    assert "圖的字併進了顯示它的網頁" in words and "圖沒讀出夠多的字，也沒有收進庫的網頁顯示它" not in words
+    assert "圖片文字併入網頁" in words and "圖片字少且無網頁引用" not in words  # assemble's words, renamed at the source
+    assert {row[1]: row[3] for row in step.link}["圖片文字併入網頁"] == ""  # its explaining sentence left out
     assert [row[2] for row in step.link if row[0] == "="] == [15, 15]
     _assembled(where, records=14, images_inlined=3, containers_dropped=1, data_rows={"4": "行事历"})
     assert pipeline.build_step(where).link_left == 2  # a record short of the files, and one short of the documents
@@ -1150,8 +1181,11 @@ def test_what_the_crawl_holds_for_a_look_is_said_cause_by_cause(where, ledger):
               ("2026-11-16T06:55:53+00:00", "run_end", {"reason": "finished"})]
     ledger(_ledger(events, {}, results))
     step = pipeline.crawl_step(where)
-    assert ("待確認：頁面幾乎是空的", 3) in step.lost and ("待確認：檔案太大，沒抓", 1) in step.lost
+    assert ("待確認：內容過少", 3) in step.lost and ("待確認：檔案過大", 1) in step.lost  # names.py words
     assert not any(words == "待確認" for words, _n in step.lost)
+    # each row keeps its bucket and a key a drawer filters by (review:<result code>), in lost's own order
+    assert step.lost_buckets == [["review", "待確認：內容過少", 3], ["review", "待確認：檔案過大", 1]]
+    assert step.lost_keys == [["review:thin", "待確認：內容過少", 3], ["review:too_large", "待確認：檔案過大", 1]]
 
 
 def test_the_home_draws_a_steps_link_and_its_side_runs():
@@ -1278,3 +1312,132 @@ def test_the_home_folds_the_end_of_a_nodes_logs_and_names_the_machine():
             assert done.returncode == 0, done.stderr[:300]
     sides = home_page.sides_html({"sides": [["C 槽", "bad", "還剩 10 GB"]], "sides_label": "這台電腦"})
     assert "<h4>這台電腦</h4>" in sides and "class='pill bad'" in sides
+
+
+# ---------------------------------------------------------------- 11-23: the design's words, whole lost lists, use per day
+
+
+def test_the_crawl_words_are_the_designs_and_a_review_cause_keeps_its_prefix():
+    words = pipeline.bucket_words()
+    assert (words["got"], words["failed"], words["gone"], words["login"], words["queued"]) == \
+        ("已取得", "連線失敗", "校方已移除", "需要登入", "排隊中／待重試")
+    assert (words["next_round"], words["rule"], words["review"]) == ("延至下一輪", "依規則不抓", "待確認")
+    assert pipeline.review_word("thin") == "待確認：內容過少"
+    assert pipeline.review_word("api_error") == "待確認：雲端檔案無法讀取"
+    assert pipeline.review_word("no_such_code") == "待確認：no_such_code"  # a code the crawler does not name: as it is
+
+
+def test_the_text_and_build_words_are_the_designs():
+    assert pipeline.STATUS_WORDS["ok"] == "已轉文字" and pipeline.STATUS_WORDS["empty"] == "無文字可讀"
+    assert pipeline.STATUS_WORDS["skipped"] == "依規則略過" and pipeline.STATUS_WORDS["failed"] == "轉換失敗"
+    assert pipeline.left_out_words("附件(副本)") == "重複內容，已合併"
+    assert pipeline.left_out_words("事件(重复系列)") == "週期行事曆，併為系列"
+    assert pipeline.left_out_words("page:stu_courses(内容在按钮行)") == "內容在按鈕列"  # names._TAIL
+    assert pipeline.EVENT_LEFT == ("週期行事曆，併為系列", "2023 年前行事曆") and pipeline.FORMAT_LEFT == "同檔其他格式"
+    excluded = {"网页(列表翻页)": 7, "公告(列表翻页)": 3, "附件(副本)": 2, "page:x(新的)": 1, "附件(其他格式)": 0}
+    keys = pipeline.build_left_keys(excluded)
+    assert keys == {"公告列表分頁": "left:网页(列表翻页)", "重複內容，已合併": "left:附件(副本)",
+                    "page:x(新的)": "left:page:x(新的)"}  # the first build key of a word; a zero is no row
+    # a merge the library lists one by one is the drawer's alias:<why> (its rows are there to list)
+    keys = pipeline.build_left_keys(excluded, {"copy", "format", "something_else"})
+    assert keys["重複內容，已合併"] == "alias:copy" and keys["同檔其他格式"] == "alias:format"
+    assert keys["公告列表分頁"] == "left:网页(列表翻页)" and "something_else" not in keys
+
+
+def test_the_builds_lost_keys_are_the_raw_drawers_labels(tmp_path):
+    """RD-02, both sides at once: every key 建庫's lost list gives (what the night page passes to RAWSHOW) is a label
+    the raw drawer has, with the same word, and a preset passing it lands on exactly that label: alias:<why> for a
+    merge the library lists one by one, left:<the build's first key> for one it only counted."""
+    raw = pytest.importorskip("nknu.ops.raw")
+    db = _library(tmp_path / PIPE / "aca.db")
+    conn = sqlite3.connect(db)
+    excluded = {"网页(列表翻页)": 7, "公告(列表翻页)": 2, "公告(学校删掉)": 2, "附件(副本)": 1, "page:x(新的)": 1,
+                "附件(其他格式)": 0}
+    conn.execute("UPDATE meta SET value = ? WHERE key = 'excluded_json'", (json.dumps(excluded),))
+    conn.execute("CREATE TABLE docs (doc_id TEXT PRIMARY KEY, site TEXT, kind_class TEXT, title TEXT, url TEXT)")
+    conn.executemany("INSERT INTO docs VALUES (?, ?, ?, ?, ?)",
+                     [("d1", "school.example", "notice", "公告一", "https://school.example/1"),
+                      ("d2", "school.example", "page", "網頁二", "https://school.example/2")])
+    conn.execute("CREATE TABLE doc_alias (alias TEXT PRIMARY KEY, doc_id TEXT, why TEXT)")
+    conn.execute("INSERT INTO doc_alias VALUES ('a1', 'd1', 'copy')")
+    conn.commit()
+    conn.close()
+    where = Where(root=tmp_path, db=db, today=lambda: TODAY)
+    step = pipeline.build_step(where)
+    assert [k for k, _w, _n in step.lost_keys] == ["left:网页(列表翻页)", "left:公告(学校删掉)", "alias:copy",
+                                                    "left:page:x(新的)"]
+    body = raw.page(where, "build", {"per": "0"}, wait=5.0)
+    labels = {k: w for k, w, _n, _o in body["labels"]}
+    for key, word, _n in step.lost_keys:
+        assert labels.get(key) == word, key
+        assert raw.page(where, "build", {"label": key, "per": "0"}, wait=5.0)["label_on"] == [key]
+
+
+def test_a_steps_heading_has_its_short_title_and_its_rows_their_keys(where):
+    step = pipeline.guarded(pipeline.build_step, where, "build", "建庫")
+    assert step.lost_title == "未成為文件" and step.lost_label.startswith("沒成為文件的")  # the long one for the hover
+    plain = pipeline.guarded(lambda _w: Step("x", "某步", "", lost=[("甲", 2)], lost_label="別的說法（細節）"), where,
+                             "x", "某步")
+    assert plain.lost_title == "別的說法" and plain.lost_keys == [["甲", "甲", 2]]  # no keys named: its words
+
+
+def test_the_export_lost_list_keeps_every_kind(tmp_path):
+    db = _library(tmp_path / PIPE / "aca.db")
+    folder = tmp_path / "archive-export/sites/school.example-1"
+    folder.mkdir(parents=True)
+    marks = ["学校回答没有资料", "内文区是空的", "找不到内文区", "列表没翻完", "待判定", "缺内嵌页或按钮", "学校那边已不存在",
+             "连接失败", "缺附件", "缺图片", "下一轮"]
+    rows = [{"类型": "网页", "结果": "抓到了", "网址": f"https://s.example/{i}", "缺什么": f"{m}（1 个）"}
+            for i, m in enumerate(marks) for _ in range(i + 1)]
+    (folder / "manifest.json").write_text(json.dumps({"网站": "school.example", "项目": rows}, ensure_ascii=False),
+                                          encoding="utf-8")
+    step = pipeline.export_step(Where(root=tmp_path, db=db, today=lambda: TODAY))
+    assert len(step.lost) == 11  # cut to 8 before 11-23 (CR-10): the night's fold understated
+    assert step.lost[0] == ("延至下一輪", 11) and step.lost[-1] == ("頁面顯示查無資料", 1)
+    assert step.lost_keys[0] == ["下一轮", "延至下一輪", 11] and ["缺图片", "圖片未取得", 10] in step.lost_keys
+
+
+def _query(at: str, ms: int | None, tool: str = "search", error: str | None = None) -> str:
+    line = {"t": at, "via": "mcp", "tool": tool, **({"ms": ms} if ms is not None else {}),
+            **({"error": error} if error else {})}
+    return json.dumps(line)
+
+
+def test_a_days_use_counts_load_and_concurrency_over_the_searches_only(tmp_path, monkeypatch):
+    # CR-12 (11-23): the design's load2.py summed every call's span; only searches take one of MAX_SEARCHES slots
+    monkeypatch.setattr(pipeline, "search_slots", lambda: 2)
+    log = tmp_path / "queries.jsonl"
+    log.write_text("\n".join([
+        _query("2026-11-21T23:59:00+08:00", 500),  # the day before
+        _query("2026-11-22T10:00:30+08:00", 30_000),  # 10:00:00–10:00:30
+        _query("2026-11-22T10:00:40+08:00", 30_000),  # 10:00:10–10:00:40: two at once
+        _query("2026-11-22T10:00:20+08:00", 60_000, tool="fetch"),  # overlaps both: holds no slot
+        _query("2026-11-22T10:01:05+08:00", 100, error="busy"),
+        _query("2026-11-22T10:01:06+08:00", 50, tool="fetch", error="bad_args"),  # the caller's own: no error
+        _query("2026-11-22T13:00:00+08:00", None)]) + "\n", encoding="utf-8")
+    day = pipeline.usage_day(log, "2026-11-22")
+    assert day["complete"] and day["calls"] == 6 and day["search"] == 4 and day["slots"] == 2
+    assert day["conc_peak"] == 2  # the fetch overlapping both is not a third
+    # minute 10:00: 30 + 30 search seconds over 60 × 2 slot-seconds; minute 10:01: 0.1 s
+    assert day["load_max"] == 0.5 and day["active_min"] == 2
+    assert day["qpm_peak"] == 3 and day["qpm_peak_at"] == "10:00"
+    assert day["errors"] == 1 and day["err_rate"] == round(1 / 6, 4)
+    assert day["p50_ms"] == 30_000 and day["p99_ms"] == 60_000  # every call with a time, waiting included
+    quiet = pipeline.usage_day(log, "2026-11-23")
+    assert quiet["calls"] == 0 and quiet["complete"]
+    before = pipeline.usage_day(log, "2026-11-20")
+    assert before["calls"] == 0 and not before["complete"]  # the log begins after it: unknown, not quiet
+
+
+def test_the_search_slots_are_the_public_services_own():
+    from nknu.retrieval import public
+
+    assert pipeline.search_slots() == public.MAX_SEARCHES
+
+
+def test_the_reasons_a_document_left_say_the_designs_words():
+    from nknu.ops import changes
+
+    assert changes.REASONS["gone"][0] == "校方已刪除" and changes.REASONS["copy"][0] == "併為副本"
+    assert changes.REASONS["unknown"][0] == "原因不明" and changes.REASONS["unknown"][2] == changes.UNKNOWN
+    assert changes.reason_dicts()["school_gone"]["label"] == "校方已移除"

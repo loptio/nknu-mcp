@@ -1,13 +1,15 @@
 """每晚運行 drawn (2026-11-22, owner: 「每晚运行 一定要改 全部都是文字 哪些重要 哪些重要都看不出来」): the nights on their
-clock instead of a table of durations, and the few numbers worth seeing first under the sentence on top; and since that
-evening 總覽's first screen, the night in a sentence and the last nights, each opening its own on 每晚運行."""
+clock instead of a table of durations, and the few numbers worth seeing first under the sentence on top; and 總覽's
+first screen, since the 11-23 design the calendar (the sentence and the last-seven-nights card went: the calendar has
+every night), each night opening its own on 內容 under the day it runs."""
 
 from __future__ import annotations
 
 from selectolax.lexbor import LexborHTMLParser
 
-from nknu.ops import home_page, panorama
-from tests.ops.test_panels_v3 import hist, tonight
+from nknu.ops import calendar, home_page, panorama
+from tests.ops.test_home_1123 import clean
+from tests.ops.test_home_1123 import tonight as front_tonight
 
 
 def cell(start: float, end: float, *, tone: str = "done", word: str = "完成", when: str = "") -> dict:
@@ -59,20 +61,14 @@ def test_the_numbers_on_top_mark_only_what_needs_a_look():
     assert home_page.top_figures({"state": "computing"}, {"new": [{}], "old": [], "gone": []}, [{}]) == ""
 
 
-def test_the_front_page_says_the_night_in_a_sentence_and_each_night_opens_its_own():
-    # 總覽's first screen since 2026-11-22 evening: the night shown in one sentence linking 每晚運行, and the last
-    # nights, each label opening that night there (the side panel 每晚運行 draws for it)
-    card = LexborHTMLParser(panorama.nights_card(tonight(), hist()))
-    labels = card.css("a.pn-glbl")
-    assert [a.text() for a in labels][:2] == ["11-16 夜", "11-15 夜"]
-    assert [a.attributes["href"] for a in labels][:2] == ["/tonight?night=2026-11-16", "/tonight?night=2026-11-15"]
-    assert card.css_first("h2").text() == f"最近 {len(labels)} 晚"
-    assert panorama.night_sentence(tonight(), hist()) == ("ok", "11-16 夜正常")
-    broke = tonight()
-    broke["default"] = "2026-11-14"  # the night whose build failed (test_panels_v3.tonight: nights[4])
-    state, said = panorama.night_sentence(broke, hist())
-    assert said == "11-14 夜出錯（建庫），沒換庫：學生搜到的還是前一晚的庫" and state == "bad"
-    assert panorama.night_sentence({"nights": []}, {}) == ("none", "還沒有每晚的紀錄")
-    top = LexborHTMLParser(panorama.header_bar({"steps": [{"key": "x"}]}, broke, hist(), {"open": []}))
-    say = top.css_first("a.pn-say")
-    assert say.attributes["href"] == "/tonight" and say.text() == said
+def test_the_front_page_has_a_cell_a_night_each_opening_its_own_under_the_day_it_runs():
+    # 總覽's first screen since the 11-23 design: no sentence, no 最近 7 晚 card; the calendar's week, each night a
+    # cell named by the day it runs (the 01:00 run on 11-22 is night 11-21's), opening that night on 內容
+    t = front_tonight(nights=[clean("2026-11-20"), clean("2026-11-21")])
+    page = LexborHTMLParser(panorama.page({"steps": [{"key": "x"}]}, t, {}, None, todo={"open": []}))
+    cells = page.css("#calendar .wk-grid a.wk-d")
+    assert [a.css_first(".wk-day").text() for a in cells] == ["週六11/21", "週日11/22"]
+    assert [a.attributes["href"] for a in cells] == ["/sites?date=2026-11-21", "/sites?date=2026-11-22"]
+    assert page.css_first("a.pn-say") is None and page.css_first(".pn-gantt") is None
+    assert not hasattr(panorama, "night_sentence") and not hasattr(panorama, "nights_card")
+    assert calendar.run_day("2026-11-21") == "2026-11-22"  # nightly.run_day, the panels' one mapping (CR-03)

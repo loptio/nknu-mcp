@@ -30,6 +30,20 @@ What a record holds, and where each part comes from:
                   and a follow-up by hand reach it), then left as it is: the night after, the home compares with it
                   (新出現, 之前就有, 好了). Never kept while a chain runs (the night is not final then)
 
+  (11-23, the port of the owner's design copy: a night's page reads these for any night, not only the last; keyed by
+  the run day, the day the 01:00 run starts, nightly.run_day: the one mapping, CR-03)
+  night changes   the swap's comparison (nknu.ops.changes.Changes.snapshot(), whole: totals, by_reason, reasons, per
+                  site its counts and lists, capped as the comparison caps them) once it is ready, under the day
+                  nights/<day>.json files the same swap (sources.swap_day: the day its run started, so a hand
+                  promote in the afternoon is that day's, beside the 01:00 run's); the same comparison is written
+                  once; a later swap of the same day is the row and the ones before it stay in its 'earlier' list
+  night flow      the steps as read after the night ended (the same reading the problems are kept from, rewritten
+                  for SETTLE): each step's in, out, lost (with keys and buckets), link, sides, notes, and every
+                  site's cells; the public service's use and the searches it missed are left out
+  usage days      the public service's use of each finished Taipei day (pipeline.usage_of: calls, peaks, load,
+                  times, errors), written once the day is over, from the query log (it rotates at 20 MB: a day kept
+                  here outlives it); a day the log no longer reaches is not written
+
 A value a later reading does not have never wipes one an earlier reading wrote (a NULL keeps what is stored), and a
 comparison's counts are never replaced by the ingest's coarser ones. The first tick after start backfills every night
 since the chain went live (at most nightly.PICKABLE days) from what exists: the ingest's history, the crawler's
@@ -42,8 +56,10 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -65,7 +81,11 @@ PROBLEM_BACK = 60  # nights of lists looked back through for how long a problem 
 PROBLEM_KEEP = 120  # nights of lists kept 【Claude】
 PROBLEM_COLS = ("key", "sev", "place", "state", "reason", "href")
 SWAPPED = "swapped"
-CALM = ("nothing_new", "held", "failed", "paused", "deferred", "busy")  # the library in use did not change
+USAGE_BACK = 40  # finished days of the public service's use looked for in its query log (a month's chart) 【Claude】
+FLOW_DROP = ("usage", "usage_missed", "usage_label")  # the service's use is no night's: not kept with its steps
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+EARLIER_KEEP = 4  # comparisons of a day's earlier swaps kept beside its last one (a day has one swap as a rule) 【Claude】
+CALM =("nothing_new", "held", "failed", "paused", "deferred", "busy")  # the library in use did not change
 
 DDL = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -103,6 +123,15 @@ CREATE TABLE IF NOT EXISTS problems (
   night TEXT NOT NULL, key TEXT NOT NULL,  -- key: what the problem is from one night to the next (nknu.ops.standing)
   sev TEXT, place TEXT, state TEXT, reason TEXT, href TEXT,
   PRIMARY KEY (night, key)
+);
+CREATE TABLE IF NOT EXISTS night_changes (  -- the swap's comparison (nknu.ops.changes) of a night, by its run day
+  run_day TEXT PRIMARY KEY, night TEXT, digest TEXT NOT NULL, body BLOB NOT NULL, written_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS night_flow (  -- the steps as read after a night ended (nknu.ops.pipeline), by its run day
+  run_day TEXT PRIMARY KEY, at TEXT, digest TEXT NOT NULL, body BLOB NOT NULL, written_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_days (  -- the public service's use of a finished Taipei day (pipeline.usage_of)
+  day TEXT PRIMARY KEY, body TEXT NOT NULL, written_at TEXT NOT NULL
 );
 """
 NIGHT_COLS = ("night", "state", "word", "started_at", "ended_at", "swapped", "counted_by", "site_counts", *COUNTS,
@@ -301,6 +330,147 @@ class Store:
             conn.execute("DELETE FROM problem_lists WHERE night < ?", (oldest,))
             return True
 
+    def problem_sightings(self, keys) -> dict[str, dict]:
+        """For 總覽's 已知 (11-23): for each key, the last night a kept list held it ({'key' (the problem's own key:
+        a mark like site:<site> covers every key under it), 'night', 'run_day' (that night's run day), 'gone_run_day'
+        (the run day of the first night after it whose list did not hold it: 「MM-DD 起沒再出現」; None while the latest
+        list still holds it), 'sev', 'place', 'reason', 'href'}); a key no kept list ever held is absent."""
+        if not self.enabled:
+            return {}
+        out: dict[str, dict] = {}
+        with self._lock, self._db() as conn:
+            latest = conn.execute("SELECT max(night) FROM problem_lists").fetchone()[0]
+            for mark in dict.fromkeys(keys):
+                row = conn.execute(
+                    f"SELECT night, {', '.join(PROBLEM_COLS)} FROM problems WHERE key = ? OR key LIKE ? ESCAPE '\\'"
+                    " ORDER BY night DESC, key LIMIT 1",
+                    (mark, mark.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%")).fetchone()
+                if row is None:
+                    continue
+                after = conn.execute("SELECT min(night) FROM problem_lists WHERE night > ?", (row["night"],)).fetchone()[0]
+                out[mark] = {**{k: row[k] for k in PROBLEM_COLS}, "night": row["night"],
+                             "run_day": nightly.run_day(row["night"]),
+                             "gone_run_day": nightly.run_day(after) if after and row["night"] != latest else None}
+        return out
+
+    def last_swapped(self, before: str | None = None) -> dict | None:
+        """The latest night (up to `before`, a night key) that swapped the library, with its steps (總覽's calendar
+        head: when the library in use was crawled); None when none is recorded."""
+        if not self.enabled:
+            return None
+        with self._lock, self._db() as conn:
+            row = conn.execute("SELECT night FROM nights WHERE swapped = 1 AND night <= ? ORDER BY night DESC LIMIT 1",
+                               (before or "9999-12-31",)).fetchone()
+            return self._load(conn, row["night"]) if row else None
+
+    # ---------------------------------------------------------------- 11-23: a night's comparison, its steps, the use
+
+    def _put_blob(self, table: str, run_day: str, extra: tuple[str, object], body: dict) -> bool:
+        if not self.enabled or not _DAY.match(str(run_day or "")):
+            return False
+        raw = json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode()
+        digest = hashlib.blake2b(raw, digest_size=8).hexdigest()
+        with self._lock, self._db() as conn:
+            old = conn.execute(f"SELECT digest FROM {table} WHERE run_day = ?", (run_day,)).fetchone()
+            if old is not None and old["digest"] == digest:
+                return False
+            conn.execute(f"INSERT OR REPLACE INTO {table} (run_day, {extra[0]}, digest, body, written_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (run_day, extra[1], digest, zlib.compress(raw, 6),
+                                                   pl.now_tpe().isoformat(timespec="seconds")))
+            oldest = (date.fromisoformat(run_day) - timedelta(days=PROBLEM_KEEP)).isoformat()
+            conn.execute(f"DELETE FROM {table} WHERE run_day < ?", (oldest,))
+            return True
+
+    def _blob(self, table: str, run_day: str) -> dict | None:
+        if not self.enabled or not _DAY.match(str(run_day or "")):
+            return None
+        with self._lock, self._db() as conn:
+            row = conn.execute(f"SELECT body FROM {table} WHERE run_day = ?", (run_day,)).fetchone()
+        if row is None:
+            return None
+        try:
+            got = json.loads(zlib.decompress(row["body"]).decode())
+        except (zlib.error, ValueError, UnicodeDecodeError):
+            return None
+        return got if isinstance(got, dict) else None
+
+    def _days(self, table: str) -> list[str]:
+        if not self.enabled:
+            return []
+        with self._lock, self._db() as conn:
+            return [r[0] for r in conn.execute(f"SELECT run_day FROM {table} ORDER BY run_day")]
+
+    def put_night_changes(self, run_day: str, changes: dict) -> bool:
+        """Keep a swap's comparison (Changes.snapshot(), ready) for the day its swap is filed under (sources.swap_day);
+        True when it changed what was kept. The same comparison twice writes once. Another swap of the same day (a hand
+        promote after the 01:00 run's) becomes the row, and the comparisons before it stay in its 'earlier' list
+        (oldest first, at most EARLIER_KEEP): the run's own comparison is not lost to the promote's."""
+        if not isinstance(changes, dict) or changes.get("state") != "ready":
+            return False
+        body = {k: v for k, v in changes.items() if k != "earlier"}
+        old = self.night_changes(run_day)
+        earlier: list[dict] = []
+        if old is not None:
+            mine = _swap_id(body)
+            earlier = [e for e in old.get("earlier") or [] if isinstance(e, dict) and _swap_id(e) != mine]
+            if _swap_id(old) != mine:
+                earlier.append({k: v for k, v in old.items() if k != "earlier"})
+            earlier = sorted(earlier, key=lambda e: str((e.get("new") or {}).get("swapped_at") or ""))[-EARLIER_KEEP:]
+        if earlier:
+            body["earlier"] = earlier
+        return self._put_blob("night_changes", run_day, ("night", changes.get("night")), body)
+
+    def night_changes(self, run_day: str) -> dict | None:
+        """The comparison kept for a run day (Changes.snapshot()'s shape: the day's last swap's), with 'earlier' (the
+        comparisons of that day's swaps before it) when the day had more than one; None when none is kept."""
+        return self._blob("night_changes", run_day)
+
+    def night_changes_days(self) -> list[str]:
+        """The run days with a comparison kept, oldest first."""
+        return self._days("night_changes")
+
+    def put_night_flow(self, run_day: str, flow: dict, *, at: str | None = None) -> bool:
+        """Keep the steps of a night as read after it ended ({'at', 'steps': [...], 'sites': [...]}), by run day."""
+        if not isinstance(flow, dict) or not flow.get("steps"):
+            return False
+        return self._put_blob("night_flow", run_day, ("at", at or flow.get("at")), flow)
+
+    def night_flow(self, run_day: str) -> dict | None:
+        """The steps kept for a run day ({'at', 'steps', 'sites'}), None when none are."""
+        return self._blob("night_flow", run_day)
+
+    def night_flow_days(self) -> list[str]:
+        return self._days("night_flow")
+
+    def put_usage_day(self, day: str, metrics: dict) -> bool:
+        """Keep one finished day's use of the public service (pipeline.usage_of's numbers); True when it changed."""
+        if not self.enabled or not _DAY.match(str(day or "")) or not isinstance(metrics, dict):
+            return False
+        body = json.dumps({k: v for k, v in metrics.items() if k != "day"}, sort_keys=True, ensure_ascii=False)
+        with self._lock, self._db() as conn:
+            old = conn.execute("SELECT body FROM usage_days WHERE day = ?", (day,)).fetchone()
+            if old is not None and old["body"] == body:
+                return False
+            conn.execute("INSERT OR REPLACE INTO usage_days (day, body, written_at) VALUES (?, ?, ?)",
+                         (day, body, pl.now_tpe().isoformat(timespec="seconds")))
+            return True
+
+    def usage_days(self, first: str, last: str) -> list[dict]:
+        """The days kept from first to last (YYYY-MM-DD, both in), oldest first: {'day', **numbers}; a day not kept is
+        absent (no record is no quiet day: the page leaves a gap)."""
+        if not self.enabled:
+            return []
+        with self._lock, self._db() as conn:
+            rows = conn.execute("SELECT day, body FROM usage_days WHERE day BETWEEN ? AND ? ORDER BY day",
+                                (first, last)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append({"day": r["day"], **json.loads(r["body"])})
+            except ValueError:
+                continue
+        return out
+
     def put(self, rec: dict, *, at: datetime | None = None) -> bool:
         """Write one night's record, merged with what is stored for it (module docstring); True when anything
         changed. The same record put twice writes once."""
@@ -366,6 +536,21 @@ def merge(old: dict | None, new: dict) -> dict:
                            if any(row.get(k) is not None for k in ("docs", "undated", *SITE_COUNTS))),
                           key=lambda s: s["site"])
     return out
+
+
+def _swap_id(changes: dict) -> tuple:
+    """Which swap a comparison is of: the library it compared to (its built_at and when it was swapped in)."""
+    new = changes.get("new") if isinstance(changes.get("new"), dict) else {}
+    return (new.get("built_at"), new.get("swapped_at"))
+
+
+def flow_of(snap: dict) -> dict:
+    """What a pipeline reading keeps for its night: {'at', 'steps': every step but the public service's use, 'sites':
+    each site's key, name and cells}."""
+    steps = [{k: v for k, v in s.items() if k not in FLOW_DROP} for s in snap.get("steps") or [] if isinstance(s, dict)]
+    sites = [{"key": r.get("key"), "name": r.get("name"), "cells": r.get("cells") or {}, "worst": r.get("worst")}
+             for r in snap.get("sites") or [] if isinstance(r, dict)]
+    return {"at": snap.get("at"), "steps": steps, "sites": sites}
 
 
 # ------------------------------------------------------------------------------------------------ one night
@@ -506,6 +691,7 @@ class Recorder:
         self.flow = flow  # the app's Pipeline (the steps as last read): the list of problems is kept from it
         self.backfilled = False
         self.last: dict = {}
+        self._usage_none: set[str] = set()  # days the query log was found not to reach (keep_usage)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick_lock = threading.Lock()
@@ -551,9 +737,63 @@ class Recorder:
             except Exception:
                 log.exception("每晚纪录：问题清单这一次没留成")
                 listed = False
+            try:
+                compared = self.keep_changes(changes)
+            except Exception:
+                log.exception("每晚纪录：这一晚的比对这一次没留成")
+                compared = False
+            try:
+                used = self.keep_usage(now)
+            except Exception:
+                log.exception("每晚纪录：对外服务的每日用量这一次没留成")
+                used = 0
             self.last = {"at": now.isoformat(timespec="seconds"), "wrote": wrote, "nights": len(finished),
-                         "problems": listed}
+                         "problems": listed, "changes": compared, "usage": used}
             return wrote
+
+    def keep_changes(self, changes: dict | None) -> bool:
+        """Keep the swap's comparison, once it is ready, under the day nights/<day>.json files the same swap
+        (sources.swap_day: the day its run started; else the run day of its 'night'); True when it was written (11-23:
+        the night page reads any night's changes, not only the last swap's)."""
+        if not changes or changes.get("state") != "ready" or not changes.get("night"):
+            return False
+        from nknu.ops import sources  # here: sources reads pipeline and nightly, as this module does
+
+        try:
+            library = sources.library_dir(self.where)
+        except Exception:  # noqa: BLE001 - no library path: the swap's own day
+            library = None
+        day = sources.swap_day(library, changes) or nightly.run_day(changes["night"])
+        return self.store.put_night_changes(day, changes)
+
+    def keep_usage(self, now: datetime) -> int:
+        """Keep each finished Taipei day's use of the public service that is not kept yet (the last USAGE_BACK days),
+        read from the query log in one pass; a day the log does not reach is left out (and not looked for again by
+        this process). Returns the days written."""
+        path = self.where.public_log
+        if path is None or not path.exists():
+            return 0
+        today = now.astimezone(pl.TAIPEI).date()
+        days = [(today - timedelta(days=i)).isoformat() for i in range(USAGE_BACK, 0, -1)]
+        have = {d["day"] for d in self.store.usage_days(days[0], days[-1])}
+        missing = [d for d in days if d not in have and d not in self._usage_none]
+        if not missing:
+            return 0
+        start = datetime.combine(date.fromisoformat(missing[0]), datetime.min.time(), pl.TAIPEI)
+        lines, whole = pl.lines_since(path, start)
+        first = lines[0]["_at"].astimezone(pl.TAIPEI).date().isoformat() if lines else today.isoformat()
+        per = pl.usage_of(lines)
+        wrote = 0
+        for day in missing:
+            if day in per:
+                got = {**per[day], "complete": whole or day > first}
+            elif whole or day > first:  # the log reaches the day and holds no call of it: a quiet day
+                got = {**pl.usage_empty(), "complete": True}
+            else:  # before the log begins: unknown, never a quiet day
+                self._usage_none.add(day)
+                continue
+            wrote += int(self.store.put_usage_day(day, got))
+        return wrote
 
     def keep_problems(self, now: datetime, changes: dict | None) -> bool:
         """Keep the home's list of problems for the night the home opens on (module docstring: problems); True when
@@ -578,7 +818,14 @@ class Recorder:
         kept = self.store.problems_kept(t["default"])
         if kept is not None and (ended is None or read > ended + SETTLE):
             return False  # kept and settled: it stays what the night left, for the night after to compare with
-        rows = tonight_page.problems(t, snap, tonight_page.handle_rows(snap, changes))
+        try:  # the night's steps as this reading has them (11-23): the night page draws any night's flow from them
+            self.store.put_night_flow(nightly.run_day(t["default"]), flow_of(snap), at=snap.get("at"))
+        except Exception:
+            log.exception("每晚纪录：这一晚的步骤这一次没留成")
+        # the same list 待處理 shows (todo.night_rows: the night's problems and the raw files' backup when it is behind),
+        # so a row ages night after night and a 已知 mark of it gets its days
+        from nknu.ops import todo  # here, not on top: todo → tonight_page → history would be a cycle
+        rows = todo.night_rows(t, snap, tonight_page.handle_rows(snap, changes), self.where.archive)
         return self.store.put_problems(t["default"], standing.records(rows), at=snap["at"])
 
     def _loop(self) -> None:
@@ -629,3 +876,18 @@ def site_history(store: Store, site: str, today_night: date, days: int = SHOWN) 
         return {"enabled": False, "why": store.error, "days": span_, "nights": []}
     got = {rec["night"]: rec for rec in store.site_nights(site, span_[0], span_[-1])}
     return {"enabled": True, "why": "", "days": span_, "nights": [got.get(d) for d in span_]}
+
+
+def usage_api(store: Store, where: Where, params, now: datetime | None = None) -> dict:
+    """GET /api/usage/days (nknu.ops.logs.ROUTES_TO_WIRE): the public service's use per day from first to last
+    (YYYY-MM-DD; default the month so far): the finished days kept in ops.db (a day not kept is absent: a gap) and
+    today, read live from the query log ('today': True, not over yet)."""
+    now = now or pl.now_tpe()
+    today = now.astimezone(pl.TAIPEI).date()
+    first, last = str(params.get("first") or ""), str(params.get("last") or "")
+    first = first if _DAY.match(first) else today.replace(day=1).isoformat()
+    last = last if _DAY.match(last) else today.isoformat()
+    days = [d for d in store.usage_days(first, last) if d["day"] < today.isoformat()]
+    if first <= today.isoformat() <= last and where.public_log is not None and where.public_log.exists():
+        days.append({**pl.usage_day(where.public_log, today.isoformat()), "today": True})
+    return {"days": days, "first": first, "last": last, "slots": pl.search_slots()}

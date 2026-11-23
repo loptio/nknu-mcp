@@ -160,17 +160,17 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
     # the 33 test questions to try by hand
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url=BASE) as client:
-        home = client.get("/tonight").text
+        home = client.get("/tonight", follow_redirects=False)
         search = client.get("/search")
         page_of_trace = client.get("/trace")
-    assert "aria-current='true'>總覽</a>" in home and "action='/search'" not in home
+    assert home.status_code == 307 and home.headers["location"] == "/sites?date="  # 11-23: 定時更新 is 內容's
     assert str(search.url).endswith("/try#tests")  # lands on the 33 test questions to try by hand
     assert "aria-current='page'>搜尋</a>" in search.text and "data-board='" not in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
     assert "<form class='nk-find nk-on'" in page_of_trace.text
 
 
-def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_on_to_tonight(db, tmp_path):
+def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_to_its_night_in_content(db, tmp_path):
     # 2026-11-22: 總覽 (nknu.ops.panorama) is /, 每晚運行 moved to /tonight; a link kept from before (a night's, or
     # 現在重讀) still lands on 每晚運行
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
@@ -179,16 +179,17 @@ def test_the_front_page_is_the_overview_and_an_old_link_to_a_night_goes_on_to_to
         night = client.get("/?night=2026-11-14", follow_redirects=False)
         fresh = client.get("/?fresh=1", follow_redirects=False)
     assert front.status_code == 200 and "<title>總覽 · 檢視台</title>" in front.text
-    assert "aria-current='page'>總覽</a>" in front.text and "href='/tonight'" in front.text
-    assert "網站的統計還在算" in front.text  # 網站's numbers are counted in the background: said, not a failure
-    # 2026-11-22 evening: first what needs a look (要處理, the last nights), then 全景 under a divider; how right the
-    # search is lives on 搜尋 and the crawler on 內容
-    first, whole = front.text.split("<h2 class='pn-divider' id='whole'>全景</h2>", 1)
-    assert "id='todo'" in first and "<h2>要處理" in first and "id='todo'" not in whole
-    assert "<h2>每晚運行</h2>" in first  # the nights' card (no night recorded yet: its empty state)
-    assert "搜尋排得準不準" not in front.text and "爬蟲狀態" not in front.text
-    assert night.status_code == 307 and night.headers["location"] == "/tonight?night=2026-11-14"
-    assert fresh.headers["location"] == "/tonight?fresh=1"
+    assert "aria-current='page'>總覽</a>" in front.text and "href='/tonight'" not in front.text
+    # 11-23 design: the calendar first (each run day links its night in 內容), then visits beside 待處理/日誌/已知,
+    # then the date chart and 全部網站 in 內容's frame; no 全景 divider, no nights' Gantt, no AI test tile
+    text = front.text
+    assert "id='calendar'" in text and text.index("id='calendar'") < text.index("id='todo'")
+    # the frame waits for 內容's numbers (counted in the background: said, not a failure)
+    assert ("/sites?embed=1" in text or "網站的統計還在算" in text) and "全景</h2>" not in text
+    assert "<h2>每晚運行</h2>" not in text
+    assert "搜尋排得準不準" not in text and "爬蟲狀態" not in text
+    assert night.status_code == 307 and night.headers["location"].startswith("/sites?date=2026-11-15")
+    assert fresh.status_code == 307 and fresh.headers["location"] == "/sites?date="
 
 
 # ---------------------------------------------------------------- a document's dates on one line
@@ -255,7 +256,7 @@ def test_a_step_that_left_nothing_has_no_card_and_its_place_on_the_line_is_no_li
 
 
 def test_every_step_that_left_something_has_its_card(site):
-    page = site.get("/trace", params={"ref": NOTICE_URL}).text
+    page = site.get("/trace", params={"ref": NOTICE_URL}).text.split("<style id='design-")[0]  # the page, not its 11-23 layer
     for step in ("s1", "s2", "s3", "s4", "s5"):
         assert f"id='{step}'" in page
     # 2026-11-18: the first two cards hold a few facts each and stand side by side on a wide screen

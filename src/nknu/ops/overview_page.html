@@ -203,6 +203,14 @@ svg.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-wid
 /* a reminder of the build's checks: a name and its figure, what it means floating over the row */
 .ck { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
 .ck b { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 品質提醒's rows of a scope are filters (owner 11-23): a row to press, the one on sunk with a bar at its left */
+.ck-f { cursor: pointer; border-radius: 6px; margin: 0 -6px; padding-left: 6px !important; padding-right: 6px !important; }
+.ck-f:hover { background: var(--hover); }
+.ck-f.on { background: var(--sunk); box-shadow: inset 2px 0 0 var(--ink2); }
+.ck-f:hover > span::after { content: ' ›'; color: var(--ink3); }
+/* the side card's head: 「全部網站 146」 on one line (owner 11-23, 總覽 and 內容) */
+.ih-t .ih-n { font-size: 14px; font-weight: 600; color: var(--ink3); margin-left: 6px; }
+#iS:empty { display: none; }
 
 /* dates */
 /* the readout above the chart: the count on the right, under the buttons that change it, its period just left of it
@@ -319,7 +327,6 @@ tr.grow .pc { color: var(--ink); }
 @container (max-width: 610px) { .c-mix { display: none; } }
 @container (max-width: 530px) { .c-p { display: none; } #tbl th.r, #tbl td.r { padding-left: 10px; } }
 @container (max-width: 420px) { .c-last, .c-m { display: none; } th, td { padding-left: 6px; padding-right: 6px; } tr.in td:first-child { padding-left: 18px; } tr.kid td:first-child { padding-left: 30px; } }
-.foot { color: var(--ink3); font-size: 12px; margin-top: 14px; }
 
 /* tooltip */
 .tip { position: fixed; z-index: 60; pointer-events: none; max-width: 300px; padding: 8px 10px; border-radius: 10px; background: var(--surface);
@@ -350,7 +357,7 @@ tr.grow .pc { color: var(--ink); }
 @media (prefers-reduced-motion: reduce) { .tile, .ghead, .dn path { transition: none !important; } }
 </style>
 
-<main class="app">
+<main class="app"><!--NIGHT-BAND-->
   <header class="topbar" id="bar">
     <div class="tb-l"><nav class="crumbs" id="crumbs" aria-label="目前範圍"></nav><span class="live" id="live" role="status" hidden></span></div>
     <div class="top-r">
@@ -368,14 +375,14 @@ tr.grow .pc { color: var(--ink); }
     <section class="card" aria-labelledby="hMap">
       <div class="card-h cm">
         <h2><span id="hMap" style="font-weight:650;color:var(--ink)"></span><span id="hMapSub"></span><button class="help" id="tmHelp" type="button" aria-expanded="false" aria-controls="tmKey" aria-label="這張圖怎麼看">?</button></h2>
-        <div class="seg" id="segLens" role="group" aria-label="整塊按哪一項上色；再點一次已選的那一項，回到按文件類型分色"><button data-v="ud">無日期</button><button data-v="miss">未抓到</button><button data-v="old">最近更新</button></div>
+        <div class="seg" id="segLens" role="group" aria-label="整塊按哪一項上色；再點一次已選的那一項，回到按文件類型分色"><button data-v="ud">無日期</button><button data-v="miss">未取得</button><button data-v="old">更新時間</button></div>
         <button class="tog" id="tmBack" type="button" hidden>‹ 全部網站</button>
       </div>
       <div class="key" id="tmKey" hidden>
         <h4>矩形樹狀圖<span>treemap</span></h4>
         <div class="key-r"><span class="kb"><i style="width:10px;height:10px"></i><i style="width:18px;height:18px"></i><i style="width:28px;height:28px"></i></span><span>一個方塊是一個網站，越大文件越多</span></div>
         <div class="key-r"><span><span class="kmini"><i style="grid-row:1 / span 2;background:var(--k2)"></i><i style="background:var(--k0)"></i><i style="background:var(--k1)"></i></span></span><span>方塊裡的色塊是文件類型，哪種顏色大，哪種文件就多</span></div>
-        <div class="key-r"><span><span class="ramp" id="keyRamp"></span></span><span>點標題旁的無日期、未抓到或最近更新，整塊換成一種顏色，按圖下方的色條讀；再點一次就回來</span></div>
+        <div class="key-r"><span><span class="ramp" id="keyRamp"></span></span><span>點標題旁的無日期、未取得或更新時間，整塊換成一種顏色，按圖下方的色條讀；再點一次就回來</span></div>
         <div class="key-r"><span></span><span>點方塊看這個網站，點單位名放大</span></div>
       </div>
       <div class="tm noanim" id="tm"></div>
@@ -393,7 +400,7 @@ tr.grow .pc { color: var(--ink); }
       </div>
       <div class="seg tabs" id="segTab" role="group" aria-label="詳情分頁"><button data-v="sum">概況</button><button data-v="what">內容</button><button data-v="crawl">收錄</button></div>
       <div id="iSecs"></div>
-    </div></aside>
+    </div><!--EMBED-SIDE--></aside>
 
     <section class="card" aria-labelledby="hTime">
       <div class="card-h">
@@ -422,13 +429,12 @@ tr.grow .pc { color: var(--ink); }
       <div class="note" id="tNote"></div>
     </section>
 
-    <section class="card" aria-labelledby="hList">
-      <div class="card-h cm"><h2 id="hList">網站列表</h2><div class="seg" id="segList" role="group" aria-label="已抓或待抓的網站"><button data-v="got" data-tip="第一輪已經抓下來的網站">已抓<b id="nGot"></b></button><button data-v="later" data-tip="留到第二輪再抓的網站">待抓<b id="nLater"></b></button></div></div>
+    <!--NIGHT-LOG--><section class="card" aria-labelledby="hList">
+      <div class="card-h cm"><h2 id="hList">網站列表</h2><div class="seg" id="segList" role="group" aria-label="已抓或待抓的網站"><button data-v="got" data-tip="第一輪已經抓下來的網站">已抓取<b id="nGot"></b></button><button data-v="later" data-tip="留到第二輪再抓的網站">待抓取<b id="nLater"></b></button></div></div>
       <div class="tw" id="tw" tabindex="0" role="region" aria-label="網站列表，上下方向鍵切換"><table id="tbl"></table></div>
       <div class="tw later" id="later" hidden><table id="tblLater"></table></div>
     </section>
   </div>
-  <footer class="foot" id="foot"></footer>
 </main>
 <div class="tip" id="tip" hidden></div>
 
@@ -447,16 +453,17 @@ const DSRC = ['網頁或公告上寫的日期', '跟所屬公告的日期', '伺
 // the build's own checks of each site (site_checks.json, written after each build): a reminder's name and what it means.
 // The names say what is wrong from the reader's side, one concept one word; each was tried on a cold reader first (the
 // owner's rule for new names, 11-16). 【Claude】 redesign 2026-11-17 (research/dashboard_redesign_2026-11-17/diagnosis.md,
-// 資料總覽 ③); before it they were 沒有文件, 用標題搜不到, 同名標題, 開頭相同, 碎字附件, 整批檔案時間.
+// 資料總覽 ③); before it they were 沒有文件, 用標題搜不到, 同名標題, 開頭相同, 碎字附件, 整批檔案時間. 11-23 (owner: 「整个内容页
+// 有哪些名字和词需要换的，你换一下」): the design's shorter names, the site page's words (網頁無文字 as there, one word a thing).
 const CK = {
-  none: ['沒有文件進庫', '這個網站一份文件都沒收進庫'],
-  self: ['用標題找不回文件', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
-  empty: ['網頁沒文字', '兩成以上的網頁轉成文字後是空的'],
-  same_title: ['多份文件同一標題', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
-  same_opening: ['選單混進正文', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
-  fragments: ['附件一字一行', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
+  none: ['無文件', '這個網站一份文件都沒收進庫'],
+  self: ['標題搜不到', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
+  empty: ['網頁無文字', '兩成以上的網頁轉成文字後是空的'],
+  same_title: ['標題重複', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
+  same_opening: ['選單混入正文', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
+  fragments: ['附件逐字斷行', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
 };
-const CK_SPIKE = ['檔案時間整批相同', '同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批複製時留下的），這些檔不拿這個時間當日期，算在「無日期」裡'];
+const CK_SPIKE = ['檔案時間雷同', '同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批複製時留下的），這些檔不拿這個時間當日期，算在「無日期」裡'];
 const OUTN = ['抓到', '留到下一輪', '學校已刪除', '抓取失敗', '要登入', '待處理'];
 const OUTTIP = ['', '這一輪按規則先不抓，多數是要 JavaScript 才出現的內容和按鈕', '連結還在，但學校那邊已經沒有這個網頁或檔案', '連不上、被拒絕，或者回來的不是檔案', '要登入才看得到', '寫法特殊，這一輪還沒決定怎麼抓'];
 const OUTCLS = ['o-got', 'o-next', 'o-gone', 'o-fail', 'o-login', 'o-todo'];
@@ -501,6 +508,10 @@ S0.forEach((s, i) => {
   s.miss = [1, 3, 4, 5].reduce((a, j) => a + s.cr.p[j] + s.cr.f[j], 0);
   s.missShare = s.got + s.miss ? s.miss / (s.got + s.miss) : null;
   s.udShare = s.b ? s.ud / s.b : null;
+  // 無文件 is read off the library too: the build's checks of another build (after a swap, before its checks ran) name
+  // no site, and the filter that replaced the card of sites with no document must not go blank then 【Claude】
+  if (!s.total && !(s.ck && s.ck.f.includes('none')))
+    s.ck = Object.assign({ nw: [], st: 0, so: [0, 0], fr: 0, em: [0, 0], se: [0, 0], sp: 0 }, s.ck || {}, { f: ['none'].concat(s.ck ? s.ck.f : []) });
 });
 // A department's 品保 site hangs under the department's own site in the list (owner 11-15): same unit and same group, the
 // site named like the unit first, else the largest. s.par is the department's key, s.kids its 品保 sites.
@@ -517,20 +528,26 @@ S0.forEach(s => {
 const LENS = {
   ud: { name: '無日期的比例', lo: '0%', hi: '100%', tip: '公告、網頁、附件裡沒有日期的比例', nil: '這個網站沒有公告、網頁或附件', f: s => s.udShare, lab: s => pct(s.ud, s.b),
     bin: i => Math.round(100 * i / 6) + '%–' + Math.round(100 * (i + 1) / 6) + '%' },
-  miss: { name: '未抓到的比例', lo: '0%', hi: '50% 以上', tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例', nil: '這個網站沒有抓取紀錄', f: s => s.missShare == null ? null : Math.min(1, s.missShare / .5), lab: s => pct(s.miss, s.miss + s.got),
+  miss: { name: '未取得的比例', lo: '0%', hi: '50% 以上', tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例', nil: '這個網站沒有抓取紀錄', f: s => s.missShare == null ? null : Math.min(1, s.missShare / .5), lab: s => pct(s.miss, s.miss + s.got),
     bin: i => i < 5 ? Math.round(50 * i / 6) + '%–' + Math.round(50 * (i + 1) / 6) + '%' : '42% 以上' },
-  old: { name: '最近更新', lo: '剛更新', hi: '3 年以上沒更新', tip: '最新一份帶日期的文件是多久以前的', nil: '這個網站沒有帶日期的文件', f: s => s.age == null ? null : Math.min(1, s.age / 1095), lab: s => ago(s.age),
+  old: { name: '更新時間', lo: '剛更新', hi: '3 年以上沒更新', tip: '最新一份帶日期的文件是多久以前的', nil: '這個網站沒有帶日期的文件', f: s => s.age == null ? null : Math.min(1, s.age / 1095), lab: s => ago(s.age),
     bin: i => i < 5 ? (i * 6) + '–' + (i * 6 + 6) + ' 個月' : '兩年半以上' },
 };
 
 const S = { grp: null, site: null, kinds: [true, true, true, true, true], metric: 'docs', list: 'got', unfold: new Set(), gopen: new Set(),
   range: 'all', win: [AX0 * DAY, (AX1 + 1) * DAY], link: false, split: false, view: 'line', calYear: new Date(TODAY * DAY).getUTCFullYear(), calDay: null,
-  sort: 'group', dir: -1, tab: 'sum', lens: null };
+  sort: 'group', dir: -1, tab: 'sum', lens: null, ck: null };
+// 總覽 shows this page in a frame (?embed=1, set on <html> before the page draws: nknu.ops.overview.EMBED_JS)
+const EMBED = document.documentElement.classList.contains('embed');
 
 /* ---------- scope and values ---------- */
-const inGrp = s => S.grp === null || s.g === S.grp;
+// a reminder of 品質提醒 picked as a filter (S.ck: a CK key, or 'spike' for the sites with files of one server time)
+// narrows every part: the map, the list, the side card and the date chart (owner 11-23: 「文件日期分布也跟着筛选变」)
+const ckHit = (s, k) => !!(s.ck && (k === 'spike' ? s.ck.sp > 0 : s.ck.f.includes(k)));
+const ckKey = k => typeof k === 'string' && (Object.prototype.hasOwnProperty.call(CK, k) || k === 'spike') ? k : null;
+const inGrp = s => (S.grp === null || s.g === S.grp) && (!S.ck || ckHit(s, S.ck));
 const scopeSites = () => S.site ? [byKey[S.site]] : S0.filter(inGrp);
-const scopeKey = () => S.site ? 's' + S.site : S.grp !== null ? 'g' + S.grp : 'all';
+const scopeKey = () => (S.site ? 's' + S.site : S.grp !== null ? 'g' + S.grp : 'all') + (S.ck ? '|ck:' + S.ck : '');
 let winCache = { key: '', map: new Map() };
 function winParts(s) {
   const d0 = Math.floor(S.win[0] / DAY), d1 = Math.ceil(S.win[1] / DAY) - 1, off = byChars() ? CH : 0, key = d0 + ':' + d1 + ':' + off;
@@ -572,10 +589,12 @@ function showTip(html, ev, owner) {
 function hideTip(owner) { if (!owner || tipOwner === owner) { tipEl.hidden = true; tipOwner = null; } }
 document.addEventListener('pointermove', ev => {
   const el = ev.target.closest && ev.target.closest('[data-tip]');
-  if (el) showTip('<p>' + esc(el.dataset.tip) + '</p>', ev, 'attr'); else hideTip('attr');
+  // read for the eye (richtip.js, owner 11-23: 「很多悬浮窗的文字都太杂了」): a head, rows of name and number, short lines
+  if (el) showTip(window.RICHTIP ? RICHTIP(el) : '<p>' + esc(el.dataset.tip) + '</p>', ev, 'attr'); else hideTip('attr');
 });
 document.addEventListener('scroll', () => hideTip(), true);
 function siteTip(s) {
+  if (window.NM && S.lens === 'night') return NM.tip(s);
   const p = partsNow(s), tot = sel(p) || 1, on = S.lens || '';
   const bar = (share, c) => '<span class="tt-b">' + (share > 0 ? '<i style="width:' + Math.max(3, 100 * Math.min(1, share)) + '%' + (c ? ';background:' + c : '') + '"></i>' : '') + '</span>';
   const row = (id, label, share, txt) => '<div class="tt-r' + (id === on ? ' on' : '') + '"><span>' + label + '</span>' + bar(share) + '<b>' + txt + '</b></div>';
@@ -585,8 +604,8 @@ function siteTip(s) {
     p.map((v, i) => v && S.kinds[i] ? '<div class="tt-r"><span>' + KN[i] + '</span>' + bar(v / tot, 'var(--k' + i + ')') + '<b>' + fmtVal(v) + '</b></div>' : '').join('') +
     '<div class="tt-d"></div>' +
     row('ud', '無日期', s.udShare, s.udShare == null ? '—' : pct(s.ud, s.b)) +
-    row('miss', '未抓到', s.missShare, s.missShare == null ? '—' : pct(s.miss, s.miss + s.got)) +
-    row('old', '最近更新', s.age == null ? 0 : s.age / 1095, s.age == null ? '—' : ago(s.age)) + '</div>';
+    row('miss', '未取得', s.missShare, s.missShare == null ? '—' : pct(s.miss, s.miss + s.got)) +
+    row('old', '更新時間', s.age == null ? 0 : s.age / 1095, s.age == null ? '—' : ago(s.age)) + '</div>';
 }
 
 /* ---------- navigation ---------- */
@@ -616,6 +635,7 @@ function renderBar() {
   const chips = [];
   if (!S.kinds.every(Boolean)) chips.push('<button class="chip" data-x="kinds">' + esc(KN.filter((_, i) => S.kinds[i]).join('、')) + '<i>✕</i></button>');
   if (S.link) chips.push('<button class="chip" data-x="link" data-tip="只統計這段時間內帶日期的文件；沒有日期的不算">' + dstr(Math.floor(S.win[0] / DAY)) + ' – ' + dstr(Math.ceil(S.win[1] / DAY) - 1) + '<i>✕</i></button>');
+  if (S.ck) chips.push('<button class="chip" data-x="ck" data-tip="只看品質提醒點到這一項的網站">' + esc(S.ck === 'spike' ? CK_SPIKE[0] : (CK[S.ck] || [S.ck])[0]) + '<i>✕</i></button>');
   $('#chips').innerHTML = chips.join('');
   syncSeg('segMetric', byChars() ? 'chars' : 'docs');
   setBarH();
@@ -657,14 +677,20 @@ function tmInit() {
 function renderMap() {
   const W = tm.el.clientWidth, H = tm.el.clientHeight;
   if (!W || !H) return;
-  const zoomed = S.grp !== null, lens = S.lens ? LENS[S.lens] : null, grand = grandTotal(), sd = zoomed ? 1 : 2;
-  const items = S0.filter(inGrp).map(s => { const p = partsNow(s); return { s, p, v: sel(p) }; }).filter(o => o.v > 0);
-  $('#hMap').textContent = '各網站' + unitWord(); $('#hMapSub').textContent = zoomed ? GROUPS[S.grp] : '';
-  $('#tmBack').hidden = !zoomed;
+  // the night view (window.NM, the night layer) draws its own map in this one: only the sites a night changed or a
+  // problem named, one flat field, its own sizes, colours, labels and hover (owner 11-23: 「哪里出问题直接那个区块变黄色或者红色」)
+  const nightMap = !!(window.NM && S.lens === 'night'), zoomed = S.grp !== null || nightMap, lens = S.lens ? LENS[S.lens] : null, grand = grandTotal(), sd = zoomed ? 1 : 2;
+  let items = S0.filter(inGrp).map(s => { const p = partsNow(s); return { s, p, v: sel(p) }; }).filter(o => o.v > 0);
+  if (window.NM && S.lens === 'night') items = NM.items(S0.filter(inGrp));
+  $('#hMap').textContent = '各網站' + unitWord(); $('#hMapSub').textContent = S.grp !== null ? GROUPS[S.grp] : '';
+  $('#tmBack').hidden = S.grp === null;
   tm.empty.hidden = items.length > 0;
+  tm.empty.textContent = window.NM && S.lens === 'night' ? '這一晚沒有網站有變動' : '目前篩選下沒有文件';
   const seen = new Set(), heads = new Set();
   if (items.length) {
-    const node = o => ({ o, children: o.p.map((v, i) => ({ i, v: S.kinds[i] ? v : 0 })).filter(d => d.v > 0) });
+    // a night's tile is one block of its own size (NM.items: p = [v, 0, 0, 0, 0]): the kinds' filter is not the night's
+    // (?kind=N from 總覽's legend left every night tile without a block, and d3 then without children)
+    const node = o => ({ o, children: nightMap ? [{ i: 0, v: o.v }] : o.p.map((v, i) => ({ i, v: S.kinds[i] ? v : 0 })).filter(d => d.v > 0) });
     const tree = zoomed ? { children: items.map(node) } : { children: GROUPS.map((_, g) => ({ g, children: items.filter(o => o.s.g === g).map(node) })).filter(n => n.children.length) };
     const root = d3.hierarchy(tree).sum(d => d.v || 0).sort((a, b) => b.value - a.value);
     d3.treemap().size([W, H]).round(true).tile(d3.treemapSquarify.ratio(1.3))
@@ -674,10 +700,11 @@ function renderMap() {
       if (!n.head) continue;
       const h = tm.heads[n.data.g]; heads.add(n.data.g);
       h.style.left = n.x0 + 'px'; h.style.top = n.y0 + 'px'; h.style.width = Math.max(0, n.x1 - n.x0) + 'px';
-      const gp = pct1(n.value, grand), fits = (emW(GROUPS[n.data.g]) + emW(gp) * .95) * 12 + 8 <= n.x1 - n.x0;
+      const gp = window.NM && S.lens === 'night' ? NM.sum(n.value) : pct1(n.value, grand), fits = (emW(GROUPS[n.data.g]) + emW(gp) * .95) * 12 + 8 <= n.x1 - n.x0;
       h.innerHTML = esc(GROUPS[n.data.g]) + (fits ? '<span>' + gp + '</span>' : '');
     }
     for (const n of zoomed ? root.children : root.children.flatMap(g => g.children)) {
+      if (!n.children) continue;  // a tile with no block to draw is left out (marked gone below), never a TypeError
       const o = n.data.o, t = tm.tiles.get(o.s.k), w = n.x1 - n.x0, h = n.y1 - n.y0, st = t.el.style;
       seen.add(o.s.k);
       st.left = n.x0 + 'px'; st.top = n.y0 + 'px'; st.width = w + 'px'; st.height = h + 'px';
@@ -694,6 +721,7 @@ function renderMap() {
       t.el.classList.toggle('lens', !!lens);
       if (lens) st.setProperty('--fill', step < 0 ? 'var(--qx)' : 'var(--q' + step + ')');
       t.el.classList.toggle('inv', !!lens && step >= 4);
+      if (window.NM && S.lens === 'night') NM.tile(o.s, t.el, st);
       t.el.classList.toggle('onw', !lens && c0.data.i === 0);
       // the label sits on the largest block (on the whole tile under a lens). A name is printed only where it reads as a
       // name: whole, on at most two lines (three on a tile wide enough for 8 characters a line), at least 3 characters a
@@ -729,6 +757,7 @@ function renderMap() {
   else lg.innerHTML = '<span class="kinds">' + KN.map((n, i) => '<button data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" data-tip="' + esc(KTIP[i]) + '"><span class="sw" style="background:var(--k' + i + ')"></span>' + n + '</button>').join('') + '</span>';
   $('#keyRamp').innerHTML = [0, 1, 2, 3, 4, 5].map(i => '<i style="background:var(--q' + i + ')"></i>').join('');
   syncSeg('segLens', S.lens);
+  if (window.NM) NM.after();  // the map redrawn alone (a resize) keeps the night's title and key
   $$('#segLens button').forEach(b => { b.dataset.tip = S.lens === b.dataset.v ? '再點一次，回到按文件類型分色' : '整塊換成一種顏色：' + LENS[b.dataset.v].tip; });
 }
 
@@ -786,8 +815,9 @@ function ckFig(k, c) {
     : k === 'fragments' ? fmt(c.fr) + ' 份' : '';
 }
 const NEW_SUM = n => '<span data-tip="標了「新」的提醒：這次建庫才出現，上一次建庫時沒有">新出現 ' + n + ' 項</span>';
-function ckRow(name, tip, fig, isNew) {
-  return '<div class="ck" data-tip="' + esc(tip) + '"><span>' + name + (isNew ? '<span class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' : '') + '</span><b>' + fig + '</b></div>';
+// key: a scope's row is a filter (one site's own rows stay plain); pressed again, or its chip's ✕, it lets go
+function ckRow(name, tip, fig, isNew, key) {
+  return '<div class="ck' + (key ? ' ck-f' + (S.ck === key ? ' on' : '') + '" data-ck="' + key + '" role="button" tabindex="0" aria-pressed="' + (S.ck === key) : '') + '" data-tip="' + esc(tip) + '"><span>' + name + (isNew ? '<span class="tag" data-tip="這次建庫才出現的提醒，上一次建庫時沒有">新</span>' : '') + '</span><b>' + fig + '</b></div>';
 }
 function checkRows(one, sc) {
   if (one) {
@@ -804,20 +834,22 @@ function checkRows(one, sc) {
     if (!hit.length) continue;
     const isNew = hit.filter(s => s.ck.nw.includes(k)).length;
     fresh += isNew;
-    rows.push(ckRow(CK[k][0], CK[k][1] + '：' + hit.slice(0, 6).map(s => s.f).join('、') + (hit.length > 6 ? ' 等' : ''), hit.length + ' 站', isNew));
+    rows.push(ckRow(CK[k][0], CK[k][1] + '：' + hit.slice(0, 6).map(s => s.f).join('、') + (hit.length > 6 ? ' 等' : ''), hit.length + ' 站', isNew, k));
   }
+  // 檔案時間雷同 counts files, not sites: as a filter it keeps the sites that have such files (their number in its hover)
   const sp = sum(sc.map(s => (s.ck && s.ck.sp) || 0));
-  if (sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1], fmt(sp) + ' 份', false));
+  if (sp) rows.push(ckRow(CK_SPIKE[0], CK_SPIKE[1] + '（' + sc.filter(s => s.ck && s.ck.sp > 0).length + ' 站）', fmt(sp) + ' 份', false, 'spike'));
   return rows.length ? [rows.join(''), fresh ? NEW_SUM(fresh) : ''] : null;
 }
 function renderInsp() {
   const one = S.site ? byKey[S.site] : null, sc = scopeSites();
-  $('#iT').textContent = one ? one.n : S.grp !== null ? GROUPS[S.grp] : '全部網站';
-  const go = $('#iGo'); go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k);
+  $('#iT').innerHTML = one ? esc(one.n) : esc(S.grp !== null ? GROUPS[S.grp] : '全部網站') + ' <small class="ih-n">' + sc.length + '</small>';
+  // a site's page opens on the reminder picked here (its 品質 tabs read ?ck=), and its way back brings the filter back
+  const go = $('#iGo'); go.hidden = !one; if (one) go.href = SITE_PAGE + encodeURIComponent(one.k) + (S.ck ? '&ck=' + S.ck : '');
   $('#iS').innerHTML = one
     ? esc(GROUPS[one.g]) + ' · <a href="' + esc(one.url) + '" target="_blank" rel="noopener">' + esc(one.k) + ' ↗</a>' +
       (one.imp ? '<span class="tag" data-tip="網站名單裡給它標的重要性">' + esc(one.imp) + '</span>' : '') + (/品保/.test(one.f) ? '<span class="tag" data-tip="' + QA + '">品保</span>' : '')
-    : sc.length + ' 個網站';
+    : '';
   const parts = [0, 0, 0, 0, 0];
   sc.forEach(s => partsNow(s).forEach((v, i) => { parts[i] += v; }));
   const total = sel(parts);
@@ -826,7 +858,7 @@ function renderInsp() {
   const within = S.link ? ' · 所選時間內' : '';
   if (byChars()) { tweenNum($('#dnV'), total, v => charsParts(v)[0]); $('#dnL').textContent = charsParts(total)[1] + (within || (share ? ' · ' + share : '')); }
   else { tweenNum($('#dnV'), total, fmt); $('#dnL').textContent = within ? '份' + within : share || '份文件'; }
-  $('#kl').innerHTML = parts.map((v, i) => v > 0 || !S.kinds[i] ? '<li data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" style="--c:var(--k' + i + ')" role="button" tabindex="0" aria-pressed="' + S.kinds[i] + '" data-tip="' + esc(KTIP[i]) + '"><i></i><span>' + KN[i] + '</span><b>' + (byChars() ? shortChars(v) : fmt(v)) + '</b></li>' : '').join('');
+  $('#kl').innerHTML = parts.map((v, i) => v > 0 || !S.kinds[i] ? '<li data-k="' + i + '" class="' + (S.kinds[i] ? '' : 'off') + '" style="--c:var(--k' + i + ')" role="button" tabindex="0" aria-pressed="' + S.kinds[i] + '" data-tip="' + esc(KTIP[i] + (EMBED ? '；點了到內容只看這一類' : '')) + '"><i></i><span>' + KN[i] + '</span><b>' + (byChars() ? shortChars(v) : fmt(v)) + '</b></li>' : '').join('');
   syncSeg('segTab', S.tab);
 
   const h = [];
@@ -851,12 +883,12 @@ function renderInsp() {
     h.push(sec('資料品質',
       meterRow(b ? ud / b : null, one && ud ? '<a href="' + esc(TABLES + '/aca/site_undated_why?site=' + encodeURIComponent(one.k)) + '" target="_blank" rel="noopener">無日期 ↗</a>' : '無日期',
         '公告、網頁、附件裡沒有日期的：' + fmt(ud) + ' 份' + (one && ud ? '；點「無日期」看每一份為什麼沒有日期' : '')) +
-      meterRow(both[0] + miss ? miss / (both[0] + miss) : null, '未抓到', '網頁、附件和按鈕裡這一輪沒抓下來的：' + fmt(miss) + ' 個') +
-      (one ? meterRow(one.age == null ? null : Math.min(1, one.age / 1095), '最近更新', one.age == null ? '這個網站沒有帶日期的文件' : '最新一份帶日期的文件：' + one.last + '；條越長越久沒更新', one.age == null ? '—' : ago(one.age)) : '') +
-      meterRow(b ? nt / b : null, '沒讀到字', '轉成文字後正文是空的（掃描圖沒認出字、空網頁等），只能靠標題找到：' + fmt(nt) + ' 份') +
-      meterRow(att ? ocr / att : null, '掃描認字', '附件裡是掃描檔或圖片、靠影像認字（OCR）轉出文字的，可能有錯字：' + fmt(ocr) + ' 份')));
+      meterRow(both[0] + miss ? miss / (both[0] + miss) : null, '未取得', '網頁、附件和按鈕裡這一輪沒抓下來的：' + fmt(miss) + ' 個') +
+      (one ? meterRow(one.age == null ? null : Math.min(1, one.age / 1095), '更新時間', one.age == null ? '這個網站沒有帶日期的文件' : '最新一份帶日期的文件：' + one.last + '；條越長越久沒更新', one.age == null ? '—' : ago(one.age)) : '') +
+      meterRow(b ? nt / b : null, '無文字', '轉成文字後正文是空的（掃描圖沒認出字、空網頁等），只能靠標題找到：' + fmt(nt) + ' 份') +
+      meterRow(att ? ocr / att : null, 'OCR 認字', '附件裡是掃描檔或圖片、靠影像認字（OCR）轉出文字的，可能有錯字：' + fmt(ocr) + ' 份')));
     const checks = checkRows(one, sc);
-    if (checks) h.push(sec('<span data-tip="每次建庫後自動檢查每個網站；只提醒，不擋建庫' + (D.checked ? '（' + esc(D.checked) + ' 那次）' : '') + '">體檢提醒</span>', checks[0], checks[1]));
+    if (checks) h.push(sec('<span data-tip="每次建庫後自動檢查每個網站；只提醒，不擋建庫' + (D.checked ? '（' + esc(D.checked) + ' 那次）' : '') + '">品質提醒</span>', checks[0], checks[1]));
   } else if (S.tab === 'what') {
     // [name, documents, characters] from the data; the switch picks one
     const pick = l => l.map(r => [r[0], byChars() ? r[2] : r[1]]);
@@ -1110,9 +1142,9 @@ function renderTime() {
   $('#btnLink').setAttribute('aria-pressed', String(S.link));
   if (S.view === 'line') { if (!tc.W) tcSize(); else drawLine(); } else drawCal();
   const sc = scopeSites(), undated = sum(sc.map(s => sum([0, 1, 2].map(k => S.kinds[k] ? (byChars() ? s.uc : s.u3)[k] : 0)))), fut = S.kinds[3] ? sum(sc.map(s => s.fut)) : 0, miss = [];
-  if (undated) miss.push(amount(undated) + '沒有日期');
+  if (undated) miss.push('無日期 ' + amount(undated));
   if (fut) miss.push(fmt(fut) + ' 條行事曆排在 ' + (new Date(AX1 * DAY).getUTCFullYear() + 1) + ' 年以後');
-  $('#tNote').textContent = miss.length ? '另有 ' + miss.join('，') : '';
+  $('#tNote').textContent = miss.join(' · ');
 }
 
 /* ---------- list: one row per site; amounts as neutral bars, kinds as a thin segmented bar ---------- */
@@ -1122,8 +1154,8 @@ const COLS = [
   { k: 'yr', t: '各年', tip: Y0 + ' 年及以前到 ' + Y1 + ' 年，每年的文件數（切到字數就是字數），每個網站按自己最多的一年畫滿' },
   { k: 'v', t: null, r: true },
   { k: 'ud', t: '無日期', r: true, tip: '公告、網頁、附件裡沒有日期的份數，按份數排（佔多少比例滑過去看）' },
-  { k: 'miss', t: '未抓到', r: true, tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例；學校已刪除的不算' },
-  { k: 'last', t: '最近更新', r: true, tip: '最新一份帶日期的文件是多久以前的；灰色的是一年以上沒更新' },
+  { k: 'miss', t: '未取得', r: true, tip: '網頁、附件和按鈕裡這一輪沒抓下來的比例；學校已刪除的不算' },
+  { k: 'last', t: '更新時間', r: true, tip: '最新一份帶日期的文件是多久以前的；灰色的是一年以上沒更新' },
 ];
 function spark(list) {
   const ys = new Array(NY).fill(0);
@@ -1136,7 +1168,7 @@ const LENS_COL = { ud: 'ud', miss: 'miss', old: 'last' };
 let listSeen = null;
 
 /* ---------- live: the page asks the lab PC every minute and reloads when the data changed, keeping the view ---------- */
-const VIEW_KEY = 'nknu-overview-view';
+const VIEW_KEY = 'nknu-overview-view' + (EMBED ? '-embed' : '');  // 總覽's frame keeps its own, in the same tab
 function saveView() {
   try {
     sessionStorage.setItem(VIEW_KEY, JSON.stringify({ t: Date.now(), y: scrollY,
@@ -1158,6 +1190,7 @@ function restoreView(v) {
   if (Array.isArray(v.kinds) && v.kinds.length === 5 && v.kinds.some(Boolean)) S.kinds = v.kinds.map(Boolean);
   if (one(v.metric, ['docs', 'chars'])) S.metric = v.metric;
   S.lens = v.lens && LENS[v.lens] ? v.lens : null;
+  S.ck = ckKey(v.ck);
   if (one(v.list, ['got', 'later'])) S.list = v.list;
   S.unfold = new Set((v.unfold || []).filter(k => byKey[k]));
   S.gopen = new Set((v.gopen || []).filter(g => Number.isInteger(g) && g >= 0 && g < GROUPS.length));
@@ -1244,7 +1277,7 @@ function renderList() {
   const siteRow = (r, kid) => {
     const s = r.s, ks = kidsOf.get(s.k) || [], open = S.unfold.has(s.k);
     const fold = ks.length ? '<button type="button" class="fold" data-fold="' + esc(s.k) + '" aria-expanded="' + open + '" data-tip="' + (open ? '收起' : '展開') + '這個系的品保網站">品保' + (ks.length > 1 ? ' ' + ks.length : '') + '</button>' : '';
-    return '<tr data-k="' + esc(s.k) + '" class="' + (kid ? 'kid' : grouped ? 'in' : '') + '" aria-selected="' + (S.site === s.k) + '"><td><span class="nm"><a class="nm-a" href="' + esc(SITE_PAGE + encodeURIComponent(s.k)) + '" data-tip="' + esc(s.f + ' · ' + s.s) + '">' + esc(s.n) + '</a>' + fold + '</span></td>' +
+    return '<tr data-k="' + esc(s.k) + '" class="' + (kid ? 'kid' : grouped ? 'in' : '') + '" aria-selected="' + (S.site === s.k) + '"><td><span class="nm"><a class="nm-a" href="' + esc(SITE_PAGE + encodeURIComponent(s.k) + (S.ck ? '&ck=' + S.ck : '')) + '" data-tip="' + esc(s.f + ' · ' + s.s) + '">' + esc(s.n) + '</a>' + fold + '</span></td>' +
       cells(figs([s], r.v, r.p), grand, hl) + '</tr>' + (open ? ks.map(k => siteRow(k, true)).join('') : '');
   };
   let body = '';
@@ -1304,13 +1337,41 @@ function findInit() {
 }
 
 /* ---------- wiring ---------- */
-function render() { renderBar(); renderMap(); renderInsp(); renderTime(); renderList(); }
+// the night view (window.NM) redraws its parts after every render of the page
+function render() { renderBar(); renderMap(); renderInsp(); renderTime(); renderList(); addrUrl(); if (window.NM) NM.after(); }
+// 品質提醒 as filters (owner 11-23: 「如果我想知道哪些没文件的话直接用筛选来实现」): its groups open on the sites it names,
+// and the address keeps it (?ck=), so the page's own reload and a site page's way back (‹ 內容 · 標題重複) bring it back
+function ckOpen() { if (S.ck) S0.forEach(x => { if (ckHit(x, S.ck)) S.gopen.add(x.g); }); }
+// the address follows the filters at every drawing: ?ck= the reminder picked, ?kind=N while one kind alone is shown (總覽's
+// legend sends it), each gone once it is cleared, so a reload (the page's own after new data too: the saved view and the
+// address then agree) or a copied link brings back what is shown and never a filter cleared; the rest of the address (the
+// night view's ?date, &step) is kept. 總覽's frame keeps its own address.
+function addrUrl() {
+  if (EMBED) return;
+  try {
+    const u = new URL(location.href), on = [0, 1, 2, 3, 4].filter(j => S.kinds[j]);
+    if (S.ck) u.searchParams.set('ck', S.ck); else u.searchParams.delete('ck');
+    if (on.length === 1) u.searchParams.set('kind', String(on[0])); else u.searchParams.delete('kind');
+    if (u.search !== location.search) history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+  } catch (e) { /* an address that cannot be rewritten: the filters still hold on the page */ }
+}
+function setCk(k, byKeyboard) {
+  S.ck = S.ck === k ? null : ckKey(k); S.site = null; ckOpen(); render();
+  if (byKeyboard) { const r = $('#iSecs .ck-f[data-ck="' + k + '"]'); if (r) r.focus({ preventScroll: true }); }
+  if (S.ck) { const t = $('#tw'); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+}
 function init() {
   tmInit(); tcInit(); findInit(); renderLater();
-  $('#foot').textContent = '資料：正式庫 aca.db（' + D.built + ' 建）、各網站的匯出清單和建庫報告，唯讀。「今天」按 ' + D.today + ' 算。' +
-    (D.live ? '頁面每分鐘檢查一次，庫換了會自己更新。' : '');
-  const view = D.live ? takeView() : null;
+  const view = D.live && !EMBED ? takeView() : null;
   if (view && view.s) restoreView(view.s);
+  // the address: ?ck= a reminder as the filter, ?kind=N only that kind of document (總覽's legend sends it); 總覽's
+  // frame keeps its one setting
+  const q = new URLSearchParams(location.search);
+  if (!EMBED) {
+    if (q.has('ck')) { S.ck = ckKey(q.get('ck')); ckOpen(); }
+    const kq = q.get('kind');
+    if (kq !== null && /^\d$/.test(kq) && +kq < S.kinds.length) S.kinds = S.kinds.map((_, j) => j === +kq);
+  }
   $('#crumbs').addEventListener('click', ev => {
     const b = ev.target.closest('button[data-go]'); if (!b) return;
     if (b.dataset.go === 'all') { S.grp = null; S.site = null; } else { S.grp = +b.dataset.g; S.site = null; }
@@ -1318,9 +1379,25 @@ function init() {
   });
   $('#chips').addEventListener('click', ev => {
     const b = ev.target.closest('button[data-x]'); if (!b) return;
-    if (b.dataset.x === 'kinds') S.kinds = [true, true, true, true, true]; else S.link = false;
+    if (b.dataset.x === 'kinds') S.kinds = [true, true, true, true, true];
+    else if (b.dataset.x === 'ck') S.ck = null; else S.link = false;
     render();
   });
+  $('#iSecs').addEventListener('click', ev => { const r = ev.target.closest('.ck-f[data-ck]'); if (r) setCk(r.dataset.ck, false); });
+  $('#iSecs').addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const r = ev.target.closest('.ck-f[data-ck]'); if (!r) return;
+    ev.preventDefault(); setCk(r.dataset.ck, true);
+  });
+  if (EMBED && window.top !== window) {
+    // 總覽's 全部網站 leads into 內容 (owner 11-23: 「這裡少了跳轉到內容頁面」): the title and the donut open it, a kind of
+    // the legend opens it with only that kind; in 內容 itself they keep filtering in place
+    const to = u => { (window.top || window).location.href = u; }, page = LINKS.page || '/sites';
+    [$('#iT'), $('#dn')].forEach(x => { x.classList.add('ov-go'); x.dataset.tip = '到內容看全部網站'; x.addEventListener('click', () => to(page)); });
+    const kindGo = ev => { const li = ev.target.closest('li[data-k]'); if (!li) return; ev.stopImmediatePropagation(); ev.preventDefault(); to(page + '?kind=' + li.dataset.k); };
+    $('#kl').addEventListener('click', kindGo, true);
+    $('#kl').addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') kindGo(ev); }, true);
+  }
   const key = $('#tmKey'), help = $('#tmHelp'), setKey = on => { key.hidden = !on; help.setAttribute('aria-expanded', String(on)); };
   help.addEventListener('click', ev => { ev.stopPropagation(); setKey(key.hidden); });
   document.addEventListener('click', ev => { if (!key.hidden && !ev.target.closest('#tmKey')) setKey(false); });
@@ -1381,6 +1458,8 @@ function init() {
   requestAnimationFrame(() => { tm.el.classList.remove('noanim'); animate = true; if (view) scrollTo(0, view.y || 0); });
   if (D.live) watchLive();
 }
+// the page's state and drawing, for the layers that work on it (the night view's NM, nknu.ops.night_view)
+window.APP = { S, S0, render, byKey, LENS };
 if (typeof d3 === 'undefined') document.querySelector('.app').insertAdjacentHTML('afterbegin', '<div class="card" style="margin-top:16px">圖表庫沒有載入成功，請重新整理頁面再試。</div>');
 else init();
 })();

@@ -288,8 +288,9 @@ def test_the_page_opens_on_last_night_until_tonights_hour_comes(where):
     t = nightly.tonight(where, now=at("2026-11-18T01:10:00"))
     assert t["default"] == "2026-11-17" and cells(t)["crawl"]["say"] == "該開始了"
     marks = t["nights"]
-    assert len(marks) == 7 and marks[-1]["night"] == "2026-11-17" and marks[-1]["href"] == "/tonight"
-    assert marks[-2]["href"] == "/tonight?night=2026-11-16"
+    # 11-23: a night opens in 內容's night view, named by its run day (/tonight only sends on there)
+    assert len(marks) == 7 and marks[-1]["night"] == "2026-11-17" and marks[-1]["href"] == "/sites?date=2026-11-18"
+    assert marks[-2]["href"] == "/sites?date=2026-11-17" and marks[-2]["run"] == "2026-11-17"
 
 
 def test_a_night_can_be_picked(where):
@@ -358,6 +359,8 @@ def test_a_night_that_stopped_on_purpose_is_a_warning_for_the_content_session(wh
     c = cells(t)[where_]
     assert c["state"] == nightly.STOP and c["say"] == say and c["sev"] == sev and c["fix"] == CONTENT
     assert t["shown"]["state"] == WARN and t["sentence"]["text"].startswith("11-16 夜停了：")
+    # the night's mark says 留意 (the 11-23 design, map NV04): 停了 is the part's, said in the sentence
+    assert t["shown"]["word"] == nightly.NIGHT_WORDS[WARN] == "留意"
 
 
 def test_a_build_run_by_hand_is_said_beside_the_nights_build_not_as_its_state(where):
@@ -636,7 +639,7 @@ def test_a_file_the_school_took_away_is_explained_as_the_builds_swap_guard_count
     away = ("a", "attachment", "附件", U + "away.pdf", "2026-11-01", 100, "x")
     assert ch.why_left("d1", away, new, prev, m) == ("school_gone", "")
     label, _tip, kind, fix = ch.REASONS["school_gone"]
-    assert label == "學校那邊已經不存在" and kind == ch.OK_KIND and not fix
+    assert label == "校方已移除" and kind == ch.OK_KIND and not fix  # the 11-23 words (names.py)
     broken = ("a", "attachment", "沒抓到的", U + "broken", "", 100, "y")
     assert ch.why_left("d2", broken, new, prev, m)[0] == "not_fetched"  # no file for another reason: still ours
     assert ch.SCHOOL_GONE == build.SCHOOL_GONE
@@ -812,24 +815,23 @@ def test_the_page_escapes_what_it_prints(where):
     assert later["sig"] == nightly.tonight(where, now=at("2026-11-17T01:40:00"))["sig"]  # minutes never reload
 
 
-def test_the_api_and_the_home_carry_tonight(db, tmp_path):
+def test_the_api_and_the_night_view_carry_tonight(db, tmp_path):
     app = web.create_app(tmp_path / "t.db", tmp_path, models=models(), today_fn=lambda: TODAY)
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         got = client.get("/api/tonight")
-        home = client.get("/tonight").text
+        moved = client.get("/tonight", follow_redirects=False)
+        old = client.get("/tonight", params={"night": "2026-11-21"}, follow_redirects=False)
+        night = client.get("/api/night")
     assert got.status_code == 200 and got.headers["cache-control"] == "no-store"
     data = got.json()
     assert len(data["nights"]) == 7 and data["sentence"]["text"] and data["changes"]["state"] == "none"
     with TestClient(app, base_url="http://127.0.0.1:8878") as client:
         brief = client.get("/api/tonight?brief=1").json()
     assert brief["sig"] == data["sig"] and set(brief["changes"]) <= {"state", "words", "keys", "night", "totals"}
-    assert "data-tonight='/api/tonight?brief=1'" in home
-    # the spec's questions in its order (panels v3 三), then the steps' detail folded; the third (問題) is 總覽's
-    # 要處理 since 2026-11-22 evening
-    asked = (1, 2, 4, 5)
-    assert [home.index(f"data-q='{q}'") for q in asked] == sorted(home.index(f"data-q='{q}'") for q in asked)
-    assert "data-q='3'" not in home
-    assert "各步驟細節" not in home or home.index("data-q='5'") < home.index("各步驟細節")
+    # 11-23: 每晚運行 is 內容's night view (/sites?date=<run day>); an old night key lands on its run day
+    assert moved.status_code == 307 and moved.headers["location"] == "/sites?date="
+    assert old.status_code == 307 and old.headers["location"].startswith("/sites?date=2026-11-22")
+    assert night.status_code == 200 and night.headers["cache-control"] == "no-store" and "run" in night.json()
 
 
 def test_a_page_of_a_menu_only_left_for_a_reason(tmp_path):

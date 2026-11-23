@@ -116,11 +116,12 @@ def test_only_the_page_check_reads_the_crawlers_archive_and_only_read_only():
     compose = _compose()
     services = compose["services"]
     ops = services["ops"]["volumes"]
-    assert "nknu-crawl:/crawl:ro" in ops and "D:/nknu-crawl/warc:/crawl/archive/warc:ro" in ops
+    assert "nknu-crawl:/crawl:ro" in ops and "E:/nknu/warc:/crawl/archive/warc:ro" in ops
     assert "nknu-work:/work:ro" in ops and "nknu-models:/models:ro" in ops
     assert all(v.endswith(":ro") for v in ops if v != "nknu-ops:/ops")
-    for name in ("mcp", "datasette"):
-        assert not any("crawl" in v for v in services[name]["volumes"]), name
+    assert not any("crawl" in v for v in services["mcp"]["volumes"])
+    # 資料庫 opens the ledger's newest nightly backup only (owner 11-23: 「加，用每晚备份」), never the ledger being written
+    assert services["datasette"]["volumes"] == ["nknu-work:/work:ro", "D:/nknu-backup/crawler-nightly:/ledger:ro"]
     assert compose["volumes"]["nknu-crawl"] == {"external": True}
     assert "--archive /crawl/archive" in " ".join(services["ops"]["command"])
 
@@ -337,7 +338,8 @@ def test_every_page_gets_the_other_panels_and_the_words_for_what_the_library_cod
     assert table["column_names"]["kind_class"]["rest"].startswith("公告 notice")  # what floats over the name
     assert table["op_words"]["exact"] == "等於" and table["op_words"]["isnull"].startswith("是空的")
     assert table["trace_url"].endswith("/trace?ref=") and table["kind_classes"]["attachment"] == "k2"
-    assert table["db_titles"] == {"aca": "正式庫"}  # the crumbs name a database by these (對照庫 gone 11-19)
+    # the crumbs name a database by these (對照庫 gone 11-19; the ledger's nightly backup since 11-23)
+    assert table["db_titles"] == {"aca": "正式庫", "frontier": "爬蟲帳本（每晚備份）"}
     assert _vars(guide, "query.html", ds, "aca", None)["column_names"] == {}
     assert "sites" in _vars(guide, "query.html", ds, "aca", None) and table["site_names"] == {}  # a facet's names
 
@@ -640,7 +642,10 @@ def test_only_the_library_in_use_is_opened():
     # 11-19: the 11-15 control library (aca1115.db) was cleared from the lab PC; Datasette opens the library in use only
     command = " ".join(_compose()["services"]["datasette"]["command"])
     assert "aca1115" not in command and "aca.db" in command
-    assert list(_metadata()["databases"]) == ["aca"]
+    # 11-23: and the crawler's ledger, as its newest nightly backup (a file never written again, so -i is right),
+    # always under the one name frontier
+    assert "datasette/ledger_copy.py /ledger /tmp/frontier.db" in command and "-i /tmp/frontier.db" in command
+    assert list(_metadata()["databases"]) == ["aca", "frontier"]
 
 
 def test_every_page_links_a_stylesheet_the_service_serves_and_it_puts_the_traditional_fonts_first():
@@ -783,8 +788,12 @@ def test_pack_names_the_version_each_replaced_file_was_made_from(tmp_path):
 
 def test_a_wide_tables_page_opens_on_the_columns_that_matter_and_a_choice_is_left_alone(empty):
     columns = _plugin("columns")
+    from nknu.archive.frontier import TABLES
+    ledger = sqlite3.connect(":memory:")
+    ledger.executescript(TABLES)
     for table, default in columns.DEFAULT.items():
-        assert set(default) <= set(_columns(empty, table)), table  # the defaults name real columns
+        have = _columns(empty, table) or _columns(ledger, table)  # the library's tables, or the ledger's (11-23)
+        assert set(default) <= set(have), table  # the defaults name real columns
     got = columns.with_default("/aca/docs", b"")
     assert got == "&".join(f"_col={c}" for c in columns.DEFAULT["docs"]).encode()
     assert columns.with_default("/aca/docs", b"_sort=chars").startswith(b"_sort=chars&_col=title")
@@ -862,9 +871,11 @@ def test_the_list_of_sites_is_one_piece_the_home_page_and_a_sites_query_share():
     templates = KIT / "datasette" / "templates"
     piece = (templates / "_sitefind.html").read_text(encoding="utf-8")
     assert "{% macro finder(sites, go, why" in piece and 'data-k="{{ s.found_by }}"' in piece and "s.undated" in piece
-    for name in ("index.html", "query.html"):
-        source = (templates / name).read_text(encoding="utf-8")
-        assert '{% from "_sitefind.html" import finder %}' in source and "/static/sitefind.js" in source, name
+    source = (templates / "query.html").read_text(encoding="utf-8")
+    assert '{% from "_sitefind.html" import finder %}' in source and "/static/sitefind.js" in source
+    # 2026-11-23: the home page lists no sites and searches no titles any more (the panel's 內容 and top bar do)
+    home = (templates / "index.html").read_text(encoding="utf-8")
+    assert "finder(" not in home and "find_title" not in home and "do raw" in home
     script = (KIT / "datasette" / "static" / "sitefind.js").read_text(encoding="utf-8")
     assert "dataset.k" in script and "inOrder" in script
     query = (templates / "query.html").read_text(encoding="utf-8")
@@ -874,9 +885,7 @@ def test_the_list_of_sites_is_one_piece_the_home_page_and_a_sites_query_share():
     assert 'canned_query == "site_docs" and at.cur and at.cur.docs > display_rows|length' in query
     assert "只列最新的" in query and "classList.add('numc')" in query
     assert "td.numc" in (KIT / "datasette" / "static" / "tc.css").read_text(encoding="utf-8")
-    # the home's list: a site's name opens its page in 檢視台 (structure design 2026-11-17 section 二); a query's list
-    # keeps switching that query's site
-    assert 'name_go=site_page' in (templates / "index.html").read_text(encoding="utf-8")
+    # a query's list keeps switching that query's site (the home's list, whose names opened 檢視台, left on 11-23)
     assert "name_go" not in query and '{{ name_go or go }}{{ s.site|urlencode }}' in piece
 
 
@@ -1007,3 +1016,40 @@ def test_the_new_question_sets_summary_holds_totals_and_no_question():
     assert module.summary({"rows": []}, late, "2026-12-01T10:00:00+08:00", "x")["b_asked"]["expired"] == 1
     said = json.dumps(got, ensure_ascii=False)
     assert "暑修" not in said and "B001" not in said and "封存的题目" not in said  # counts only: no question, no id
+
+
+# --- the ledger for 資料庫 (datasette/ledger_copy.py, owner 11-23)
+
+
+def _ledger_copy():
+    spec = importlib.util.spec_from_file_location("ledger_copy", KIT / "datasette" / "ledger_copy.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_ledger_is_the_newest_nightly_backup_with_its_views_dropped_and_its_tables_kept(tmp_path):
+    backups = tmp_path / "ledger"
+    backups.mkdir()
+    for name, n in (("nightly-20261122-010002.db", 1), ("nightly-20261123-010002.db", 2)):
+        conn = sqlite3.connect(backups / name)
+        conn.execute("CREATE TABLE url(id INTEGER PRIMARY KEY, url TEXT)")
+        conn.executemany("INSERT INTO url(url) VALUES (?)", [(f"https://a/{i}",) for i in range(n)])
+        conn.execute("CREATE VIEW url_result AS SELECT id FROM url")
+        conn.commit()
+        conn.close()
+    dest = _ledger_copy().copy(backups, tmp_path / "frontier.db")
+    conn = sqlite3.connect(dest)
+    assert conn.execute("SELECT count(*) FROM url").fetchone()[0] == 2  # the newest backup
+    assert not conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'").fetchall()
+    conn.close()
+    kept = sqlite3.connect(backups / "nightly-20261123-010002.db")
+    assert kept.execute("SELECT name FROM sqlite_master WHERE type = 'view'").fetchall()  # the backup untouched
+    kept.close()
+    assert not (tmp_path / "frontier.db.part").exists()
+
+
+def test_no_backup_leaves_no_ledger_and_the_library_opens_alone(tmp_path):
+    (tmp_path / "frontier.db").write_text("old")
+    assert _ledger_copy().copy(tmp_path / "none", tmp_path / "frontier.db") is None
+    assert not (tmp_path / "frontier.db").exists()

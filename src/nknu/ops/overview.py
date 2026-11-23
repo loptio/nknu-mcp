@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from nknu.ops import overview_data
+from nknu.ops import design, overview_data
 from nknu.ops.theme import bar as theme
 
 log = logging.getLogger(__name__)
@@ -31,6 +31,49 @@ PAGE = HERE / "overview_page.html"
 PATH = "/sites"  # panels.json's entry 網站
 WAITING = ("<!doctype html><html lang='zh-Hant-TW'><meta charset='utf-8'><meta http-equiv='refresh' content='3'>"
            "<title>網站</title><p style='font:14px system-ui;padding:24px'>正在統計，幾秒後自己更新。</p>").encode()
+
+# the 11-23 design's layers the page loads after its own script: its band's card and clicks (content), the floating
+# words read for the eye (richtip), the drawers of raw records and files (drawers) and the night view (night), each
+# reaching the page through window.APP; a layer without files is skipped (nknu.ops.design)
+LAYERS = ("content", "richtip", "drawers", "night")
+# where web.py puts what it draws at each request (fill): the band (抓取覆蓋, nknu.ops.content_band) first in main, the
+# night view's band above the map and its log after the map and the dates (nknu.ops.night_view), and in 總覽's frame
+# (?embed=1) what 總覽 shows under the donut
+MAIN = '<main class="app">'
+NIGHT_BAND = "<!--NIGHT-BAND-->"
+NIGHT_LOG = "<!--NIGHT-LOG-->"
+EMBED_SIDE = "<!--EMBED-SIDE-->"
+# 總覽's frame (/sites?embed=1; owner 11-23, the design copy's sites-embed.html): the date chart and the side card only,
+# as one card; the chart keeps one setting (全部 · 折線 · 合計: 「这个在总览只留着些设定」); its links open in the top
+# window. Set before the page draws, so nothing else flashes: a class on <html> and a <base target=_top>.
+EMBED_JS = ("<script>(()=>{if(new URLSearchParams(location.search).get('embed')!=='1')return;"
+            "document.documentElement.classList.add('embed');const b=document.createElement('base');b.target='_top';"
+            "document.head.prepend(b)})();</script>")
+EMBED_CSS = """<style id='embed-css'>
+html.embed .nk-bar,html.embed .ct-band,html.embed #bar,html.embed section[aria-labelledby=hMap],
+html.embed section[aria-labelledby=hList],html.embed #segTab,html.embed #iSecs{display:none!important}
+html.embed .grid ~ *,html.embed .app > :not(.grid):not(style):not(script){display:none!important}
+html.embed,html.embed body{background:transparent!important}html.embed body::before{display:none!important}
+html.embed .app{padding:0!important;margin:0!important;max-width:none!important}
+html.embed .side-in .dn{margin-bottom:0}
+html.embed .side,html.embed .side-in{position:static!important;top:auto!important;margin-top:0!important;align-self:start}
+html.embed .grid{margin:0!important;row-gap:0!important;align-items:stretch!important;background:var(--surface);
+border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px 20px;gap:0 24px!important}
+html.embed aside.side{grid-row:1!important}
+html.embed section[aria-labelledby=hTime]{grid-row:1;grid-column:1;align-self:stretch!important;display:flex;flex-direction:column}
+html.embed section[aria-labelledby=hTime] #vLine{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
+html.embed .grid>.card,html.embed .side-in.card,html.embed .side-mc{background:none!important;border:0!important;
+box-shadow:none!important;padding:0!important;border-radius:0!important}
+html.embed .side{border-left:1px solid var(--line);padding-left:24px}
+html.embed .side-in{max-height:none!important;overflow:visible!important}
+html.embed .side-mc .pn-chd{display:none!important}html.embed .ih-t{font-size:15px!important}
+html.embed .side-mc{margin-top:16px!important;padding-top:16px!important;border-top:1px solid var(--line)!important}
+html.embed #segRange,html.embed #segView,html.embed #segSplit{display:none!important}
+html.embed .ov-go{cursor:pointer}html.embed #iT.ov-go:hover{text-decoration:underline;text-underline-offset:3px}
+html.embed #iT.ov-go::after{content:' ›';color:var(--ink3)}
+@media (max-width:1020px){html.embed aside.side{grid-row:2!important;border-left:0;padding-left:0;
+border-top:1px solid var(--line);padding-top:16px;margin-top:16px}}
+</style>"""
 
 
 def today() -> datetime.date:
@@ -64,25 +107,39 @@ class Watch:
 
 
 def head() -> str:
-    """The skeleton an Artifact page gets, with the panels' theme first and their bar on top."""
+    """The skeleton an Artifact page gets, with the panels' theme first and their bar on top (and, for 總覽's frame,
+    the class and styles that leave only the date chart and the side card)."""
     return ('<!doctype html><html lang="zh-Hant-TW"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             "<style>:root{color-scheme:light;padding-block:env(safe-area-inset-top,0px) env(safe-area-inset-bottom,0px)}"
             "body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>"
-            f"<style>{theme.theme_css()}</style></head><body>{theme.bar('sites', 'ops')}")
+            f"<style>{theme.theme_css()}</style>{EMBED_JS}{EMBED_CSS}</head><body>{theme.bar('sites', 'ops')}")
 
 
 def links() -> str:
     """Where the page's links go, from panels.json (one place for the addresses): one site's page (the list's names
-    and the inspector's 「這個網站的詳情」), 資料庫's origin (its canned queries), and where the page asks for its stamp."""
+    and the inspector's 「這個網站的詳情」), 資料庫's origin (its canned queries), where the page asks for its stamp,
+    and the page itself (where 總覽's frame sends a click)."""
     return json.dumps({"site": theme.site_prefix("ops"), "tables": theme.panels()["hosts"]["tables"].rstrip("/"),
-                       "stamp": f"{PATH}/stamp"}, ensure_ascii=False)
+                       "stamp": f"{PATH}/stamp", "page": PATH}, ensure_ascii=False)
 
 
 def render(template: str, data: dict) -> bytes:
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     page = template.replace("__DATA__", text).replace("__LINKS__", links().replace("</", "<\\/"))
-    return (head() + page + "</body></html>").encode("utf-8")
+    return (head() + page + design.layer(*LAYERS) + "</body></html>").encode("utf-8")
+
+
+def fill(page: str, *, band: str = "", night_band: str = "", night_log: str = "", embed_side: str = "") -> str:
+    """The kept page with what is drawn at each request put in its places: band first in main (content_band), the
+    night view's band and log where the page keeps their places (night_view), and what 總覽's frame shows under the
+    donut. Each goes in once; a page without the place gets nothing there."""
+    if band:
+        page = page.replace(MAIN, MAIN + band, 1)
+    for mark, html in ((NIGHT_BAND, night_band), (NIGHT_LOG, night_log), (EMBED_SIDE, embed_side)):
+        if html:
+            page = page.replace(mark, html, 1)
+    return page
 
 
 class State:

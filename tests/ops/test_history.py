@@ -50,7 +50,9 @@ def test_the_store_makes_its_tables_and_says_its_schema(store):
     assert store.enabled and store.error == ""
     conn = sqlite3.connect(store.path)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert names == {"meta", "nights", "steps", "sites", "problem_lists", "problems"}  # the last two: 2026-11-21
+    # problem_lists, problems: 2026-11-21; night_changes, night_flow, usage_days: 11-23 (the design's port)
+    assert names == {"meta", "nights", "steps", "sites", "problem_lists", "problems", "night_changes", "night_flow",
+                     "usage_days"}
     assert conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0] == history.SCHEMA
     cols = {r[1] for r in conn.execute("PRAGMA table_info(nights)")}
     assert {"night", "state", "counted_by", "new", "changed", "left", "unexplained", "docs", "digest"} <= cols
@@ -198,3 +200,199 @@ def test_the_pages_get_fourteen_nights_with_a_gap_where_none_is_recorded(store):
                                              "unexplained": 0}]}
     one = history.site_history(store, "a.example", date(2026, 11, 16))
     assert one["nights"][-2]["counted"] is False  # the ingest's counts are not exact per site: no bar, not a 0
+
+
+# ---------------------------------------------------------------- 11-23: a night's comparison, its steps, the use per day
+
+
+def comparison(night: str = "2026-11-22", **more) -> dict:
+    return {"state": "ready", "night": night, "totals": {"new": 2, "changed": 1, "left": 1, "unexplained": 0,
+                                                          "look": 0},
+            "by_reason": {"copy": 1}, "reasons": {"copy": {"label": "併為副本", "tip": "", "kind": "ok", "fix": ""}},
+            "sites": [{"site": "a.example", "name": "甲處", "new": 2, "changed": 1, "left": 1, "unexplained": 0,
+                       "lists": {"new": [{"id": "d1", "title": "新的", "url": "https://a.example/1"}], "changed": [],
+                                 "left": {"copy": [{"id": "d9", "title": "舊的", "url": "https://a.example/9"}]}}}],
+            "unexplained": [], **more}
+
+
+def test_a_nights_comparison_is_kept_by_its_run_day(store):
+    assert store.night_changes("2026-11-23") is None and store.night_changes_days() == []
+    assert store.put_night_changes("2026-11-23", comparison()) is True
+    assert store.put_night_changes("2026-11-23", comparison()) is False  # the same comparison: written once
+    got = store.night_changes("2026-11-23")
+    assert got == comparison() and got["sites"][0]["lists"]["left"]["copy"][0]["id"] == "d9"
+    assert store.put_night_changes("2026-11-23", comparison(by_reason={"copy": 2})) is True  # a later swap replaces it
+    assert store.night_changes("2026-11-23")["by_reason"] == {"copy": 2}
+    assert store.put_night_changes("2026-11-24", {"state": "computing"}) is False  # never one not ready
+    assert store.put_night_changes("../x", comparison()) is False and store.night_changes("../x") is None
+    assert store.night_changes_days() == ["2026-11-23"]
+    assert history.Store(None).put_night_changes("2026-11-23", comparison()) is False
+
+
+def swapped(built: str, at_: str, **more) -> dict:
+    return comparison(new={"built_at": built, "swapped_at": at_, "docs": 9}, **more)
+
+
+def test_a_days_later_swap_is_the_row_and_the_earlier_ones_stay_beside_it(store):
+    """A hand promote in the afternoon after the 01:00 run's swap: both are the day's (nights/<day>.json lists both);
+    the promote's comparison is the row and the run's stays in 'earlier', never lost to it."""
+    run_ = swapped("2026-11-23T01:20:00+08:00", "2026-11-23T01:40:00+08:00")
+    promote = swapped("2026-11-23T09:40:00+08:00", "2026-11-23T15:20:00+08:00", by_reason={"copy": 3})
+    assert store.put_night_changes("2026-11-23", run_) is True
+    assert store.put_night_changes("2026-11-23", promote) is True
+    got = store.night_changes("2026-11-23")
+    assert got["by_reason"] == {"copy": 3} and got["earlier"] == [run_]
+    assert store.put_night_changes("2026-11-23", promote) is False  # the same again: nothing written
+    # the same swap's comparison made again (a restart) replaces itself and keeps what was before it
+    assert store.put_night_changes("2026-11-23", {**promote, "took": "3 秒"}) is True
+    assert store.night_changes("2026-11-23")["earlier"] == [run_]
+    for i in range(6):  # at most EARLIER_KEEP kept, the latest of them
+        store.put_night_changes("2026-11-23", swapped(f"b{i}", f"2026-11-23T{16 + i}:00:00+08:00"))
+    kept = store.night_changes("2026-11-23")["earlier"]
+    assert len(kept) == history.EARLIER_KEEP and kept[-1]["new"]["built_at"] == "b4"
+    assert all("earlier" not in e for e in kept)
+
+
+def test_the_recorder_files_a_comparison_under_the_day_its_swap_record_is(where, tmp_path_factory):
+    """keep_changes uses the day nights/<day>.json files the swap (sources.swap_day), so an afternoon promote is the
+    day's own, not the next night's (critic CR-03: the two per-night stores agree)."""
+    import json
+
+    two_nights(where)
+    folder = where.library.parent / "nights"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "2026-11-17.json").write_text(json.dumps({"day": "2026-11-17", "swaps": [
+        {"started_at": "2026-11-17T14:50:00+08:00", "how": "promote", "built_at": "2026-11-17T09:00:00+08:00",
+         "sites": {}}]}), encoding="utf-8")
+    store = history.Store(tmp_path_factory.mktemp("ops") / "ops.db")
+    promote = {**comparison("2026-11-17"), "new": {"built_at": "2026-11-17T09:00:00+08:00",
+                                                   "swapped_at": "2026-11-17T15:00:00+08:00"}}
+    rec = history.Recorder(store, where, changes=Fixed(promote), kinds=Fixed(None))
+    assert rec.keep_changes(promote) is True
+    assert store.night_changes("2026-11-17") == promote and store.night_changes("2026-11-18") is None
+
+
+def test_a_nights_steps_are_kept_without_the_services_use(store):
+    snap = {"at": "2026-11-23T04:06:00+08:00", "began": "x",
+            "steps": [{"key": "crawl", "lost": [["連線失敗", 2]], "lost_keys": [["failed", "連線失敗", 2]]},
+                      {"key": "serve", "usage": [["查詢", "ok", "3 次"]], "usage_missed": [["1", "MCP", "誰"]],
+                       "usage_label": "x", "say": "正常"}],
+            "sites": [{"key": "a.example", "name": "甲處", "cells": {"crawl": {"n": 5}}, "worst": "ok", "q": "a"}]}
+    flow = history.flow_of(snap)
+    assert flow["steps"][1] == {"key": "serve", "say": "正常"} and flow["sites"][0] == {
+        "key": "a.example", "name": "甲處", "cells": {"crawl": {"n": 5}}, "worst": "ok"}
+    assert store.put_night_flow("2026-11-23", flow) is True and store.put_night_flow("2026-11-23", flow) is False
+    got = store.night_flow("2026-11-23")
+    assert got["steps"][0]["lost_keys"] == [["failed", "連線失敗", 2]] and got["at"] == "2026-11-23T04:06:00+08:00"
+    assert store.night_flow_days() == ["2026-11-23"] and store.put_night_flow("2026-11-24", {"steps": []}) is False
+
+
+def test_a_days_use_is_kept_and_a_day_not_kept_is_a_gap(store):
+    assert store.put_usage_day("2026-11-20", {"calls": 3, "search": 2, "complete": True}) is True
+    assert store.put_usage_day("2026-11-20", {"day": "2026-11-20", "calls": 3, "search": 2, "complete": True}) is False
+    store.put_usage_day("2026-11-22", {"calls": 0, "search": 0, "complete": True})
+    got = store.usage_days("2026-11-01", "2026-11-30")
+    assert got == [{"day": "2026-11-20", "calls": 3, "search": 2, "complete": True},
+                   {"day": "2026-11-22", "calls": 0, "search": 0, "complete": True}]  # 11-21: absent, not 0
+    assert store.put_usage_day("someday", {"calls": 1}) is False
+
+
+def test_the_recorder_keeps_the_comparison_under_its_nights_run_day(where, tmp_path_factory):
+    two_nights(where)
+    store = history.Store(tmp_path_factory.mktemp("ops") / "ops.db")
+    ready = comparison("2026-11-16")
+    rec = history.Recorder(store, where, changes=Fixed(ready), kinds=Fixed(None))
+    rec.tick(now=at("2026-11-17T09:00:00"))
+    assert store.night_changes("2026-11-17") == ready and rec.last["changes"] is True  # night 11-16 runs on 11-17
+    assert store.night_changes("2026-11-16") is None
+    rec.tick(now=at("2026-11-17T09:05:00"))
+    assert rec.last["changes"] is False  # the same comparison: nothing written again
+    busy = history.Recorder(store, where, changes=Fixed({"state": "computing", "night": "2026-11-17"}),
+                            kinds=Fixed(None))
+    busy.tick(now=at("2026-11-18T09:00:00"))
+    assert store.night_changes("2026-11-18") is None
+
+
+def test_the_recorder_keeps_each_finished_day_of_the_services_use(where, tmp_path_factory, monkeypatch):
+    import json
+
+    from nknu.ops import pipeline as pl
+
+    monkeypatch.setattr(pl, "search_slots", lambda: 4)
+    log = where.root / "queries.jsonl"
+    lines = [{"t": "2026-11-20T15:00:00+08:00", "tool": "search", "ms": 900},
+             {"t": "2026-11-20T15:00:30+08:00", "tool": "fetch", "ms": 100},
+             {"t": "2026-11-22T10:00:00+08:00", "tool": "search", "ms": 1200, "error": "busy"},
+             {"t": "2026-11-23T08:00:00+08:00", "tool": "search", "ms": 700}]  # today: not over, not kept
+    log.write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
+    where.public_log = log
+    store = history.Store(tmp_path_factory.mktemp("ops") / "ops.db")
+    rec = history.Recorder(store, where, changes=Fixed(None), kinds=Fixed(None))
+    assert rec.keep_usage(at("2026-11-23T09:00:00")) == 3
+    days = {d["day"]: d for d in store.usage_days("2026-10-01", "2026-11-30")}
+    assert sorted(days) == ["2026-11-20", "2026-11-21", "2026-11-22"]  # before 11-20 the log does not reach: unknown
+    assert days["2026-11-20"]["calls"] == 2 and days["2026-11-20"]["search"] == 1
+    assert days["2026-11-20"]["complete"] is False  # the log began that day
+    assert days["2026-11-21"]["calls"] == 0 and days["2026-11-21"]["complete"] is True  # a quiet day, known
+    assert days["2026-11-22"]["errors"] == 1 and days["2026-11-22"]["slots"] == 4
+    assert rec.keep_usage(at("2026-11-23T09:05:00")) == 0  # kept: not read again
+    where.public_log = None
+    assert history.Recorder(store, where).keep_usage(at("2026-11-24T09:00:00")) == 0  # no log mounted: nothing
+
+
+def test_the_recorder_keeps_a_finished_nights_steps_with_its_problems(where, tmp_path_factory):
+    from tests.ops.test_standing import Flow, reading
+
+    two_nights(where)  # 11-16's chain ended 03:40
+    store = history.Store(tmp_path_factory.mktemp("ops") / "ops.db")
+    flow = Flow(reading("2026-11-17T03:00:00+08:00"))  # read while the chain ran: not the night's
+    keeper = history.Recorder(store, where, changes=Fixed(None), kinds=Fixed(None), flow=flow)
+    keeper.tick(now=at("2026-11-17T03:05:00"))
+    assert store.night_flow("2026-11-17") is None
+    flow.snap = reading("2026-11-17T04:06:00+08:00")
+    keeper.tick(now=at("2026-11-17T04:10:00"))
+    got = store.night_flow("2026-11-17")  # night 11-16, its run day 11-17
+    assert got["at"] == "2026-11-17T04:06:00+08:00" and got["steps"][0]["key"] == "serve"
+
+
+def test_a_known_marks_last_sighting_is_read_from_the_kept_lists(store):
+    def rec(key: str) -> dict:
+        return {"key": key, "sev": "warn", "place": "甲處", "state": "warn", "reason": f"{key} 的原因", "href": "/x"}
+
+    store.put_problems("2026-11-19", [rec("step:build"), rec("site:a.example:docs")], at="x")
+    store.put_problems("2026-11-20", [rec("step:build"), rec("site:a.example:docs"), rec("site:b_x.example:docs")],
+                       at="x")
+    store.put_problems("2026-11-21", [rec("site:a.example:export")], at="x")
+    got = store.problem_sightings(["step:build", "site:a.example", "site:b_x.example", "machine:gpu", "site:a"])
+    assert got["step:build"]["night"] == "2026-11-20" and got["step:build"]["run_day"] == "2026-11-21"
+    assert got["step:build"]["gone_run_day"] == "2026-11-22"  # night 11-21's list did not hold it: 11-22 起沒再出現
+    # a mark on a site covers every key under it; still in the latest list: not gone
+    assert got["site:a.example"]["key"] == "site:a.example:export" and got["site:a.example"]["gone_run_day"] is None
+    assert got["site:b_x.example"]["reason"] == "site:b_x.example:docs 的原因"
+    assert "machine:gpu" not in got and "site:a" not in got  # never listed; a prefix is only a whole part
+
+
+def test_the_last_swapped_night_is_found_with_its_steps(store):
+    store.put(record("2026-11-20", swapped=1))
+    store.put(record("2026-11-21", swapped=0))
+    got = store.last_swapped()
+    assert got["night"] == "2026-11-20" and got["steps"][0]["name"] == "爬取"
+    assert store.last_swapped(before="2026-11-19") is None and history.Store(None).last_swapped() is None
+
+
+def test_the_use_per_day_api_gives_the_kept_days_and_today_live(store, tmp_path):
+    import json as _json
+
+    from nknu.ops import pipeline as pl
+
+    log = tmp_path / "queries.jsonl"
+    log.write_text(_json.dumps({"t": "2026-11-23T08:00:00+08:00", "tool": "search", "ms": 700}) + "\n", encoding="utf-8")
+    store.put_usage_day("2026-11-21", {"calls": 3, "complete": True})
+    store.put_usage_day("2026-11-23", {"calls": 99, "complete": True})  # today kept by mistake: today is read live
+    where = Where(root=tmp_path, db=tmp_path / "aca.db", public_log=log)
+    got = history.usage_api(store, where, {}, now=at("2026-11-23T09:00:00"))
+    assert (got["first"], got["last"]) == ("2026-11-01", "2026-11-23") and got["slots"] == pl.search_slots()
+    assert [(d["day"], d["calls"], d.get("today")) for d in got["days"]] == [("2026-11-21", 3, None),
+                                                                            ("2026-11-23", 1, True)]
+    past = history.usage_api(store, where, {"first": "2026-11-01", "last": "2026-11-22"}, now=at("2026-11-23T09:00:00"))
+    assert [d["day"] for d in past["days"]] == ["2026-11-21"]

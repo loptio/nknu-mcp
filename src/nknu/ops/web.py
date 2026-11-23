@@ -71,12 +71,18 @@ from nknu.ops import (
     content_band,
     history,
     keep,
+    lineage,
+    logs,
+    night_view,
     nightly,
     pagecheck,
     panorama,
+    raw,
+    site_checks,
     standing,
     todo,
     units_page,
+    visits,
 )
 from nknu.ops import overview as overview_mod
 from nknu.ops.changes import Changes
@@ -94,7 +100,7 @@ from nknu.ops.site_page import Kinds, now_line
 from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
 from nknu.ops.theme import bar as theme
-from nknu.ops.tonight_page import handle_rows, night_departures, problems
+from nknu.ops.tonight_page import handle_rows, night_departures
 from nknu.ops.trace import WITHIN, site_exports, trace
 from nknu.ops.trace_page import FOUND_MAX, MARKUP, trace_body, trace_form
 from nknu.ops.try_page import TryPage
@@ -265,6 +271,22 @@ def load_questions(folder: Path | None, gold: Path | None) -> list[dict]:
         return []
 
 
+DOC_HELP = ("可以打：&#10;標題裡的幾個字　繁體、簡體都可以&#10;網址　學校網頁或檔案的網址&#10;文件編號　庫裡每份文件自己的編號&#10;"
+            "網站名　列出那個網站&#10;找到的分兩邊：庫裡的文件（點了看它的每一步）、抓到的網頁（點了看有沒有漏抓）")
+
+
+def design_doc_help(body: str) -> str:
+    """文件搜尋 with nothing typed: a ? beside its box says what it takes (the 11-23 design's doc layer styles it)."""
+    return re.sub(r"(<form class='ask dc-ask'[^>]*>.*?)</form>",
+                  lambda m: m.group(1) + "<button type='button' class='hp pd-hp' aria-label='可以打什麼' "
+                                         f"data-tip='{DOC_HELP}'>?</button></form>", body, count=1, flags=re.DOTALL)
+
+
+def _json(body: object, status: int = 200) -> JSONResponse:
+    """A data answer the pages poll: never cached."""
+    return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
 def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Path | None = None,
                gold: Path | None = None, config: HybridConfig | None = None, models: dict | None = None,
                today_fn: Callable[[], date] = today_tpe, code_root: Path | None = None,
@@ -409,10 +431,10 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         """要處理 (nknu.ops.todo): the problems of the night shown against the list kept for the night before, this
         machine past its lines, less what the owner said is known."""
         reading = not snap.get("steps")
-        rows = problems(night, snap, [] if reading else handle_rows(snap, changes))
+        rows = todo.night_rows(night, snap, [] if reading else handle_rows(snap, changes), where.archive)
         parts = standing.split(rows, store.problem_base(night["default"]), reading=reading,
                                swap_known=(changes or {}).get("state") != "computing")
-        return todo.collect(parts, rows, panorama.machine_meters(snap), known.load())
+        return todo.collect(parts, rows, panorama.machine_meters(snap), known.load(), night=night["default"])
 
     async def mark_known(request: Request) -> Response:
         """要處理's row marked known (or taken off with off=1), from 總覽's own form only: the request's Origin must be
@@ -427,14 +449,13 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                 await run_in_threadpool(known.unmark, keys)
             else:
                 await run_in_threadpool(known.mark, keys, str(form.get("note") or "").strip())
-        return RedirectResponse("/#todo", status_code=303)
+        return RedirectResponse("/#known" if form.get("off") == "1" else "/#todo", status_code=303)
 
     def front(request: Request) -> Response:
         """總覽 (nknu.ops.panorama), the front page since 2026-11-22: the whole project on one page, mostly charts.
         每晚運行 was here until then: an old link to a night (?night=) or to read again (?fresh=) is sent on to it."""
         if {"night", "fresh"} & set(request.query_params):
-            return RedirectResponse(f"{nightly.TONIGHT}?{request.url.query}", status_code=307,
-                                    headers={"Cache-Control": "no-store"})
+            return night_moved(request)
         sites_state.start()
         with sites_state.lock:
             data = sites_state.data
@@ -446,10 +467,21 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         finally:
             conn.close()
         snap = flow.snapshot()
-        page = panorama.page(snap, {**night, "changes": changes}, data or {}, hist,
-                             aitest=kept(AITEST_FILE), built=built,
-                             todo=todo_now(snap, night, changes))
+        tonight = {**night, "changes": changes}
+        todo_res = todo_now(snap, night, changes)
+        page = panorama.page(snap, tonight, data or {}, hist, built=built, todo=todo_res,
+                             more=panorama.gather(store, known, where, tonight, snap, todo_res))
         return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+    def night_moved(request: Request) -> Response:
+        """每晚運行 is 內容's night view since 11-23 (/sites?date=<run day>): an old link to a night (?night=, the
+        night's key) goes to that night, anything else to the default night."""
+        n = request.query_params.get("night", "").strip()
+        try:
+            target = nightly.night_href(n) if n else f"{nightly.NIGHT_VIEW}?date="
+        except (ValueError, OverflowError):  # not a date, or one past the calendar's end
+            target = f"{nightly.NIGHT_VIEW}?date="
+        return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
 
     def history_api(request: Request) -> Response:
         """The nights' record as data: the fourteen nights 今晚 draws, or one site's (?site=)."""
@@ -488,6 +520,12 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         conn = connect(db_path)
         try:
             info = db_info(conn)
+            # 品質提醒 (site_checks.py): the build's lists of documents behind each reminder, while they are this library's
+            try:  # a list that cannot be read leaves the rest of the site's page standing
+                quality = site_checks.card(key, site_checks.load(db_path.parent, info.get("built_at") or ""), conn)
+            except Exception:
+                log.exception("網站頁：品質提醒的清單讀不了（%s）", key)
+                quality = site_checks.card(key, None, conn, broken=True)
         finally:
             conn.close()
         if detail is None and row is None and view is None and mine is None:
@@ -507,7 +545,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             tables=tables, row=row,
             hist=history.site_history(store, key, tonight_night(night)), labels=labels_of(night),
             departures=night_departures(night), read=bool(snap.get("steps")))
-        return shell(f"{name} · 檢視台", body, info, tab="sites")
+        return shell(f"{name} · 檢視台", site_checks.lay_out(body, quality), info, tab="sites", layer="site")
 
     def pipeline_site(request: Request) -> Response:
         """Moved: one site's page is /site (structure design 2026-11-17 section 二)."""
@@ -558,7 +596,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                 return moved("/doc", [("q", ref)])
             body = trace_form(ref, focus=False) + trace_body(traced(conn, ref), viewer_url, today_fn(),
                                                              archive=archive is not None)
-            return shell(f"{ref} · 文件搜尋", body, db_info(conn), tab="doc")
+            return shell(f"{ref} · 文件搜尋", body, db_info(conn), tab="doc", layer="trace")
         finally:
             conn.close()
 
@@ -581,8 +619,10 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         q = request.query_params.get("q", "").strip()
         conn = connect(db_path)
         try:
-            inner = doc_found(conn, q) if q else empty_html()
-            return shell(f"{q} · 文件搜尋" if q else "文件搜尋 · 檢視台", doc_body(q, inner), db_info(conn), tab="doc")
+            # with nothing typed, what the box takes is its ? (11-23 design: the 「可以打什麼」 card went)
+            body = doc_body(q, doc_found(conn, q)) if q else design_doc_help(doc_body(q, ""))
+            return shell(f"{q} · 文件搜尋" if q else "文件搜尋 · 檢視台", body, db_info(conn), tab="doc",
+                         layer="found" if q else "doc")
         finally:
             conn.close()
 
@@ -764,14 +804,15 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         try:
             if not key and sw is not None and (named := sw.site_key(ref)):
                 key = named  # a site's key pasted back from its row: that site's page
-            if key:
+            if key and not p.get("lists"):
                 return moved("/site", [("site", key), ("q", p.get("q", "").strip()), ("only", p.get("only", ""))],
                              "check")
-            if not ref:  # nothing asked: the school's 網頁核查 (2026-11-18; until then it sat under 文件搜尋's box)
+            if not ref:  # nothing asked: the school's 網頁核查 (2026-11-18; until then it sat under 文件搜尋's box);
+                # with ?site=…&lists=1 the design layer puts that site's lists in place of the school's (11-23)
                 view = sw.overview() if sw is not None else None
                 body = school_body(check_form("", "", live=False),
                                    school_html(view, archive=sw is not None))
-                return shell("全校網頁核查 · 檢視台", body, db_info(conn), tab="check")
+                return shell("全校網頁核查 · 檢視台", body, db_info(conn), tab="check", layer="check")
             if not asks_a_page(ref, conn):
                 return moved("/doc", [("q", ref)])
             info = db_info(conn)
@@ -782,7 +823,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                 crumb = sw.crumb(summary["page"]["site"], summary["page"]["url"])
             body = check_body(summary, value=ref, crumb=crumb, flash=p.get("n", ""))
             named = (crumb or {}).get("name") or summary.get("title") or ref  # the tab says which page, not its address
-            return shell(f"{named} · 網頁核查", body, info, tab="doc")
+            return shell(f"{named} · 網頁核查", body, info, tab="doc", layer="pagecheck")
         finally:
             conn.close()
 
@@ -872,16 +913,6 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     # hands out what it last made
     sites_state = overview_mod.State(root, kept=found_before)
 
-    def units_view(_request: Request) -> Response:
-        """單位 (nknu.ops.units_page): the unit tree with each unit's documents, sites and newest date."""
-        conn = connect(db_path)
-        try:
-            body = (f"<style>{content_band.CSS}</style><div class='ct-head'><h1>內容</h1>{content_band.switch('units')}"
-                    f"</div>{units_page.body(conn, today_fn())}")
-            return shell("單位 · 內容 · 檢視台", body, db_info(conn), tab="units")
-        finally:
-            conn.close()
-
     def sites_page(request: Request) -> Response:
         """內容: the page of every site as computed for this library (overview_mod.State), under the band that is
         drawn now (content_band: what the crawler missed, what holds no document)."""
@@ -891,14 +922,14 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
         if page is None:
             return Response(overview_mod.WAITING, media_type="text/html; charset=utf-8", headers=headers)
-        night, _changes = tonight_now(request)
-        conn = connect(db_path)
-        try:
-            tree = units_page.load(conn, today_fn())
-        finally:
-            conn.close()
-        band = content_band.band(data or {}, flow.snapshot(), night, tree)
-        html = page.decode("utf-8").replace('<main class="app">', '<main class="app">' + band, 1).encode("utf-8")
+        text = page.decode("utf-8")
+        if request.query_params.get("embed") == "1":  # 總覽's frame: the date chart and 全部網站, with this machine
+            text = overview_mod.fill(text, embed_side=panorama.machine_block(flow.snapshot()))
+        else:  # 內容, and its night view (?date=): the band, the night's band and log (night_view, night.js)
+            night, _changes = tonight_now(request)
+            text = overview_mod.fill(text, band=content_band.band_for(where, data or {}, flow.snapshot(), night),
+                                     night_band=night_view.band_html(), night_log=night_view.log_html())
+        html = text.encode("utf-8")  # the kept page already carries its layers (overview.render): never twice
         if "gzip" in (request.headers.get("accept-encoding") or ""):  # the page carries its data: about 2 MB
             return Response(gzip.compress(html, 5), media_type="text/html; charset=utf-8",
                             headers={**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
@@ -945,7 +976,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
 
     routes = [Route("/", guarded(front, False), methods=["GET"]),
               Route("/todo/known", mark_known, methods=["POST"]),
-              Route(nightly.TONIGHT, guarded(home, False), methods=["GET"]),
+              Route(nightly.TONIGHT, night_moved, methods=["GET"]),  # 定時更新 is 內容 at ?date= (11-23)
               Route("/site", guarded(site_view, False), methods=["GET"]),
               Route(overview_mod.PATH, guarded(sites_page, False), methods=["GET"]),
               Route(f"{overview_mod.PATH}/stamp", guarded(sites_stamp, True), methods=["GET"]),
@@ -963,7 +994,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/pipeline/site", guarded(pipeline_site, False), methods=["GET"]),
               Route("/file", guarded(original, True), methods=["GET"]),
               Route("/check", guarded(check_panel, False), methods=["GET"]),
-              Route("/units", guarded(units_view, False), methods=["GET"]),
+              Route("/units", units_page.moved, methods=["GET"]),  # 單位 went into 內容 (11-23)
               Route("/check/raw", guarded(check_raw, True), methods=["GET"]),
               Route("/check/source", guarded(check_source, False), methods=["GET"]),
               Route("/check/text", guarded(check_text, False), methods=["GET"]),
@@ -974,7 +1005,24 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/check/site", guarded(check_site, True), methods=["GET"]),
               Route("/check/item", guarded(check_item, True), methods=["GET"]),
               Route("/api/check", guarded(check_api, True), methods=["GET"]),
-              Route("/api/check/sweep", guarded(sweep_api, True), methods=["GET"])]
+              Route("/api/check/sweep", guarded(sweep_api, True), methods=["GET"]),
+              # the 11-23 design's data, read live (round 2: sources, logs, history, visits, raw, lineage, night_view)
+              Route("/api/logs", guarded(lambda r: _json(logs.api_window(where, r.query_params)), True),
+                    methods=["GET"]),
+              Route("/api/usage/days", guarded(lambda r: _json(history.usage_api(store, where, r.query_params)), True),
+                    methods=["GET"]),
+              Route("/api/usage/live", guarded(lambda r: _json(visits.live_api(where, r.query_params)), True),
+                    methods=["GET"]),
+              Route("/api/raw", guarded(lambda r: _json(*reversed(raw.api(where, r.query_params,
+                                                                         changes=night_changes.snapshot()))), True),
+                    methods=["GET"]),
+              Route("/api/file", guarded(lambda r: _json(*reversed(lineage.api(where, r.query_params))), True),
+                    methods=["GET"]),
+              Route("/api/night", guarded(lambda r: _json(night_view.api(where, store, r.query_params, flow=flow,
+                                                                          changes=night_changes)), True),
+                    methods=["GET"]),
+              Route("/api/night/ticks", guarded(lambda r: _json(night_view.ticks(where, store, r.query_params)), True),
+                    methods=["GET"])]
 
     # 搜尋 (nknu.ops.try_page; structure design 2026-11-17 section 三.1): the search service as a student's AI agent
     # sees it, called from here through mcp_url ('' : the page says it is not set)
@@ -991,7 +1039,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             # the night; its scores are no longer shown here while its answers are being cleaned)
             board = "" if asked_something else tests_html(asked)
             title, body = trying.page(request.query_params, why=why, board=board)
-            return shell(title, body, db_info(conn), tab="try")
+            return shell(title, body, db_info(conn), tab="try", layer="why" if why is not None else "try")
         finally:
             conn.close()
 
@@ -1055,7 +1103,7 @@ def main(argv: list[str] | None = None) -> int:
                          "不给就用 --watch 里方式是 mcp 的那一个，都没有就是那一页说没有设定")
     ap.add_argument("--disk", action="append", default=[], metavar="名字=资料夹",
                     help="首页要说剩余空间的硬盘，给它上面的一个资料夹（从这个程序看得到的），可以给好几次；"
-                         "实验室：C 槽=/host-c、D 槽=/crawl/archive/warc")
+                         "实验室：E 槽=/crawl/archive/warc（工作资料都在 E 槽）")
     ap.add_argument("--public-log", default="",
                     help="对外服务的查询纪录 queries.jsonl（只读挂进来的），首页「查詢服務」说它最近 24 小时的使用；不给就不说")
     add_model_flags(ap)

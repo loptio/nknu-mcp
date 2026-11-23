@@ -29,6 +29,9 @@ except ImportError:  # the tests load this file where Datasette is not installed
 DEFAULT = {
     "docs": ("title", "kind_class", "unit", "ident_date", "tier", "chars", "url"),
     "sites": ("name", "unit", "docs", "data_as_of", "missing_pages", "missing_files"),
+    # the crawler's ledger (database frontier, 11-23)
+    "url": ("url", "site", "kind", "found_via", "state", "reason", "status", "fetched_at"),
+    "request": ("url", "purpose", "method", "status", "error", "campus", "bytes"),
 }
 CHOICE = ("_col", "_nocol")  # Datasette's own two ways to say which columns
 MARK = "nknu_default_columns"  # set on the request's scope when the columns are the default, not a choice

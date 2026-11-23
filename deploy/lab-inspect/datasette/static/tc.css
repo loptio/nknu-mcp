@@ -76,6 +76,7 @@ h3.grp { margin: 14px 2px 6px; font-size: 12px; font-weight: 600; color: var(--i
 .start { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 900px) { .start { grid-template-columns: minmax(0, 1fr); } }
 .start .side { display: grid; gap: 12px; }
+.start.solo { grid-template-columns: minmax(0, 1fr); }
 .card.find { padding: 14px 16px 10px; }
 .card.find h3, .card.do h3 { display: flex; align-items: baseline; gap: 10px; }
 .card.find h3 { margin: 0 0 10px; font-size: 14px; font-weight: 650; }

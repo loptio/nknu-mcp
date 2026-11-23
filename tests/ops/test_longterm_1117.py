@@ -80,7 +80,7 @@ def where(tmp_path) -> Where:
 def todo_rows(t: dict) -> list:
     """總覽's 要處理 rows of the night once the steps are read (the problems' list moved there from 每晚運行)."""
     got = todo.collect(None, tonight_page.problems(t, {"steps": []}, []), [], {})
-    return LexborHTMLParser(panorama.todo_card(got, False)).css(".pn-tlist li")
+    return LexborHTMLParser(panorama.todo_card(got, False)).css("ul.td > li")
 
 
 def test_no_page_says_who_should_fix_anything(where, mcp):

@@ -73,8 +73,9 @@ def test_what_the_night_before_did_not_list_is_new_and_the_rest_says_how_long():
     assert [g["place"] for g in parts["gone"]] == ["丙處"]  # listed the night before, not there now
     # nothing new of 甲處: it is old, with its nights (three before, this one the fourth)
     same = standing.split(rows_of({"steps": [], "sites": before["sites"][:1]}, t={**TONIGHT, "nights": []}), base)
-    assert same["new"] == [] and same["old"][0]["age"] == "第 4 晚" and "連續 4 晚" in same["old"][0]["age_tip"]
-    assert standing.age_words(2, True)[0] == "至少 2 晚"  # the lists go no further back: never a made-up first night
+    assert same["new"] == [] and same["old"][0]["age"] == "第 4 天" and "連續 4 天" in same["old"][0]["age_tip"]
+    # the lists go no further back: never a made-up first night; days, a night being named by the day it runs (11-23)
+    assert standing.age_words(2, True)[0] == "≥2 天"
 
 
 def test_a_problem_that_went_from_warn_to_bad_is_new_again_and_marked():
@@ -85,7 +86,7 @@ def test_a_problem_that_went_from_warn_to_bad_is_new_again_and_marked():
     assert [x["where"] for x in parts["new"]] == ["查詢服務"] and parts["new"][0]["worse"] and parts["gone"] == []
     assert "變嚴重" in tonight_page.problem_html(parts["new"][0])
     back = standing.split(rows_of(before, t=quiet), base_of(rows_of(now, t=quiet)))  # bad to warn: not new
-    assert back["new"] == [] and back["old"][0]["age"] == "至少 2 晚"
+    assert back["new"] == [] and back["old"][0]["age"] == "≥2 天"
 
 
 def test_nothing_is_said_gone_while_the_steps_are_read_and_a_run_is_never_gone():
@@ -248,10 +249,10 @@ def test_the_home_lists_what_is_new_first_and_says_so_on_top():
     snap = {"steps": SNAP["steps"], "sites": [site("a.example", "甲處", ("crawl", WARN, "有 3 個網址抓不到")),
                                               SNAP["sites"][1]]}
     tree = front(snap, quiet, base)
-    items = tree.css("#todo > .pn-tlist li")
-    assert [li.css_first(".pn-twhat a").text() for li in items] == ["查詢服務", "乙處", "甲處"]  # the new first
-    assert [li.css_first(".pn-tnew, .pn-tage").text() for li in items] == ["新出現", "新出現", "第 3 晚"]
-    assert "和 11-15 夜比" in tree.css_first(".pn-tsub").text() and tree.css_first(".pn-tcount").text() == "3"
+    items = tree.css("#pane-todo ul.td > li")
+    assert [li.css_first(".td-what a").text() for li in items] == ["查詢服務", "乙處", "甲處"]  # the new first
+    assert [li.css_first(".td-age").text() for li in items] == ["新出現", "新出現", "第 3 天"]
+    assert tree.css_first("#tab-todo b").text() == "3"  # the tab's count says it (11-23: no 「和 11-15 夜比」)
     # what the night before listed and is not there now (好了) is nothing to handle: 總覽 does not list it
     assert "丙處" not in tree.html
     page = home_page.home_body(snap, quiet, None, {"enabled": False}, {}, base=base)
@@ -259,10 +260,10 @@ def test_the_home_lists_what_is_new_first_and_says_so_on_top():
     # nothing new: no row marked so, and said on top
     fine = [{"key": "serve", "name": "查詢服務", "state": "ok", "say": "", "at": ""}]
     calm = {"steps": fine, "sites": snap["sites"][:1]}
-    assert front(calm, quiet, base).css(".pn-tnew") == [] and len(front(calm, quiet, base).css(".pn-tage")) == 1
+    assert front(calm, quiet, base).css(".td-new") == [] and len(front(calm, quiet, base).css(".td-age")) == 1
     assert "；有 1 個問題，都是之前就有的" in home_page.home_body(calm, quiet, None, {"enabled": False}, {}, base=base)
     # no night to compare with: the rows as they were, nothing called new (the note why was 問題's; the section left)
     plain = front(snap, quiet, None)
-    assert plain.css(".pn-tnew, .pn-tage") == [] and plain.css_first(".pn-tsub") is None
+    assert plain.css(".td-age") == [] and plain.css_first(".pn-tsub") is None
     said = home_page.home_body(snap, quiet, None, {"enabled": False}, {}, base_note="問題清單從這一晚開始記")
     assert "；有 3 個問題" in said and "其中新出現" not in said

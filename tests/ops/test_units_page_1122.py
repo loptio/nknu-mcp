@@ -1,8 +1,15 @@
 """單位 (nknu.ops.units_page): each unit's own documents, its units' added on the line above, the sites they came from,
-the newest date, and the units with no document or none in a year marked. Offline: a small made-up library."""
+the newest date, and the units with no document or none in a year marked. Offline: a small made-up library.
+
+11-23 (owner: 「把单位页面拿掉」): /units is no page; its address lands on 內容 (moved). The tree is kept, read by nothing on
+the panel now."""
 
 import sqlite3
 from datetime import date
+
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
 from nknu.ops import units_page
 
@@ -80,3 +87,10 @@ def test_the_page_marks_what_is_missing_and_links_the_sites():
 
 def test_a_library_without_the_unit_tree_says_so():
     assert "沒有單位表" in units_page.body(library(with_units=False), TODAY)
+
+
+def test_the_page_is_gone_and_its_address_lands_on_content():
+    app = Starlette(routes=[Route("/units", units_page.moved, methods=["GET"])])
+    got = TestClient(app).get("/units", follow_redirects=False)
+    assert got.status_code == 307 and got.headers["location"] == "/sites"
+    assert got.headers["cache-control"] == "no-store"  # the address may serve again one day: no browser keeps the jump

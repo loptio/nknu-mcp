@@ -23,7 +23,7 @@ from urllib.parse import quote
 from nknu.ops import charts
 from nknu.ops.history import hours_of
 from nknu.ops.look import e, icon
-from nknu.ops.nightly import DONE, RUN, STOP, clock
+from nknu.ops.nightly import DONE, NIGHT_STEP, RUN, STOP, clock, night_href
 from nknu.ops.pipeline import BAD, NONE, OK, WARN, span, stamp, when_of
 from nknu.ops.pipeline_page import strip_fixer
 
@@ -96,6 +96,10 @@ def handle_rows(snap: dict, changes: dict | None) -> list[dict]:
 
 # a night's parts: their state in the fixed words (spec 2026-11-17-panels-v3-questions.md 八.1)
 SHOWN_PROBLEMS = 12  # rows of 問題 before 還有 N 個 【Claude】
+# the steps that are no part of a night, and where each shows once /tonight sends on to the night view (critic CR-05's
+# proposal, 【Claude】 until the owner places them): 查詢服務 (the services and the machine) on 總覽's 網站訪問量
+# (visits.py, #usage), 品質檢查 (the 33 by hand since 11-22, the real-data checks after an install) on 搜尋's 測試
+ELSEWHERE = {"serve": "/#usage", "check": "/try#tests"}
 PART_STATE = {RUN: "跑中", DONE: "完成", STOP: "停了"}
 
 
@@ -116,9 +120,16 @@ def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
     the worse first (spec 八.5): the night's parts that stopped or warn (their source's own reason: a status file's
     reason or error, a log line, as written; a code no dictionary knows marked 沒見過), every run of the night that
     did not end well, 流水線's steps that are not normal (what each probe says), and the sites to look at. Nothing
-    here is written for one night: the rows are what the sources say."""
+    here is written for one night: the rows are what the sources say. A part of the night, its run or a step of the
+    chain links to the night view with that step open (nightly.night_href, 11-23: the night is 內容's 定時更新); a
+    step of no night links where it shows (ELSEWHERE: 查詢服務 to 總覽's 網站訪問量, 品質檢查 to 搜尋's 測試, CR-05)."""
     out: list[dict] = []
     night = next((x for x in t.get("nights") or [] if x.get("night") == t.get("default")), None) or {}
+
+    def here(step: str | None) -> str:
+        key = night.get("night") or t.get("default")
+        return night_href(key, step) if key else "#nights"
+
     covered: set[str] = set()
     for c in night.get("cells") or []:
         if c.get("word") in ("還沒上線", "看不到"):
@@ -128,7 +139,7 @@ def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
             sev = BAD if c.get("sev") == BAD else WARN
             reason = c.get("reason") or c.get("say") or ""
             key = f"part:{c.get('key')}" + (f":{c['code']}" if c.get("code") else "")
-            out.append({"sev": sev, "where": c["name"], "href": "#nights", "state": part_state(c),
+            out.append({"sev": sev, "where": c["name"], "href": here(c.get("key")), "state": part_state(c),
                         "reason": reason, "code": c.get("code") or "",
                         "unknown": bool(c.get("unknown")), "when": stamp(c.get("until") or c.get("since")),
                         "issues": [{"key": key, "sev": sev, "what": reason}]})
@@ -137,7 +148,7 @@ def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
             continue
         sev = BAD if x.get("outcome") == "failed" else WARN
         out.append({"sev": sev, "where": f"進庫第 {x['run']} 次",
-                    "href": "#nights", "state": "沒見過" if x.get("unknown") else "出錯" if x.get("outcome") == "failed"
+                    "href": here("build"), "state": "沒見過" if x.get("unknown") else "出錯" if x.get("outcome") == "failed"
                     else "停了", "reason": x.get("reason") or "", "code": x.get("code") or "",
                     "unknown": bool(x.get("unknown")), "when": stamp(x.get("until")),
                     # one run of one night: an event, never the same problem the night after
@@ -146,7 +157,8 @@ def problems(t: dict, snap: dict, handle: list[dict]) -> list[dict]:
         if s.get("key") == "nightly" or s.get("state") not in (WARN, BAD) or s.get("key") in covered:
             continue
         reason = strip_fixer(s.get("say") or "")
-        out.append({"sev": s["state"], "where": s["name"], "href": f"#step-{s['key']}",
+        out.append({"sev": s["state"], "where": s["name"],
+                    "href": here(s["key"]) if s.get("key") in NIGHT_STEP else ELSEWHERE.get(s["key"], f"#step-{s['key']}"),
                     "state": "出錯" if s["state"] == BAD else "留意", "reason": reason,
                     "code": "", "unknown": False, "when": stamp(s.get("at")),
                     "issues": [{"key": f"step:{s['key']}", "sev": s["state"], "what": reason}]})

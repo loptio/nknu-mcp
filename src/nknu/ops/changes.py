@@ -46,6 +46,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
+from nknu.ops.names import rename
 from nknu.ops.pipeline import CONTENT, CRAWLER, folder_of, open_ro, span, tw, when_of
 
 log = logging.getLogger(__name__)
@@ -148,6 +149,9 @@ REASONS = {
     "same_export": ("導出沒換", "這個網站用的導出和上一份庫一樣，離開是建庫的程式或設定改了", LOOK, CONTENT),
     "unknown": ("查不出原因", "導出清單裡有它、也抓到了，卻沒有進新庫", UNKNOWN, CONTENT),
 }
+# the short names in the 11-23 words (names.py, owner 11-23: 「名字取的太弱…」): 校方已刪除, 併為副本, 原因不明 …; the keys stay,
+# so a page or a drawer that filters by a reason's key never depends on its word
+REASONS = {k: (rename(label), tip, kind, fix) for k, (label, tip, kind, fix) in REASONS.items()}
 ALIAS_REASON = {"copy": "copy", "format": "format", "duplicate": "duplicate"}
 
 
@@ -426,7 +430,12 @@ def compare(prev: dict, new: dict, root: Path, hold: set[str] | None = None,
         for k, n in s["reasons"].items():
             reasons_total[k] = reasons_total.get(k, 0) + n
     return {"totals": totals, "sites": sites, "unexplained": unexplained, "by_reason": reasons_total,
-            "reasons": {k: {"label": v[0], "tip": v[1], "kind": v[2], "fix": v[3]} for k, v in REASONS.items()}}
+            "reasons": reason_dicts()}
+
+
+def reason_dicts() -> dict[str, dict]:
+    """REASONS as the pages read them ({key: {label, tip, kind, fix}}), in today's words."""
+    return {k: {"label": v[0], "tip": v[1], "kind": v[2], "fix": v[3]} for k, v in REASONS.items()}
 
 
 # ------------------------------------------------------------------------------------------------ the background
@@ -508,6 +517,8 @@ class Changes:
                     self._done, self._keys = got, keys
         with self._lock:
             if self._keys == keys and self._done is not None:
+                if self._done.get("state") == "ready":  # a result kept before a restart says today's words (11-23)
+                    return {**self._done, "reasons": reason_dicts()}
                 return self._done
             running = self._thread is not None and self._thread.is_alive()
             if not running:
