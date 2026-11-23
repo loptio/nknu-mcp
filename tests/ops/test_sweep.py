@@ -187,6 +187,23 @@ def test_a_sites_pages_problems_first_and_each_marked(made, lib):
     sw.close()
 
 
+def test_a_sites_pages_come_a_part_at_a_time_from_where_the_list_has_got_to(made, lib):
+    """11-23 port audit: a kind over 300 pages could not be reached past its first 300. offset: where this part
+    starts in the filtered list (matched counts the whole of it); anything that is not a number starts at 0."""
+    sw = swept(made, lib)
+    whole = [r["url"] for r in sw.site_view(ACA)["rows"]]
+    parts = [sw.site_view(ACA, offset=at, limit=3) for at in (0, 3, 6)]
+    assert [r["url"] for p in parts for r in p["rows"]] == whole and len(whole) == 7
+    assert [p["offset"] for p in parts] == [0, 3, 6] and {p["matched"] for p in parts} == {7}
+    assert sw.site_view(ACA, offset=99)["rows"] == [] and sw.site_view(ACA, offset=99)["matched"] == 7
+    for odd in ("", "x", "-4", None):
+        assert sw.site_view(ACA, offset=odd)["offset"] == 0
+    assert sw.site_view(ACA, offset="3", limit=3)["offset"] == 3  # as a query string gives it
+    menu = sw.site_view(ACA, only="menu", offset=1, limit=1)  # the filter first, then the part
+    assert menu["matched"] == 2 and len(menu["rows"]) == 1 and "menu" in menu["rows"][0]["chips"]
+    sw.close()
+
+
 def test_the_overview_puts_the_content_areas_misses_first_and_a_site_without_pages_last(made, lib):
     sw = swept(made, lib)
     view = sw.overview()

@@ -139,6 +139,7 @@ class Where:
     services: tuple[tuple[str, str, str], ...] = ()
     disks: tuple[tuple[str, str], ...] = ()  # (name, a folder on it): the drives whose free space the page says
     public_log: Path | None = None  # the public service's query log (queries.jsonl), read only; None: not mounted
+    machine: Path | None = None  # the lab's own measure of its drives (deploy/lab-inspect/machine/probe.ps1), read only
     board: Callable[[], dict | None] | None = None
     sweep: Callable[[], dict | None] | None = None
     today: Callable[[], date] = field(default=lambda: datetime.now(TAIPEI).date())
@@ -1692,7 +1693,7 @@ def build_step(where: Where) -> Step:
     # close: a record two exports both hold counts once)
     before = facts["docs"] + sum(left.values())
     step.into = [(f"筆整理前的網頁、檔案和行事曆（{sites} 站）", before)]
-    step.out = [("份文件", facts["docs"]), ("個小段（搜尋時比對的單位）", facts["chunks"])]
+    step.out = [("份文件", facts["docs"]), ("個小段（檢索時比對的單位）", facts["chunks"])]
     step.figure, step.unit, step.bar = f"{facts['docs']:,}", "份文件", [facts["docs"], before] if before else []
     step.share = False  # its share is mostly merged repeats: a percentage would read as a loss
     build_link(where, step, facts, left)
@@ -1809,7 +1810,7 @@ def check_step(where: Where) -> Step:
     2026-11-22 (build.sh --q33), and the question bank checks the whole project now and then, never the night (owner,
     2026-11-22 night: 「拿这些题目和答案做质量检查其实没什么意义……删了这个流程吧」): the 33 are tried on 搜尋. A
     warning when a check failed that passed in the build before."""
-    step = Step("check", "品質檢查", "建庫最後跑的 22 項真資料檢查；33 題在「搜尋」頁手動測")
+    step = Step("check", "品質檢查", "建庫最後跑的 22 項真資料檢查；33 題在「檢索」頁手動測")
     step.more = [("手動測 33 題", "board")]
     built_at = library_facts(where.library)["built_at"]
     real = realdata(where.pipe / "checks.md")
@@ -1982,13 +1983,51 @@ def memory(path: Path = MEMINFO) -> tuple[int, int, int] | None:
     return kb["MemTotal"], kb["MemAvailable"], max(0, kb.get("SwapTotal", 0) - kb.get("SwapFree", 0))
 
 
-def machine_read(where: Where) -> list[dict]:
+PROBE_FRESH = timedelta(hours=3)  # the lab measures every 30 minutes: older than this, its split is not drawn
+
+
+def probe_read(path: Path | None) -> dict | None:
+    """The lab's measure of its drives (machine/probe.ps1 writes it, UTF-8 with a BOM): {'at', 'drives': {letter:
+    {'total', 'free', 'parts': {'nknu', 'docker', 'strata'} (bytes)}}}; None when absent or not that shape."""
+    if path is None:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("drives"), dict) and data.get("at") else None
+
+
+def drive_parts(probe: dict | None, name: str, used_gb: float, now: datetime) -> dict:
+    """What a drive's row gets from the lab's measure: {'parts': [[本專案, GB, 'p'], [Strata, GB, 's'], [其他, GB, 'o']],
+    'probe': {at, nknu, docker, strata (GB)}} while it is fresh; {'probe_old': its time} when it is older than
+    PROBE_FRESH; {} with none for this drive. 本專案 is the crawler's raw files (E:\\nknu) and Docker's data disk
+    (E:\\DockerData, where the library, the text, the models and qdrant, not ours, all live); 其他 the rest in use."""
+    drive = ((probe or {}).get("drives") or {}).get(name[:1].upper())
+    if not isinstance(drive, dict) or not isinstance(drive.get("parts"), dict):
+        return {}
+    try:
+        at = datetime.fromisoformat(str(probe["at"]))
+        size = {k: round(float(drive["parts"].get(k) or 0) / GB, 1) for k in ("nknu", "docker", "strata")}
+    except (TypeError, ValueError):
+        return {}
+    if at.tzinfo is None or now - at > PROBE_FRESH:
+        return {"probe_old": str(probe["at"])}
+    own = round(size["nknu"] + size["docker"], 1)
+    rest = round(max(0.0, used_gb - own - size["strata"]), 1)
+    return {"parts": [["本專案", own, "p"], ["Strata", size["strata"], "s"], ["其他", rest, "o"]],
+            "probe": {"at": str(probe["at"]), **size}}
+
+
+def machine_read(where: Where, now: datetime | None = None) -> list[dict]:
     """The machine everything runs on, one dict a line: a drive each (where.disks: free space, said in amber and red
     as it runs out), the memory Docker has (memory), the graphics card's. {name, tone, words, used, total (GB; None
     where unreadable), swap (GB, memory only)}. Until 2026-11-21 no panel said any, and this one machine has been near
     these limits before (C: went from 36 to 23 GB free within a day while builds ran, the page file the likely cause:
     docs/project-blueprint.md)."""
     rows: list[dict] = []
+    now = now or now_tpe()
+    probe = probe_read(getattr(where, "machine", None))
     for name, path in where.disks:
         try:
             usage = shutil.disk_usage(path)
@@ -1998,9 +2037,10 @@ def machine_read(where: Where) -> list[dict]:
         share = usage.free / usage.total if usage.total else 0.0
         tone = (BAD if share < DISK_BAD[0] or usage.free < DISK_BAD[1]
                 else WARN if share < DISK_WARN[0] or usage.free < DISK_WARN[1] else OK)
+        used = round((usage.total - usage.free) / GB, 1)
         rows.append({"name": name, "tone": tone,
                      "words": f"還剩 {usage.free / GB:,.0f} GB（共 {usage.total / GB:,.0f} GB，用了 {1 - share:.0%}）",
-                     "used": round((usage.total - usage.free) / GB, 1), "total": round(usage.total / GB, 1)})
+                     "used": used, "total": round(usage.total / GB, 1), **drive_parts(probe, name, used, now)})
     if mem := memory():
         total, free, swap = mem
         words = f"用了 {(total - free) / GB:.1f} GB（共 {total / GB:.1f} GB，Docker 分到的那一份）"
@@ -2033,7 +2073,9 @@ PUBLIC_SLOW = 10_000  # ms: the slowest tenth over this is worth a look (a searc
 PUBLIC_TIMED = 5
 LOG_CHUNK = 256 * 1024  # bytes read at a time from the end of the query log (it grows to 20 MB before it rotates)
 VIA_WORDS = {"mcp": "MCP", "web": "網頁", "api": "接口"}
-TOOL_WORDS = {"search": "搜尋", "fetch": "讀全文"}
+TOOL_WORDS = {"search": "檢索", "fetch": "讀全文"}
+# the retrieval service as compose names it (--watch); 搜尋服務 until 11-23 (owner: 「搜索 改成 檢索」)
+SEARCH_NAMES = ("檢索", "搜尋")
 # what a failed call's 'error' says (nknu.retrieval.public, asked for 2026-11-21); bad_args is the caller's own
 FAIL_WORDS = {"busy": "排隊太久", "unavailable": "庫讀不到", "internal": "程式出錯", "bad_args": "參數不對"}
 
@@ -2139,7 +2181,7 @@ def public_usage(path: Path, now: datetime | None = None,
     searches = [x for x in done if x.get("tool") == "search"]
     missed = [x for x in searches if not x.get("found")]
     if searches:
-        rows.append(["查無資料", OK, f"{len(missed):,} 次，占搜尋的 {_share(len(missed), len(searches))}"])
+        rows.append(["查無資料", OK, f"{len(missed):,} 次，占檢索的 {_share(len(missed), len(searches))}"])
     new_log = any("ms" in x for x in lines)  # the log writes how long and what failed (2026-11-21 on)
     # how long a search took that answered: a refused argument or a missing document answers in milliseconds and
     # would pull the middle down (the lab's first lines with times, 11-21 23:02: the middle read 0.0 s)
@@ -2151,10 +2193,10 @@ def public_usage(path: Path, now: datetime | None = None,
         over = sum(1 for ms in times if ms > PUBLIC_SLOW)
         words = f"一半在 {mid / 1000:.1f} 秒內答完，最慢的一成要 {slow / 1000:.1f} 秒以上"
         if over == 1:  # most likely the first search after a restart, which loads the models
-            words += f"；超過 {PUBLIC_SLOW // 1000} 秒的只有 1 次（服務重啟後第一次搜尋要先載入模型，約 17 秒）"
+            words += f"；超過 {PUBLIC_SLOW // 1000} 秒的只有 1 次（服務重啟後第一次檢索要先載入模型，約 17 秒）"
         rows.append(["多慢", WARN if slow > PUBLIC_SLOW and over >= 2 else OK, words])
     else:
-        rows.append(["多慢", NONE, "沒有答完的搜尋可以算" if new_log else "紀錄還沒記每次花多久"])
+        rows.append(["多慢", NONE, "沒有答完的檢索可以算" if new_log else "紀錄還沒記每次花多久"])
     if failed:
         kinds: dict[str, int] = {}
         for x in failed:
@@ -2213,7 +2255,10 @@ def usage_of(lines: list[dict], slots: int | None = None) -> dict[str, dict]:
 
       calls, search        every call; the searches among them
       qpm_peak, _at        the busiest minute's calls and its HH:MM
-      conc_peak            the most searches running at once (their spans t − ms .. t, swept)
+      conc_peak            the most searches running at once (their spans t − ms .. t, swept); a 't' written to the
+                           second (the fraction cut: its end is t … t + 1 s) counts only where the overlap holds
+                           whatever the fractions were (its span taken as t − ms + 1 s .. t), so two searches one
+                           right after the other never read as two at once (review 11-23)
       load_p95, load_max   per minute with a search running: the share of the slots its searches held (busy seconds
                            / (60 × slots)), the 95th percentile and the most (over 1: searches waited); active_min:
                            the minutes counted
@@ -2222,7 +2267,7 @@ def usage_of(lines: list[dict], slots: int | None = None) -> dict[str, dict]:
                            bad_args, the caller's own), over every call
     """
     slots = slots or search_slots()
-    days: dict[str, list[tuple[datetime, object, object, object]]] = {}
+    days: dict[str, list[tuple[datetime, object, object, object, bool]]] = {}
     for x in lines:
         at = x.get("_at")
         if not isinstance(at, datetime):
@@ -2230,19 +2275,22 @@ def usage_of(lines: list[dict], slots: int | None = None) -> dict[str, dict]:
             if at is None:
                 continue
         at = at.astimezone(TAIPEI)
-        days.setdefault(at.date().isoformat(), []).append((at, x.get("ms"), x.get("error"), x.get("tool")))
+        exact = "." in str(x.get("t") or "")  # the time has its fraction (else it was cut to the second)
+        days.setdefault(at.date().isoformat(), []).append((at, x.get("ms"), x.get("error"), x.get("tool"), exact))
     out: dict[str, dict] = {}
     for day, rs in sorted(days.items()):
         per_min: dict[datetime, int] = {}
         busy: dict[datetime, float] = {}
         spans: list[tuple[datetime, datetime]] = []
-        for at, ms, _err, tool in rs:
+        for at, ms, _err, tool, exact in rs:
             minute = at.replace(second=0, microsecond=0)
             per_min[minute] = per_min.get(minute, 0) + 1
             if tool != "search" or not isinstance(ms, (int, float)) or ms < 0:
                 continue
             a, b = at - timedelta(milliseconds=ms), at
-            spans.append((a, b))
+            sure = a if exact else a + timedelta(seconds=1)  # the latest it can have begun
+            if sure < b:
+                spans.append((sure, b))
             m = a.replace(second=0, microsecond=0)
             while m < b:
                 n = m + timedelta(minutes=1)
@@ -2301,6 +2349,9 @@ def serve_step(where: Where) -> Step:
         return step
     built_at = library_facts(where.library)["built_at"] or ""
     answers = [ask_service(*s) for s in where.services]
+    # each service's answer by its kind ('public' is the one students call: 網站訪問量 says it when it is down)
+    step.nums["services"] = [{"name": a["name"], "kind": s[2] if len(s) > 2 else "", "up": bool(a["up"]),
+                              "words": str(a.get("words") or "")} for a, s in zip(answers, where.services, strict=True)]
     down = [a for a in answers if not a["up"]]
     step.into = [("個服務", len(answers))]
     step.out = [("個有回應", len(answers) - len(down))]
@@ -2313,7 +2364,7 @@ def serve_step(where: Where) -> Step:
                 str(a["built"]).replace(" ", "T")):
             late.append(a)
     state, fix = OK, ""
-    say = "都有回應" + "".join(f"；{a['words']}" for a in answers if a["name"].startswith("搜尋"))
+    say = "都有回應" + "".join(f"；{a['words']}" for a in answers if a["name"].startswith(SEARCH_NAMES))
     if late:
         state, fix = WARN, CONTENT
         say = "、".join(f"{a['name']}還開著舊庫（{stamp(a['built'])} 那份）" for a in late) + "：換庫後要重啟它"
@@ -2323,7 +2374,7 @@ def serve_step(where: Where) -> Step:
         say = "；".join(f"{a['name']}{a['words'].rsplit('；', 1)[-1]}" for a in stale)
     if down:
         state = BAD
-        fix = INTERFACE if any(a["name"].startswith("搜尋") or a.get("interface") for a in down) else PANEL
+        fix = INTERFACE if any(a["name"].startswith(SEARCH_NAMES) or a.get("interface") for a in down) else PANEL
         say = "、".join(a["name"] for a in down) + " 沒有回應"
         step.lost = [(f"{a['name']}：{a['words']}", 1) for a in down]
         step.lost_label = "沒回應的服務"

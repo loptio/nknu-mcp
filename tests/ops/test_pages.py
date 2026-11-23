@@ -165,7 +165,7 @@ def test_the_home_is_tonight_and_the_tools_went_to_their_entries(db, tmp_path):
         page_of_trace = client.get("/trace")
     assert home.status_code == 307 and home.headers["location"] == "/sites?date="  # 11-23: 定時更新 is 內容's
     assert str(search.url).endswith("/try#tests")  # lands on the 33 test questions to try by hand
-    assert "aria-current='page'>搜尋</a>" in search.text and "data-board='" not in search.text
+    assert "aria-current='page'>檢索</a>" in search.text and "data-board='" not in search.text
     assert str(page_of_trace.url).endswith("/doc") and "action='/doc'" in page_of_trace.text
     assert "<form class='nk-find nk-on'" in page_of_trace.text
 

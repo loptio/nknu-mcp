@@ -73,3 +73,82 @@ def test_the_site_layer_never_writes_the_address_into_the_page(tmp_path):
     (tmp_path / "site_check_docs.json").write_text("[1, 2]", encoding="utf-8")  # not the build's shape
     assert site_checks.load(tmp_path, BUILT) is None
     assert "讀不了" in site_checks.card(SITE, None, sqlite3.connect(":memory:"), broken=True)
+
+
+# ---------------------------------------------------------------- a list longer than the page draws (port audit 11-23)
+# site:quality-all-rows: the card drew the first SHOW rows of a reminder and said how many there were, with no way to
+# the rest. The rest now come from the server a part at a time (api: GET /site/quality), each part as the card draws it.
+
+LONG = 650  # 無日期 documents: more than two parts
+
+
+def _long(tmp_path, built=BUILT):
+    """A library file (meta + docs) and the build's lists beside it: 無日期 with LONG documents, 標題重複 in two titles
+    (the second over one part), 選單混入正文 with two."""
+    nd = [f"n{i:03d}" for i in range(LONG)]
+    second = [f"t{i:03d}" for i in range(320)]
+    data = {"built_at": built, "sites": {SITE: {
+        "flags": ["no_date"],
+        "same_title": {"total": 322, "groups": [{"title": "公告", "total": 2, "truncated": False, "docs": ["n000", "n001"]},
+                                                {"title": "活動<花絮>", "total": 320, "truncated": False, "docs": second}]},
+        "same_opening": {"total": 2, "of": 9, "opening": "首頁 關於我們", "truncated": False, "docs": ["n002", "n003"]},
+        "no_date": {"total": LONG, "truncated": False, "docs": nd}}}}
+    (tmp_path / "site_check_docs.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    db = tmp_path / "aca.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('built_at', ?)", (BUILT,))
+    conn.execute("CREATE TABLE docs (doc_id, kind_class, title, url, ident_date, date_line, ident_kind, text)")
+    conn.executemany("INSERT INTO docs VALUES (?, 'page', ?, ?, NULL, ?, '', '')",
+                     [(i, f"第 {i} 頁", f"https://c.nknu.edu.tw/aca/{i}.aspx", f"日期原文{i}") for i in nd + second])
+    conn.commit()
+    return db, conn
+
+
+def test_a_long_list_draws_its_first_part_and_a_button_for_the_rest(tmp_path):
+    _db, conn = _long(tmp_path)
+    tree = LexborHTMLParser(site_checks.card(SITE, site_checks.load(tmp_path, BUILT), conn))
+    assert tree.css_first("#quality").attributes["data-site"] == SITE  # the button asks for this site's rows
+    nd = tree.css_first(".sq-p[data-k='no_date']")
+    assert len(nd.css("tbody tr")) == site_checks.SHOW == 300
+    more = nd.css(".sq-more-b")
+    assert len(more) == 1 and more[0].attributes["data-k"] == "no_date" and more[0].attributes["data-g"] == "0"
+    assert (more[0].attributes["data-at"], more[0].attributes["data-of"]) == ("300", str(LONG))
+    assert "再列 300 份" in more[0].text() and "共 650 份" in nd.css_first(".sq-more").text()
+    groups = tree.css(".sq-p[data-k='same_title'] .sq-list")
+    assert [len(g.css(".sq-more-b")) for g in groups] == [0, 1]  # each title its own list, its own button
+    assert groups[1].css_first(".sq-more-b").attributes["data-g"] == "1"
+    assert "再列 20 份" in groups[1].css_first(".sq-more-b").text()
+    assert not tree.css(".sq-p[data-k='same_opening'] .sq-more-b")  # all drawn: no button
+
+
+def test_the_rest_of_a_list_comes_a_part_at_a_time_as_the_card_draws_it(tmp_path):
+    db, _conn = _long(tmp_path)
+    status, got = site_checks.api(db, {"site": SITE, "k": "no_date", "g": "0", "at": "300"})
+    assert status == 200 and (got["at"], got["of"]) == (600, LONG)
+    rows = LexborHTMLParser(f"<table><tbody>{got['rows']}</tbody></table>").css("tbody tr")
+    assert len(rows) == 300
+    first = rows[0].css_first("a.sq-t").attributes["href"]
+    assert first.startswith("/trace?ref=n300&ck=no_date&site=c.nknu.edu.tw%2Faca&why=")
+    assert rows[0].css_first("td.sq-x").text() == "日期原文n300"  # the reminder's own column, as on the card
+    status, last = site_checks.api(db, {"site": SITE, "k": "no_date", "g": "0", "at": "600"})
+    assert status == 200 and (last["at"], last["of"]) == (LONG, LONG) and last["rows"].count("<tr>") == 50
+    status, title = site_checks.api(db, {"site": SITE, "k": "same_title", "g": "1", "at": "300"})
+    assert status == 200 and title["rows"].count("<tr>") == 20 and (title["at"], title["of"]) == (320, 320)
+    href = LexborHTMLParser(title["rows"]).css_first("a.sq-t").attributes["href"]
+    assert "ck=same_title" in href and "%E6%B4%BB%E5%8B%95%3C%E8%8A%B1%E7%B5%AE%3E" in href  # the title's why, quoted
+    assert "<花絮>" not in title["rows"]  # every word from the library or the build is escaped
+
+
+def test_a_part_that_is_not_there_is_refused(tmp_path):
+    db, _conn = _long(tmp_path)
+    for asked in ({"site": SITE, "k": "bogus", "g": "0", "at": "0"}, {"site": SITE, "k": "self", "g": "0", "at": "0"},
+                  {"site": SITE, "k": "same_title", "g": "2", "at": "0"}, {"site": "other.example", "k": "no_date"},
+                  {"site": "", "k": "no_date"}):
+        status, got = site_checks.api(db, asked)
+        assert status == 404 and "rows" not in got, asked
+    status, odd = site_checks.api(db, {"site": SITE, "k": "no_date", "g": "x", "at": "-3"})
+    assert status == 200 and odd["at"] == 300  # not a number: the first part
+    (tmp_path / "old").mkdir()
+    old, _ = _long(tmp_path / "old", built="2026-11-22T02:53:09+08:00")  # the library's own built_at stays BUILT
+    assert site_checks.api(old, {"site": SITE, "k": "no_date", "at": "0"})[0] == 404  # an older list: not this library's

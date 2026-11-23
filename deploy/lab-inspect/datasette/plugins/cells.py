@@ -31,7 +31,7 @@ except ImportError:  # the tests load this file where Datasette is not installed
 from markupsafe import Markup, escape
 
 # a query's column name -> (the word shown, whether it opens in a new tab: the trace page is another service)
-LINKS = {"追蹤": ("追蹤 ↗", True, "在檢視台的文件追蹤看這一份：從抓取到搜尋的每一步"),
+LINKS = {"追蹤": ("追蹤 ↗", True, "在檢視台的文件追蹤看這一份：從抓取到檢索的每一步"),
          "看清單": ("看清單", False, "列出這個原因的每一份文件")}
 SITE_COLUMN = "代號"  # sites_overview: the site's own code, linking its list of documents
 OURS = ("http://127.0.0.1:18001/", "http://127.0.0.1:18878/")

@@ -459,7 +459,7 @@ const CK = {
   none: ['無文件', '這個網站一份文件都沒收進庫'],
   self: ['標題搜不到', '抽 20 份文件、用它自己的標題去搜，排進前 10 名的不到七成：標題可能太籠統，或彼此重複'],
   empty: ['網頁無文字', '兩成以上的網頁轉成文字後是空的'],
-  same_title: ['標題重複', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），搜尋結果分不出哪份是哪份'],
+  same_title: ['標題重複', '網站裡有 15 份以上的文件用同一個標題（像「檔案連結」「相關檔案」），檢索結果分不出哪份是哪份'],
   same_opening: ['選單混入正文', '三成以上的網頁開頭 80 個字一模一樣，多半是選單被當成正文讀了進來（要在爬蟲的正文區設定修）'],
   fragments: ['附件逐字斷行', '轉成文字後一行只有一個字的附件（多半是圖表或轉向的表格），裡面的字搜不太到'],
 };
@@ -1210,23 +1210,31 @@ function setLive(text, tip) {
   el.hidden = !text; el.textContent = text || '';
   if (tip) el.dataset.tip = tip; else delete el.dataset.tip;
 }
+// The night view (window.NM, /sites?date=) draws one night from its own answers (/api/night): a reload there closed its
+// open step and drawers (critic CR-15). New data then draws the night again in place (NM.refresh, once per new stamp),
+// and the page reloads once the night view is left (night.js tells it: the 'nm:mode' event), keeping the view as ever.
 function watchLive() {
-  let pending = false;
+  let pending = false, drawn = D.stamp;
+  const night = () => !!(window.NM && NM.on);
+  const reload = () => { saveView(); location.reload(); };
   const check = () => fetch(LINKS.stamp || 'stamp', { cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
     .then(j => {
       setLive(j.state === 'error' ? '更新失敗' : '', j.state === 'error' ? j.error + '。顯示的是上一次的資料' : '');
       if (j.stamp && j.stamp !== D.stamp) {
         pending = true;
-        if (!document.hidden) { saveView(); location.reload(); }
+        if (document.hidden) return;
+        if (!night()) reload();
+        else if (j.stamp !== drawn) { drawn = j.stamp; if (typeof NM.refresh === 'function') NM.refresh(); }
       }
     })
     .catch(() => setLive('連不上實驗室電腦', '檢查一下 SSH 通道還開著沒有。顯示的是上一次的資料'));
   setInterval(check, 60000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    if (pending) { saveView(); location.reload(); } else check();
+    if (pending && !night()) reload(); else check();
   });
+  document.addEventListener('nm:mode', ev => { if (pending && !(ev.detail && ev.detail.on) && !document.hidden) reload(); });
 }
 // one set of figures for a row: a site, or a unit summed over its sites
 function figs(list, v, p) {

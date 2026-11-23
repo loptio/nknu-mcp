@@ -35,7 +35,7 @@ def snap() -> dict:
         Step("totext", "轉文字", "轉", state=OK, into=[("個檔和網頁", 110)], out=[("個轉成文字", 104)], bar=[104, 110],
              lost=[("讀不出文字", 5), ("照規則跳過", 1)]),
         Step("build", "建庫", "建", state=OK, into=[("筆整理前的網頁、檔案和行事曆（3 站）", 104)],
-             out=[("份文件", 70), ("個小段（搜尋時比對的單位）", 600)], bar=[70, 104], share=False,
+             out=[("份文件", 70), ("個小段（檢索時比對的單位）", 600)], bar=[70, 104], share=False,
              lost=[("別處有一模一樣的一份，合併了", 30), ("每週重複的行事曆，合成一個系列", 4)]),
         Step("nightly", "每晚進庫", "進", state=OK)]
     sites = [{"key": "a.example", "name": "甲處", "worst": WARN, "href": "/site?site=a.example",
@@ -368,13 +368,14 @@ def test_a_sites_funnel_and_reasons_are_its_own_and_say_who_can_fix_each():
     panels = [LexborHTMLParser(site_page.step_panel(x, detail)) for x in nodes]
     crawl, export = panels[0], panels[1]
     # a step's reasons the largest first, on the step's own scale; the split bar only where out + reasons = in
-    assert [r.text() for r in crawl.css(".rs-w")] == ["學校那邊已經不存在", "連接失敗", "要登入"]
+    # the 11-23 words (names.py), a reading's older words renamed (test_site_words_1123)
+    assert [r.text() for r in crawl.css(".rs-w")] == ["校方已移除", "連線失敗", "需要登入"]
     assert len(crawl.css(".hm-split i")) == 4 and not export.css(".hm-split") and len(panels[2].css(".hm-split i")) == 3
     assert [d.text() for d in crawl.css(".hm-io dd")] == ["100 個這一輪該抓的網址", "90 個抓到了"]
     assert "新導出用舊資料補的從 0 筆變成 2 筆" in export.css_first(".hm-said").text()
     assert "交給" not in export.text() and not export.css(".v3-tag")  # no who-can-fix-it (spec 八.2)
     # a reason with a list opens on it: the export's examples open 網頁核查 on that page; one without is a plain row
-    att = next(li for li in export.css("ul.rsd > li") if li.css_first(".rs-w").text().startswith("附件沒抓到"))
+    att = next(li for li in export.css("ul.rsd > li") if li.css_first(".rs-w").text().startswith("附件未取得"))
     assert att.css_first("details .rs-items a").attributes["href"] == "/check?ref=https%3A%2F%2Fa.example%2Ff1"
     assert not crawl.css("ul.rsd details") and all("%" not in p.text() for p in panels)
 

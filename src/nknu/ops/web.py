@@ -95,7 +95,7 @@ from nknu.ops.look import e, s2t, shell
 from nknu.ops.lookup import as_address, columns, has_table, resolve
 from nknu.ops.pipeline import Pipeline, Where, log_tail, site_detail
 from nknu.ops.pipeline_page import changes_title
-from nknu.ops.search_page import search_body, tests_html, why_head
+from nknu.ops.search_page import read_answer_key, read_checks, search_body, tests_html, why_head
 from nknu.ops.site_page import Kinds, now_line
 from nknu.ops.site_page import site_body as one_site_body
 from nknu.ops.sweep import Sweep
@@ -293,7 +293,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                pipeline_src: Path | None = None, overview_url: str = "", tables_url: str = "",
                archive: Path | None = None, watch: tuple[tuple[str, str, str], ...] = (),
                mcp_url: str = "", ops_db: Path | None = None, record: bool = True,
-               disks: tuple[tuple[str, str], ...] = (), public_log: Path | None = None) -> Starlette:
+               disks: tuple[tuple[str, str], ...] = (), public_log: Path | None = None,
+               machine: Path | None = None) -> Starlette:
     """The app over one library file. root: the folder its relative paths start from; viewer_url: where the owner's
     browser reaches the archive viewer ('' : no link); questions and gold: no longer used (the 33 questions, gone
     2026-11-22; taken so an older compose still starts); config: the search's
@@ -335,6 +336,8 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
     # the 33 test questions with their gold documents, offered on 搜尋's second tab to try by hand (owner 2026-11-22
     # night: 「以后如果要的话再从dashboard那边手动测试那33题就好了」); nothing runs them on its own
     asked = load_questions(questions, gold)
+    # the 33 questions' cleaned answers (11-22/23): also right, replaced, old versions (not in git: the lab's copy)
+    answer_key = read_answer_key(Path(questions) / "also_right_1122.json") if questions is not None else None
 
     def asked_for(request: Request) -> tuple[str, list[str], int, dict | None]:
         """(the question, the documents to follow, the limit, the test question when one was picked)."""
@@ -368,7 +371,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         return sweep.overview() if sweep is not None else None
 
     where = Where(root=root, db=db_path, archive=archive, services=tuple(watch), disks=tuple(disks), public_log=public_log,
-                  sweep=sweep_overview, today=today_fn)
+                  machine=machine, sweep=sweep_overview, today=today_fn)
     # what the background work found, kept beside the nights' record so a restart shows it at once (2026-11-22)
     found_before = keep.Kept(ops_db)
     # the problems the owner marked known on 總覽 (nknu.ops.todo.Known), in the same file
@@ -574,7 +577,7 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             return None
         report = explained(conn, query, docs, limit)
         gold_ids = {f["doc_id"] for f in report["follow"] if f["doc_id"]} if question else set()
-        return query, why_head(asked, question, query, docs) + search_body(report, gold_ids, question)
+        return query, why_head(asked, question, query, docs) + search_body(report, gold_ids, question, key=answer_key)
 
     def search_api(request: Request) -> Response:
         query, docs, limit, _ = asked_for(request)
@@ -842,12 +845,15 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
         """A site's page's changing parts for its script: {top, chips, rows, running}."""
         p = request.query_params
         key, sw = p.get("site", "").strip(), swept()
-        view = sw.site_view(key, q=p.get("q", "").strip(), only=p.get("only", "")) if sw is not None and key else None
+        view = (sw.site_view(key, q=p.get("q", "").strip(), only=p.get("only", ""), offset=p.get("offset", ""))
+                if sw is not None and key else None)
         if view is None or not view.get("ready"):
             return JSONResponse({"top": "", "chips": "", "rows": "", "running": view is not None},
                                 status_code=200 if view is not None else 404, headers={"Cache-Control": "no-store"})
         sw.prioritize(key)
-        return JSONResponse(site_parts(view), headers={"Cache-Control": "no-store"})
+        # matched and offset: the list page pages the whole filtered list from here (再列, 11-23)
+        return JSONResponse({**site_parts(view), "matched": view.get("matched"), "offset": view.get("offset", 0)},
+                            headers={"Cache-Control": "no-store"})
 
     def check_item(request: Request) -> Response:
         """One row of a merged list opened in place (the drawer of the entry and the site page): {html}; 404 when no
@@ -978,6 +984,9 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
               Route("/todo/known", mark_known, methods=["POST"]),
               Route(nightly.TONIGHT, night_moved, methods=["GET"]),  # 定時更新 is 內容 at ?date= (11-23)
               Route("/site", guarded(site_view, False), methods=["GET"]),
+              # 品質提醒 lists past their first 300 rows, a part at a time (再列, 11-23)
+              Route("/site/quality", guarded(lambda r: _json(*reversed(site_checks.api(db_path, r.query_params))), True),
+                    methods=["GET"]),
               Route(overview_mod.PATH, guarded(sites_page, False), methods=["GET"]),
               Route(f"{overview_mod.PATH}/stamp", guarded(sites_stamp, True), methods=["GET"]),
               Route(f"{overview_mod.PATH}/data.json", guarded(sites_data, True), methods=["GET"]),
@@ -1011,7 +1020,9 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
                     methods=["GET"]),
               Route("/api/usage/days", guarded(lambda r: _json(history.usage_api(store, where, r.query_params)), True),
                     methods=["GET"]),
-              Route("/api/usage/live", guarded(lambda r: _json(visits.live_api(where, r.query_params)), True),
+              Route("/api/usage/live", guarded(lambda r: _json(visits.live_api(where, r.query_params, flow=flow)),
+                                               True), methods=["GET"]),
+              Route("/api/usage/card", guarded(lambda r: _json(visits.card_api(store, where, r.query_params)), True),
                     methods=["GET"]),
               Route("/api/raw", guarded(lambda r: _json(*reversed(raw.api(where, r.query_params,
                                                                          changes=night_changes.snapshot()))), True),
@@ -1037,7 +1048,9 @@ def create_app(db_path: Path, root: Path, *, viewer_url: str = "", questions: Pa
             asked_something = why is not None or bool(request.query_params.get("call"))
             # the 33 test questions to try by hand (2026-11-22 night: the question bank checks the whole project, never
             # the night; its scores are no longer shown here while its answers are being cleaned)
-            board = "" if asked_something else tests_html(asked)
+            # 手動檢查: the 33 questions and the last real-data check (checks.md, read each time: a manual run shows at once)
+            board = "" if asked_something else tests_html(asked, key=answer_key,
+                                                          checks=read_checks(where.pipe / "checks.md"))
             title, body = trying.page(request.query_params, why=why, board=board)
             return shell(title, body, db_info(conn), tab="try", layer="why" if why is not None else "try")
         finally:
@@ -1104,6 +1117,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--disk", action="append", default=[], metavar="名字=资料夹",
                     help="首页要说剩余空间的硬盘，给它上面的一个资料夹（从这个程序看得到的），可以给好几次；"
                          "实验室：E 槽=/crawl/archive/warc（工作资料都在 E 槽）")
+    ap.add_argument("--machine", default="",
+                    help="实验室自己量的硬盘分项（deploy/lab-inspect/machine/probe.ps1 每 30 分钟写的 machine.json，只读挂进来的），"
+                         "首页「這台電腦」把 E 槽分成本專案、Strata、其他；不给就不分")
     ap.add_argument("--public-log", default="",
                     help="对外服务的查询纪录 queries.jsonl（只读挂进来的），首页「查詢服務」说它最近 24 小时的使用；不给就不说")
     add_model_flags(ap)
@@ -1127,7 +1143,8 @@ def main(argv: list[str] | None = None) -> int:
                      ops_db=Path(args.ops_db) if args.ops_db else None,
                      disks=tuple((name.strip(), path.strip()) for name, _, path in (d.partition("=") for d in args.disk)
                                  if name.strip() and path.strip()),
-                     public_log=Path(args.public_log) if args.public_log else None)
+                     public_log=Path(args.public_log) if args.public_log else None,
+                     machine=Path(args.machine) if args.machine else None)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

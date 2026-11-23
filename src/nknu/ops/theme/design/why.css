@@ -2,3 +2,7 @@
 .pd-f i{font-style:normal;padding:1px 7px;border-radius:999px;color:var(--ink);background:var(--sunk);border:1px solid var(--line2)}
 .pd-f i.rel{border-color:var(--good-s)}.pd-f i.add{border-color:var(--q4,#9a90ff)}.pd-f i.cut{border-color:var(--warn-s)}
 .pd-fn{margin:0 0 8px;font-size:11px;color:var(--ink3);line-height:1.6}.pd-pc{display:inline-flex;align-items:center;gap:3px;cursor:help}
+.row.also>summary{box-shadow:inset 2px 0 0 var(--ink3)}
+.sd-also{display:inline-block;margin-left:8px;padding:0 6px;border-radius:999px;border:1px solid var(--line2);font-size:11px;line-height:17px;color:var(--ink2);vertical-align:2px;cursor:help}
+.sd-also.gone{background:var(--bad-bg);color:var(--bad-ink);border-color:transparent}.sd-also.old{background:var(--warn-bg);color:var(--warn-ink);border-color:transparent}
+.rhead .lg .pd-f i,.rhead .lg .pd-f i.rel,.rhead .lg .pd-f i.add,.rhead .lg .pd-f i.cut{width:auto;height:auto;border-radius:999px;background:var(--sunk)}

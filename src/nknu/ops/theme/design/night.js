@@ -106,8 +106,10 @@ function stepDetail(n){let box=$('ntStep');if(!box){box=document.createElement('
   // what did not go on: the six largest, the rest folded
   const L=F.lost||[],mx=Math.max(1,...L.map(x=>x[1])),hd=(F.lost_label||'沒走到下一步的').split('（')[0];
   const li=x=>`<li${x[2]?` data-key='${esc(x[2])}'`:''}><span title='${esc(x[0])}'>${esc(x[0])}</span><i><em style='width:${Math.max(1.5,x[1]/mx*100)}%'></em></i><b>${num(x[1])}</b></li>`;
-  const rest=L.slice(6),lost=L.length?`<div class='sd-lostbox'><h5 data-tip='${esc(F.lost_tip||F.lost_label||'')}'>${esc(hd)}</h5><ul class='sd-lost'>${L.slice(0,6).map(li).join('')}</ul>`+
-    (rest.length?`<details class='sd-more'><summary>其餘 ${rest.length} 項 · ${num(rest.reduce((t,x)=>t+x[1],0))}</summary><ul class='sd-lost'>${rest.map(li).join('')}</ul></details>`:'')+`</div>`:'';
+  // no rows and a word why (換庫 on a night whose record kept no reasons, or nothing left: night_view lost_none)
+  const rest=L.slice(6),h5=`<h5 data-tip='${esc(F.lost_tip||F.lost_label||'')}'>${esc(hd)}</h5>`,lost=L.length?`<div class='sd-lostbox'>${h5}<ul class='sd-lost'>${L.slice(0,6).map(li).join('')}</ul>`+
+    (rest.length?`<details class='sd-more'><summary>其餘 ${rest.length} 項 · ${num(rest.reduce((t,x)=>t+x[1],0))}</summary><ul class='sd-lost'>${rest.map(li).join('')}</ul></details>`:'')+`</div>`
+    :F.lost_none?`<div class='sd-lostbox'>${h5}<p class='sd-none'>${esc(F.lost_none)}</p></div>`:'';
   const lacks=G.flow&&G.flow.kind!=='live'&&G.flow.lacks?`<p class='sd-none sd-lacks'>${esc(G.flow.lacks)}</p>`:'';
   box.innerHTML=`<div class='sd-h'><b data-tip='${esc(F.does||'')}'>${w}</b><button class='sd-x' aria-label='收起'>×</button></div>${io}${(F.sides||[]).length?`<div class='sd-sides'>${F.sides.map(([nm,st,tp])=>`<span class='sd-side s-${esc(st)}' data-tip-h='${esc(nm)}' data-tip='${esc(tp)}'>${esc(({'校外網站每週重看':'校外週檢','要用瀏覽器開的網站':'瀏覽器抓取'})[nm]||nm)}</span>`).join('')}</div>`:''}${wf||lost?`<div class='sd-cols'>${wf}${lost}</div>`:''}${lacks}`;
   box.querySelector('.sd-x').onclick=()=>{openStep=null;url();gantt(n)};
@@ -178,8 +180,9 @@ $('lv-list').addEventListener('scroll',e=>{const l=e.target;if(l.scrollTop+l.cli
   addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('lv-open'))set(false)})})();
 
 // ---------------------------------------------------------------- show a night (‹ › and ← → redraw in place)
-// the address keeps the night and its open step: a reload (內容 reloads itself when the library changes) comes back here;
-// only ?date and &step are the night's, the rest of the address (內容's ?ck, ?kind) stays as it is
+// the address keeps the night and its open step: a reload comes back here (內容 no longer reloads itself in the night
+// view when its data changes: it asks refresh, and reloads once the night view is left, CR-15); only ?date and &step
+// are the night's, the rest of the address (內容's ?ck, ?kind) stays as it is
 function url(){if(!G)return;addr(u=>{u.searchParams.set('date',G.run);if(openStep)u.searchParams.set('step',openStep);else u.searchParams.delete('step')})}
 function addr(edit){try{const u=new URL(location.href);edit(u);if(u.search!==location.search)history.replaceState(history.state,'',u.pathname+u.search+u.hash)}
   catch(_){/* an address that cannot be rewritten: the night still shows */}}
@@ -286,9 +289,12 @@ function after(){
     const lg=$('tmLegend');if(lg)lg.innerHTML=`<span class='nm-key' data-tip='方塊大小：新進＋改了＋離開'><span><i style='background:var(--q2)'></i><i style='background:var(--q4)'></i>越深越多</span><span><i style='background:var(--warn-s)'></i>留意</span><span><i style='background:var(--bad-s)'></i>出錯</span>${kind==='full'?'':kind==='counts'?"<em>這一晚只留下逐站的新進和離開；改了沒留下</em>":"<em>這一晚只有問題點名的網站，逐站變動沒留下</em>"}</span>`}
   else if(key&&key.dataset.all)key.innerHTML=key.dataset.all;
   side();focus()}
+// 內容's own check of its data waits for the night view to be left before it reloads (overview_page.html watchLive):
+// each switch is told as the 'nm:mode' event, {on}
+const told=v=>{try{document.dispatchEvent(new CustomEvent('nm:mode',{detail:{on:v}}))}catch(_){/* an old browser: no event */}};
 function set(night,date,stepKey){
-  if(!night){on=false;G=null;pickKey=null;clearInterval(poll);clearInterval(window.ntTick);A.S.lens=null;addr(u=>{u.searchParams.delete('date');u.searchParams.delete('step')});A.render();return}
-  on=true;document.body.classList.add('night-on');$('nightBand').hidden=false;$('nightLog').hidden=false;
+  if(!night){const was=on;on=false;G=null;pickKey=null;clearInterval(poll);clearInterval(window.ntTick);A.S.lens=null;addr(u=>{u.searchParams.delete('date');u.searchParams.delete('step')});A.render();if(was)told(false);return}
+  on=true;document.body.classList.add('night-on');$('nightBand').hidden=false;$('nightLog').hidden=false;told(true);
   return show(date||'',{step:stepOk(stepKey)})}
 document.querySelector('.nm-sw')?.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;set(b.dataset.v==='night')});
 
@@ -398,7 +404,8 @@ function siteGantt(){const k=A.S.site||null;io(k);ticks(k);stepLine(k);wireAll()
 function focus(){if(!on||!G)return;const k=A.S.site||null,m=G.run+'|'+(k||'');chip(k);io(k);kpi(k);probsOf(k);
   if(m!==pickKey){pickKey=m;if(labelsFor!==m)labelsFor=null;ticks(k)}stepLine(k);wireAll();logFollow(k)}
 
-window.NM={apply,tile,after,set,items,sum,tip,focus,get on(){return on},get night(){return G?G.run:null}};
+// refresh: the night shown asked again and drawn in place, its step, site and drawers kept (內容's new data, CR-15)
+window.NM={apply,tile,after,set,items,sum,tip,focus,refresh,get on(){return on},get night(){return G?G.run:null}};
 // a link with ?date= opens the night (總覽's calendar, the old /tonight); &step= opens that step's detail
 const qs=new URLSearchParams(location.search),d0=qs.get('date');
 if(d0!==null&&qs.get('embed')!=='1')set(true,d0,qs.get('step'));

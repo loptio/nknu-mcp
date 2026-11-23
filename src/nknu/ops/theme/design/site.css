@@ -73,3 +73,6 @@
 .hm.st:not(.sd-open) .hm-node a.on{box-shadow:none!important;background:none!important;border-color:transparent!important}
 .hm.st:not(.sd-open) .hm-node a.on::before,.hm.st:not(.sd-open) .hm-node a.on::after{display:none!important}
 .sd-sample{margin:-4px 0 12px;padding:6px 12px;border-radius:8px;background:var(--warn-bg);color:var(--warn-ink);font-size:12px}
+/* 品質提醒: 「再列 N 份」 under a list longer than the card draws (site.js asks /site/quality for the next part) */
+.sq-more-b{display:inline-flex;margin:6px 0 0;padding:3px 12px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink2);font:12px var(--font);cursor:pointer}
+.sq-more-b:hover{border-color:var(--ink3);color:var(--ink)}.sq-more-b:disabled{opacity:.55;cursor:progress}

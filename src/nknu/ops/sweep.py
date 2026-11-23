@@ -1225,9 +1225,12 @@ class Sweep:
             r["site_name"] = names.get(r["site"], r["site"])
         return out
 
-    def site_view(self, key: str, *, q: str = "", only: str = "", limit: int = 300) -> dict | None:
+    def site_view(self, key: str, *, q: str = "", only: str = "", limit: int = 300,
+                  offset: int | str | None = 0) -> dict | None:
         """A site's view (design section 六 2): its numbers, its merged misses, its pages (problems first) filtered
-        by a chip and by what is typed, the first limit of them; None for a site the listing does not have."""
+        by a chip and by what is typed, limit of them from offset (matched: how many the filter keeps in all; the
+        11-23 port audit: a kind over 300 pages is read a part at a time, never cut); None for a site the listing
+        does not have. offset may be a query string's text: anything not a whole number starts at 0."""
         listing, found, gen, snap = self._snap()
         progress = self.progress(key)
         if listing is None:
@@ -1245,10 +1248,11 @@ class Sweep:
         forms = query_forms(q)
         if forms:
             rows = [r for r in rows if any(f in k for f in forms for k in listing.keys.get(r["url"], ()))]
+        start = max(0, int(offset) if isinstance(offset, int) or str(offset or "").isdecimal() else 0)
         return {"site": {"key": site.key, "name": site.name, "home": site.home, "round1": site.round1},
                 "sum": self._sum(site, data), "misses": data.misses, "menu": data.menu, "errors": data.errors,
                 "more": data.more,
-                "chips": data.chips, "rows": rows[:limit], "matched": len(rows), "q": q,
+                "chips": data.chips, "rows": rows[start:start + limit], "matched": len(rows), "offset": start, "q": q,
                 "only": only if only in dict(CHIPS) else "", "progress": progress, "ready": True}
 
     def item_view(self, site: str, key: str, limit: int = 40) -> dict | None:

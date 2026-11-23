@@ -28,24 +28,47 @@ $('.ck-tr-wrap')?.closest('details')?.remove();
 // tabs that work on whatever is in the page (the site's lists are put in after load)
 const tabs=box=>{box.querySelectorAll('.ck-tabbar button').forEach(b=>b.onclick=()=>{box.querySelectorAll('.ck-tabbar button').forEach(x=>x.setAttribute('aria-selected',String(x===b)));
   box.querySelectorAll('.ck-pane').forEach(p=>p.hidden=p.dataset.tab!==b.dataset.tab)})};
-const pick=(box,t)=>{const b=t&&box.querySelector(`.ck-tabbar button[data-tab='${t}']`)||box.querySelector('.ck-tabbar button:not(.pd-zero)');if(b)b.click()};
-const ONLY={gap:['正文區有漏'],menu:['只漏選單'],check:['要查','內容可疑','核查出錯'],nofetch:['這一頁沒抓下來','失敗']};
-const pages=pl=>{if(!pl)return;let only=q.get('only')||'',words='';const inp=pl.querySelector('input');
-  // a row's state: its hover's head, else its pill (a page that failed has only the pill)
-  const stOf=a=>a?(a.dataset.tipH||(a.querySelector('.pill')||{}).textContent||'').trim():'';
-  const note=document.createElement('p');note.className='pd-cut';pl.querySelector('#chk-chips')?.closest('.pl-head')?.after(note);
-  // 要查 also takes a page whose own state is another but which holds addresses to look at (its hover: 「要查 N 個」), as the
-  // panel's own count does
-  const hit=(a,k)=>{const st=stOf(a);return (ONLY[k]||[]).includes(st)||(k==='check'&&/要查 \d/.test(a&&a.dataset.tip||''))};
-  const run=()=>{let shown=0;pl.querySelectorAll('#chk-rows li').forEach(li=>{const a=li.querySelector('.prow');
-      li.hidden=(only&&!hit(a,only))||(words&&!li.textContent.toLowerCase().includes(words));if(!li.hidden)shown++});
-    pl.querySelectorAll('#chk-chips .chip').forEach(c=>c.setAttribute('aria-pressed',String(c.dataset.only===only)));
-    // the copy carries the site page's first rows only; say so when a kind has more than are here (the panel pages through all)
-    const c=only&&pl.querySelector(`#chk-chips .chip[data-only='${only}'] b`),n=c?+c.textContent.replace(/,/g,''):0;
-    note.hidden=!(n>shown);note.textContent=n>shown?`這裡列出 ${shown.toLocaleString()} 頁，共 ${n.toLocaleString()} 頁：打字篩選看其他的`:''};
-  pl.querySelectorAll('#chk-chips .chip').forEach(c=>c.onclick=e=>{e.preventDefault();only=only===c.dataset.only?'':c.dataset.only;run()});
-  if(inp){inp.closest('form').onsubmit=e=>e.preventDefault();inp.oninput=()=>{words=inp.value.trim().toLowerCase();run()}}
-  run();if(only)pl.scrollIntoView({block:'start'})};
+const TABS=['fix','check','school'];  // only a known tab key goes into a selector (the address is never trusted)
+const pick=(box,t)=>{const b=TABS.includes(t)&&box.querySelector(`.ck-tabbar button[data-tab='${t}']`)||box.querySelector('.ck-tabbar button:not(.pd-zero)');if(b)b.click()};
+// a site's pages (port audit 11-23: 「要精准跳转…需要帮我输入好筛选好」): the server filters and parts them
+// (/check/site?site=&only=&q=&offset=), so a number's link lands on exactly the pages it counts, all of them. A chip
+// asks again, typing asks again (a moment after the last key), 「再列 N 頁」 asks for the next part; the chips' numbers
+// come back with the rows (one answer, one count). The latest answer wins; ?only= and ?q= keep what is picked.
+const KINDS=['gap','menu','check','nofetch'];
+const pages=pl=>{if(!pl)return;const rows=pl.querySelector('#chk-rows'),chips=pl.querySelector('#chk-chips');if(!rows||!chips)return;
+  const inp=pl.querySelector('#chk-filter'),form=inp&&inp.closest('form');let only=KINDS.includes(q.get('only'))?q.get('only'):'';
+  if(inp&&q.get('q'))inp.value=q.get('q');
+  const note=document.createElement('p');note.className='pd-cut';note.hidden=true;chips.closest('.pl-head')?.after(note);
+  const more=document.createElement('button');more.type='button';more.className='pd-more';more.hidden=true;rows.after(more);
+  let seq=0,timer=null,matched=null,paged=false,step=0;
+  const listed=()=>rows.querySelectorAll('ol>li').length,words=()=>inp?inp.value.trim():'';
+  const say=()=>{const n=listed(),m=matched==null?n:matched;
+    chips.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',String(c.dataset.only===only)));
+    // the server counts the pages this filter keeps (matched); when they are not all here, say so and offer the rest
+    note.hidden=!(m>n);note.textContent=m>n?`列出 ${n.toLocaleString()} 頁，共 ${m.toLocaleString()} 頁`+(paged?'':'：打字找其他的'):'';
+    more.hidden=!(paged&&m>n);more.textContent=`再列 ${Math.min(step||m-n,m-n).toLocaleString()} 頁`};
+  const keep=()=>{const u=new URLSearchParams(location.search);if(only)u.set('only',only);else u.delete('only');
+    if(words())u.set('q',words());else u.delete('q');history.replaceState(null,'','?'+u+location.hash)};
+  const ask=add=>{const my=++seq,at=add?listed():0,p=new URLSearchParams({site});if(only)p.set('only',only);
+    if(words())p.set('q',words());if(at)p.set('offset',String(at));more.disabled=true;
+    fetch('/check/site?'+p,{cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null).then(j=>{if(my!==seq)return;more.disabled=false;
+      if(!j||typeof j.rows!=='string'||!j.rows){say();return}  // the sweep is not ready, or no answer: keep what is here
+      const got=new DOMParser().parseFromString(`<div id='got'>${j.rows}</div>`,'text/html').getElementById('got');
+      // 「還有 N 頁」 under the server's rows counts from its first page; the note here says it for the whole list
+      const tail=got.querySelector('.more-n'),rest=tail?+((tail.textContent.match(/[\d,]+/)||['0'])[0].replace(/,/g,'')):0;if(tail)tail.remove();
+      paged=typeof j.offset==='number'&&typeof j.matched==='number';
+      if(add){const ol=rows.querySelector('ol');if(!paged||j.offset!==at||!ol){paged=false;say();return}
+        got.querySelectorAll('ol>li').forEach(li=>ol.append(li))}
+      else{rows.replaceChildren(...got.childNodes);if(typeof j.chips==='string'&&j.chips)chips.innerHTML=j.chips;
+        step=listed()}
+      matched=paged?j.matched:listed()+rest;say()})};
+  chips.addEventListener('click',e=>{const c=e.target.closest('.chip[data-only]');if(!c)return;e.preventDefault();
+    only=only===c.dataset.only?'':c.dataset.only;matched=null;say();ask(false);keep()});
+  more.onclick=()=>ask(true);
+  if(form)form.addEventListener('submit',e=>{e.preventDefault();clearTimeout(timer);ask(false);keep()});
+  // while the words wait to be asked, 「再列」 would add the next part of the list they are about to replace
+  if(inp)inp.addEventListener('input',()=>{clearTimeout(timer);more.disabled=true;timer=setTimeout(()=>{ask(false);keep()},180)});
+  say();ask(false);if(only)pl.scrollIntoView({block:'start'})};
 const school=$('.ck-tabs');if(school)tabs(school);
 if(!site){if(school)pick(school,q.get('tab'));return}
 const chip=document.createElement('span');chip.className='pd-site';

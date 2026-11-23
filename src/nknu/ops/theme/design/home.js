@@ -68,17 +68,19 @@
   const vs = document.querySelector('.vs');
   let vsView = () => {};
   if (vs && $('vs-data')) {
-    const D = JSON.parse($('vs-data').textContent);
+    let D = JSON.parse($('vs-data').textContent), sel = null;  // sel: the day clicked (kept while D is asked again)
+    const partial = day => ((D.days || {})[day] || {}).complete === false;  // the log began after the day began
     const pct = v => (v == null ? '—' : (v * 100).toFixed(v < 0.1 ? 1 : 0));
     const slots = D.slots || 4;
     const show = day => {
       const v = (D.days || {})[day] || {};
       if (!day) { $('vs-day').textContent = '沒有紀錄'; return; }
       const [, m, d] = day.split('-');
-      $('vs-day').textContent = `${+m}/${+d}` + (day === D.today ? '（今天，還沒過完）' : '') + (v.calls != null ? ` · ${v.calls.toLocaleString()} 次` : '');
+      $('vs-day').textContent = `${+m}/${+d}` + (day === D.today ? '（今天，還沒過完）' : partial(day) ? '（這天的紀錄不是整天）' : '')
+        + (v.calls != null ? ` · ${v.calls.toLocaleString()} 次` : '');
       $('vs-load').textContent = pct(v.load_p95);
       $('vs-meter').style.width = Math.min(100, (v.load_p95 || 0) * 100) + '%';
-      vs.querySelector('.vs-days .vs-main').dataset.tip = `有查詢的每一分鐘裡，${slots} 個搜尋名額平均被占用幾成，取 P95。超過 100% 表示有請求在排隊。`
+      vs.querySelector('.vs-days .vs-main').dataset.tip = `有查詢的每一分鐘裡，${slots} 個檢索名額平均被占用幾成，取 P95。超過 100% 表示有請求在排隊。`
         + (v.load_max != null ? `\n最忙一分鐘 ${pct(v.load_max)}%` : '');
       $('vs-qpm').textContent = v.qpm_peak ?? '—'; $('vs-qpm-at').textContent = v.qpm_peak_at || '';
       $('vs-conc').textContent = v.conc_peak ?? '—';
@@ -88,25 +90,30 @@
       $('vs-err').textContent = v.err_rate != null ? (v.err_rate * 100).toFixed(1) : '—';
     };
     show(D.pick);
-    // 每日: the month's calls a day, zooming and panning; a click on a day fills the five numbers
+    // 每日: the last 30 days' calls a day, zooming and panning; a click on a day fills the five numbers
     let chart = null;
     const el = $('vs-chart');
     const draw = () => {
       if (!window.echarts || !el) return;
       const ink3 = css('--ink3'), line = css('--line'), q4 = css('--q4'), surf = css('--surface'), ink = css('--ink');
       const ti = D.dates.indexOf(D.today);
+      // a redraw (new data, the theme) keeps the zoom the reader left (setOption below replaces the whole option)
+      const z0 = chart && chart.getOption ? ((chart.getOption() || {}).dataZoom || [])[0] : null;
+      const zoom = z0 && z0.start != null ? {start: z0.start, end: z0.end} : {};
       chart = chart || window.echarts.init(el, null, {renderer: 'svg'});
       chart.setOption({animation: false, grid: {left: 44, right: 14, top: 16, bottom: 54},
         tooltip: {trigger: 'axis', backgroundColor: surf, borderColor: line, textStyle: {color: ink, fontSize: 12},
-          formatter: p => { const i = p[0].dataIndex, c = D.calls[i]; return `${D.labels[i]}<br>` + (c == null ? '沒有紀錄' : `${c.toLocaleString()} 次`) + (i === ti ? '（今天還沒過完）' : ''); }},
+          formatter: p => { const i = p[0].dataIndex, c = D.calls[i]; return `${D.labels[i]}<br>` + (c == null ? (ti >= 0 && i > ti ? '還沒到' : '沒有紀錄') : `${c.toLocaleString()} 次`)
+            + (i === ti ? '（今天還沒過完）' : partial(D.dates[i]) ? '（這天的紀錄不是整天）' : ''); }},
         xAxis: {type: 'category', data: D.labels, boundaryGap: false, axisLine: {lineStyle: {color: line}}, axisTick: {show: false},
           axisLabel: {color: ink3, fontSize: 11}},
         yAxis: {type: 'value', splitNumber: 3, axisLabel: {color: ink3, fontSize: 11}, splitLine: {lineStyle: {color: line}}},
-        dataZoom: [{type: 'inside', zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false},
-          {type: 'slider', height: 16, bottom: 8, backgroundColor: 'transparent', borderColor: line, fillerColor: q4 + '2e', handleSize: 16,
+        dataZoom: [{type: 'inside', zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false, ...zoom},
+          {type: 'slider', ...zoom, height: 16, bottom: 8, backgroundColor: 'transparent', borderColor: line, fillerColor: q4 + '2e', handleSize: 16,
             handleStyle: {color: surf, borderColor: ink3}, moveHandleSize: 0, showDetail: false, brushSelect: false,
             dataBackground: {lineStyle: {color: q4, opacity: .5}, areaStyle: {color: q4, opacity: .12}}, textStyle: {color: ink3, fontSize: 10}}],
-        series: [{type: 'line', data: D.calls.map((c, i) => (i === ti && c != null ? {value: c, symbol: 'emptyCircle', itemStyle: {borderType: 'dashed'}} : c)),
+        series: [{type: 'line', data: D.calls.map((c, i) => (c == null ? c : i === ti ? {value: c, symbol: 'emptyCircle', itemStyle: {borderType: 'dashed'}}
+            : partial(D.dates[i]) ? {value: c, symbol: 'emptyCircle'} : c)),
           connectNulls: false, smooth: false, symbol: 'circle', symbolSize: 8, showSymbol: true,
           lineStyle: {color: q4, width: 2.5}, itemStyle: {color: q4, borderColor: surf, borderWidth: 2},
           areaStyle: {color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [{offset: 0, color: q4 + '55'}, {offset: 1, color: q4 + '00'}])},
@@ -116,7 +123,7 @@
         const p = [ev.offsetX, ev.offsetY];
         if (!chart.containPixel('grid', p)) return;
         const i = Math.round(chart.convertFromPixel({seriesIndex: 0}, p)[0]);
-        if (D.calls[i] != null) show(D.dates[i]);
+        if (D.calls[i] != null) { sel = D.dates[i]; show(sel); }
       });
       chart.resize();
     };
@@ -125,10 +132,30 @@
       const s = $('echarts-lib');
       if (s) s.addEventListener('load', cb, {once: true});
     };
+    // the page's own data is the moment it was drawn: shown, 每日 asks again (GET /api/usage/card) and every minute while
+    // it stays shown, so today's point and its numbers follow the day, and the date turns over at midnight (review 11-23)
+    let asking = false;
+    const refresh = async () => {
+      if (asking) return;
+      asking = true;
+      try {
+        const r = await fetch('/api/usage/card', {cache: 'no-store'});
+        const j = r.ok ? await r.json() : null;
+        if (j && Array.isArray(j.dates) && Array.isArray(j.calls)) {
+          D = j;
+          if (sel && !(D.days || {})[sel]) sel = null;
+          show(sel || D.pick);
+          if (vs.dataset.v === 'day') whenCharts(draw);
+        }
+      } catch (e) { /* what is drawn stays; the next round asks again */ } finally { asking = false; }
+    };
+    const dayLoop = () => { if (vs.dataset.v === 'day' && !document.hidden) refresh(); setTimeout(dayLoop, 60000); };
+    setTimeout(dayLoop, 60000);
     // 即時: requests a second over the last five minutes, each point a 30-second weighted average, sliding left
     const cv = $('vs-ecg'), cx = cv ? cv.getContext('2d') : null, WIN = 300, SM = 30;
     const S = new Map();
-    let end = 0, got = 0, read = true, poll = 3000;
+    let end = 0, got = 0, read = true, poll = 3000, lastCall = null, serve = null;
+    const stamp = t => { const m = /^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d)/.exec(t || ''); return m ? `${+m[1]}/${+m[2]} ${m[3]}` : ''; };
     const at = i => S.get(i) || 0;
     const rate = i => { let s = 0, w = 0; for (let k = 0; k < SM; k++) { const q = SM - k; s += at(i - k) * q; w += q; } return s / w; };
     // the log unread, the address not answering or answering wrong: said on the card, never a flat line of 0
@@ -140,7 +167,7 @@
           if (!r.ok) lost();
           else {
             const j = await r.json();
-            read = j.read !== false; poll = j.poll_ms || 3000;
+            read = j.read !== false; poll = j.poll_ms || 3000; lastCall = j.last || null; serve = j.serve || null;
             const per = j.per_sec || [], first = j.end - per.length + 1;
             per.forEach((v, k) => S.set(first + k, v));
             for (const k of [...S.keys()]) if (k < first) S.delete(k);
@@ -167,11 +194,22 @@
       for (const f of [0, .5, 1]) {
         const v = top / 1.25 * f, y = Y(v);
         cx.beginPath(); cx.moveTo(padL, y + .5); cx.lineTo(W - padR, y + .5); cx.stroke();
-        cx.textAlign = 'right'; cx.fillText(v.toFixed(v < 1 ? 1 : 0), padL - 6, y + 4);
+        cx.textAlign = 'right'; cx.fillText(String(+v.toFixed(2)), padL - 6, y + 4);  // 0.25 as it is, never 「0.3」
       }
       cx.textAlign = 'center'; for (let m = 5; m >= 1; m--) { const x = padL + (WIN - m * 60) / WIN * iw; cx.fillText(`-${m} 分`, x, H - 6); }
       cx.textAlign = 'right'; cx.fillText('現在', W - padR, H - 6);
-      if (!pts.length) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); return; }  // nothing measured yet, or unread
+      const quiet = $('vs-ecg-quiet');
+      if (!pts.length) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); if (quiet) quiet.hidden = true; return; }  // nothing measured yet, or unread
+      // the public service down at its last check (查詢服務's reading): said, never 「沒有人查」 (its log stops too);
+      // else a window nobody called in says so, with when the last call was (a flat line alone reads as broken)
+      const down = !!(serve && serve.up === false);
+      if (quiet) {
+        const none = pts.every(([i]) => !at(i));
+        quiet.hidden = !(down || none);
+        if (down) quiet.textContent = '對外服務沒有回應' + (stamp(serve.at) ? `（${stamp(serve.at)} 檢查）` : '') + (serve.words ? '：' + serve.words : '');
+        else if (none) quiet.textContent = '最近 5 分鐘沒有人查' + (stamp(lastCall) ? ' · 最後一次 ' + stamp(lastCall) : '');
+      }
+      if (down) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); return; }
       const curve = () => { cx.beginPath(); pts.forEach(([i, v], k) => { const x = X(i), y = Y(v); if (!k) { cx.moveTo(x, y); return; } const [pi, pv] = pts[k - 1], px = X(pi), py = Y(pv); cx.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2); }); };
       cx.save(); cx.beginPath(); cx.rect(padL, 0, iw, H); cx.clip();
       const g = cx.createLinearGradient(0, padT, 0, padT + ih); g.addColorStop(0, q4 + '55'); g.addColorStop(1, q4 + '00');
@@ -184,12 +222,15 @@
     vsView = v => {
       vs.dataset.v = v;
       vs.querySelectorAll('.vs-switch button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === v)));
-      if (v === 'day') whenCharts(draw);  // drawn once it has a size: the zoom starts on the whole month
+      if (v === 'day') { whenCharts(draw); refresh(); }  // drawn once it has a size, then with the data asked now
     };
     vs.querySelectorAll('.vs-switch button').forEach(b => b.addEventListener('click', () => vsView(b.dataset.v)));
     pull(); requestAnimationFrame(frame);
     addEventListener('resize', () => chart && chart.resize());
     new MutationObserver(() => chart && draw()).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    // following the system's light or dark (no data-theme set): the chart takes its colours again
+    const dark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (dark && dark.addEventListener) dark.addEventListener('change', () => chart && draw());
   }
 
   // ---- 日誌: every line of the night's logs, a page at a time from /api/logs (nknu.ops.logs.api_window, the one handler

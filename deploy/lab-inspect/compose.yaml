@@ -126,6 +126,8 @@ services:
       - nknu-ops:/ops
       # 对外服务（8770）的查询纪录，只读（11-21）：首页「查詢服務」说它最近 24 小时的使用
       - C:/nknu-transfer/public/log:/public-log:ro
+      # 实验室自己量的硬盘分项（11-23）：machine/probe.ps1 每 30 分钟写 machine.json（排程 nknu-machine-probe），只读
+      - C:/nknu-transfer/inspect/machine:/machine:ro
     command: ["python", "-m", "nknu.ops.web", "--db", "research/pipeline_2026-11-02/aca.db", "--root", "/work",
               "--host", "0.0.0.0", "--port", "8878",
               "--tables-url", "http://127.0.0.1:18001",
@@ -138,7 +140,7 @@ services:
               # 流水线页每 5 分钟问一次这几个服务有没有回应：同一个 compose 里的用服务名，别的 compose 的经 host.docker.internal
               # （11-16 在 ops 里实测都连得到）。mcp 是握手、每小时真的搜一次；datasette 看它开的是不是正式库；
               # 资料总览 11-21 并进检视台（/sites）、爬虫看板同一晚停用（看原样在 /check），都不用再问
-              "--watch", "搜尋服務（MCP）=mcp:http://mcp:8766/mcp",
+              "--watch", "檢索服務（MCP）=mcp:http://mcp:8766/mcp",
               "--watch", "資料庫=datasette:http://datasette:8001",
               "--watch", "模型服務=http:http://models:8780/health",
               # 对外服务在另一个 compose（C:\nknu-transfer\public）：只问它的 /health，不搜（搜会进它的查询纪录、载入模型）
@@ -146,7 +148,9 @@ services:
               "--public-log", "/public-log/queries.jsonl",
               # 首页「查詢服務」那一格说这台电脑的硬盘还剩多少、显卡内存用了多少（11-21）
               # 11-23 起只量 E 槽：工作资料都在 E 槽；C 槽只剩 Windows，D 槽只放备份、不会一直变大
-              "--disk", "E 槽=/crawl/archive/warc"]
+              "--disk", "E 槽=/crawl/archive/warc",
+              # E 槽里本專案（爬虫原档 E:\\nknu、Docker 的磁碟 E:\\DockerData）、Strata、其他各占多少：实验室自己量的
+              "--machine", "/machine/machine.json"]
     ports:
       - "127.0.0.1:8878:8878"
 

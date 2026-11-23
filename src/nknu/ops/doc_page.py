@@ -103,10 +103,12 @@ def _doc_rows(docs: list[dict]) -> str:
     out = []
     for x in docs[:DOCS_SHOWN]:
         kind = KINDS.get(x.get("kind"), x.get("kind") or "")
-        under = " · ".join(y for y in (x.get("name") or x.get("site"), kind, x.get("date") or "無日期") if y)
+        # the kind is its icon, said on the icon's hover (the 11-23 design), never again in the grey line: drawn here
+        # so typed and polled lists (they replace the list's markup) say it the same as the first one
+        under = " · ".join(y for y in (x.get("name") or x.get("site"), x.get("date") or "無日期") if y)
         out.append(f"<li><a class='prow' href='/trace?{urlencode({'ref': x['doc_id']})}' "
-                   f"data-tip-h='{e(x['doc_id'])}' data-tip='看它從抓取到搜尋的每一步'>"
-                   f"<span class='pn'><span class='dc-k dc-k{KIND_COLOUR.get(x.get('kind'), 1)}'>"
+                   f"data-tip-h='{e(x['doc_id'])}' data-tip='看它從抓取到檢索的每一步'>"
+                   f"<span class='pn'><span class='dc-k dc-k{KIND_COLOUR.get(x.get('kind'), 1)}' data-tip='{e(kind)}'>"
                    f"{icon(KIND_ICON.get(x.get('kind'), 'page'), 13)}</span>{e(x.get('title') or x['doc_id'])}"
                    f"</span><span class='pp'>{e(under)}</span></a></li>")
     return f"<ol>{''.join(out)}</ol>"
@@ -165,7 +167,7 @@ def empty_html() -> str:
     tries = "".join(f"<a href='/doc?{urlencode({'q': w})}'>{e(w)}</a>" for w in EXAMPLES)
     return (f"<section class='card dc-empty'><h2>可以打什麼</h2><ul class='dc-hints'>{lis}</ul>"
             f"<div class='dc-try'><span class='lab'>試試</span>{tries}</div>"
-            "<p class='dc-two-say'>找到的分兩邊：<b>庫裡的文件</b>點了看它從抓取到搜尋的每一步；<b>抓到的網頁</b>點了看存檔裡的"
+            "<p class='dc-two-say'>找到的分兩邊：<b>庫裡的文件</b>點了看它從抓取到檢索的每一步；<b>抓到的網頁</b>點了看存檔裡的"
             "那一頁有沒有漏抓。</p>"
             f"<a class='dc-more' href='/check'>全校網頁核查{icon('right', 12)}</a></section>")
 

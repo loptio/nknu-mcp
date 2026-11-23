@@ -30,7 +30,7 @@ from nknu.ops.trace import (
 
 MARKUP = (".html", ".htm", ".xhtml", ".svg")
 IMAGES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-STEP_NAMES = ("抓取", "匯出", "轉文字", "建庫", "搜尋")
+STEP_NAMES = ("抓取", "匯出", "轉文字", "建庫", "檢索")
 STEP_MARKS = "①②③④⑤"
 FOUND_MAX = 40  # how many documents a title search lists 【Claude】
 ROOMY = 8  # a document of more chunks lists them in a box that scrolls 【Claude】
@@ -183,9 +183,9 @@ def _steps(report: dict) -> str:
     else:
         states.append(("bad", "沒進庫" if report["left_out"] else "庫裡找不到"))
     if s is None:
-        states.append(("", "沒有搜尋"))
+        states.append(("", "沒有檢索"))
     else:
-        states.append(("ok", f"標題搜尋第 {s['rank']} 名") if s["rank"] else ("bad", f"前 {s['within']} 名裡沒有"))
+        states.append(("ok", f"標題檢索第 {s['rank']} 名") if s["rank"] else ("bad", f"前 {s['within']} 名裡沒有"))
     mark = {"ok": "ok", "warn": "warn", "bad": "no", "": "dash"}
     why = "\n".join(report["missing"])  # why a step left nothing: trace's notes, floating over that step
     out = []
@@ -238,10 +238,10 @@ def _who(report: dict) -> str:
     place = ""
     if s is not None:
         why = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
-        pill = (f"<span class='pill good'>{icon('ok', 12)}標題搜尋第 {s['rank']} 名</span>" if s["rank"]
-                else f"<span class='pill bad'>{icon('no', 12)}標題搜尋：前 {s['within']} 名裡沒有</span>")
+        pill = (f"<span class='pill good'>{icon('ok', 12)}標題檢索第 {s['rank']} 名</span>" if s["rank"]
+                else f"<span class='pill bad'>{icon('no', 12)}標題檢索：前 {s['within']} 名裡沒有</span>")
         place = (f"<a href='{e(why)}' style='text-decoration:none' "
-                 f"data-tip='拿它的標題當問題搜一次，它排第幾；點了看那次搜尋怎麼排'>{pill}</a>")
+                 f"data-tip='拿它的標題當問題檢索一次，它排第幾；點了看那次檢索怎麼排'>{pill}</a>")
     return (f"<section class='card pad who'><div><h1>{e(title)}</h1><div class='about'>{about}</div>"
             f"<div class='addr'>{addr}</div></div><div>{place}</div></section>")
 
@@ -402,7 +402,7 @@ def _library_card(report: dict, today: date) -> str:
                       f"<table class='grid'><tbody>{rows}</tbody></table></details>")
     out.append("".join(around))
     shown = f"，列出前 {len(lib['chunks'])} 段" if lib["chunks_total"] > len(lib["chunks"]) else ""
-    out.append(f"<h3 class='cap' style='margin-top:18px' data-tip='搜尋是一小段一小段比對的'>小段"
+    out.append(f"<h3 class='cap' style='margin-top:18px' data-tip='檢索是一小段一小段比對的'>小段"
                f"<span class='faint' style='font-weight:400'>　{len(lib['sections'])} 節 · {lib['chunks_total']} 段{shown}"
                "</span></h3>")
     chunks = lib["chunks"]
@@ -455,8 +455,8 @@ def trace_body(report: dict, viewer_url: str, today: date, *, archive: bool = Fa
                  else f"<span class='pill bad'>前 {s['within']} 名裡沒有</span>")
         href = why_url(q=s["query"], docs=[r["doc_id"] or ""], anchor=f"r-{r['doc_id']}" if r["doc_id"] else "")
         why = (f"<a class='btn' href='{e(href)}' "
-               f"data-tip='測試的「為什麼這樣排」：那次搜尋怎麼排'>{icon('search', 12)}看那次搜尋</a>")
+               f"data-tip='測試的「為什麼這樣排」：那次檢索怎麼排'>{icon('search', 12)}看那次檢索</a>")
         last = (f"<div class='in' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
-                f"<span data-tip='拿它的標題當問題搜一次'>標題搜尋</span>{place}{why}</div>")
+                f"<span data-tip='拿它的標題當問題檢索一次'>標題檢索</span>{place}{why}</div>")
         out.append(f"<section class='card step' id='s5'><h2>{STEP_MARKS[4]} {STEP_NAMES[4]}</h2>{last}</section>")
     return "".join(out)

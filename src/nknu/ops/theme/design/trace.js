@@ -38,16 +38,13 @@ const id=($('.who [data-copy]')||{}).dataset?.copy;const who=$('.who>div');if(id
   const Q=[['doc','全部欄位'],['doc_dates','讀到的日期'],['doc_chunks','切成的小段'],['copies_of','合併進來的副本'],['doc_scope_rows','和單位的關係'],['why_undated','為什麼沒日期']];
   d.innerHTML=`<i data-tip='在資料庫裡看這份文件'><svg viewBox='0 0 16 16' width='13' height='13' fill='none' stroke='currentColor' stroke-width='1.4' aria-hidden='true'><ellipse cx='8' cy='3.8' rx='5' ry='1.8'/><path d='M3 3.8v8.4c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V3.8M3 8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8'/></svg></i>`+Q.map(([k,n])=>`<a href='${DBB}/${k}?doc_id=${encodeURIComponent(id)}' target='_blank' rel='noopener'>${n}</a>`).join('');who.append(d)}
 // opened from a site's 品質提醒 row (site_design.py doc_go): which reminder, why this document, and the way back
-const q=new URLSearchParams(location.search),ck=q.get('ck'),NAME={"none": "無文件", "self": "標題搜不到", "empty": "網頁無文字", "no_date": "無日期", "same_title": "標題重複", "same_opening": "選單混入正文", "fragments": "附件逐字斷行", "spike": "檔案時間雷同"},WHAT={"none": "一份文件都沒收進庫", "self": "抽 20 份文件、用自己的標題去搜，排進前 10 的不到七成就提醒", "empty": "網頁轉成文字後是空的；超過兩成才提醒", "no_date": "公告、網頁、附件裡沒有日期；超過一半才提醒", "same_title": "15 份以上的文件用同一個標題，搜尋結果分不出哪份是哪份", "same_opening": "三成以上的網頁開頭 80 個字一樣，多半是選單被當成正文讀了進來", "fragments": "附件轉出來一行只有一個字（多半是圖表或轉向的表格），裡面的字搜不太到", "spike": "同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批上傳），這些檔不拿這個時間當日期"};
+const q=new URLSearchParams(location.search),ck=q.get('ck'),NAME={"none": "無文件", "self": "標題搜不到", "empty": "網頁無文字", "no_date": "無日期", "same_title": "標題重複", "same_opening": "選單混入正文", "fragments": "附件逐字斷行", "spike": "檔案時間雷同"},WHAT={"none": "一份文件都沒收進庫", "self": "抽 20 份文件、用自己的標題去搜，排進前 10 的不到七成就提醒", "empty": "網頁轉成文字後是空的；超過兩成才提醒", "no_date": "公告、網頁、附件裡沒有日期；超過一半才提醒", "same_title": "15 份以上的文件用同一個標題，檢索結果分不出哪份是哪份", "same_opening": "三成以上的網頁開頭 80 個字一樣，多半是選單被當成正文讀了進來", "fragments": "附件轉出來一行只有一個字（多半是圖表或轉向的表格），裡面的字搜不太到", "spike": "同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批上傳），這些檔不拿這個時間當日期"};
 const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
 if(ck&&NAME[ck]){const site=q.get('site')||'',ref=q.get('ref')||'',t=q.get('t')||'';const box=document.createElement('section');box.className='card pd-ck';
   box.innerHTML=`<div class='pd-ck-h'><span class='pd-tag'>品質提醒</span><b data-tip='${esc(WHAT[ck]||'')}'>${esc(NAME[ck])}</b>`
     +(site?`<a class='pd-back' href='/site?site=${encodeURIComponent(site)}&ck=${encodeURIComponent(ck)}'>‹ 回到這個網站的${esc(NAME[ck])}</a>`:'')+`</div>`
-    +(q.get('why')?`<p class='pd-why'>${esc(q.get('why'))}</p>`:'')
-    +(ref&&id&&ref!==id?`<p class='pd-sample'>設計稿的文件頁只有一份樣本：下面是 ${esc(id)}，不是${t?'「'+esc(t)+'」':' '+esc(ref)}</p>`:'');
+    +(q.get('why')?`<p class='pd-why'>${esc(q.get('why'))}</p>`:'');
   const w=$('.who');if(w)w.before(box)}
-else if(q.get('ref')&&id&&q.get('ref')!==id){const p=document.createElement('p');p.className='pd-sample pd-only';const t=q.get('t');
-  p.innerHTML=`設計稿的文件頁只有一份樣本：下面是 ${esc(id)}，不是${t?'「'+esc(t)+'」':' '+esc(q.get('ref'))}`;const w=$('.who');if(w)w.before(p)}
 })();
 (()=>{let cur=null;document.querySelectorAll('.strip a[data-chunk]').forEach(a=>{const c=document.getElementById(a.dataset.chunk);if(!c)return;
   const peek=(c.querySelector('.peek')||{}).textContent||'',side=(c.querySelector('.side')||{}).textContent||'';

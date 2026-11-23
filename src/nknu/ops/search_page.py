@@ -11,9 +11,14 @@ floats over it (owner 11-15: 「很多名字看着不直觉 然后感觉是想�
 
 from __future__ import annotations
 
+import json
 import math
+import re
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode
 
+from nknu.core.timeutil import TAIPEI
 from nknu.ops.explain import IN_TOP, NO_CANDIDATE, NOT_FOUND, NOT_IN_HEAD, RANKED, background_words, order_words
 from nknu.ops.look import e, icon, kind_tag, tw
 from nknu.ops.trace import KINDS
@@ -105,23 +110,130 @@ def why_head(questions: list[dict], question: dict | None, query: str, docs: lis
     return f"<div class='whyhead'>{question_nav(questions, question)}{follow_form(query, typed, question)}</div>"
 
 
-# ---------------------------------------------------------------- the scoreboard
+# ---------------------------------------------------------------- 手動檢查: the 33 questions and the real-data checks
 
-def tests_html(questions: list[dict]) -> str:
-    """The 33 test questions to try by hand (owner 2026-11-22 night: 「以后如果要的话再从dashboard那边手动测试那33题就好
-    了」): each opens 搜尋's second tab on it, which says where its gold answer stands and why. Nothing is graded here
-    or run on its own. '' without questions."""
+# The cleaned answer key of the 33 questions (research/eval_2026-11-01/also_right_1122.json, 11-22 night and 11-23):
+# by question id, the documents that also count as right ('also_right': {qid: [{doc_id, why, …}]}), a registered
+# answer a newer version replaced, which must not count ('superseded': {qid: [{doc_id, by, reason}]}), and a
+# registered answer that is an old version but still right ('stale': {qid: [{doc_id, reason}]}).
+KEY_PARTS = (("also", "also_right"), ("gone", "superseded"), ("old", "stale"))
+MARK_WORDS = {  # (the mark's word, what floats over it) on a question of the 33
+    "gone": ("被取代", "登記的標準答案已經被新版取代：手動測時不算對，要換成新版"),
+    "old": ("舊版", "登記的標準答案是舊版：還算對，學生可能要看新的"),
+}
+LEGEND = (("also", "+3", "另有幾份也算對"), ("old", "舊版", "答案是舊版"), ("gone", "被取代", "答案已被新版取代"))
+CHECKS_TIP = "每晚不跑：裝新程式那天手動跑一次（build.sh --realdata 或 --from 8）。這是上次跑的結果"
+_CHECK_ROW = re.compile(r"^\|\s*(\d+)\s*\|\s*(.*?)\s*\|\s*(PASS|FAIL)\s*\|\s*(.*?)\s*\|\s*$")
+_CHECKED_LIB = re.compile(r"建于\s*(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})")
+
+
+def read_answer_key(path: Path) -> dict | None:
+    """The cleaned answer key (also_right_1122.json) as read, None when it is missing or no JSON object."""
+    try:
+        got = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def answer_key(key: dict | None, qid: str) -> dict[str, dict[str, dict]]:
+    """One question's part of the answer key: {'also', 'gone', 'old'}, each {doc_id: its entry}; empty where the key
+    says nothing of it or is not in its shape."""
+    out: dict[str, dict[str, dict]] = {}
+    for short, name in KEY_PARTS:
+        part = (key or {}).get(name)
+        entries = part.get(qid) if isinstance(part, dict) else None
+        out[short] = {str(x["doc_id"]): x for x in (entries if isinstance(entries, list) else [])
+                      if isinstance(x, dict) and x.get("doc_id")}
+    return out
+
+
+def _marks(k: dict[str, dict[str, dict]]) -> list[tuple[str, str, str]]:
+    """(class, word, what floats over it) of a question's marks: 被取代, 舊版, then +N for the ones that also count."""
+    out = [(c, *MARK_WORDS[c]) for c in ("gone", "old") if k[c]]
+    if n := len(k["also"]):
+        out.append(("also", f"+{n}", f"另外 {n} 份也算對（同一句答案或新版），手動測時一起算"))
+    return out
+
+
+def tests_html(questions: list[dict], key: dict | None = None, checks: dict | None = None) -> str:
+    """手動檢查 (the owner's 11-23 design copy): the 33 test questions to try by hand (owner 2026-11-22 night: 「以后如果要
+    的话再从dashboard那边手动测试那33题就好了」), each marked with what the cleaned answer key (key: read_answer_key) says of
+    it and opening 檢索's second tab on it, beside the real-data checks' last manual run (checks: read_checks). Nothing
+    is graded here or run on its own. '' without questions."""
     if not questions:
         return ""
-    lis = "".join(f"<li><a href='{e(why_url(qid=q['id']))}'><span class='tq-id'>{e(q['id'])}</span>"
-                  f"{e(tw(q['question']))}</a></li>" for q in questions)
+    lis, shown = [], set()
+    for q in questions:
+        marks = _marks(answer_key(key, str(q["id"])))
+        shown |= {c for c, _, _ in marks}
+        lis.append(f"<li><a href='{e(why_url(qid=q['id']))}'><span class='tq-id'>{e(q['id'])}</span>"
+                   f"{e(tw(q['question']))}"
+                   + "".join(f"<span class='sd-m {c}' data-tip='{e(tip)}'>{e(w)}</span>" for c, w, tip in marks)
+                   + "</a></li>")
+    legend = "".join(f"<span><span class='sd-m {c}'>{w}</span>{said}</span>" for c, w, said in LEGEND if c in shown)
+    head = (f"<div class='sd-h'><h3>{len(questions)} 題</h3><span class='sd-at' "
+            "data-tip='點一題看它的答案排第幾、為什麼這樣排；每晚不跑'>手動測</span></div>")
     return ("<style>.tq{list-style:none;margin:0;padding:0;columns:2 320px;column-gap:24px}"
             ".tq li{break-inside:avoid;padding:5px 0;border-top:1px solid var(--line);font-size:13px}"
             ".tq a{color:var(--ink);text-decoration:none}.tq a:hover{text-decoration:underline;text-underline-offset:3px}"
             ".tq-id{display:inline-block;min-width:44px;color:var(--ink3);font-variant-numeric:tabular-nums}</style>"
-            f"<h2 class='sec' id='tests'>測試題<span class='faint small'>　{len(questions)} 題，點一題看它的標準答案排第幾、"
-            "為什麼這樣排（手動測，不會自己跑）</span></h2>"
-            f"<section class='card pad'><ul class='tq'>{lis}</ul></section>")
+            "<h2 class='sec' id='tests'>手動檢查</h2><div class='sd-two'>"
+            f"<section class='card pad'>{head}<ul class='tq'>{''.join(lis)}</ul>"
+            + (f"<div class='sd-legend'>{legend}</div>" if legend else "")
+            + f"</section>{checks_html(checks)}</div>")
+
+
+def read_checks(path: Path) -> dict | None:
+    """The real-data checks' report (checks.md, check_realdata.py) and when it was written: {'text', 'ran': an aware
+    datetime in Taipei time}; None when it cannot be read."""
+    try:
+        return {"text": path.read_text(encoding="utf-8"),
+                "ran": datetime.fromtimestamp(path.stat().st_mtime, TAIPEI)}
+    except OSError:
+        return None
+
+
+def check_rows(text: str) -> list[tuple[str, str, bool, str]]:
+    """checks.md's summary table (the first table: | # | 检查 | 结果 | 数字 |) as (number, check, passed, figures)."""
+    out: list[tuple[str, str, bool, str]] = []
+    inside = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not inside:
+            inside = line.startswith("| #")
+            continue
+        if not line.startswith("|"):
+            break
+        if m := _CHECK_ROW.match(line):
+            out.append((m.group(1), m.group(2), m.group(3) == "PASS", m.group(4)))
+    return out
+
+
+def checks_html(checks: dict | None) -> str:
+    """The real-data checks' card: when they last ran (they run by hand since 11-23), how many passed of how many, one
+    square each (a failed one red, its number in it), and the failed ones in their own words; every check's name
+    and figures float over its square. Said so when there is no result."""
+    rows = check_rows(str((checks or {}).get("text") or ""))
+    if not rows:
+        return ("<section class='card pad'><div class='sd-h'><h3>真資料檢查</h3></div>"
+                f"<p class='faint small' data-tip='{e(CHECKS_TIP)}'>還沒有真資料檢查的結果（checks.md）</p></section>")
+    ran = checks.get("ran")
+    at = ran.strftime("%m-%d %H:%M") if isinstance(ran, datetime) else ""
+    lib = _CHECKED_LIB.search(str(checks.get("text") or ""))
+    tip = CHECKS_TIP + (f"；檢查的庫建於 {lib.group(1)} {lib.group(2)}" if lib else "")
+    passed = sum(1 for _, _, ok, _ in rows if ok)
+    failed = " class='f'"
+    grid = "".join(f"<i{'' if ok else failed} data-tip-h='第 {n} 項 · {'過了' if ok else '沒過'}' "
+                   f"data-tip='{e(tw(name))}\n{e(tw(figures))}'>{'' if ok else n}</i>" for n, name, ok, figures in rows)
+    fails = "".join(f"<li data-tip='{e(tw(figures))}'><b>{n}</b><span>{e(tw(name))}</span></li>"
+                    for n, name, ok, figures in rows if not ok)
+    tail = (f"<ul class='rc-fail'>{fails}</ul>" if fails
+            else f"<p class='faint small'>{len(rows)} 項都過了</p>")
+    return (f"<section class='card pad'><div class='sd-h'><h3>真資料檢查</h3>"
+            f"<span class='sd-at' data-tip='{e(tip)}'>{'上次 ' + at if at else '上次'}</span>"
+            f"<span class='sd-n'>{passed}<small>/{len(rows)}</small></span></div>"
+            f"<div class='rc-grid'>{grid}</div>{tail}</section>")
 
 
 def parts(row: dict, weights: dict) -> dict:
@@ -283,7 +395,7 @@ def _detail(row: dict, p: dict, weights: dict, words: str = "") -> str:
     if words:
         right += f"<h3>沒排上的原因</h3><div class='soft'>{e(words)}</div>"
     doc_id = row["doc_id"]
-    act = (f"<a class='btn' href='/trace?{urlencode({'ref': doc_id})}' data-tip='看它從抓取到搜尋的每一步'>"
+    act = (f"<a class='btn' href='/trace?{urlencode({'ref': doc_id})}' data-tip='看它從抓取到檢索的每一步'>"
            f"{icon('trace', 13)}文件追蹤</a>"
            + (f"<a class='btn' href='{e(row['url'])}' target='_blank' rel='noopener' data-tip='打開學校網站上的這一頁'>"
               f"{icon('out', 12)}原網頁</a>"
@@ -293,16 +405,33 @@ def _detail(row: dict, p: dict, weights: dict, words: str = "") -> str:
     return f"<div class='more'>{left}<div>{right}<div class='act'>{act}</div></div></div>"
 
 
+TAG_WORDS = {"also": "也算對", "gone": "被取代", "old": "舊版"}  # a row the answer key speaks of: its chip's word
+
+
+def _tags(k: dict[str, dict[str, dict]] | None) -> dict[str, tuple[str, str]]:
+    """The rows the answer key of a test question speaks of: {doc_id: (its kind: also, gone or old; what floats over
+    its chip)} (the key's reasons are our own Simplified notes, shown in Traditional)."""
+    out: dict[str, tuple[str, str]] = {}
+    for kind in ("old", "gone", "also"):  # a document in two parts keeps the last kind: also, then gone, then old
+        for doc_id, x in (k or {}).get(kind, {}).items():
+            said = tw(x.get("why") or x.get("reason") or "")
+            newer = f"\n新版：{x['by']}" if kind == "gone" and x.get("by") else ""
+            out[doc_id] = (kind, f"{TAG_WORDS[kind]}：{said}{newer}" if said else TAG_WORDS[kind] + newer)
+    return out
+
+
 def _row(row: dict, weights: dict, scale: float, *, marks: dict[str, str], limit: int, far: bool = False,
-         stopped: tuple[str, str] | None = None, words: str = "") -> str:
+         stopped: tuple[str, str] | None = None, words: str = "", tag: tuple[str, str] | None = None) -> str:
     """One document: its final place, what it is, its place on each path, and its score as a bar (or, for a followed
-    document the reranker never read, the word for where it stopped)."""
+    document the reranker never read, the word for where it stopped); tag: what the answer key says of it (_tags)."""
     p = parts(row, weights)
     doc_id = row["doc_id"]
     mark = marks.get(doc_id, "")
     star = (f"<span class='star' data-tip='{'標準答案' if mark == 'gold' else '指定的文件'}'>{icon('star', 10)}</span>"
             if mark else "")
-    title = (f"{star}<a href='/trace?{urlencode({'ref': doc_id})}'>{e(row.get('title') or doc_id)}</a>"
+    chip = (f"<span class='sd-also{'' if tag[0] == 'also' else ' ' + tag[0]}' data-tip='{e(tag[1])}'>"
+            f"{TAG_WORDS[tag[0]]}</span>" if tag else "")
+    title = (f"{star}<a href='/trace?{urlencode({'ref': doc_id})}'>{e(row.get('title') or doc_id)}</a>{chip}"
              + (f" <span class='tag' data-tip='{e(background_words(weights))}'>背景</span>"
                 if row.get("background") else ""))
     k, d = row.get("keyword"), row.get("dense")
@@ -315,7 +444,7 @@ def _row(row: dict, weights: dict, scale: float, *, marks: dict[str, str], limit
                  f"<span class='tot'>{row['score']:.2f}</span>")
     rank = row.get("rank")
     why = ""  # where it stopped is the badge; the sentence is in the opened row (owner 11-15: 「頁面廢話太多了」)
-    cls = "row" + (" gold" if mark else "")
+    cls = "row" + (" gold" if mark else " also" if tag and tag[0] == "also" else "")
     place = f"<b class='g-{_grade(rank, limit)}'>{rank}</b>" if mark and rank else str(rank or "—")
     return (f"<details class='{cls}' id='r-{e(doc_id)}'><summary>"
             f"<span class='rk{' far' if far and not mark else ''}'>{place}</span>"
@@ -366,9 +495,48 @@ def _grade(rank: int | None, limit: int) -> str:
     return TOP if rank is not None and rank <= limit else OUT
 
 
-def verdict_html(report: dict, question: dict | None) -> str:
+def _ranks(ranks: list[int]) -> str:
+    return "第 " + "、".join(str(r) for r in ranks[:8]) + (" …" if len(ranks) > 8 else "") + " 名"
+
+
+def _right(report: dict, gold: set[str], k: dict[str, dict[str, dict]]) -> tuple[int | None, str, str]:
+    """A test question read with its cleaned answer key: (the best place of a right document, the verdict's second
+    line, what floats over it). Right are the registered answers no newer version replaced and the documents that
+    also count; one that also counts is placed when it is among the results (or followed)."""
+    limit = report["limit"]
+    placed = {row["doc_id"]: row["rank"] for row in report["rows"] if row.get("rank")}
+    placed |= {en["doc_id"]: en["row"]["rank"] for en in report["follow"]
+               if en.get("doc_id") and en.get("row") and en["row"].get("rank")}
+    golds = [en for en in report["follow"] if (en.get("doc_id") or en.get("ref")) in gold]
+    right = sorted([placed[en["doc_id"]] for en in golds if en["doc_id"] in placed and en["doc_id"] not in k["gone"]]
+                   + [placed[d] for d in k["also"] if d in placed and d not in gold])
+    tip = []
+    if golds:
+        ranks = sorted(placed[en["doc_id"]] for en in golds if en["doc_id"] in placed)
+        bits = [_ranks(ranks)] if ranks else []
+        for verdict, word in ((NOT_IN_HEAD, "沒進重排"), (NO_CANDIDATE, "沒進候選"), (NOT_FOUND, "庫裡沒有")):
+            if n := sum(1 for en in golds if en["doc_id"] not in placed and en["verdict"] == verdict):
+                bits.append(f"{word} {n} 份")
+        tip.append(f"登記的標準答案 {len(golds)} 份：{'、'.join(bits)}")
+        if n := sum(1 for en in golds if en["doc_id"] in k["gone"]):
+            tip[-1] += f"（其中 {n} 份已被新版取代，不算）"
+    also = [d for d in k["also"] if d not in gold]
+    if also:
+        ranks = sorted(placed[d] for d in also if d in placed)
+        away = len(also) - len(ranks)
+        tip.append(f"另外 {len(also)} 份也算對：" + "，".join(
+            ([_ranks(ranks)] if ranks else []) + ([f"{away} 份不在前 {limit} 名"] if away else [])))
+    best = right[0] if right else None
+    said = (f"前 {limit} 名裡 {sum(1 for r in right if r <= limit)} 份答對" if best is not None and best <= limit
+            else f"{len(golds)} 份標準答案" + (f"：{_ranks(right)}" if right else "，沒有一份算對"))
+    return best, said, "；".join(tip)
+
+
+def verdict_html(report: dict, question: dict | None, key: dict | None = None, gold: set[str] | None = None) -> str:
     """Above everything, when documents are followed: the best one's place as a badge, a sentence, and every followed
-    document on one ruler (its place in a marker of its grade's colour; those no path brought counted at the end)."""
+    document on one ruler (its place in a marker of its grade's colour; those no path brought counted at the end).
+    key: a test question's part of the cleaned answer key (answer_key), gold its registered answers: then the place
+    is the best right document's (第 N 名就答對) and the second line counts the right ones in the top (_right)."""
     followed = report["follow"]
     if not followed:
         return ""
@@ -376,22 +544,27 @@ def verdict_html(report: dict, question: dict | None) -> str:
     ranked = sorted((en["row"]["rank"], en) for en in followed if en.get("row") and en["row"].get("rank"))
     lost = [en for en in followed if not (en.get("row") and en["row"].get("rank"))]
     best = ranked[0][0] if ranked else None
-    grade = _grade(best, limit)
     what = "標準答案" if question else "指定的文件"
-    if best is not None and best <= limit:
-        head = f"{what}在第 {best} 名"
-    elif question:
-        head = f"前 {limit} 名裡沒有標準答案"
+    said_tip = ""
+    if question and key is not None:  # a registered answer the library lacks is known by the ref it was asked as
+        best, sub, said_tip = _right(report, (gold or set()) | set(question.get("gold") or []), key)
+        head = f"第 {best} 名就答對" if best is not None and best <= limit else f"前 {limit} 名裡沒有答對的"
     else:
-        head = f"{what}沒進前 {limit} 名"
-    said = []
-    if len(followed) > 1 or best is None or best > limit:
-        if ranked:
-            said.append("、".join(str(r) for r, _ in ranked[:8]) + (" …" if len(ranked) > 8 else "") + " 名")
-        for verdict, word in ((NO_CANDIDATE, "沒進候選"), (NOT_FOUND, "庫裡沒有")):
-            if n := sum(1 for en in lost if en["verdict"] == verdict):
-                said.append(f"{word} {n} 份")
-    sub = f"{len(followed)} 份：{' · '.join(said)}" if said else ""
+        if best is not None and best <= limit:
+            head = f"{what}在第 {best} 名"
+        elif question:
+            head = f"前 {limit} 名裡沒有標準答案"
+        else:
+            head = f"{what}沒進前 {limit} 名"
+        said = []
+        if len(followed) > 1 or best is None or best > limit:
+            if ranked:
+                said.append("、".join(str(r) for r, _ in ranked[:8]) + (" …" if len(ranked) > 8 else "") + " 名")
+            for verdict, word in ((NO_CANDIDATE, "沒進候選"), (NOT_FOUND, "庫裡沒有")):
+                if n := sum(1 for en in lost if en["verdict"] == verdict):
+                    said.append(f"{word} {n} 份")
+        sub = f"{len(followed)} 份：{' · '.join(said)}" if said else ""
+    grade = _grade(best, limit)
     badge = (f"<div class='v-badge g-{grade}'><span>{best if best is not None else '—'}"
              f"{'<small>名</small>' if best is not None else ''}</span></div>")
     # the ruler
@@ -417,8 +590,9 @@ def verdict_html(report: dict, question: dict | None) -> str:
     ruler = (f"<div class='ruler{' tall' if tall else ''}{' lost' if lost else ''}' aria-label='{e(head)}'>"
              "<div class='marks'>"
              f"{''.join(marks)}</div><div class='track'>{track}</div><div class='ticks'>{ticks}</div>{off}</div>")
+    said_html = f"<span data-tip='{e(said_tip)}'>{e(sub)}</span>" if said_tip else f"<span>{e(sub)}</span>"
     return (f"<section class='card pad verdict'><div class='v-main'>{badge}<div class='v-text'><b>{e(head)}</b>"
-            f"<span>{e(sub)}</span></div></div>{ruler}</section>")
+            f"{said_html}</div></div>{ruler}</section>")
 
 
 # ---------------------------------------------------------------- how the question was read, and the funnel
@@ -450,7 +624,7 @@ def _words(report: dict) -> str:
         key.append("<span><i class='must'></i>要對上</span><span><i class='plain'></i>只加分</span>")
         if any(word not in read for word in topic):
             key.append("<span><i class='also'></i>別名</span>")
-    return (f"<div><div class='cap' data-tip='問題切成的詞：搜尋拿它們去比對'>查詢詞</div><div class='words'>{''.join(chips)}</div>"
+    return (f"<div><div class='cap' data-tip='問題切成的詞：檢索拿它們去比對'>查詢詞</div><div class='words'>{''.join(chips)}</div>"
             f"<div class='keyline'>{''.join(key)}</div></div>")
 
 
@@ -509,25 +683,48 @@ def pipeline_html(report: dict) -> str:
 
 # ---------------------------------------------------------------- the whole page of one search
 
+def _formula(report: dict) -> str:
+    """The rule of a reranked order as chips (the owner's 11-23 design copy): the reranker's part, what adds, what
+    discounts, each in its bar colour, the library's own numbers under it (explain.order_words says the same in a
+    sentence), and a vector search that failed."""
+    w = report["weights"]
+    chips = (f"(<i class='rel'>對題×{w['rerank']:g}</i>＋<i class='add'>學期</i>＋<i class='add'>屆別</i>"
+             "＋<i class='add'>新舊</i>)×<i class='cut'>還有效</i>×<i class='cut'>對口</i>＋<i class='add'>單位</i>")
+    if w.get("background_factor"):
+        background = (f"背景文件（學報、考題、會議紀錄）總分 ×{w['background_factor']:g}，"
+                      f"前 {w['top_n']} 名最多 {w['background_slots']} 份")
+    else:
+        background = background_words(w)
+    failed = order_words(report).rpartition(background_words(w))[2]  # what order_words adds after the rule
+    return (f"<p class='pd-f'>{chips}</p><p class='pd-fn'>還有效：每過一個學年 ×{w['valid_decay']:g}　"
+            f"對口：系所自己的文件、問題沒點名系所時 ×{w['scope_factor']:g}<br>{e(background)}"
+            + (f"<br>{e(failed)}" if failed else "") + "</p>")
+
+
 def _help(report: dict) -> str:
-    """One click away: the rule in the explanation's own sentence (explain.order_words) and what each part is."""
+    """One click away: the rule (chips when a rerank shaped the order, else the explanation's own sentence:
+    explain.order_words) and what each part is."""
     w = report["weights"]
     rows = (("對題", f"{PART_TIPS['對題']}（{w['rerank']:g}）"),
             *((n, PART_TIPS[n]) for n in ("學期", "屆別", "新舊", "還有效", "對口")),
             ("關鍵字・向量・合併", "關鍵字、向量各自把它排第幾，兩邊合併後第幾；重排只讀合併後最前面的那些"))
     listed = "".join(f"<dt>{e(n)}</dt><dd>{e(v)}</dd>" for n, v in rows)
-    return (f"<details class='help'><summary aria-label='分數怎麼算' data-tip='分數怎麼算'>?</summary><div class='pop'><b>{e(order_words(report))}"
-            f"</b><dl>{listed}</dl></div></details>")
+    rule = _formula(report) if report["order"] == "reranked" else f"<b>{e(order_words(report))}</b>"
+    return ("<details class='help'><summary aria-label='分數怎麼算' data-tip='分數怎麼算'>?</summary>"
+            f"<div class='pop'>{rule}<dl>{listed}</dl></div></details>")
 
 
-def search_body(report: dict, gold: set[str], question: dict | None) -> str:
+def search_body(report: dict, gold: set[str], question: dict | None, key: dict | None = None) -> str:
     """One search, explained: the verdict (when documents are followed), how the question was read and the funnel,
-    then the documents."""
+    then the documents. key: the cleaned answer key of the 33 questions (read_answer_key): for a test question the
+    rows it speaks of are tagged and the verdict counts every right document."""
     if report["mode"] == "empty":
         return "<section class='card empty'>這個問題沒有可以搜的詞（只有標點或空白）。</section>"
     weights, limit = report["weights"], report["limit"]
     rows = report["rows"]
     followed = report["follow"]
+    k = answer_key(key, str(question["id"])) if question and key is not None else None
+    tags = _tags(k)
     marks = {en["doc_id"]: ("gold" if en["doc_id"] in gold else "ask") for en in followed if en.get("doc_id")}
     inside = {row["doc_id"] for row in rows}
     extra = [en for en in followed if not en.get("doc_id") or en["doc_id"] not in inside]
@@ -543,7 +740,7 @@ def search_body(report: dict, gold: set[str], question: dict | None) -> str:
             f"<span data-tip='「還有效」「對口」折掉的分'><i class='cut'></i>折扣</span>{_help(report)}</span>"
             "<span class='r'>總分</span></div>")
     by_id = {en["doc_id"]: en for en in followed if en.get("doc_id")}
-    body = "".join(_row(row, weights, scale, marks=marks, limit=limit,
+    body = "".join(_row(row, weights, scale, marks=marks, limit=limit, tag=tags.get(row["doc_id"]),
                         words=(by_id.get(row["doc_id"]) or {}).get("words", "")) for row in rows)
     if not rows:
         body = "<div class='empty'>沒有結果。</div>"
@@ -555,10 +752,10 @@ def search_body(report: dict, gold: set[str], question: dict | None) -> str:
             if en.get("row"):
                 stopped = STOPPED.get(en["verdict"])
                 body += _row(en["row"], weights, scale, marks=marks, limit=limit, far=True, stopped=stopped,
-                             words=en["words"])
+                             words=en["words"], tag=tags.get(en["doc_id"]))
             else:
                 body += _lost_row(en, marks)
     count = f"前 {len(rows)} 名" if rows else "結果"
-    return (verdict_html(report, question) + pipeline_html(report)
+    return (verdict_html(report, question, k, gold) + pipeline_html(report)
             + f"<h2 class='sec'>{count}</h2>"
             + f"<section class='card rows'>{head}{body}</section>")

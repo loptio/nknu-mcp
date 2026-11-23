@@ -19,7 +19,7 @@ NAME = {"none": "無文件", "self": "標題搜不到", "empty": "網頁無文�
         "same_opening": "選單混入正文", "fragments": "附件逐字斷行", "spike": "檔案時間雷同"}
 WHAT = {"none": "一份文件都沒收進庫", "self": "抽 20 份文件、用自己的標題去搜，排進前 10 的不到七成就提醒",
         "empty": "網頁轉成文字後是空的；超過兩成才提醒", "no_date": "公告、網頁、附件裡沒有日期；超過一半才提醒",
-        "same_title": "15 份以上的文件用同一個標題，搜尋結果分不出哪份是哪份",
+        "same_title": "15 份以上的文件用同一個標題，檢索結果分不出哪份是哪份",
         "same_opening": "三成以上的網頁開頭 80 個字一樣，多半是選單被當成正文讀了進來",
         "fragments": "附件轉出來一行只有一個字（多半是圖表或轉向的表格），裡面的字搜不太到",
         "spike": "同一天有二十個以上的檔共用同一個伺服器時間（搬家或整批上傳），這些檔不拿這個時間當日期"}
@@ -137,13 +137,57 @@ class _Card:
                 f"<td class='sq-k'>{kind_icon(m.get('k') or '')}</td>{extra}<td class='sq-d'>{E(m.get('d') or '—')}</td>"
                 f"<td class='sq-go'>{go}</td></tr>")
 
-    def table(self, ids, head_extra="", extra=lambda i: "", by_url=False, total=None, truncated=False) -> str:
-        shown = ids[:SHOW]
-        n = total if total is not None else len(ids)
-        more = (f"<p class='sq-more'>共 {n:,} 份" + (f"，這裡列前 {len(shown):,} 份" if n > len(shown) else "")
-                + ("；建庫只存到上限" if truncated else "") + "</p>") if n > len(shown) or truncated else ""
-        return (f"<table class='sq-tb'><thead><tr><th>{'網址' if by_url else '文件'}</th><th></th>{head_extra}<th>日期</th><th></th>"
-                f"</tr></thead><tbody>{''.join(self.row(i, extra(i), by_url) for i in shown)}</tbody></table>{more}")
+    def tables(self, k: str) -> list[dict]:
+        """A reminder's lists of documents, as the card draws them and the rest of them are read (api): per list its
+        documents (ids), the reminder's words for them (why), what is drawn over it (before), its own column (head,
+        cell), whether a row is named by its address (by_url), how many there are (total) and whether the build cut
+        it (truncated). One list per title of 標題重複 and per day of 檔案時間雷同; none for 標題搜不到 (a sample of
+        20) and 無文件."""
+        x = self.x
+        v = x.get(k) if k != "spike" else x.get("spike_dates")
+        if not v or k in ("self", "none"):
+            return []
+        if k == "same_title":
+            return [{"ids": g["docs"], "why": f"「{g['title']}」這個標題共 {g['total']:,} 份", "by_url": True,
+                     "before": f"<h6 class='sq-g'>「{E(g['title'])}」<b>{g['total']:,} 份</b></h6>",
+                     "total": g["total"], "truncated": g.get("truncated")} for g in v["groups"]]
+        if k == "spike":
+            return [{"ids": d["docs"], "why": f"{d['day']} 這一天 {d['total']:,} 份共用伺服器時間，不拿它當日期",
+                     "before": f"<h6 class='sq-g'>{E(d['day'])}<b>{d['total']:,} 份共用這一天的伺服器時間</b></h6>",
+                     "total": d["total"], "truncated": d.get("truncated")} for d in v.get("days", [])]
+        one = {"ids": v.get("docs", []), "total": v.get("total"), "truncated": v.get("truncated")}
+        if k == "same_opening":
+            one["why"] = f"開頭和另外 {v['total'] - 1:,} 頁一模一樣：{v['opening'][:40]}…"
+        elif k == "fragments":
+            one["head"] = "<th>轉出來的字</th>"
+            one["cell"] = (lambda i: f"<td class='sq-x'><span data-tip='{E(self.meta.get(i, {}).get('s') or '')}'>"
+                                     f"{E((self.meta.get(i, {}).get('s') or '')[:40])}…</span></td>")
+        elif k == "no_date":
+            one["head"] = "<th>日期原文</th>"
+            one["cell"] = lambda i: f"<td class='sq-x'>{E(self.meta.get(i, {}).get('why') or '')}</td>"
+        return [one]
+
+    def rows(self, t: dict, start: int, count: int) -> str:
+        """The <tr>s of one list from start, count of them (the card's first part, or a part api reads)."""
+        self.why = t.get("why", "")
+        cell = t.get("cell") or (lambda i: "")
+        return "".join(self.row(i, cell(i), t.get("by_url", False)) for i in t["ids"][start:start + count])
+
+    def table(self, t: dict, g: int) -> str:
+        """One list: its first SHOW rows; when the build listed more, 「再列」 asks for the next SHOW (site.js reads
+        data-k, data-g and data-at, api answers) and the note under it says how many are drawn of how many."""
+        ids = t["ids"]
+        shown = min(len(ids), SHOW)
+        n = t["total"] if t.get("total") is not None else len(ids)
+        cut = "；建庫只存到上限" if t.get("truncated") else ""
+        more = (f"<p class='sq-more' data-n='{n}'>共 {n:,} 份<span class='sq-at'>"
+                + (f"，這裡列前 {shown:,} 份" if n > shown else "") + f"</span>{cut}</p>") if n > shown or cut else ""
+        if len(ids) > shown:
+            more += (f"<button type='button' class='sq-more-b' data-k='{E(self.k)}' data-g='{g}' data-at='{shown}' "
+                     f"data-of='{len(ids)}'>再列 {min(SHOW, len(ids) - shown):,} 份</button>")
+        return (f"<div class='sq-list'><table class='sq-tb'><thead><tr><th>{'網址' if t.get('by_url') else '文件'}</th>"
+                f"<th></th>{t.get('head', '')}<th>日期</th><th></th></tr></thead><tbody>{self.rows(t, 0, SHOW)}</tbody>"
+                f"</table>{more}</div>")
 
     def panel(self, k: str) -> str:
         x = self.x
@@ -159,39 +203,18 @@ class _Card:
                          f"<td class='sq-x' colspan='3'>{res}</td><td></td></tr>")
             return (f"<p class='sq-note'>抽 {v['sampled']} 份、用自己的標題去搜：前 {v['top']} 名找到 {v['found']} 份；下面是沒找到的</p>"
                     f"<table class='sq-tb'><thead><tr><th>用這個標題去搜</th><th colspan='3'>結果</th><th></th></tr></thead><tbody>{rows}</tbody></table>")
-        if k == "same_title":
-            out = ""
-            for g in v["groups"]:
-                self.why = f"「{g['title']}」這個標題共 {g['total']:,} 份"
-                out += (f"<h6 class='sq-g'>「{E(g['title'])}」<b>{g['total']:,} 份</b></h6>"
-                        + self.table(g["docs"], by_url=True, total=g["total"], truncated=g.get("truncated")))
-            return out
+        lists = "".join(t.get("before", "") + self.table(t, g) for g, t in enumerate(self.tables(k)))
         if k == "same_opening":
-            self.why = f"開頭和另外 {v['total'] - 1:,} 頁一模一樣：{v['opening'][:40]}…"
             return (f"<div class='sq-quote' data-tip='這幾頁開頭 80 個字一模一樣（去掉空白）'>{E(v['opening'])}</div>"
-                    f"<p class='sq-note'>有開頭的網頁 {v['of']:,} 頁，{v['total']:,} 頁是這一個</p>"
-                    + self.table(v["docs"], total=v["total"], truncated=v.get("truncated")))
-        if k == "fragments":
-            return self.table(v["docs"], "<th>轉出來的字</th>",
-                              lambda i: f"<td class='sq-x'><span data-tip='{E(self.meta.get(i, {}).get('s') or '')}'>"
-                                        f"{E((self.meta.get(i, {}).get('s') or '')[:40])}…</span></td>",
-                              total=v["total"], truncated=v.get("truncated"))
-        if k == "no_date":
-            return self.table(v["docs"], "<th>日期原文</th>", lambda i: f"<td class='sq-x'>{E(self.meta.get(i, {}).get('why') or '')}</td>",
-                              total=v["total"], truncated=v.get("truncated"))
-        if k == "empty":
-            return self.table(v["docs"], total=v["total"], truncated=v.get("truncated"))
+                    f"<p class='sq-note'>有開頭的網頁 {v['of']:,} 頁，{v['total']:,} 頁是這一個</p>" + lists)
         if k == "spike":
             if v.get("note"):
                 return f"<p class='sq-note'>{E(v['note'])}</p>"
             gap = v["counted"] - v["listed"]
-            out = (f"<p class='sq-note'>建庫記了 {v['counted']} 份，列得出 {v['listed']} 份"
-                   + (f"；差的 {gap} 份是併進其他文件的副本，庫裡沒有它們自己的編號" if gap else "") + "</p>")
-            for d in v["days"]:
-                self.why = f"{d['day']} 這一天 {d['total']:,} 份共用伺服器時間，不拿它當日期"
-                out += (f"<h6 class='sq-g'>{E(d['day'])}<b>{d['total']:,} 份共用這一天的伺服器時間</b></h6>"
-                        + self.table(d["docs"], total=d["total"], truncated=d.get("truncated")))
-            return out
+            return (f"<p class='sq-note'>建庫記了 {v['counted']} 份，列得出 {v['listed']} 份"
+                    + (f"；差的 {gap} 份是併進其他文件的副本，庫裡沒有它們自己的編號" if gap else "") + "</p>" + lists)
+        if k in ("same_title", "fragments", "no_date", "empty"):
+            return lists
         return "<p class='sq-note'>這個網站一份文件都沒收進庫；看下面「流程」哪一步沒有往下走。</p>"
 
 
@@ -207,7 +230,7 @@ def counts(x: dict) -> dict:
 
 def card(site: str, data: dict | None, conn: sqlite3.Connection, *, broken: bool = False) -> str:
     """The 品質提醒 section of one site's page; broken: the build's list was there but could not be read."""
-    head = "<section class='v3-q sq' id='quality' aria-label='品質提醒'><div class='v3-h'><h2>品質提醒</h2>"
+    head = f"<section class='v3-q sq' id='quality' data-site='{E(site)}' aria-label='品質提醒'><div class='v3-h'><h2>品質提醒</h2>"
     if broken:
         return (head + "</div><div class='card hm-card'><div class='hm-pad'><p class='sq-note'>這一版庫的提醒清單讀不了"
                 "（格式和面板對不上）；網站的其他部分照常</p></div></div></section>")
@@ -233,6 +256,38 @@ def card(site: str, data: dict | None, conn: sqlite3.Connection, *, broken: bool
     return (head + clock + "</div><div class='card hm-card'><div class='hm-pad'>"
             + (f"<div class='sq-tabs' role='tablist'>{btn}</div>{panes}" if tabs else "<p class='sq-note'>這個網站沒有品質提醒</p>")
             + "</div></div></section>")
+
+
+def _whole(value) -> int:
+    """A query string's whole number; anything else is 0."""
+    text = str(value if value is not None else "")
+    return int(text) if text.isdecimal() else 0
+
+
+def api(db_path: Path, params) -> tuple[int, dict]:
+    """GET /site/quality?site=&k=&g=&at=: the next SHOW rows of one of a reminder's lists on a site's page (its
+    「再列」 button; port audit 11-23: a list over SHOW could not be read past its first part). k: the reminder, g: which
+    of its lists (a title of 標題重複, a day of 檔案時間雷同; 0 for the others), at: where this part starts. (status,
+    {rows: the <tr>s as the card draws them, at: where the next part starts, of: how many the build listed}); 404 when
+    the library has no such list (the build's lists are read only while they are this library's, as card's are)."""
+    site, k = str(params.get("site") or "").strip(), str(params.get("k") or "")
+    g, at = _whole(params.get("g")), _whole(params.get("at"))
+    none = 404, {"error": "這一版庫沒有這份清單"}
+    if not site or k not in NAME:
+        return none
+    conn = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True)
+    try:
+        built = conn.execute("SELECT value FROM meta WHERE key = 'built_at'").fetchone()
+        x = ((load(Path(db_path).parent, built[0] if built else "") or {}).get("sites") or {}).get(site)
+        lists = _Card(site, x, {}).tables(k) if x else []
+        if g >= len(lists):
+            return none
+        part = lists[g]["ids"][at:at + SHOW]
+        c = _Card(site, x, lookup(conn, part))
+        c.k = k
+        return 200, {"rows": c.rows(c.tables(k)[g], at, SHOW), "at": at + len(part), "of": len(lists[g]["ids"])}
+    finally:
+        conn.close()
 
 
 def lay_out(body: str, quality: str) -> str:

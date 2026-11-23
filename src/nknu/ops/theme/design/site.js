@@ -1,4 +1,17 @@
 (()=>{const q=new URLSearchParams(location.search),ck=q.get('ck'),box=document.getElementById('quality');if(!box)return;const pick=k=>{box.querySelectorAll('.sq-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.k===k)));box.querySelectorAll('.sq-p').forEach(p=>p.hidden=p.dataset.k!==k)};box.querySelectorAll('.sq-tabs button').forEach(b=>b.onclick=()=>pick(b.dataset.k));const N={"none": "無文件", "self": "標題搜不到", "empty": "網頁無文字", "no_date": "無日期", "same_title": "標題重複", "same_opening": "選單混入正文", "fragments": "附件逐字斷行", "spike": "檔案時間雷同"},known=ck&&Object.prototype.hasOwnProperty.call(N,ck);if(known&&box.querySelector(`.sq-p[data-k='${ck}']`)){pick(ck);box.scrollIntoView({block:'start'})}const back=document.getElementById('sqBack');if(back&&known){back.href='/sites?ck='+encodeURIComponent(ck);back.textContent='‹ 內容 · ';const b=document.createElement('b');b.textContent=N[ck];back.append(b)}})();
+// 品質提醒: a list longer than the card draws has 「再列 N 份」 under it, which asks /site/quality for the next part (rows
+// as the card draws them, escaped on the server) and adds them; the note says how many are drawn of how many
+(()=>{const box=document.getElementById('quality');if(!box)return;
+  box.addEventListener('click',ev=>{const b=ev.target.closest&&ev.target.closest('.sq-more-b');if(!b||b.disabled)return;
+    const list=b.closest('.sq-list'),tb=list&&list.querySelector('tbody');if(!tb)return;const at=+b.dataset.at||0,of=+b.dataset.of||0;
+    const site=box.dataset.site||new URLSearchParams(location.search).get('site')||'';b.disabled=true;
+    fetch('/site/quality?'+new URLSearchParams({site,k:b.dataset.k||'',g:b.dataset.g||'0',at:String(at)}),{cache:'no-store'})
+      .then(r=>r.ok?r.json():null).catch(()=>null).then(j=>{b.disabled=false;
+        if(!j||typeof j.rows!=='string'||!(j.at>at)){b.textContent='讀不到，再試一次';return}
+        tb.insertAdjacentHTML('beforeend',j.rows);const now=j.at,step=now-at;b.dataset.at=String(now);
+        const note=list.querySelector('.sq-more'),cut=note&&note.querySelector('.sq-at'),n=note?+note.dataset.n||of:of;
+        if(cut)cut.textContent=now<n?`，這裡列前 ${now.toLocaleString()} 份`:'';
+        if(now>=of)b.remove();else b.textContent=`再列 ${Math.min(step,of-now).toLocaleString()} 份`})})})();
 (()=>{const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const EXT=`<svg viewBox='0 0 16 16' width='11' height='11' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M6.5 3.5H12.5V9.5M12.5 3.5 4 12'/></svg>`,DBI=`<svg viewBox='0 0 16 16' width='13' height='13' fill='none' stroke='currentColor' stroke-width='1.4' aria-hidden='true'><ellipse cx='8' cy='3.8' rx='5' ry='1.8'/><path d='M3 3.8v8.4c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V3.8M3 8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8'/></svg>`,q=new URLSearchParams(location.search);
 const st=$('#now .v3-state'),say=$('#now .st-say');if(st&&say){st.dataset.tip=say.textContent.trim();say.remove()}

@@ -13,3 +13,6 @@
 .prob .sub{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .pr-u{color:var(--ink3)}.pr-why{font-style:normal;padding:0 7px;border-radius:999px;background:var(--sunk);color:var(--ink2);font-size:11px;line-height:17px}
 .sv-key{display:none!important}.sw[data-tip]{cursor:help}
+/* a site's pages (list mode): 「再列 N 頁」 under the list asks the server for the next part */
+.pd-more{display:block;margin:8px auto 10px;padding:4px 14px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink2);font:12px var(--font);cursor:pointer}
+.pd-more:hover{border-color:var(--ink3);color:var(--ink)}.pd-more:disabled{opacity:.55;cursor:progress}.pd-more[hidden]{display:none}

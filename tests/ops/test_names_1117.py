@@ -31,7 +31,7 @@ def test_the_bar_names_each_page_for_what_it_answers():
     pages = json.loads((REPO / "src/nknu/ops/theme/panels.json").read_text(encoding="utf-8"))["pages"]
     # 總覽 first since 11-22; since that evening three entries by the question each answers (每晚運行 is reached from
     # 總覽, 單位 from 內容, and 文件搜尋 is the bar's box)
-    assert [p["name"] for p in pages] == ["總覽", "內容", "搜尋"]
+    assert [p["name"] for p in pages] == ["總覽", "內容", "檢索"]
     assert all(p["tip"] and "\n" not in p["tip"] and "今晚" not in p["tip"] for p in pages)
     html = bar.bar("tonight", "ops")
     assert "aria-current='true'>總覽</a>" in html and "每晚運行" not in html  # a night marks the entry it is reached from

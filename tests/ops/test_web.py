@@ -100,7 +100,7 @@ def test_an_empty_search_page_is_try_with_its_board(lib, tmp_path):
     page = lib.get("/search", follow_redirects=False)
     assert page.status_code == 307 and page.headers["location"] == "/try#tests"
     page = lib.get("/search")
-    assert page.status_code == 200 and "aria-current='page'>搜尋</a>" in page.text
+    assert page.status_code == 200 and "aria-current='page'>檢索</a>" in page.text
     assert "id='students'" not in page.text and "新題庫成績" not in page.text and "data-board='" not in page.text
 
 
@@ -123,10 +123,10 @@ def test_the_old_addresses_go_where_their_pages_went(lib):
 
 def test_the_second_tab_of_try_explains_the_search_on_the_library(lib):
     page = lib.get("/try", params={"tab": "why", "q": "停修", "doc": "dx"}).text
-    assert "aria-current='page'>搜尋</a>" in page and "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in page
+    assert "aria-current='page'>檢索</a>" in page and "<a aria-current='page' data-seam='why'>為什麼這樣排</a>" in page
     assert "class='rhead'" in page and "id='r-dx'" in page and "class='star'" in page  # search_page's rows, dx marked
     assert "<form class='ask follow' action='/try'" in page and "name='doc' value='dx'" in page
-    assert "<title>停修 · 搜尋</title>" in page
+    assert "<title>停修 · 檢索</title>" in page
 
 
 def _tests(root, questions: list[tuple[str, str, list[str]]]) -> tuple:
@@ -176,7 +176,7 @@ def test_the_trace_api_is_the_trace_itself(site):
 def test_the_trace_page_shows_the_five_steps(site):
     page = site.get("/trace", params={"ref": NOTICE_URL})
     assert page.status_code == 200
-    for word in ("① 抓取", "② 匯出", "③ 轉文字", "④ 建庫", "⑤ 搜尋", "115-1 停修公告", "公告頁日期欄", "註冊組",
+    for word in ("① 抓取", "② 匯出", "③ 轉文字", "④ 建庫", "⑤ 檢索", "115-1 停修公告", "公告頁日期欄", "註冊組",
                  "申請人：王OO。", "/check?id=80", "存檔裡的原樣", "/file?"):
         assert word in page.text, word
 
@@ -291,7 +291,7 @@ def test_the_top_bar_is_the_panels_one_bar(db, tmp_path):
         assert ">資料庫<svg" in page and "class='nk-mode'" in page and "翻庫" not in page, path
     bars = {path: page.split("<header class='nk-bar'>", 1)[1].split("</header>", 1)[0] for path, page in pages.items()}
     marked = {path: re.findall(r"aria-current='(?:page|true)'>([^<]+)<", b)[:1] for path, b in bars.items()}
-    assert marked == {"/": ["總覽"], "/try": ["搜尋"], "/doc": [], "/trace?ref=d3": []}
+    assert marked == {"/": ["總覽"], "/try": ["檢索"], "/doc": [], "/trace?ref=d3": []}
     assert all(("class='nk-find nk-on'" in b) == (path in ("/doc", "/trace?ref=d3")) for path, b in bars.items())
     assert "data-tip='收了什麼、缺什麼" in pages["/try"]  # what each entry is floats over its name
 
@@ -462,7 +462,7 @@ def test_a_test_question_is_shown_in_traditional_chinese_and_searched_as_written
         report = client.get("/api/search", params={"qid": "Q01"}).json()
     picker = page.split("<select name='qid'", 1)[1].split("</select>", 1)[0]
     assert "Q01　怎麼申請停修</option>" in picker and "怎么申请停修" not in picker
-    assert "<title>怎么申请停修 · 搜尋</title>" in page
+    assert "<title>怎么申请停修 · 檢索</title>" in page
     assert report["query"] == "怎么申请停修"
 
 

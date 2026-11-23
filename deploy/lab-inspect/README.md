@@ -5,9 +5,9 @@
 ## 现况（2026-11-22 夜）
 
 - **装在实验室上的**：`INSTALLED` 2026-11-22T23:45:18 b6a2b899（`FORCE=1`，原因见「经过」第一条；只重启了 ops 和 datasette，models、mcp 没动），上一版（23:28 7775d545）在 `/work/inspect-code.prev`。面板两个容器：检视台（`nknu-inspect-ops-1`，8878）和资料库（`nknu-inspect-datasette-1`，8001）；同一个 compose 里还有内部 MCP（8766）和模型服务（8780）。
-- **顶栏**：總覽（`/`）· 內容（`/sites`）· 搜尋（`/try`），一个找文件、网址、网站的框（送到 `/doc`），工具 網頁核查、資料庫。每晚運行（`/tonight`）从總覽点一晚进去；單位（`/units`）从內容切过去。
+- **顶栏**：總覽（`/`）· 內容（`/sites`）· 檢索（`/try`），一个找文件、网址、网站的框（送到 `/doc`），工具 網頁核查、資料庫。每晚運行（`/tonight`）从總覽点一晚进去；單位（`/units`）从內容切过去。
 - **總覽**：第一屏是一句话、三个数字（学生搜到的库、对外查询、该抓的抓到）、要處理（`todo.py`）、最近几晚；往下是全景。**標成已知**在要處理的每一行上，存在 ops.db 的 `known` 表（`POST /todo/known`，只收面板自己页面送来的）。
-- **搜尋**：空着的时候列出 33 题，点一题看它的标准答案排第几、为什么这样排（手动测，不会自己跑）。题库（278 题加 33 题）只拿来偶尔检测整个项目，不进每晚流程，面板不读它的成绩（用户 11-22 夜：「拿这些题目和答案做质量检查其实没什么意义……删了这个流程吧」）。品質檢查只看建库的 22 项真资料检查。
+- **檢索**（11-23 前叫搜尋）：空着的时候列出 33 题，点一题看它的标准答案排第几、为什么这样排（手动测，不会自己跑）。题库（278 题加 33 题）只拿来偶尔检测整个项目，不进每晚流程，面板不读它的成绩（用户 11-22 夜：「拿这些题目和答案做质量检查其实没什么意义……删了这个流程吧」）。品質檢查只看建库的 22 项真资料检查。
 - **存在 ops.db 的**（`nknu-ops` 磁碟区，面板唯一可写的地方）：每晚纪录；網頁核查的结果（`sweep_*` 表，`sweep_store.py`）；各步骤最后一次读到的、上次换库的比较、內容的统计（`kept` 表，`keep.py`）；标成已知的问题（`known`）。**重启不再重算**：这些重启后直接读出来；網頁核查只在帐本变了以后重查（帐本静 5 分钟后、每晚抓取时不动），读网页的程序改了才整轮重读（约 13 分钟）。
 - **打包带的检索程序不是 git 里的**：`retrieval/hybrid.py`、`search.py` 带着内容那边没提交的「删掉不再用的开关」（真资料比过结果一样）。那批改动若丢掉，要用 git 里的这两个档重打包、重装（内容2 11-22 23:30 提醒）。`server.py`、`respond.py` 和 git 一致（b6f2701）。
 - **compose 改挂 E 槽**：实验室 11-23 04:03 由 judge session 换上，用的是仓库这份 `compose.yaml`：
@@ -164,6 +164,22 @@ compose 档放在 `C:\nknu-transfer\inspect\compose.yaml`。
 - **检视工具用的是自己那份程序**，装在磁碟区的 `/work/inspect-code`，不是建库用的 `/work/src`。所以平常送 `code.tar` 不会换到它；建库的程序更新以后，要照下面「换程序」重装一次，检视台看到的打分和「没进库的原因」才是新的。忘了也会知道：检视台每一页上面写着它是什么时候装的，建库的程序和它装的那份不一样时，页面最上面会出一条红色的提醒。
 - **电脑重开机以后**要有人登入、Docker Desktop 开着，三个服务才会自己起来（和爬虫看板一样）。
 - **检视台的「测试题成绩板」是现算的。** 首页和搜索测试那一页最上面，每道测试题一格，写它最好的一份标准答案排第几。库换过、或隔了一天以后第一次打开那一页，它会在背景把 33 题各搜一次（一次一题，约一分钟，用显卡），格子一题一题填上；算过就记着，不再重搜。你自己搜的问题会排在它两题之间，最多等一题。
+
+## 硬盘分项（11-23 加）
+
+總覽「這台電腦」的 E 槽分成本專案（爬虫原档 `E:\nknu`、Docker 的磁碟 `E:\DockerData`）、Strata（`E:\Strata`）、其他。Docker 里看不到这些，所以实验室每 30 分钟自己量一次（只量大小，不读内容），写 `C:\nknu-transfer\inspect\machine\machine.json`，ops 只读挂在 `/machine`（`--machine`）。量的结果超过 3 小时没更新，页面就不分、在悬停里说上次量是什么时候。内存那格的百分比照 Docker 虚拟机能用的 62.6 GB 算（11-23 定的：服务真的会用完的是这一份）。
+
+装（PowerShell，在实验室电脑上）：
+
+```
+mkdir C:\nknu-transfer\inspect\machine          # 第一次才要
+# 从 Mac 拷 deploy/lab-inspect/machine/probe.ps1、probe.vbs 到这个资料夹
+schtasks /Create /TN nknu-machine-probe /TR "wscript.exe //B //Nologo C:\nknu-transfer\inspect\machine\probe.vbs" /SC MINUTE /MO 30 /F
+schtasks /Run /TN nknu-machine-probe               # 先量一次，大约一分钟写出 machine.json
+docker compose -f C:\nknu-transfer\inspect\compose.yaml up -d ops   # 新的挂载要 up -d，restart 挂不上
+```
+
+停掉：`schtasks /Delete /TN nknu-machine-probe /F`（页面就回到不分）。
 
 ## 測試（检视台「測試」，11-18 前叫「搜尋」）
 

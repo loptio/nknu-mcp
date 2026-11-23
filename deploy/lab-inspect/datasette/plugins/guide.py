@@ -58,7 +58,7 @@ OPS = {"exact": "等於", "not": "不等於", "contains": "包含", "endswith": 
 TRACE = theme.panels()["hosts"]["ops"].rstrip("/") + "/trace?ref="
 SITE_PAGE = theme.site_prefix("tables")
 # the map's groups: (key, the caption over its tables)
-GROUPS = (("site", "網站和建庫紀錄"), ("docs", "文件和它的資料"), ("unit", "單位"), ("index", "搜尋用的索引"))
+GROUPS = (("site", "網站和建庫紀錄"), ("docs", "文件和它的資料"), ("unit", "單位"), ("index", "檢索用的索引"))
 # (table, its name on the page, group, x and y of its box on the map, joins: (column, table it joins, that column))
 TABLES = (
     ("docs", "文件", "docs", 380, 280, (("site", "sites", "site"), ("parent_id", "docs", "doc_id"))),
