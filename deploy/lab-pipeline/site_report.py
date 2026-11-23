@@ -27,6 +27,12 @@ minutes in one process, 11-18), so they are shared among --jobs processes of thi
 stdin, their places on stdout), each with its own read-only connection; --jobs 1 searches in this process as before.
 What is drawn and what is found do not depend on the number of jobs (11-19).
 
+11-23 (the owner: a reminder is of no use unless the files behind it can be followed up and fixed): beside --checks
+goes DOCS_NAME (or --docs), the documents behind each reminder, by site: the title self-search's picks and every miss
+with its place, the pages without text, the documents without a date, each shared title's documents, the pages of the
+most common opening, the scattered files, and the files the build left undated for a shared server day (_spike_docs).
+A list longer than DOCS_CAP is cut and says so. site_checks.json itself is unchanged.
+
     python research/pipeline_2026-11-02/lab_pc/site_report.py --db research/pipeline_2026-11-02/aca.db \\
         --out research/pipeline_2026-11-02/site_report.md [--sample 20] [--top 10] [--today YYYY-MM-DD] [--jobs N]
 """
@@ -34,6 +40,7 @@ What is drawn and what is found do not depend on the number of jobs (11-19).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -47,6 +54,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from nknu.content.corpus import load_corpus
+from nknu.content.dates import kept_range, load_server_dates
+from nknu.content.documents import _server_day  # the build's own reading of a file's server day (Document.server_date)
 from nknu.core.textnorm import tokenize
 from nknu.core.timeutil import today_tpe
 from nknu.retrieval.search import search_docs
@@ -82,6 +92,8 @@ OPENING_PAGES = 20
 FRAGMENT_FLAG = 0.35
 FRAGMENT_LINES = 20
 FRAGMENT_MIN = 5
+DOCS_NAME = "site_check_docs.json"  # 11-23: the documents behind each reminder, beside --checks
+DOCS_CAP = 20_000  # 【Claude】 a list longer than this is cut (truncated: true); the 11-23 library's longest is far below
 FLAG_WORDS = {"none": "没有文件", "self": "标题自搜", "empty": "网页没文字", "no_date": "没日期", "same_title": "同名标题",
               "same_opening": "开头相同", "fragments": "碎字附件"}  # a reminder's kind -> its name in the report
 KIND_WORDS = {"notice": "公告", "page": "网页", "attachment": "附件", "event": "行事历", "link": "外部链接"}
@@ -113,6 +125,15 @@ class SiteRow:
     opening: tuple[int, int] | None = None  # (pages of the most common opening, pages with an opening); None: none
     fragments: int = 0  # attachments read as scattered characters
     spike_dates: int | None = None  # files the build left undated (meta date_spikes_json); None in a database before
+    # 11-23: the documents behind each of the above (doc_ids in the database's order unless said)
+    empty_ids: list[str] = field(default_factory=list)
+    no_date_ids: list[str] = field(default_factory=list)
+    same_title_groups: list[tuple[str, list[str]]] = field(default_factory=list)  # in same_title's order
+    opening_key: str = ""  # the most common opening (its first OPENING_CHARS characters, spaces taken out)
+    opening_ids: list[str] = field(default_factory=list)
+    fragment_ids: list[str] = field(default_factory=list)
+    spike_docs: list[tuple[str, str]] = field(default_factory=list)  # (doc_id, the server day it was not dated by)
+    spike_note: str = ""  # why spike_docs could not be listed
 
     @property
     def sampled(self) -> int:
@@ -208,19 +229,77 @@ def _fragmented(text: str) -> bool:
 
 
 def _text_checks(conn: sqlite3.Connection, rows: dict[str, SiteRow], site_col: str, args: tuple) -> None:
-    """Each site's opening and fragments, in one pass over the texts of its pages, notices and attachments."""
-    openings: dict[str, Counter[str]] = {}
-    for site, kind, text in conn.execute(
-            f"SELECT {site_col}, kind_class, text FROM docs WHERE text != '' AND kind_class IN ('page', 'notice', "
-            "'attachment')", args):
+    """Each site's opening and fragments, in one pass over the texts of its pages, notices and attachments, with the
+    documents behind them (11-23): the scattered files, and the pages of the most common opening."""
+    openings: dict[str, dict[str, list[str]]] = {}
+    for doc_id, site, kind, text in conn.execute(
+            f"SELECT doc_id, {site_col}, kind_class, text FROM docs WHERE text != '' AND kind_class IN ('page', "
+            "'notice', 'attachment')", args):
         if site not in rows:
             continue
         if kind == "attachment":
-            rows[site].fragments += _fragmented(text)
+            if _fragmented(text):
+                rows[site].fragments += 1
+                rows[site].fragment_ids.append(doc_id)
         elif len(key := "".join(text[:400].split())[:OPENING_CHARS]) >= OPENING_MIN:
-            openings.setdefault(site, Counter())[key] += 1
+            openings.setdefault(site, {}).setdefault(key, []).append(doc_id)
     for site, seen in openings.items():
-        rows[site].opening = (seen.most_common(1)[0][1], sum(seen.values()))
+        key, ids = max(seen.items(), key=lambda kv: len(kv[1]))  # the first most common, as Counter.most_common(1)
+        row = rows[site]
+        row.opening = (len(ids), sum(len(v) for v in seen.values()))
+        row.opening_key, row.opening_ids = key, ids
+
+
+def _found(path: str) -> Path | None:
+    """A file the database names (meta's paths are as the build was given them: relative to the repository)."""
+    if not path:
+        return None
+    return next((p for p in (Path(path), REPO / path) if p.is_file()), None)
+
+
+def _spike_docs(conn: sqlite3.Connection, meta: dict[str, str], rows: dict[str, SiteRow]) -> None:
+    """Which files the build left undated for a server day too many of a site's files share (11-23; the build keeps
+    only how many, meta date_spikes_json's by_site). A server day is always among a file's dates (build._facts: its
+    export row's 最后修改时间, else server_dates.json's), so an attachment the library holds undated whose corpus record
+    gives it one, by the build's own reading (documents._server_day; server_dates.json within dates.kept_range, as
+    build._server_dates), lost it to such a day (build._date_spikes). Only the sites the build counted are read, each
+    in the corpus meta inputs_json names, and only while that corpus is still the one the build read (its sha256).
+    Fewer than the build counted when copies were merged: the build counts before merging."""
+    try:
+        counts = json.loads(meta["date_spikes_json"]).get("by_site") or {}
+        inputs = json.loads(meta.get("inputs_json") or "[]")
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return
+    wanted = {s for s, n in counts.items() if _int(n) and s in rows}
+    if not wanted:
+        return
+    server: dict[str, date] = {}
+    if path := _found(meta.get("server_dates") or ""):
+        earliest, latest = kept_range()
+        server = {u: d for u, d in load_server_dates(path).items() if earliest <= d <= latest}
+    read = set()
+    for inp in inputs if isinstance(inputs, list) else []:
+        site = inp.get("site") if isinstance(inp, dict) else None
+        if site not in wanted:
+            continue
+        read.add(site)
+        row, corpus = rows[site], _found(str(inp.get("corpus") or ""))
+        if corpus is None:
+            row.spike_note = f"找不到建库读的语料 {inp.get('corpus')}"
+            continue
+        if inp.get("corpus_sha256") and hashlib.sha256(corpus.read_bytes()).hexdigest() != inp["corpus_sha256"]:
+            row.spike_note = f"语料 {corpus} 已经不是建库读的那一份"
+            continue
+        days: dict[str, date] = {}
+        for r in load_corpus(corpus):
+            if (day := _server_day(r) or server.get(r.url.split("#", 1)[0])) is not None:
+                days[r.url] = day
+        for doc_id, url in conn.execute("SELECT doc_id, url FROM docs WHERE site = ? AND kind_class = 'attachment' "
+                                        "AND ident_date IS NULL ORDER BY doc_id", (site,)):
+            if (day := days.get(url)) is not None:
+                row.spike_docs.append((doc_id, day.isoformat()))
+    for site in wanted - read:
+        rows[site].spike_note = "建库读的语料里没有这个网站"
 
 
 def site_rows(conn: sqlite3.Connection, *, today: date, sample: int = SAMPLE, top: int = TOP, seed: str = SEED,
@@ -257,17 +336,26 @@ def site_rows(conn: sqlite3.Connection, *, today: date, sample: int = SAMPLE, to
     picks: dict[str, list[_Doc]] = {}
     for site, row in rows.items():
         docs = by_site.get(site, [])
-        shared = [(t, n) for t, n in Counter(d.title for d in docs if d.kind in SEARCHED and d.title.strip()).most_common()
-                  if n >= SAME_TITLE]
+        titled = [d for d in docs if d.kind in SEARCHED and d.title.strip()]
+        shared = [(t, n) for t, n in Counter(d.title for d in titled).most_common() if n >= SAME_TITLE]
         row.same_title, row.same_title_top = sum(n for _, n in shared), shared[0] if shared else None
+        if shared:
+            by_title: dict[str, list[str]] = {}
+            for d in titled:
+                by_title.setdefault(d.title, []).append(d.doc_id)
+            row.same_title_groups = [(t, by_title[t]) for t, _ in shared]
         row.spike_dates = int(spikes.get(site, 0)) if spikes is not None else None
         row.kinds = dict(Counter(d.kind for d in docs))
         row.background = sum(d.tier == BACKGROUND for d in docs)
         pages = [d for d in docs if d.kind in PAGES]
-        row.pages, row.empty_pages = len(pages), sum(not d.chars for d in pages)
+        row.empty_ids = [d.doc_id for d in pages if not d.chars]
+        row.pages, row.empty_pages = len(pages), len(row.empty_ids)
         dated = [d for d in docs if d.kind in SEARCHED]
-        row.dated, row.no_date = len(dated), sum(not d.ident for d in dated)
+        row.no_date_ids = [d.doc_id for d in dated if not d.ident]
+        row.dated, row.no_date = len(dated), len(row.no_date_ids)
         picks[site] = _picks(row, docs, sample, seed)
+    if per_site and spikes:
+        _spike_docs(conn, meta, rows)
     flat = [(d.doc_id, d.title) for chosen in picks.values() for d in chosen]
     place = places(flat) if places is not None else places_here(conn, flat, today=today, aliases=aliases, top=top)
     for site, row in rows.items():
@@ -292,6 +380,44 @@ def checks(rows: list[SiteRow], *, db: Path, meta: dict[str, str], today: date, 
                                "spike_dates": r.spike_dates, "no_date": [r.no_date, r.dated],
                                "empty_pages": [r.empty_pages, r.pages], "self": [r.found, r.sampled]} for r in rows},
             "new": [list(pair) for pair in new]}
+
+
+def _listed(ids: list[str]) -> dict:
+    return {"total": len(ids), "truncated": len(ids) > DOCS_CAP, "docs": ids[:DOCS_CAP]}
+
+
+def doc_lists(rows: list[SiteRow], *, db: Path, meta: dict[str, str], today: date, top: int) -> dict:
+    """The documents behind each reminder (DOCS_NAME beside --checks, or --docs; 11-23), by site: its reminder kinds
+    (flags, as site_checks.json), the title self-search (picked: the documents searched; misses: each one not among
+    the first top, with its place, null past DEEP), and, when the site has any: empty, no_date, same_title (groups:
+    each shared title and its documents), same_opening (the most common opening and its pages, of how many with an
+    opening; two pages or more), fragments, spike_dates (counted: the build's number; listed: how many were found;
+    days: each server day and its files; note: why none could be listed). Every list is {total, truncated, docs}."""
+    sites: dict[str, dict] = {}
+    for r in rows:
+        s: dict = {"flags": r.flag_kinds,
+                   "self": {"sampled": r.sampled, "found": r.found, "top": top, "deep": DEEP, "picked": r.picked,
+                            "misses": [{"doc_id": d, "title": " ".join(t.split()), "place": p} for d, t, p in r.misses]}}
+        if r.empty_ids:
+            s["empty"] = _listed(r.empty_ids)
+        if r.no_date_ids:
+            s["no_date"] = _listed(r.no_date_ids)
+        if r.same_title_groups:
+            s["same_title"] = {"total": r.same_title,
+                               "groups": [{"title": " ".join(t.split()), **_listed(ids)} for t, ids in r.same_title_groups]}
+        if len(r.opening_ids) >= 2 and r.opening:
+            s["same_opening"] = {"opening": r.opening_key, "of": r.opening[1], **_listed(r.opening_ids)}
+        if r.fragment_ids:
+            s["fragments"] = _listed(r.fragment_ids)
+        if r.spike_dates or r.spike_docs or r.spike_note:
+            days: dict[str, list[str]] = {}
+            for doc_id, day in r.spike_docs:
+                days.setdefault(day, []).append(doc_id)
+            s["spike_dates"] = {"counted": r.spike_dates, "listed": len(r.spike_docs), "note": r.spike_note,
+                                "days": [{"day": day, **_listed(ids)} for day, ids in sorted(days.items())]}
+        sites[r.site] = s
+    return {"db": str(db), "built_at": meta.get("built_at") or "", "today": today.isoformat(), "cap": DOCS_CAP,
+            "sites": sites}
 
 
 def new_flags(rows: list[SiteRow], prev: dict | None) -> list[tuple[str, str]]:
@@ -422,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="另写一份程序读的检查档（build.sh 写 site_checks.json）：每站的提醒种类和数字，给资料总览和下一次建库比")
     ap.add_argument("--prev", type=Path, default=None,
                     help="上一次建库的检查档；给了就在报告开头列出「这次新出现的提醒」（读不了只说明，不算失败）")
+    ap.add_argument("--docs", type=Path, default=None,
+                    help=f"每一项提醒命中的文件编号另写一份（默认和 --checks 同一个资料夹的 {DOCS_NAME}；没给 --checks 就不写）")
     args = ap.parse_args(argv)
     if args.worker:
         return _worker(args.db, args.today or today_tpe(), args.top)
@@ -465,10 +593,15 @@ def main(argv: list[str] | None = None) -> int:
         args.checks.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(args.checks, json.dumps(checks(rows, db=args.db, meta=meta, today=today, new=new), ensure_ascii=False,
                                              indent=1).encode("utf-8"))
+    docs = args.docs or (args.checks.with_name(DOCS_NAME) if args.checks is not None else None)
+    if docs is not None and not _protected(docs):
+        docs.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(docs, json.dumps(doc_lists(rows, db=args.db, meta=meta, today=today, top=args.top),
+                                      ensure_ascii=False, indent=1).encode("utf-8"))
     flagged = [r.site for r in rows if r.flags]
     print(f"每个网站的检查：{len(rows)} 个网站，有提醒的 {len(flagged)} 个"
           + (f"（{'、'.join(flagged[:10])}{' 等' if len(flagged) > 10 else ''}）" if flagged else "")
-          + f"；写在 {args.out}（只是提醒，不挡建库）")
+          + f"；写在 {args.out}（只是提醒，不挡建库）" + (f"；每项命中的文件在 {docs}" if docs is not None else ""))
     return 0
 
 

@@ -359,7 +359,7 @@ STEP="准备 保留上一次的报告"
 previous=()
 for f in "$ACC"/accounting.jsonl "$ACC"/summary.json "$ACC"/summary.md "$C"/*.json "$O"/build_report.json \
   "$O"/gold_docs.json "$O"/gold_diff.txt "$O"/offline_*.json "$O"/offline_report_r3.md "$O"/offline_report_r4.md \
-  "$O"/checks.md "$O"/site_report.md "$O"/site_checks.json; do
+  "$O"/checks.md "$O"/site_report.md "$O"/site_checks.json "$O"/site_check_docs.json; do
   if [[ -f $f ]]; then previous+=("$f"); fi  # an unmatched glob stays a literal name: dropped here too
 done
 if ((${#previous[@]})); then

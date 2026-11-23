@@ -8,6 +8,7 @@ conversion; nothing outside tmp_path is written (build.sh --dry-run only prints)
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -807,3 +808,77 @@ def test_site_report_writes_the_checks_file_and_names_what_is_new(tmp_path):
     prev.write_text("{", encoding="utf-8")
     assert site_report.main(["--db", str(_many_db(tmp_path, "again.db")), "--out", str(out), "--prev", str(prev)]) == 0
     assert "读不了上一次的检查" in out.read_text(encoding="utf-8")
+
+
+# ---- site_report.py: the documents behind each reminder (11-23) ------------------------------------------------------
+
+def test_site_report_lists_the_documents_behind_each_reminder(tmp_path):
+    out, checks = tmp_path / "site_report.md", tmp_path / "site_checks.json"
+    assert site_report.main(["--db", str(_many_db(tmp_path)), "--out", str(out), "--checks", str(checks),
+                             "--today", "2026-11-16"]) == 0
+    docs = json.loads((tmp_path / site_report.DOCS_NAME).read_text(encoding="utf-8"))
+    assert docs["built_at"] == "2026-11-08T10:00:00+08:00" and docs["cap"] == site_report.DOCS_CAP
+    c = docs["sites"][SITE_C]
+    assert c["flags"] == json.loads(checks.read_text(encoding="utf-8"))["sites"][SITE_C]["flags"]
+    (group,) = c["same_title"]["groups"]
+    assert c["same_title"]["total"] == 15 and group == {"title": "相關檔案", "total": 15, "truncated": False,
+                                                        "docs": [f"dt{i:02}" for i in range(15)]}
+    assert c["same_opening"]["docs"] == [f"do{i:02}" for i in range(21)] and c["same_opening"]["of"] == 30
+    assert c["same_opening"]["total"] == 21 and c["same_opening"]["opening"].startswith("系統訊息")
+    assert c["fragments"]["docs"] == [f"df{i:02}" for i in range(5)]
+    self = c["self"]
+    assert (self["sampled"], self["top"], self["deep"]) == (20, site_report.TOP, site_report.DEEP)
+    assert len(self["picked"]) == 20 and len(self["misses"]) == 20 - self["found"]
+    assert all(m["place"] is None or m["place"] > site_report.TOP for m in self["misses"])
+    assert "empty" not in c and "no_date" not in c and "spike_dates" not in c  # nothing of the kind on this site
+    b, a = docs["sites"][SITE_B], docs["sites"][SITE_A]
+    assert b["empty"] == {"total": 3, "truncated": False, "docs": ["dq4", "dq5", "dq6"]}
+    assert b["no_date"]["docs"] == ["dq3", "dq4", "dq5", "dq6"]
+    assert a["empty"]["docs"] == ["dp2"] and a["no_date"]["docs"] == ["da2", "dp1", "dp2"]  # no event, no link
+    assert "same_opening" not in a  # no two pages of 教務處 open alike
+
+
+def test_site_report_lists_are_cut_at_the_cap_and_say_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(site_report, "DOCS_CAP", 2)
+    with _ro(_many_db(tmp_path)) as conn:
+        rows = site_report.site_rows(conn, today=date(2026, 11, 16))
+    docs = site_report.doc_lists(rows, db=Path("x.db"), meta={}, today=date(2026, 11, 16), top=10)
+    frag = docs["sites"][SITE_C]["fragments"]
+    assert frag == {"total": 5, "truncated": True, "docs": ["df00", "df01"]}
+
+
+def _spike_corpus(tmp_path: Path, modified: dict[str, str]) -> Path:
+    """A corpus of SITE_C's files, each with the 最后修改时间 given (an address as _report_db writes it)."""
+    rows = [{"id": doc_id, "kind": "pdf", "url": f"https://x.test/{doc_id}", "file": "", "title": doc_id, "text": "",
+             "linktext": "", "linked": [], "site": SITE_C, "fetched": "2026-11-15T01:00:00+08:00", "modified": when}
+            for doc_id, when in modified.items()]
+    path = tmp_path / "corpus" / "c.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_site_report_lists_the_files_left_undated_for_a_shared_server_day(tmp_path):
+    files = [(f"ds{i}", SITE_C, "attachment", f"表單{i}", f"第 {i} 份表單。", None, "primary") for i in range(3)]
+    files += [("ds8", SITE_C, "attachment", "有日期的表", "有日期的表。", "2026-10-22", "primary"),
+              ("ds9", SITE_C, "attachment", "沒有時間的表", "沒有時間的表。", None, "primary")]
+    corpus = _spike_corpus(tmp_path, {"ds0": "2026-10-22T09:00:00+08:00", "ds1": "2026-10-22T10:00:00+08:00",
+                                      "ds2": "2026-10-23T11:00:00+08:00", "ds8": "2026-10-22T09:30:00+08:00", "ds9": ""})
+    db = _many_db(tmp_path, docs=files, spikes={"on": True, "by_site": {SITE_C: 4}})
+
+    def run(sha: str) -> dict:
+        with sqlite3.connect(db) as conn:
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('inputs_json', ?)", (json.dumps(
+                [{"corpus": str(corpus), "corpus_sha256": sha, "export": "exports/700", "site": SITE_C}]),))
+        with _ro(db) as conn:
+            rows = site_report.site_rows(conn, today=date(2026, 11, 16))
+            meta = site_report._meta(conn)
+        return site_report.doc_lists(rows, db=db, meta=meta, today=date(2026, 11, 16), top=10)["sites"][SITE_C]
+
+    spikes = run(hashlib.sha256(corpus.read_bytes()).hexdigest())["spike_dates"]
+    # the undated files with a server day: the build took that day away; the dated one and the one without a day are not
+    assert (spikes["counted"], spikes["listed"], spikes["note"]) == (4, 3, "")
+    assert spikes["days"] == [{"day": "2026-10-22", "total": 2, "truncated": False, "docs": ["ds0", "ds1"]},
+                              {"day": "2026-10-23", "total": 1, "truncated": False, "docs": ["ds2"]}]
+    stale = run("0" * 64)["spike_dates"]  # the corpus is no longer the one the build read: nothing is listed, and why
+    assert (stale["listed"], stale["days"]) == (0, []) and "不是建库读的那一份" in stale["note"]

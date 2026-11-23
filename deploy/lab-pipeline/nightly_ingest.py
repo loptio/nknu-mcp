@@ -862,9 +862,9 @@ def rollback(paths: Paths) -> int:
 # What a build leaves beside its library (build.sh's <out>: the pipeline folder for the library in use, a trial's own
 # folder for a trial), as the panels read it beside aca.db; the corpora are not among them (the library names its own,
 # meta inputs_json, wherever they are).
-REPORTS = ("build_report.json", "site_report.md", "site_checks.json", "totext/accounting.jsonl", "totext/summary.json",
-           "totext/summary.md", "gold_docs.json", "gold_diff.txt", "offline_report_r3.md", "offline_report_r4.md",
-           "checks.md")
+REPORTS = ("build_report.json", "site_report.md", "site_checks.json", "site_check_docs.json", "totext/accounting.jsonl",
+           "totext/summary.json", "totext/summary.md", "gold_docs.json", "gold_diff.txt", "offline_report_r3.md",
+           "offline_report_r4.md", "checks.md")
 REPORT_GLOBS = ("offline_*.json",)
 _TRIAL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 _NOT_TRIALS = frozenset({"aca", "aca.prev", "aca.held", "aca.rolled-back"})
