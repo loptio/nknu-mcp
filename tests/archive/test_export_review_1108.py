@@ -142,8 +142,13 @@ def _service(tmp_path: Path, arch, **env) -> tuple[int, str]:
         (tmp_path / "list.txt").write_text(f"{SITE}  # 教务处\n", encoding="utf-8")
     # OLD_COPIES '' (no copies) unless a test sets it: unset, the service takes the lab's copies folder (11-17);
     # OLD_COPIES=None leaves it unset
+    # a list folder of the test's own, its one list naming nothing: with no list found at all the service deletes no
+    # older folder (11-23), and the lab's default folder is not on this machine
+    no_names = tmp_path / "lists-naming-nothing"
+    no_names.mkdir(exist_ok=True)
+    (no_names / "exports.txt").write_text("", encoding="utf-8")
     run_env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-               "EXPORT_BASE": str(tmp_path / "sites"), "ARCHIVE_DIR": str(arch.root),
+               "EXPORT_BASE": str(tmp_path / "sites"), "ARCHIVE_DIR": str(arch.root), "EXPORT_LISTS": str(no_names),
                "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"), "OLD_COPIES": "", **env}
     run_env = {k: v for k, v in run_env.items() if v is not None}
     got = subprocess.run(["bash", str(SERVICE), str(tmp_path / "list.txt")], env=run_env, capture_output=True,
@@ -222,6 +227,37 @@ def test_the_export_service_never_deletes_a_folder_the_content_stages_export_lis
     (lists / "exports-pilot.txt").write_text(f"# {second}\n", encoding="utf-8")  # a comment names nothing
     fifth, said = run()
     assert kept() == sorted([fourth.name, fifth.name]) and "没删" not in said, said
+
+
+@pytest.mark.skipif(not SERVICE.exists() or shutil.which("bash") is None,
+                    reason="the lab tools are on the disk and in code.tar, not in git")
+def test_the_export_service_deletes_no_older_folder_when_it_finds_no_export_list_at_all(tmp_path):
+    """2026-11-23, found by the content session: with no list found at all (their folder moved, the lists renamed)
+    every older folder read as one nobody uses, and the keep-two rule deleted them, the ones the library still reads
+    among them. No list found: nothing older is deleted, and the log says so."""
+    arch = make_archive(tmp_path / "archive")
+    lists = tmp_path / "moved away"  # not there
+
+    def run() -> tuple[Path, str]:
+        code, said = _service(tmp_path, arch, FORCE="1", EXPORT_LISTS=str(lists))
+        assert code == 0 and f"好了 {SITE}" in said, said
+        return _current(tmp_path), said
+
+    def kept() -> list[str]:
+        return sorted(p.name for p in (tmp_path / "sites").iterdir() if p.is_dir())
+
+    first, _said = run()
+    second, _said = run()
+    third, said = run()
+    assert kept() == sorted([first.name, second.name, third.name]) and "删掉" not in said, said
+    assert f"找不到内容那边的导出清单（{lists} 里没有 exports 开头的 .txt）" in said, said
+    lists.mkdir()
+    (lists / "notes.txt").write_text(f"{first}\n", encoding="utf-8")  # the folder is there, with no list in it
+    fourth, said = run()
+    assert kept() == sorted([first.name, second.name, third.name, fourth.name]) and "找不到内容那边的导出清单" in said
+    (lists / "exports.txt").write_text("", encoding="utf-8")  # a list that names nothing: the keep-two rule again
+    fifth, said = run()
+    assert kept() == sorted([fourth.name, fifth.name]) and "找不到内容那边的导出清单" not in said, said
 
 
 # ---------------------------------------------------------------- --reuse, --out

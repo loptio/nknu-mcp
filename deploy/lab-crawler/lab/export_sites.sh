@@ -21,6 +21,7 @@
 #   - 每站只留现用的和上一份，更旧的删掉（硬链接的档不会跟着没：删的只是旧资料夹里的那个名字）；内容 session 的导出清单
 #     （EXPORT_LISTS 资料夹里 exports 开头的 .txt，平时是 /work/research/pipeline_2026-11-02/：build.sh 读 exports.txt，
 #     或 EXPORTS 指的另一份，例如 exports-pilot.txt）写着的资料夹一律不删，它的建库要读（11-08 内容 session 的要求）；
+#     那个资料夹里一份清单都找不到时，更旧的一个都不删，并在 export.log 里说出来（11-23）；
 #   - 导好的写进 current.tsv（网站键<TAB>资料夹，一站一行），失败的写进 failed.tsv；过程写 export.log。
 #   - NIGHTLY=1（每晚的定期更新叫它，导出那一批 T7）：不看「还没爬完」（休息中的服务器的网址留到下一晚，不挡导出）；
 #     设了 EXPORT_RESULTS 就把每站的结果写进那个档（网站键<TAB>ok｜unchanged｜failed｜not_ready｜held，held 再加<TAB>原因），
@@ -60,6 +61,13 @@ nknu() { python -c 'from nknu.admin.cli import app; app()' "$@"; }
 field() {  # field <file> <site> <column>: that column of the site's line (Tab 分隔), 没有就空的
   [ -f "$1" ] && awk -F'\t' -v s="$2" -v c="$3" '$1 == s {print $c; exit}' "$1"
 }
+# 内容那边的导出清单一份都找不到（它的资料夹搬走了、清单改了名）时，更旧的导出一个都不删（11-23，内容 session 发现的）：
+# 不然每个资料夹都会被当成没人用，照「每站留两份」删下去，库还在读的旧导出就跟着没了。读不了的清单本来就当成写着。
+no_lists=0
+if ! ls "$LISTS"/exports*.txt >/dev/null 2>&1; then
+  no_lists=1
+  say "找不到内容那边的导出清单（${LISTS} 里没有 exports 开头的 .txt）：这一次更旧的导出一个都不删"
+fi
 for p in "$BASE"/*.partial; do
   [ -e "$p" ] || continue
   say "清掉上次残留的 $p"
@@ -213,6 +221,7 @@ for site in "${sites[@]}"; do
     # all but the newest two (awk, not GNU head -n -2: the same on the Mac, where the tests run it too)
     ls -d "$BASE/$slug"-2*[0-9] 2>/dev/null | sort | awk '{a[NR] = $0} END {for (i = 1; i <= NR - 2; i++) print a[i]}' \
       | while IFS= read -r old; do
+      [ "$no_lists" -eq 0 ] || continue
       if lst=$(in_use "$old"); then
         say "没删这个网站更旧的一份 ${old}：内容 session 的导出清单 ${lst} 写着它（建库要读）"
         continue

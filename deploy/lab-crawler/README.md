@@ -144,7 +144,7 @@ docker compose -f C:\nknu-crawl\compose.yaml run --rm -v C:/nknu-crawl/in/<资�
 
 - 网站名单 `config/archive_round1.json` 在实验室上有第三份，是内容那边的：`/work/config/archive_round1.json`。转文字和建库从它读「第一轮有哪些网站」（判断一个网页是不是学校自己的），面板读站名、首页、imp、第几轮。名单动了第一轮有哪些网站，或站名、首页、imp、platform、why，就告诉内容那边把那份也换掉（它的做法是先把旧档存进 `/work/previous/` 再换）；只动爬虫自己的栏位（caps、revisit、skip）不用管。`check_lab.sh` 每次都会说那一份和这一包的一不一样。
 - `nightly_update.cmd` 在抓取之后叫 `C:\nknu-transfer\build\nightly_ingest.cmd`。那个档搬了位置，这里要跟着改一行。
-- `export_sites.sh` 把导出写到 `/work/archive-export/sites/`，每站留现用的和上一份；内容那边 `/work/research/pipeline_2026-11-02/` 里 `exports*.txt` 写着的资料夹一律不删。那几份清单搬了位置，要改这支脚本开头的 `EXPORT_LISTS`。
+- `export_sites.sh` 把导出写到 `/work/archive-export/sites/`，每站留现用的和上一份；内容那边 `/work/research/pipeline_2026-11-02/` 里 `exports*.txt` 写着的资料夹一律不删。那几份清单搬了位置，要改这支脚本开头的 `EXPORT_LISTS`。那个资料夹里一份 `exports*.txt` 都找不到时（搬走了、改了名），更旧的导出一个都不删，`export.log` 会写「找不到内容那边的导出清单」：看到这一句就是 `EXPORT_LISTS` 指错了地方，旧导出会一直攒着，要去改。
 - 每晚最后写 `/work/archive-export/sites/seen.tsv` 和 `current.tsv`，内容的每晚进库读它们。
 - 内容读每个导出资料夹的 `manifest.json`。图片行有三栏它靠着用，写法不能随便改：「网址」（它拿网页里 `<img>` 的网址来对，所以协作平台的图要写成网页档现在写的那个网址）、「本地档案」（几行可以共用一个档）、「链到它的网页」（它的换库把关靠这一栏认「这张图的字并进了哪一页」，要一直写显示这张图的那几页）。改这三栏以前先跟内容对好。
 
