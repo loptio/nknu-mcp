@@ -59,7 +59,7 @@ def test_the_schedule_s_chain_names_files_the_kit_holds():
 
 def test_the_night_has_what_it_needs_and_nothing_else_holds_the_key():
     services = compose()["services"]
-    assert sorted(services) == ["nightly", "rejudge", "status", "stop", "warc-backup"]
+    assert sorted(services) == ["coverage", "nightly", "rejudge", "status", "stop", "warc-backup"]
     night = services["nightly"]
     assert night["image"] == "nknu-browser" and night["environment"]["PYTHONPATH"] == "/crawl/code-update/src"
     assert night["environment"]["TZ"] == "Asia/Taipei" and night["environment"]["NKNU_SCHOOL_LOCK"]
@@ -90,6 +90,19 @@ def test_the_raw_files_backup_cannot_write_the_source_and_runs_after_the_ingest(
     assert ingest < backup and cmd.rstrip().endswith("exit /b %RC%")
     assert "nknu.archive import crawler, export, monitor, round1, schedules, update, viewer, warcbackup" in (
         KIT / "install.sh").read_text(encoding="utf-8")  # an install says so when the new program does not load
+
+
+def test_the_night_s_coverage_is_written_after_the_ingest_by_a_service_of_its_own():
+    # 2026-11-23: each night's count by site, for the panels. It only reads the ledger and writes one file among the
+    # crawler's reports; the schedule runs it after the ingest, so nothing it does holds the night up.
+    svc = compose()["services"]["coverage"]
+    assert svc["volumes"] == ["nknu-crawl:/crawl"] and svc["network_mode"] == "none"
+    run = svc["entrypoint"]
+    assert run[0] == "timeout" and "nknu.archive.coverage" in run and run[-2:] == ["--dir", "/crawl/archive"]
+    cmd = (KIT / "nightly_update.cmd").read_text(encoding="ascii")
+    ingest, cover = cmd.index("nightly_ingest.cmd >>"), cmd.index("run --rm coverage --quiet")
+    assert ingest < cover < cmd.index("run --rm warc-backup") and cmd.rstrip().endswith("exit /b %RC%")
+    assert "schedules, update, viewer, warcbackup, coverage" in (KIT / "install.sh").read_text(encoding="utf-8")
 
 
 def test_nothing_in_the_kit_starts_the_old_viewer_or_installs_a_copy_for_it():

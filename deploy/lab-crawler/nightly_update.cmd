@@ -20,6 +20,12 @@ echo %date% %time% ingest start>> "%TASKLOG%"
 call C:\nknu-transfer\build\nightly_ingest.cmd >> "%TASKLOG%" 2>&1
 set "IRC=%errorlevel%"
 >> "%TASKLOG%" echo %date% %time% ingest end, exit code %IRC%
+rem 2026-11-23: then the night's coverage by site is written for the panels (reports/coverage.jsonl). It only
+rem reads the ledger, runs after the ingest, and does not change the task's exit code.
+echo %date% %time% coverage start>> "%TASKLOG%"
+docker compose -f C:\nknu-crawl\compose.yaml run --rm coverage --quiet >> "%TASKLOG%" 2>&1
+set "CRC=%errorlevel%"
+>> "%TASKLOG%" echo %date% %time% coverage end, exit code %CRC%
 rem 2026-11-23: last, the raw crawl files (E:\nknu\warc) are copied to the backup disk (D:\nknu-backup\crawler-warc):
 rem files the backup lacks, each read back and checked by SHA-256; nothing is deleted there and the source is mounted
 rem read-only. It runs after the ingest so that nothing it does can hold the ingest up, and it does not change the

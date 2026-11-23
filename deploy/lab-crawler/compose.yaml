@@ -4,6 +4,7 @@
 #   docker compose -f C:\nknu-crawl\compose.yaml run --rm stop         有计划地停：写 STOP，正在跑的抓取做完手上的请求就结束
 #   docker compose -f C:\nknu-crawl\compose.yaml run --rm status       爬虫健康报告（不连网）
 #   docker compose -f C:\nknu-crawl\compose.yaml run --rm rejudge --sites <网站键,…>   规则改了重算（不连网、不重抓）
+#   docker compose -f C:\nknu-crawl\compose.yaml run --rm coverage       把这一晚各网站抓到、没抓到的数量记一行（给面板）
 #   docker compose -f C:\nknu-crawl\compose.yaml run --rm warc-backup    把原档拷一份到备份的硬盘（排程每晚最后跑；
 #                                                                       后面加 --check 只看要拷几个、什么都不拷）
 # 手动跑别的脚本（补抓、导出几个站、试跑）也用 nightly 这个服务，它带着程序、锁、金钥和要挂的资料夹：
@@ -54,6 +55,16 @@ services:
       - nknu-crawl:/crawl
       - E:/nknu/warc:/crawl/archive/warc:ro
     entrypoint: ["python", "-c", "from nknu.admin.cli import app; app()", "archive", "rejudge", "--dir", "/crawl/archive"]
+  coverage:
+    # 每晚各网站的抓取覆盖数字（11-23，面板要画「抓到 ÷ 该抓」的走势和每站那一晚的数字）：只读账本，照面板自己的算法
+    # （url_result 按网站和结果数，用 outcome.user_bucket 归类，第二轮开着的批次分开算），一晚一行写进
+    # /crawl/archive/reports/coverage.jsonl；同一晚重算会换掉那一行。排程档在内容的进库回来以后跑它，不连网。
+    # 补历史：加 -v D:/nknu-backup/crawler-nightly:/b:ro，后面接 --db /b/nightly-<年月日>-<时分秒>.db
+    # （每晚的备份是那一天开跑前的账本，算成前一天那一行）。
+    <<: *tool
+    volumes:
+      - nknu-crawl:/crawl
+    entrypoint: ["timeout", "-k", "30", "1800", "python", "-m", "nknu.archive.coverage", "--dir", "/crawl/archive"]
   warc-backup:
     # 原档的每晚备份（11-23）：E 槽的原档是唯一完整的一份，里面有些网页学校已经删了、没办法重抓，所以每晚拷一份到
     # 另一颗硬盘。排程档 nightly_update.cmd 在内容的进库回来以后才跑它，它出什么事都拦不到进库。

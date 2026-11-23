@@ -74,7 +74,7 @@ for c in $COPIES; do
   done
   find "$d/src" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
   if (cd "$d" && PYTHONPATH="$d/src" PYTHONDONTWRITEBYTECODE=1 python3 -c "
-from nknu.archive import crawler, export, monitor, round1, schedules, update, viewer, warcbackup
+from nknu.archive import crawler, export, monitor, round1, schedules, update, viewer, warcbackup, coverage
 from nknu.admin.cli import app
 round1.load()" 2>"$T/load.err"); then
     echo "  ${d}：换了 ${changed} 个档、新放 ${added} 个、拿掉 ${gone} 个；程序载得进来"

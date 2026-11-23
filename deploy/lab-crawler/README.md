@@ -8,8 +8,8 @@
 
 | 仓库里 | 实验室电脑上 | 做什么 |
 |---|---|---|
-| `compose.yaml` | `C:\nknu-crawl\compose.yaml` | 五个服务：`nightly`（每晚的定期更新，手动跑脚本也用它）、`warc-backup`（原档的每晚备份）、`stop`、`status`、`rejudge`（手动工具）。没有会听端口的服务 |
-| `nightly_update.cmd` | `C:\nknu-crawl\nightly_update.cmd` | 排程跑的那一个档：先跑 `nightly`，再叫内容那边的每晚进库（`C:\nknu-transfer\build\nightly_ingest.cmd`），最后跑 `warc-backup` 把原档拷一份到备份的硬盘，各记一行到 `nightly-task.log` |
+| `compose.yaml` | `C:\nknu-crawl\compose.yaml` | 六个服务：`nightly`（每晚的定期更新，手动跑脚本也用它）、`coverage`（每晚各网站的抓取覆盖数字，给面板）、`warc-backup`（原档的每晚备份）、`stop`、`status`、`rejudge`（手动工具）。没有会听端口的服务 |
+| `nightly_update.cmd` | `C:\nknu-crawl\nightly_update.cmd` | 排程跑的那一个档：先跑 `nightly`，再叫内容那边的每晚进库（`C:\nknu-transfer\build\nightly_ingest.cmd`），然后跑 `coverage` 记这一晚各网站的抓取覆盖数字，最后跑 `warc-backup` 把原档拷一份到备份的硬盘，各记一行到 `nightly-task.log` |
 | `nightly_hidden.vbs` | `C:\nknu-crawl\nightly_hidden.vbs` | 不开视窗地跑上面那个档（有人把视窗关掉，那一晚就断了） |
 | `lab/nightly_update.sh` | `/crawl/code-update/lab/` | 每晚的步骤：备份账本 → 放回今晚要看的 → 课表学期 → 抓取 → 复核 → 开浏览器的 5 站 → 导出有变的站 → 写 `seen.tsv` |
 | `lab/export_sites.sh` | `/crawl/code-update/lab/` | 导出一批网站（每晚叫它；白天手动导也用它） |
@@ -45,6 +45,22 @@ schtasks /create /tn nknu-nightly-update /sc daily /st 01:00 /it /tr "wscript.ex
 ```
 
 每晚 01:00～04:00 在跑，这段时间不装程序、不重启东西。那一晚的经过在存档的 `update.log`，结果在 `reports/update-status.json`；排程自己只在 `C:\nknu-crawl\nightly-task.log` 记开始和结束。想停一晚：在 `/crawl/archive` 放一个 `update.pause`。
+
+## 每晚各网站的抓取覆盖数字
+
+面板要画「抓到 ÷ 该抓」的每晚走势，还要显示某一站在某一晚抓到多少、没抓到的各有多少。它原来是从每晚的账本备份算的，但面板的容器读不到备份，备份也只留 7 份。所以排程在内容的进库回来以后跑 `coverage` 服务，把这一晚的数字记下来。程序是 `src/nknu/archive/coverage.py`。
+
+- 写在 `/crawl/archive/reports/coverage.jsonl`，一晚一行，照日期排；同一晚重算会换掉那一行。面板的容器只读挂着这个磁碟区，直接读。
+- 算法和面板自己的一样（`nknu.ops.pipeline.crawl_buckets`）：账本的 `url_result` 按网站和结果数，用 `outcome.user_bucket` 归类；第二轮开着的批次（`round2_promoted` 的行和开批以后新增的行）分开放。爬虫在实验室的那份程序里没有 `nknu.ops`，所以这段查询在爬虫这边也写了一份：面板那边改算法，这边要跟着改。
+- 一行的栏位：`night`（开跑那天；这一行是那一次跑完以后账本的样子）、`ledger`（`live`，或补历史时用的备份档名）、`written_at`、`round2_open`、`sites`（每个网站键底下 `buckets` 各类几个、`review` 待确认的按结果码各几个、第二轮开着的网站另有 `batch`）。不写全校总数：哪些网站算在内（正式库有的网站）是面板定的。
+- 只读账本，不连网，不改排程的退出码；失败了只是那一晚少一行，手动补：
+
+```text
+docker compose -f C:\nknu-crawl\compose.yaml run --rm coverage
+docker compose -f C:\nknu-crawl\compose.yaml run --rm -v D:/nknu-backup/crawler-nightly:/b:ro coverage --db /b/nightly-<年月日>-<时分秒>.db
+```
+
+第一行照现在的账本补最近这一晚；第二行从一份每晚备份补（备份是那一天开跑前的账本，所以算成前一天那一行）。白天手动动过账本的日子，变动会算在当天那一行里。
 
 ## 原档的每晚备份
 
@@ -154,6 +170,6 @@ docker compose -f C:\nknu-crawl\compose.yaml run --rm -v C:/nknu-crawl/in/<资�
 
 - **函数**：`progress.connect`（只读开账本）、`postback.read_response(root, warc, offset)`（读一笔存下来的记录）、`outcome`、`profiles`、`scope`、`links`（连私有的 `links._base`）、`google_api`、`export.redecode`。
 - **账本**：视图 `url_result`、`action_result`；表 `url`、`link`、`action`、`page_res`、`drive_item`、`site_plan`、`round2_promoted`、`event`（认 `run_start`、`run_end`、`jsfetch_start`、`jsfetch_end`，后两个还读讯息里各站的数字）、`meta`（键 `round2:open`）。
-- **状态档**（都在存档的 `reports/`；另有 `warc-backup.json` 是原档每晚备份的结果，栏位见上面「原档的每晚备份」，面板要读时照那里的栏位）：`update-status.json`（`night_started`、`counts`、`sites_changed`、`revisit_tonight`、`revisit_idle`、`put_back.revisit`）、`schedule-term.json`、`export-owed.json`；还有存档根目录的 `update.pause`。
+- **状态档**（都在存档的 `reports/`；另有 `warc-backup.json` 是原档每晚备份的结果、`coverage.jsonl` 是每晚各网站的抓取覆盖数字，栏位见上面各自那一节，改栏位以前先跟面板说）：`update-status.json`（`night_started`、`counts`、`sites_changed`、`revisit_tonight`、`revisit_idle`、`put_back.revisit`）、`schedule-term.json`、`export-owed.json`；还有存档根目录的 `update.pause`。
 - **`update.log` 里的原话**（`lab/nightly_update.sh` 写的，面板靠它们切出每晚的各个时段）：「定期更新开始」「有 update.pause」「上一晚的定期更新还在跑」「备份好了」「放回好了」「run 结束」「变动清单算好了」「run 没有好好结束」「停在：」「导出好了」「今晚没有要导出的网站」「定期更新结束」「JS 网站开始」「JS 网站结束」。
 - **导出资料夹**（`/work/archive-export/sites/`）：`current.tsv`、`failed.tsv`、`export.log`，每站的 `manifest.csv`（「存档编号」的 `u<编号>`、`a<编号>`，「结果」栏的「抓到了」，「缺什么」栏的用语）。
