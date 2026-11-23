@@ -696,6 +696,31 @@ def test_a_kind_decided_out_left_for_a_reason(tmp_path):
         del build.LEFT_WORDS["decided_made_up"]
 
 
+def test_an_album_photo_left_for_a_reason_whichever_row_of_its_address_comes_first(tmp_path):
+    # 11-23: the export declines an album's photos (原因代码 album) and may still give a file for one on a row of its
+    # own; the build leaves every such picture out (DECLINED_OUT, _leave_declined) and counts it as explained, and so
+    # does the panels' own comparison, whichever of the address's rows the manifest lists first
+    album = {"分类": build.RULE_DECLINED, "结果": "按规则不抓", "本地档案": "", "缺什么": "", "原因代码": "album"}
+    saved = {"类型": "图片", "本地档案": "files/1.jpg", "缺什么": ""}
+    pic1, pic2 = U + "case/1/thumbnail/a_s.jpg", U + "case/2/thumbnail/b_s.jpg"
+    honor = U + "honorroll/case/3/c_s.jpg"
+    folder = manifest(tmp_path, "exp/a-2", [{"网址": pic1, **album}, {"网址": pic1, **saved},
+                                             {"网址": pic2, **saved}, {"网址": pic2, **album},
+                                             {"网址": honor, **album}])
+    new = {"aliases": {}, "urls": {}, "sites": {"a": {"name": "範例系", "export": folder, "docs": 0}}, "docs": {}}
+    prev = {"sites": {"a": {"name": "範例系", "export": "exp/a-1", "docs": 3}}}
+    m = ch.Manifests(tmp_path)
+
+    def left(url: str) -> tuple[str, str]:
+        return ch.why_left("d1", ("a", "attachment", "圖", url, "", 36, "x"), new, prev, m)
+
+    assert left(pic1) == ("decided_out", "相簿照片") == left(pic2)
+    assert left(honor)[0] == "not_fetched"  # an honor roll's picture the build keeps: if it left, it is still looked at
+    assert ch.DECLINED_OUT == build.DECLINED_OUT and ch.KEEP_DECLINED == build.KEEP_DECLINED
+    assert all(ch.decided_words(why) == ch.tw(build.LEFT_WORDS[why]).removeprefix("定了不收：")
+               for _suffix, why in build.DECLINED_OUT.values())
+
+
 def test_a_picture_whose_words_are_still_in_the_library_left_for_a_reason(tmp_path):
     # 11-19: Google Sites gives a picture another address each time a page is read, and the export now writes the
     # page's; the old address leaves while the same words come in under the new one (or inside the page). The build

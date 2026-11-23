@@ -79,6 +79,14 @@ try:
 except ImportError:
     RULE_DECLINED = "规则不抓"
 WIX_PICTURE = re.compile(r"^(?:https?:)?//static\.wixstatic\.com/media/([^/?#]+)")
+# 11-23: an album's photos (原因代码 album) leave the library whatever other row of the export gives a file at their
+# address, unless a page links them or it is an honor roll's (nknu.content.build.DECLINED_OUT, KEEP_DECLINED,
+# _leave_declined); the build counts that leaving as explained, and so does this, for any row at that address
+try:
+    from nknu.content.build import DECLINED_OUT, KEEP_DECLINED
+except ImportError:
+    DECLINED_OUT = {"album": ("(相簿不收)", "decided_album")}
+    KEEP_DECLINED = ("/honorroll/",)
 # a kind decided out of the library (11-18 night: teachers' publications in full) leaves for a reason: the export names
 # the rule in 原因代码 and the build counts the leaving as explained (nknu.content.build.DECIDED_OUT); so does this
 try:
@@ -89,7 +97,7 @@ except ImportError:
 # the kind, said after the reason's name; a kind the build adds and no line here knows is said in the build's own
 # words for it (LEFT_WORDS, made Traditional), so a new kind needs no change here
 DECIDED_WORDS = {"decided_teacher_fulltext": "教師著作全文", "decided_proceedings": "研討會論文集全文",
-                 "decided_teaching_materials": "中小學教材下載區"}
+                 "decided_teaching_materials": "中小學教材下載區", "decided_album": "相簿照片"}
 
 
 def decided_words(kind: str) -> str:
@@ -207,6 +215,7 @@ class Manifests:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._rows: dict[str, dict | None] = {}
+        self._declined: dict[str, dict[str, str]] = {}
         self._calendars: dict[str, dict | None] = {}
 
     def rows(self, written: str) -> dict | None:
@@ -215,6 +224,7 @@ class Manifests:
         if written in self._rows:
             return self._rows[written]
         out: dict | None = None
+        declined: dict[str, str] = {}
         try:
             folder = folder_of(self.root, written)
             manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
@@ -225,10 +235,20 @@ class Manifests:
                 for key in (row.get("网址"), row.get("最后落地网址")):
                     for k in _forms(str(key or "")):
                         out.setdefault(k, row)
+                if row.get("分类") == RULE_DECLINED and (code := str(row.get("原因代码") or "")) in DECLINED_OUT:
+                    for k in _forms(str(row.get("网址") or "")):
+                        declined[k] = code
         except (OSError, ValueError):
             out = None
         self._rows[written] = out
+        self._declined[written] = declined
         return out
+
+    def declined(self, written: str, url: str) -> str:
+        """The DECLINED_OUT code the folder's rows decline url by (any of its rows, not only the first), else ''."""
+        self.rows(written)
+        by = self._declined.get(written) or {}
+        return next((by[f] for f in _forms(url) if f in by), "")
 
     def calendar(self, written: str) -> dict | None:
         """{event id: item} of the folder's calendar files (data/*行事历*.json, corpus.load_calendar's), None: none."""
@@ -291,6 +311,9 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
     rows = manifests.rows(after["export"])
     if rows is None:
         return "unknown", "讀不到這個網站新導出的清單"
+    code = manifests.declined(after["export"], url)
+    if code and not any(p in (url or "").lower() for p in KEEP_DECLINED):
+        return "decided_out", decided_words(DECLINED_OUT[code][1])
     row = _row_of(rows, url)
     if row is None:
         return ("same_export", "") if same_folder else ("not_exported", "")
