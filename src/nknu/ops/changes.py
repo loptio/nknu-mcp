@@ -87,6 +87,23 @@ try:
 except ImportError:
     DECLINED_OUT = {"album": ("(相簿不收)", "decided_album")}
     KEEP_DECLINED = ("/honorroll/",)
+# 11-24: the build knows a document by its identity (nknu.content.ids.location_key: http and https are one address, a
+# c.nknu notice's newsview and newsdetail of one nid are one notice), reads it from the row of that identity it fetched
+# last (documents.one_per_id), and declines an album's picture by its address without the scheme (build._address); so
+# does this. Without it the night of 11-24 said 查不出原因 of 8 notices the school moved (their newsview row said so,
+# the newsdetail one did not) and of an album picture at http:// whose declined row is at https://
+try:
+    from nknu.content import ids as _ids
+    from nknu.content.build import _address
+    from nknu.content.documents import fetched_at
+except ImportError:
+    _ids = None
+
+    def _address(url: str | None) -> str:
+        return re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", (url or "").strip(), count=1)
+
+    def fetched_at(stamp: str) -> float:
+        return 0.0
 # a kind decided out of the library (11-18 night: teachers' publications in full) leaves for a reason: the export names
 # the rule in 原因代码 and the build counts the leaving as explained (nknu.content.build.DECIDED_OUT); so does this
 try:
@@ -216,6 +233,7 @@ class Manifests:
         self.root = root
         self._rows: dict[str, dict | None] = {}
         self._declined: dict[str, dict[str, str]] = {}
+        self._idents: dict[str, dict[str, list[dict]]] = {}
         self._calendars: dict[str, dict | None] = {}
 
     def rows(self, written: str) -> dict | None:
@@ -225,6 +243,7 @@ class Manifests:
             return self._rows[written]
         out: dict | None = None
         declined: dict[str, str] = {}
+        idents: dict[str, list[dict]] = {}
         try:
             folder = folder_of(self.root, written)
             manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
@@ -237,18 +256,37 @@ class Manifests:
                         out.setdefault(k, row)
                 if row.get("分类") == RULE_DECLINED and (code := str(row.get("原因代码") or "")) in DECLINED_OUT:
                     for k in _forms(str(row.get("网址") or "")):
-                        declined[k] = code
+                        declined[_address(k)] = code
+                if _ids is not None and (address := str(row.get("网址") or "")):
+                    idents.setdefault(_ids.location_key(address), []).append(row)
         except (OSError, ValueError):
             out = None
         self._rows[written] = out
         self._declined[written] = declined
+        self._idents[written] = idents
         return out
 
     def declined(self, written: str, url: str) -> str:
-        """The DECLINED_OUT code the folder's rows decline url by (any of its rows, not only the first), else ''."""
+        """The DECLINED_OUT code the folder's rows decline url by (any of its rows, not only the first; http and https
+        alike, as build._address compares), else ''."""
         self.rows(written)
         by = self._declined.get(written) or {}
-        return next((by[f] for f in _forms(url) if f in by), "")
+        return next((by[a] for a in map(_address, _forms(url)) if a in by), "")
+
+    def row_kept(self, written: str, url: str) -> dict | None:
+        """The row the build reads url's document from: of the rows whose 网址 is of url's identity
+        (ids.location_key), the one documents.one_per_id keeps (written without &amp;, then fetched last), url's own
+        row first on a tie; url's own row when its identity has no row. None: no row, or no readable manifest."""
+        rows = self.rows(written)
+        if rows is None:
+            return None
+        own = _row_of(rows, url)
+        group = (self._idents.get(written) or {}).get(_ids.location_key(url)) if _ids is not None and url else None
+        if not group:
+            return own
+        candidates = group if own is None or any(r is own for r in group) else [*group, own]
+        return min(candidates, key=lambda r: ("&amp;" in str(r.get("网址") or ""),
+                                              -fetched_at(str(r.get("抓取时间") or "")), r is not own))
 
     def calendar(self, written: str) -> dict | None:
         """{event id: item} of the folder's calendar files (data/*行事历*.json, corpus.load_calendar's), None: none."""
@@ -314,7 +352,7 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
     code = manifests.declined(after["export"], url)
     if code and not any(p in (url or "").lower() for p in KEEP_DECLINED):
         return "decided_out", decided_words(DECLINED_OUT[code][1])
-    row = _row_of(rows, url)
+    row = manifests.row_kept(after["export"], url)
     if row is None:
         return ("same_export", "") if same_folder else ("not_exported", "")
     lacks = str(row.get("缺什么") or "")

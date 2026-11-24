@@ -721,6 +721,33 @@ def test_an_album_photo_left_for_a_reason_whichever_row_of_its_address_comes_fir
                for _suffix, why in build.DECLINED_OUT.values())
 
 
+def test_a_document_left_for_what_the_row_of_its_identity_the_build_reads_says(tmp_path):
+    # 11-24: the build knows a document by its identity (ids.location_key: a c.nknu notice's newsview and newsdetail of
+    # one nid are one, http and https are one) and reads the row of it fetched last (documents.one_per_id); on the
+    # night of 11-24 the panels said 查不出原因 of 8 notices whose newsview row said the school moved them, and of an
+    # album picture at http:// whose declined row was at https://
+    base = "https://c.nknu.edu.tw/ula/"
+    detail, view = base + "newsdetail.aspx?nid=139", base + "newsview.aspx?nid=139"
+    pic = "tecs.nknu.edu.tw/uploadfile/adj/adj_1.jpg"
+    album = {"分类": build.RULE_DECLINED, "结果": "按规则不抓", "本地档案": "", "缺什么": "", "原因代码": "album"}
+    moved = ch.MOVED + "（多半是删了）"
+
+    def why(rows: list[dict], url: str, folder: str) -> tuple[str, str]:
+        exp = manifest(tmp_path, folder, rows)
+        new = {"aliases": {}, "urls": {}, "sites": {"a": {"name": "範例系", "export": exp, "docs": 0}}, "docs": {}}
+        prev = {"sites": {"a": {"name": "範例系", "export": "exp/a-1", "docs": 3}}}
+        return ch.why_left("d1", ("a", "notice", "公告", url, "", 36, "x"), new, prev, ch.Manifests(tmp_path))
+
+    later = [{**row(detail), "抓取时间": "2026-11-20T01:00:00+08:00"},
+             {**row(view, lacks=moved), "抓取时间": "2026-11-24T01:30:00+08:00"}]
+    assert why(later, detail, "exp/a-2") == ("moved", "")
+    earlier = [{**row(detail), "抓取时间": "2026-11-24T01:30:00+08:00"},
+               {**row(view, lacks=moved), "抓取时间": "2026-11-20T01:00:00+08:00"}]
+    assert why(earlier, detail, "exp/a-3")[0] != "moved"  # the notice's own row is the one read: not the school's
+    pictures = [{"网址": "https://" + pic, **album}, {**row("http://" + pic), "类型": "图片"}]
+    assert why(pictures, "http://" + pic, "exp/a-4") == ("decided_out", "相簿照片")
+
+
 def test_a_picture_whose_words_are_still_in_the_library_left_for_a_reason(tmp_path):
     # 11-19: Google Sites gives a picture another address each time a page is read, and the export now writes the
     # page's; the old address leaves while the same words come in under the new one (or inside the page). The build
