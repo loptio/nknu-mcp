@@ -69,14 +69,19 @@
   let vsView = () => {};
   if (vs && $('vs-data')) {
     let D = JSON.parse($('vs-data').textContent), sel = null;  // sel: the day clicked (kept while D is asked again)
+    let shown = null;  // the day the five numbers describe: marked on the chart (live 11-24: the numbers stood still
+    // on yesterday while today's point rose, and nothing said which point they were)
     const partial = day => ((D.days || {})[day] || {}).complete === false;  // the log began after the day began
     const pct = v => (v == null ? '—' : (v * 100).toFixed(v < 0.1 ? 1 : 0));
     const slots = D.slots || 4;
     const show = day => {
+      shown = day || null;
       const v = (D.days || {})[day] || {};
       if (!day) { $('vs-day').textContent = '沒有紀錄'; return; }
       const [, m, d] = day.split('-');
-      $('vs-day').textContent = `${+m}/${+d}` + (day === D.today ? '（今天，還沒過完）' : partial(day) ? '（這天的紀錄不是整天）' : '')
+      const ti = D.dates.indexOf(D.today);
+      $('vs-day').textContent = `${+m}/${+d}` + (day === D.today ? '（今天，還沒過完）' : partial(day) ? '（這天的紀錄不是整天）'
+        : ti > 0 && day === D.dates[ti - 1] ? '（昨天）' : '')
         + (v.calls != null ? ` · ${v.calls.toLocaleString()} 次` : '');
       $('vs-load').textContent = pct(v.load_p95);
       $('vs-meter').style.width = Math.min(100, (v.load_p95 || 0) * 100) + '%';
@@ -96,7 +101,11 @@
     const draw = () => {
       if (!window.echarts || !el) return;
       const ink3 = css('--ink3'), line = css('--line'), q4 = css('--q4'), surf = css('--surface'), ink = css('--ink');
-      const ti = D.dates.indexOf(D.today);
+      const ti = D.dates.indexOf(D.today), si = D.dates.indexOf(shown);
+      // the point the five numbers describe: a bigger, filled dot (today's dashed ring kept off it)
+      const point = (c, i) => (c == null ? c : i === si ? {value: c, symbolSize: 13, itemStyle: {color: q4, borderColor: surf, borderWidth: 3}}
+        : i === ti ? {value: c, symbol: 'emptyCircle', itemStyle: {borderType: 'dashed'}}
+          : partial(D.dates[i]) ? {value: c, symbol: 'emptyCircle'} : c);
       // a redraw (new data, the theme) keeps the zoom the reader left (setOption below replaces the whole option)
       const z0 = chart && chart.getOption ? ((chart.getOption() || {}).dataZoom || [])[0] : null;
       const zoom = z0 && z0.start != null ? {start: z0.start, end: z0.end} : {};
@@ -104,7 +113,8 @@
       chart.setOption({animation: false, grid: {left: 44, right: 14, top: 16, bottom: 54},
         tooltip: {trigger: 'axis', backgroundColor: surf, borderColor: line, textStyle: {color: ink, fontSize: 12},
           formatter: p => { const i = p[0].dataIndex, c = D.calls[i]; return `${D.labels[i]}<br>` + (c == null ? (ti >= 0 && i > ti ? '還沒到' : '沒有紀錄') : `${c.toLocaleString()} 次`)
-            + (i === ti ? '（今天還沒過完）' : partial(D.dates[i]) ? '（這天的紀錄不是整天）' : ''); }},
+            + (i === ti ? '（今天還沒過完）' : partial(D.dates[i]) ? '（這天的紀錄不是整天）' : '')
+            + (c != null && i !== si ? '<br><span style="opacity:.65">點一下看這天的數字</span>' : ''); }},
         xAxis: {type: 'category', data: D.labels, boundaryGap: false, axisLine: {lineStyle: {color: line}}, axisTick: {show: false},
           axisLabel: {color: ink3, fontSize: 11}},
         yAxis: {type: 'value', splitNumber: 3, axisLabel: {color: ink3, fontSize: 11}, splitLine: {lineStyle: {color: line}}},
@@ -112,8 +122,9 @@
           {type: 'slider', ...zoom, height: 16, bottom: 8, backgroundColor: 'transparent', borderColor: line, fillerColor: q4 + '2e', handleSize: 16,
             handleStyle: {color: surf, borderColor: ink3}, moveHandleSize: 0, showDetail: false, brushSelect: false,
             dataBackground: {lineStyle: {color: q4, opacity: .5}, areaStyle: {color: q4, opacity: .12}}, textStyle: {color: ink3, fontSize: 10}}],
-        series: [{type: 'line', data: D.calls.map((c, i) => (c == null ? c : i === ti ? {value: c, symbol: 'emptyCircle', itemStyle: {borderType: 'dashed'}}
-            : partial(D.dates[i]) ? {value: c, symbol: 'emptyCircle'} : c)),
+        series: [{type: 'line', data: D.calls.map(point),
+          markLine: {silent: true, symbol: 'none', label: {show: false}, lineStyle: {color: q4, type: 'dashed', width: 1.5},
+            data: si >= 0 ? [{xAxis: D.labels[si]}] : []},
           connectNulls: false, smooth: false, symbol: 'circle', symbolSize: 8, showSymbol: true,
           lineStyle: {color: q4, width: 2.5}, itemStyle: {color: q4, borderColor: surf, borderWidth: 2},
           areaStyle: {color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [{offset: 0, color: q4 + '55'}, {offset: 1, color: q4 + '00'}])},
@@ -123,7 +134,7 @@
         const p = [ev.offsetX, ev.offsetY];
         if (!chart.containPixel('grid', p)) return;
         const i = Math.round(chart.convertFromPixel({seriesIndex: 0}, p)[0]);
-        if (D.calls[i] != null) { sel = D.dates[i]; show(sel); }
+        if (D.calls[i] != null) { sel = D.dates[i]; show(sel); draw(); }  // the mark follows the day clicked
       });
       chart.resize();
     };
@@ -158,6 +169,16 @@
     const stamp = t => { const m = /^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d)/.exec(t || ''); return m ? `${+m[1]}/${+m[2]} ${m[3]}` : ''; };
     const at = i => S.get(i) || 0;
     const rate = i => { let s = 0, w = 0; for (let k = 0; k < SM; k++) { const q = SM - k; s += at(i - k) * q; w += q; } return s / w; };
+    // the pointer over the line (owner 11-24: 每日 says a day under the mouse, 即時 said nothing): the second under it,
+    // a guide down to the line and a card with that second's time, its calls and the smoothed rate the line draws
+    const tipEl = $('vs-ecg-tip');
+    let hx = null, hy = 0, tipHtml = '';
+    const hideTip = () => { if (tipEl) tipEl.hidden = true; };
+    const clock = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
+    if (cv) {
+      cv.addEventListener('pointermove', ev => { hx = ev.offsetX; hy = ev.offsetY; });
+      cv.addEventListener('pointerleave', () => { hx = null; hideTip(); });
+    }
     // the log unread, the address not answering or answering wrong: said on the card, never a flat line of 0
     const lost = () => { read = false; const none = $('vs-ecg-none'); if (none) none.hidden = false; };
     const pull = async () => {
@@ -199,7 +220,7 @@
       cx.textAlign = 'center'; for (let m = 5; m >= 1; m--) { const x = padL + (WIN - m * 60) / WIN * iw; cx.fillText(`-${m} 分`, x, H - 6); }
       cx.textAlign = 'right'; cx.fillText('現在', W - padR, H - 6);
       const quiet = $('vs-ecg-quiet');
-      if (!pts.length) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); if (quiet) quiet.hidden = true; return; }  // nothing measured yet, or unread
+      if (!pts.length) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); if (quiet) quiet.hidden = true; hideTip(); return; }  // nothing measured yet, or unread
       // the public service down at its last check (查詢服務's reading): said, never 「沒有人查」 (its log stops too);
       // else a window nobody called in says so, with when the last call was (a flat line alone reads as broken)
       const down = !!(serve && serve.up === false);
@@ -209,7 +230,7 @@
         if (down) quiet.textContent = '對外服務沒有回應' + (stamp(serve.at) ? `（${stamp(serve.at)} 檢查）` : '') + (serve.words ? '：' + serve.words : '');
         else if (none) quiet.textContent = '最近 5 分鐘沒有人查' + (stamp(lastCall) ? ' · 最後一次 ' + stamp(lastCall) : '');
       }
-      if (down) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); return; }
+      if (down) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); hideTip(); return; }
       const curve = () => { cx.beginPath(); pts.forEach(([i, v], k) => { const x = X(i), y = Y(v); if (!k) { cx.moveTo(x, y); return; } const [pi, pv] = pts[k - 1], px = X(pi), py = Y(pv); cx.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2); }); };
       cx.save(); cx.beginPath(); cx.rect(padL, 0, iw, H); cx.clip();
       const g = cx.createLinearGradient(0, padT, 0, padT + ih); g.addColorStop(0, q4 + '55'); g.addColorStop(1, q4 + '00');
@@ -218,6 +239,20 @@
       const cur = rate(last), xc = X(last), yc = Y(cur); cx.fillStyle = q4; cx.beginPath(); cx.arc(xc, yc, 3.5, 0, 7); cx.fill();
       const lastMin = pts.slice(-60), qpm = lastMin.reduce((a, [i]) => a + at(i), 0), peak = Math.max(...lastMin.map(([i]) => at(i)));
       $('vs-rps').textContent = cur.toFixed(1); $('vs-60').textContent = qpm; $('vs-peak').textContent = peak;
+      if (!tipEl) return;
+      if (hx == null || hx < padL || hx > W - padR) { hideTip(); return; }
+      // the second under the pointer, read again every frame: the line slides under a still pointer
+      const i = Math.max(last - WIN, Math.min(last, Math.round(head - WIN + (hx - padL) / iw * WIN))), x = X(i), v = rate(i);
+      cx.save(); cx.strokeStyle = ink3; cx.lineWidth = 1; cx.setLineDash([3, 3]);
+      cx.beginPath(); cx.moveTo(Math.round(x) + .5, padT); cx.lineTo(Math.round(x) + .5, padT + ih); cx.stroke(); cx.restore();
+      cx.fillStyle = css('--surface') || '#fff'; cx.beginPath(); cx.arc(x, Y(v), 5.5, 0, 7); cx.fill();
+      cx.fillStyle = q4; cx.beginPath(); cx.arc(x, Y(v), 3.5, 0, 7); cx.fill();
+      const html = `<b>${clock.format(new Date(i * 1000))}</b><br>這一秒 ${at(i)} 次<br>每秒請求 ${v.toFixed(2)}`;
+      if (html !== tipHtml) { tipEl.innerHTML = html; tipHtml = html; }
+      tipEl.hidden = false;
+      const tw = tipEl.offsetWidth || 0, th = tipEl.offsetHeight || 0;
+      tipEl.style.left = (hx + 14 + tw > W - 4 ? Math.max(4, hx - tw - 12) : hx + 14) + 'px';
+      tipEl.style.top = Math.max(4, Math.min(H - th - 4, hy - th / 2)) + 'px';
     };
     vsView = v => {
       vs.dataset.v = v;

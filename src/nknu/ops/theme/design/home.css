@@ -36,6 +36,9 @@ color:var(--ink2)!important;font:12px var(--font)!important;cursor:pointer;min-h
 .vs-ecg canvas{position:absolute;inset:0;width:100%;height:100%}
 .vs-ecg-none{position:absolute;left:40px;top:0;font-size:11px;color:var(--ink3)}
 .vs-ecg-quiet{position:absolute;left:40px;top:0;font-size:11px;color:var(--ink3)}
+.vs-ecg canvas{cursor:crosshair}
+.vs-ecg-tip{position:absolute;z-index:2;pointer-events:none;white-space:nowrap;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;line-height:1.55;color:var(--ink);box-shadow:0 2px 10px rgb(0 0 0/.1)}
+.vs-ecg-tip[hidden]{display:none}
 .vs-load{display:flex;flex-direction:column;gap:8px}
 .vs-day{font-size:12px;color:var(--ink2);font-weight:650}
 .vs-main{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 12px;padding:12px 14px;border-radius:12px;

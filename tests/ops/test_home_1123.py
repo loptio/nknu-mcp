@@ -833,7 +833,8 @@ const el = (id, extra = {}) => {
   const attrs = {};
   const e = {id, hidden: true, textContent: '', innerHTML: '', dataset: {}, style: {}, clientWidth: 300, clientHeight: 200,
     width: 0, height: 0, attrs, setAttribute(k, v) { attrs[k] = String(v); }, getAttribute(k) { return k in attrs ? attrs[k] : null; },
-    hasAttribute(k) { return k in attrs; }, querySelector: () => null, querySelectorAll: () => [], addEventListener() {},
+    hasAttribute(k) { return k in attrs; }, querySelector: () => null, querySelectorAll: () => [],
+    addEventListener(t, f) { (e.on ||= {})[t] = f; },
     closest() { return e; }, getContext: () => ctx2d, ...extra};
   els[id] = e; return e;
 };
@@ -863,8 +864,10 @@ const g = {document, URLSearchParams, console, setImmediate,
     if (r === 'throw') throw new Error('unreachable');
     return r ? {ok: true, status: 200, json: async () => r} : {ok: false, status: 404, json: async () => ({})};
   }};
-if (cfg.echarts) g.echarts = {init: () => ({setOption(o) { option = o; }, getZr: () => ({off() {}, on() {}}), resize() {}}),
-  graphic: {LinearGradient: class {}}};
+const zr = {};  // the chart's click handler (cfg.clickAt: the day index a click lands on)
+if (cfg.echarts) g.echarts = {init: () => ({setOption(o) { option = o; }, getZr: () => ({off() {}, on(t, f) { zr[t] = f; }}),
+  resize() {}, containPixel: () => true, convertFromPixel: () => [cfg.clickAt]}), graphic: {LinearGradient: class {}}};
+const mark = () => (option ? {line: (option.series[0].markLine || {}).data || null, pts: option.series[0].data} : null);
 g.window = g;
 vm.createContext(g);
 vm.runInContext(fs.readFileSync(rt, 'utf8'), g);
@@ -884,11 +887,27 @@ const ticks = async () => { for (let i = 0; i < 6; i++) await new Promise(r => s
     out.none = el('vs-ecg-none').hidden;
     out.texts = texts.slice();
     out.quiet = {hidden: el('vs-ecg-quiet').hidden, text: String(el('vs-ecg-quiet').textContent)};
+    if (cfg.hoverAt && els['vs-ecg'] && (els['vs-ecg'].on || {}).pointermove) {
+      const cv = els['vs-ecg'], tipEl = el('vs-ecg-tip');
+      out.tipBefore = tipEl.hidden;
+      cv.on.pointermove({offsetX: cfg.hoverAt[0], offsetY: cfg.hoverAt[1]});
+      frames.slice(-1).forEach(f => f(2000));
+      out.tip = {hidden: tipEl.hidden, html: String(tipEl.innerHTML)};
+      cv.on.pointerleave({});
+      frames.slice(-1).forEach(f => f(2000));
+      out.tipAfter = tipEl.hidden;
+    }
     out.day = String(el('vs-day').textContent);
     if (cfg.echarts) {
       els['btn-day'].on.click(); await ticks();
       out.dayTips = option ? (cfg.tipAt || []).map(i => option.tooltip.formatter([{dataIndex: i}])) : null;
       out.dayNow = String(el('vs-day').textContent);
+      out.mark = mark();
+      if (cfg.clickAt != null && zr.click) {
+        zr.click({offsetX: 1, offsetY: 1}); await ticks();
+        out.dayClicked = String(el('vs-day').textContent);
+        out.markClicked = mark();
+      }
     }
   }
   if (cfg.log) {
@@ -979,6 +998,44 @@ def test_the_live_axis_says_its_steps_as_they_are_and_a_quiet_window_says_when_t
     busy = {"/api/usage/live": {**got, "per_sec": [2] * 330}}
     out = run_layer(tmp_path, ids=ids, vsData=data, answers=busy)
     assert out["quiet"]["hidden"] is True and [t for t in out["texts"] if t[0].isdigit()] == ["0", "1", "2"]
+
+
+def test_the_days_numbers_say_which_point_they_are_and_that_point_is_marked(tmp_path):
+    """Live 11-24 (owner: 「我刚刚明明访问了不少次，但是他数字没变 图确实变了」): 每日's five numbers are the last day
+    over (11-23's rule), but nothing on the chart said which point they were, so today's point rose with every call
+    while the numbers stood still. The point the numbers describe is marked (a dashed line down to it, a bigger dot)
+    and moves to the day clicked; the line under the chart names yesterday 昨天."""
+    data = {"days": {"2026-11-22": {"calls": 1800}, "2026-11-23": {"calls": 9, "qpm_peak": 9},
+                     "2026-11-24": {"calls": 46, "qpm_peak": 18}},
+            "pick": "2026-11-23", "dates": ["2026-11-22", "2026-11-23", "2026-11-24"],
+            "labels": ["11/22", "11/23", "11/24"], "calls": [1800, 9, 46], "today": "2026-11-24", "slots": 4}
+    ids = ["vs-data", "vs-day", "vs-chart", "vs-load", "vs-meter", "vs-qpm", "vs-qpm-at", "vs-conc", "vs-p90",
+           "vs-lat-card", "vs-err"]
+    out = run_layer(tmp_path, ids=ids, vsData=data, echarts=True, clickAt=2, answers={"/api/usage/card": data})
+    assert out["dayNow"] == "11/23（昨天） · 9 次"
+    assert out["mark"]["line"] == [{"xAxis": "11/23"}]
+    pts = out["mark"]["pts"]
+    assert pts[1]["symbolSize"] > 8 and not isinstance(pts[0], dict)  # the day shown stands out, the others not
+    assert out["dayClicked"] == "11/24（今天，還沒過完） · 46 次"
+    assert out["markClicked"]["line"] == [{"xAxis": "11/24"}]
+    after = out["markClicked"]["pts"]
+    assert after[2]["symbolSize"] > 8 and not isinstance(after[1], dict)
+
+
+def test_the_live_line_says_the_second_under_the_pointer(tmp_path):
+    """Live 11-24 (owner: 「每日的卡片下可以把鼠标放到图上显示一些信息，但是即時的就不行」): 每日's ECharts line says a
+    day's calls under the mouse; 即時's canvas said nothing. The pointer over it now shows that second's time (Taipei),
+    its calls and the smoothed rate the line draws, and leaving the line hides it."""
+    ids = ["vs-data", "vs-day", "vs-ecg", "vs-ecg-none", "vs-ecg-quiet", "vs-ecg-tip", "vs-rps", "vs-60", "vs-peak"]
+    data = {"days": {}, "pick": "", "dates": [], "calls": [], "labels": [], "today": "2026-11-23", "slots": 4}
+    busy = {"/api/usage/live": {"read": True, "end": 1700000000, "per_sec": [2] * 330, "poll_ms": 3000}}
+    out = run_layer(tmp_path, ids=ids, vsData=data, answers=busy, hoverAt=[288, 80])  # the right edge: 現在
+    assert out["tipBefore"] is True and out["tip"]["hidden"] is False and out["tipAfter"] is True
+    html = out["tip"]["html"]
+    assert "06:13:20" in html  # 1700000000 is 2023-11-15 06:13:20 in Taipei
+    assert "這一秒 2 次" in html and "每秒請求 2.00" in html
+    card = LexborHTMLParser(visits.card_html(data))
+    assert "hidden" in card.css_first("#vs-ecg-tip").attributes  # drawn hidden: nothing shows before a pointer
 
 
 def test_a_day_still_to_come_says_so_not_no_record(tmp_path):
