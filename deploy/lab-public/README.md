@@ -14,7 +14,7 @@
 
 设计：`docs/superpowers/specs/2026-11-21-outward-interfaces-design.md`。程序：`src/nknu/retrieval/public.py`（服务）、`web.py`（网页）、`server.py`（MCP 的两个工具）。测试：`tests/retrieval/test_public_1121.py`。
 
-## 现在的状态（2026-11-21）
+## 现在的状态（2026-11-24）
 
 - 装在实验室电脑上，容器 `nknu-public-public-1`，只开本机的 `127.0.0.1:8770`。**还没有对外网址**，外面连不到。
 - 读的是正式库 `aca.db`，只读。每晚换库不用重启。
@@ -25,6 +25,7 @@
   - 11-22 13:09 装了 `sort=date` 的修正（`a97ffd2`），旧包留成 `public-src.1121.tar`。
   - 11-22 20:5x 装了「附带其他单位」：填了 unit 时多给 `other_units`，见接口设计稿 §二 `unit`。这次是已提交的 `3a7a61e` 加上工作区的 `server.py`、`respond.py`、`web.py`、`public.py`（这四个档同一晚提交在 `b6f2701`），旧包留成 `public-src.1122a.tar`。查询纪录多一栏 `other_ids`。
   - `pack.sh` 从这次起也带工作区的 `respond.py`：它和 `server.py` 要成对，只换其中一个，填了 unit 的搜索会出错。
+  - 11-24 09:5x 照 git `ba2c7ed` 整份重装，跟实验室上的其他程序一起对齐 git。和上一版只差 `retrieval/hybrid.py`、`search.py`（`7f0e86d` 删掉不再用的开关，行为不变）。旧包留成 `public-src.1122b.tar`，旧的程序资料夹改名 `src.1122b`（这次没用 `rmdir`）。重启后 `/health` 正常、89,317 份，搜索答得出来，日志没有错误。
 
 ## 从 Mac 上看
 

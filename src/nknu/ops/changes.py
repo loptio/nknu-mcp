@@ -37,6 +37,7 @@ research/dashboard_redesign_2026-11-17/diagnosis.md)."""
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
 import re
@@ -87,6 +88,23 @@ try:
 except ImportError:
     DECLINED_OUT = {"album": ("(相簿不收)", "decided_album")}
     KEEP_DECLINED = ("/honorroll/",)
+# 11-24: the build knows a document by its identity (nknu.content.ids.location_key: http and https are one address, a
+# c.nknu notice's newsview and newsdetail of one nid are one notice), reads it from the row of that identity it fetched
+# last (documents.one_per_id), and declines an album's picture by its address without the scheme (build._address); so
+# does this. Without it the night of 11-24 said 查不出原因 of 8 notices the school moved (their newsview row said so,
+# the newsdetail one did not) and of an album picture at http:// whose declined row is at https://
+try:
+    from nknu.content import ids as _ids
+    from nknu.content.build import _address
+    from nknu.content.documents import fetched_at
+except ImportError:
+    _ids = None
+
+    def _address(url: str | None) -> str:
+        return re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", (url or "").strip(), count=1)
+
+    def fetched_at(stamp: str) -> float:
+        return 0.0
 # a kind decided out of the library (11-18 night: teachers' publications in full) leaves for a reason: the export names
 # the rule in 原因代码 and the build counts the leaving as explained (nknu.content.build.DECIDED_OUT); so does this
 try:
@@ -216,6 +234,7 @@ class Manifests:
         self.root = root
         self._rows: dict[str, dict | None] = {}
         self._declined: dict[str, dict[str, str]] = {}
+        self._idents: dict[str, dict[str, list[dict]]] = {}
         self._calendars: dict[str, dict | None] = {}
 
     def rows(self, written: str) -> dict | None:
@@ -225,6 +244,7 @@ class Manifests:
             return self._rows[written]
         out: dict | None = None
         declined: dict[str, str] = {}
+        idents: dict[str, list[dict]] = {}
         try:
             folder = folder_of(self.root, written)
             manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
@@ -237,18 +257,37 @@ class Manifests:
                         out.setdefault(k, row)
                 if row.get("分类") == RULE_DECLINED and (code := str(row.get("原因代码") or "")) in DECLINED_OUT:
                     for k in _forms(str(row.get("网址") or "")):
-                        declined[k] = code
+                        declined[_address(k)] = code
+                if _ids is not None and (address := str(row.get("网址") or "")):
+                    idents.setdefault(_ids.location_key(address), []).append(row)
         except (OSError, ValueError):
             out = None
         self._rows[written] = out
         self._declined[written] = declined
+        self._idents[written] = idents
         return out
 
     def declined(self, written: str, url: str) -> str:
-        """The DECLINED_OUT code the folder's rows decline url by (any of its rows, not only the first), else ''."""
+        """The DECLINED_OUT code the folder's rows decline url by (any of its rows, not only the first; http and https
+        alike, as build._address compares), else ''."""
         self.rows(written)
         by = self._declined.get(written) or {}
-        return next((by[f] for f in _forms(url) if f in by), "")
+        return next((by[a] for a in map(_address, _forms(url)) if a in by), "")
+
+    def row_kept(self, written: str, url: str) -> dict | None:
+        """The row the build reads url's document from: of the rows whose 网址 is of url's identity
+        (ids.location_key), the one documents.one_per_id keeps (written without &amp;, then fetched last), url's own
+        row first on a tie; url's own row when its identity has no row. None: no row, or no readable manifest."""
+        rows = self.rows(written)
+        if rows is None:
+            return None
+        own = _row_of(rows, url)
+        group = (self._idents.get(written) or {}).get(_ids.location_key(url)) if _ids is not None and url else None
+        if not group:
+            return own
+        candidates = group if own is None or any(r is own for r in group) else [*group, own]
+        return min(candidates, key=lambda r: ("&amp;" in str(r.get("网址") or ""),
+                                              -fetched_at(str(r.get("抓取时间") or "")), r is not own))
 
     def calendar(self, written: str) -> dict | None:
         """{event id: item} of the folder's calendar files (data/*行事历*.json, corpus.load_calendar's), None: none."""
@@ -314,7 +353,7 @@ def why_left(doc_id: str, fp: tuple, new: dict, prev: dict, manifests: Manifests
     code = manifests.declined(after["export"], url)
     if code and not any(p in (url or "").lower() for p in KEEP_DECLINED):
         return "decided_out", decided_words(DECLINED_OUT[code][1])
-    row = _row_of(rows, url)
+    row = manifests.row_kept(after["export"], url)
     if row is None:
         return ("same_export", "") if same_folder else ("not_exported", "")
     lacks = str(row.get("缺什么") or "")
@@ -473,6 +512,25 @@ def read_hold(path: Path) -> set[str]:
     return {line for line in lines if line}
 
 
+def rules_digest(modules: tuple[str, ...] = ("nknu.ops.changes", "nknu.content.build", "nknu.content.documents",
+                                             "nknu.content.ids", "nknu.content.corpus")) -> str:
+    """A digest of the programs a comparison's reasons come from (this module and the build's rules it mirrors), a
+    module that cannot be found counting as none. 11-24: a comparison kept over a restart is kept under it as well as
+    the two files, so new rules compare again; the night of 11-24 kept saying 查不出原因 of 9 documents after the
+    panels had learnt their reasons, the two libraries being the same files."""
+    h = hashlib.blake2b(digest_size=8)
+    for name in modules:
+        try:
+            spec = importlib.util.find_spec(name)
+            h.update(name.encode() + b"\0" + (Path(spec.origin).read_bytes() if spec and spec.origin else b""))
+        except (ImportError, OSError, ValueError):
+            h.update(name.encode() + b"\0")
+    return h.hexdigest()
+
+
+RULES = rules_digest()
+
+
 class Changes:
     """The last swap's comparison, made in a background thread and kept until either library file changes.
     snapshot(): {'state': none (no library before to compare with), same (the two are one file: the last night did
@@ -522,7 +580,7 @@ class Changes:
         with self._lock:
             self._done, self._keys = result, keys
         if self.kept is not None and result.get("state") == "ready":
-            self.kept.put("changes", keys, result)
+            self.kept.put("changes", (keys, RULES), result)
 
     def snapshot(self) -> dict:
         prev_key, new_key = file_key(self.prev_db), file_key(self.new_db)
@@ -533,8 +591,8 @@ class Changes:
         if prev_key[:2] == new_key[:2]:
             return {"state": "same", "words": "前一份庫和現在用的是同一份（還沒換上新庫：每晚進庫在建庫前先留一份，換上以後才有得比）"}
         keys = (prev_key, new_key)
-        if self._done is None and self.kept is not None:  # after a restart: the same two files, the same comparison
-            got = self.kept.get("changes", keys)
+        if self._done is None and self.kept is not None:  # after a restart: the same files and rules, the same result
+            got = self.kept.get("changes", (keys, RULES))
             if isinstance(got, dict) and got.get("state") == "ready":
                 with self._lock:
                     self._done, self._keys = got, keys

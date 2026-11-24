@@ -721,6 +721,33 @@ def test_an_album_photo_left_for_a_reason_whichever_row_of_its_address_comes_fir
                for _suffix, why in build.DECLINED_OUT.values())
 
 
+def test_a_document_left_for_what_the_row_of_its_identity_the_build_reads_says(tmp_path):
+    # 11-24: the build knows a document by its identity (ids.location_key: a c.nknu notice's newsview and newsdetail of
+    # one nid are one, http and https are one) and reads the row of it fetched last (documents.one_per_id); on the
+    # night of 11-24 the panels said 查不出原因 of 8 notices whose newsview row said the school moved them, and of an
+    # album picture at http:// whose declined row was at https://
+    base = "https://c.nknu.edu.tw/ula/"
+    detail, view = base + "newsdetail.aspx?nid=139", base + "newsview.aspx?nid=139"
+    pic = "tecs.nknu.edu.tw/uploadfile/adj/adj_1.jpg"
+    album = {"分类": build.RULE_DECLINED, "结果": "按规则不抓", "本地档案": "", "缺什么": "", "原因代码": "album"}
+    moved = ch.MOVED + "（多半是删了）"
+
+    def why(rows: list[dict], url: str, folder: str) -> tuple[str, str]:
+        exp = manifest(tmp_path, folder, rows)
+        new = {"aliases": {}, "urls": {}, "sites": {"a": {"name": "範例系", "export": exp, "docs": 0}}, "docs": {}}
+        prev = {"sites": {"a": {"name": "範例系", "export": "exp/a-1", "docs": 3}}}
+        return ch.why_left("d1", ("a", "notice", "公告", url, "", 36, "x"), new, prev, ch.Manifests(tmp_path))
+
+    later = [{**row(detail), "抓取时间": "2026-11-20T01:00:00+08:00"},
+             {**row(view, lacks=moved), "抓取时间": "2026-11-24T01:30:00+08:00"}]
+    assert why(later, detail, "exp/a-2") == ("moved", "")
+    earlier = [{**row(detail), "抓取时间": "2026-11-24T01:30:00+08:00"},
+               {**row(view, lacks=moved), "抓取时间": "2026-11-20T01:00:00+08:00"}]
+    assert why(earlier, detail, "exp/a-3")[0] != "moved"  # the notice's own row is the one read: not the school's
+    pictures = [{"网址": "https://" + pic, **album}, {**row("http://" + pic), "类型": "图片"}]
+    assert why(pictures, "http://" + pic, "exp/a-4") == ("decided_out", "相簿照片")
+
+
 def test_a_picture_whose_words_are_still_in_the_library_left_for_a_reason(tmp_path):
     # 11-19: Google Sites gives a picture another address each time a page is read, and the export now writes the
     # page's; the old address leaves while the same words come in under the new one (or inside the page). The build
@@ -778,6 +805,27 @@ def test_the_comparison_runs_in_the_background_and_never_writes_the_libraries(tw
     assert done["prev"]["swapped_at"] == "2026-11-16T15:03:00+08:00"
     assert {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in two} == before
     assert not list(tmp_path.glob("*.db-journal")) and not list(tmp_path.glob("*.db-wal"))
+
+
+def test_a_comparison_kept_over_a_restart_comes_back_only_under_the_same_rules(two, tmp_path, monkeypatch):
+    # 11-24: kept by the two files alone, the night of 11-24 went on saying 查不出原因 of 9 documents after the panels
+    # had learnt their reasons; the digest of the rules' programs is part of what it is kept under
+    from nknu.ops import keep
+
+    prev, new = two
+    monkeypatch.setattr(ch, "RULES", "the rules of 11-23")
+    first = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))
+    first.snapshot()
+    first.wait(30)
+    assert first.snapshot()["state"] == "ready"
+    same = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))  # a restart, same rules
+    assert same.snapshot()["state"] == "ready" and same._thread is None
+    monkeypatch.setattr(ch, "RULES", "the rules of 11-24")
+    later = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))  # a restart, new rules
+    assert later.snapshot()["state"] == "computing"
+    later.wait(30)
+    assert later.snapshot()["totals"]["left"] == 15
+    assert ch.rules_digest(("nknu.ops.changes",)) != ch.rules_digest(("nknu.ops.changes", "nknu.content.build"))
 
 
 def test_no_library_before_or_the_same_one_is_said(two, tmp_path):

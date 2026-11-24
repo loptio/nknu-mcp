@@ -474,7 +474,26 @@ docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nkn
 - 在 Mac 上用同一版代码跑 `tests/content tests/pipeline tests/totext`，1,365 个过；实验室上这条线的测试 118 个过。
 - 被换掉的档在 `/work/previous/lab-pipeline-20261123-230249.tar`。
 - 真资料只读算过：116 份图落在导出标「相簿不收」的网址上，荣誉榜 14 份留下，其余没有网页链接的按「定了不收：相簿照片」离开；最多一站离开 15 份，每站都还留 98% 以上，不会碰到「掉到一半」的把关。
-- 以后 `/work/src` 整份跟上 git 时，这个档会被 git 的版本盖掉，修正已经在里面。
+- 以后 `/work/src` 整份跟上 git 时，这个档会被 git 的版本盖掉，修正已经在里面。（11-24 已经整份跟上，见下。）
+
+**整份对齐 git**（11-24 09:39 第一次，对齐到 `ba2c7ed`）：`pack.sh --with-src` 只带 `content`、`totext`、`retrieval`、`core` 和 `config/`，`install.sh` 也只收这几处；`settings.py`、`archive/`、`admin/`、`ops/` 会留旧的，解包只盖不删，v1 的旧档也会一直留着。要整份对齐时改用 `full_sync_install.sh`：
+
+```
+git archive --format=tar <提交> src config deploy/lab-pipeline tests/pipeline > /tmp/full-sync.tar
+mkdir /tmp/fs && tar -xf /tmp/full-sync.tar -C /tmp/fs && (cd /tmp/fs && find . -type f | sed 's|^\./||' | sort | xargs shasum -a 256) > /tmp/full-sync.files.sha256
+(cd /tmp && shasum -a 256 full-sync.tar > full-sync.tar.sha256)
+scp /tmp/full-sync.tar /tmp/full-sync.tar.sha256 /tmp/full-sync.files.sha256 nknu-lab:C:/nknu-transfer/out/
+scp deploy/lab-pipeline/full_sync_install.sh nknu-lab:C:/nknu-transfer/tools/full_sync_install.sh
+```
+
+实验室上（同样避开 01:00～04:00）：`docker run --rm -v nknu-work:/work -v C:\nknu-transfer\tools:/tools:ro -v C:\nknu-transfer\out:/out -w /work -e NKNU_CONFIG_DIR=/work/config -e PYTHONPATH=/work/src nknu-pipeline bash /tools/full_sync_install.sh`。装完手动跑一次真资料检查（`... run --rm -e BUILD_OPTS="--from 8" build`），再照 `deploy/lab-inspect` 重装面板。
+
+11-24 那一次：
+- 对齐前只读对过（`research/sync_2026-11-24/`）：`/work/src` 一样的 85 个、不一样的 46 个、git 有它没有的 75 个、它有 git 没有的 45 个（v1 的 `crawl/`、`server/`、`build/` 等）。爬虫的两份程序（`/crawl/code-update`、`/crawl/export-code`）里爬虫自己的档和 git 一样，没动。
+- 换之前的整份存在 `/work/previous/full-sync-20261124-093927.tar`（176 个档）；旧的 `src/nknu` 和 v1 的 `config/entities.yaml`、`templates.yaml` 移到 `/work/previous/full-sync-20261124-093927-aside/`。
+- 装完 206 个档都和 `ba2c7ed` 一样，`src/nknu` 里没有 git 没有的档；这条线的测试 118 个过。
+- 真资料检查 18/22，和 11-23 那次一样（没过的还是第 7、13、14、20 项）。
+- 面板跟着重装，这次不用 `FORCE=1`（10:00 又装了一次 `b4d0c2c`）；8770 对外服务也换成 `ba2c7ed`（见各自的 README）。
 
 所以在 Mac 上直接跑 `pack.sh` 会把工作区里那些「先不要」的改动一起打进去；那些改动提交或丢掉以前，要照上面这样另外打包。`compose.yaml` 或 `nightly_ingest.cmd` 有改的话，另外 scp 到 `C:\nknu-transfer\build\`（旧的先改名留着）。装完跑一次 `... run --rm ingest status` 和 `... run --rm progress` 确认还读得到。
 
