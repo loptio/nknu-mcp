@@ -807,6 +807,27 @@ def test_the_comparison_runs_in_the_background_and_never_writes_the_libraries(tw
     assert not list(tmp_path.glob("*.db-journal")) and not list(tmp_path.glob("*.db-wal"))
 
 
+def test_a_comparison_kept_over_a_restart_comes_back_only_under_the_same_rules(two, tmp_path, monkeypatch):
+    # 11-24: kept by the two files alone, the night of 11-24 went on saying 查不出原因 of 9 documents after the panels
+    # had learnt their reasons; the digest of the rules' programs is part of what it is kept under
+    from nknu.ops import keep
+
+    prev, new = two
+    monkeypatch.setattr(ch, "RULES", "the rules of 11-23")
+    first = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))
+    first.snapshot()
+    first.wait(30)
+    assert first.snapshot()["state"] == "ready"
+    same = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))  # a restart, same rules
+    assert same.snapshot()["state"] == "ready" and same._thread is None
+    monkeypatch.setattr(ch, "RULES", "the rules of 11-24")
+    later = ch.Changes(new, tmp_path, prev_db=prev, kept=keep.Kept(tmp_path / "ops.db"))  # a restart, new rules
+    assert later.snapshot()["state"] == "computing"
+    later.wait(30)
+    assert later.snapshot()["totals"]["left"] == 15
+    assert ch.rules_digest(("nknu.ops.changes",)) != ch.rules_digest(("nknu.ops.changes", "nknu.content.build"))
+
+
 def test_no_library_before_or_the_same_one_is_said(two, tmp_path):
     _prev, new = two
     assert ch.Changes(new, tmp_path, prev_db=tmp_path / "none.db").snapshot()["state"] == "none"

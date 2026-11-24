@@ -37,6 +37,7 @@ research/dashboard_redesign_2026-11-17/diagnosis.md)."""
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
 import re
@@ -511,6 +512,25 @@ def read_hold(path: Path) -> set[str]:
     return {line for line in lines if line}
 
 
+def rules_digest(modules: tuple[str, ...] = ("nknu.ops.changes", "nknu.content.build", "nknu.content.documents",
+                                             "nknu.content.ids", "nknu.content.corpus")) -> str:
+    """A digest of the programs a comparison's reasons come from (this module and the build's rules it mirrors), a
+    module that cannot be found counting as none. 11-24: a comparison kept over a restart is kept under it as well as
+    the two files, so new rules compare again; the night of 11-24 kept saying 查不出原因 of 9 documents after the
+    panels had learnt their reasons, the two libraries being the same files."""
+    h = hashlib.blake2b(digest_size=8)
+    for name in modules:
+        try:
+            spec = importlib.util.find_spec(name)
+            h.update(name.encode() + b"\0" + (Path(spec.origin).read_bytes() if spec and spec.origin else b""))
+        except (ImportError, OSError, ValueError):
+            h.update(name.encode() + b"\0")
+    return h.hexdigest()
+
+
+RULES = rules_digest()
+
+
 class Changes:
     """The last swap's comparison, made in a background thread and kept until either library file changes.
     snapshot(): {'state': none (no library before to compare with), same (the two are one file: the last night did
@@ -560,7 +580,7 @@ class Changes:
         with self._lock:
             self._done, self._keys = result, keys
         if self.kept is not None and result.get("state") == "ready":
-            self.kept.put("changes", keys, result)
+            self.kept.put("changes", (keys, RULES), result)
 
     def snapshot(self) -> dict:
         prev_key, new_key = file_key(self.prev_db), file_key(self.new_db)
@@ -571,8 +591,8 @@ class Changes:
         if prev_key[:2] == new_key[:2]:
             return {"state": "same", "words": "前一份庫和現在用的是同一份（還沒換上新庫：每晚進庫在建庫前先留一份，換上以後才有得比）"}
         keys = (prev_key, new_key)
-        if self._done is None and self.kept is not None:  # after a restart: the same two files, the same comparison
-            got = self.kept.get("changes", keys)
+        if self._done is None and self.kept is not None:  # after a restart: the same files and rules, the same result
+            got = self.kept.get("changes", (keys, RULES))
             if isinstance(got, dict) and got.get("state") == "ready":
                 with self._lock:
                     self._done, self._keys = got, keys
