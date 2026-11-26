@@ -860,7 +860,7 @@ const g = {document, URLSearchParams, console, setImmediate,
   Event: class { constructor(t) { this.type = t; } },
   fetch: async url => {
     asked.push(String(url));
-    const r = (cfg.answers || {})[String(url).split('?')[0]];
+    const A = cfg.answers || {}, r = String(url).includes('?from=') && 'span' in A ? A.span : A[String(url).split('?')[0]];
     if (r === 'throw') throw new Error('unreachable');
     return r ? {ok: true, status: 200, json: async () => r} : {ok: false, status: 404, json: async () => ({})};
   }};
@@ -896,6 +896,22 @@ const ticks = async () => { for (let i = 0; i < 6; i++) await new Promise(r => s
       cv.on.pointerleave({});
       frames.slice(-1).forEach(f => f(2000));
       out.tipAfter = tipEl.hidden;
+    }
+    if (cfg.actions && els['vs-ecg']) {  // the wheel, a drag, a key, 回到現在; after each: the axis, the button, the tip
+      const cv = els['vs-ecg'], ev = o => ({preventDefault() {}, pointerId: 1, deltaX: 0, deltaY: 0, offsetY: 80, ...o});
+      out.steps = [];
+      for (const a of cfg.actions) {
+        if (a.type === 'wheel') cv.on.wheel(ev({deltaY: a.deltaY || 0, deltaX: a.deltaX || 0, offsetX: a.x}));
+        if (a.type === 'drag') { cv.on.pointerdown(ev({offsetX: a.from})); cv.on.pointermove(ev({offsetX: a.to})); cv.on.pointerup(ev({offsetX: a.to})); }
+        if (a.type === 'key') cv.on.keydown(ev({key: a.key}));
+        if (a.type === 'now') els['vs-now'].on.click(ev({}));
+        if (a.type === 'hover') cv.on.pointermove(ev({offsetX: a.x}));
+        await ticks();
+        texts.length = 0; frames.slice(-1).forEach(f => f(2000));
+        out.steps.push({texts: texts.slice(), now: els['vs-now'] ? els['vs-now'].hidden : null,
+          tip: els['vs-ecg-tip'] && !els['vs-ecg-tip'].hidden ? String(els['vs-ecg-tip'].innerHTML) : null,
+          quiet: el('vs-ecg-quiet').hidden ? null : String(el('vs-ecg-quiet').textContent)});
+      }
     }
     out.day = String(el('vs-day').textContent);
     if (cfg.echarts) {
@@ -1036,6 +1052,57 @@ def test_the_live_line_says_the_second_under_the_pointer(tmp_path):
     assert "這一秒 2 次" in html and "每秒請求 2.00" in html
     card = LexborHTMLParser(visits.card_html(data))
     assert "hidden" in card.css_first("#vs-ecg-tip").attributes  # drawn hidden: nothing shows before a pointer
+
+
+def test_a_stretch_of_the_live_line_is_read_from_the_log_sparse_and_says_where_the_log_began(tmp_path):
+    """Live 11-24 (owner: 「可以滑动回看之前的走线以及放大缩小时间范围吗」): 即時 dragged back or zoomed out asks
+    /api/usage/live with from= and to= for the seconds it does not hold: the seconds with calls only, kept inside the
+    last 24 hours; and when the log began after from=, its first second, so nothing before it is drawn as quiet."""
+    now = at("2026-11-24T12:00:00")
+    last = int(now.timestamp()) - 1
+    t = lambda s: (now - timedelta(seconds=s)).isoformat()
+    log = write_log(tmp_path / "queries.jsonl", [call(t(7200)), call(t(3000)), call(t(3000)), call(t(10))])
+    got = visits.span(log, last - 4000, last - 100, now)
+    assert got["calls"] == [[int(now.timestamp()) - 3000, 2]] and got["read"]
+    assert got["whole"] is True and got["began"] is None  # the log holds a line older than from=
+    young = visits.span(log, last - 9000, last, now)
+    assert young["whole"] is False and young["began"] == int(now.timestamp()) - 7200  # nothing known before it
+    far = visits.span(log, last - 10 * 86400, last + 999, now)
+    assert far["from"] == last - visits.BACK and far["to"] == last  # never past 24 hours back, never past now
+    empty = write_log(tmp_path / "none.jsonl", [])
+    assert visits.span(empty, last - 60, last, now)["began"] == last + 1  # no line at all: no record, no quiet
+    assert visits.span(tmp_path / "missing.jsonl", last - 60, last, now)["read"] is False
+    where = type("W", (), {"public_log": log})()
+    assert "per_sec" in visits.live_api(where, {}) and "calls" in visits.live_api(where, {"from": "1", "to": "2"})
+    assert visits.live_api(where, {"from": "x"})["error"] == "bad_args"
+
+
+def test_the_live_line_zooms_looks_back_and_comes_back_to_now(tmp_path):
+    """The wheel zooms (following, now stays at the right edge, and the axis says how long ago); a drag looks back
+    (the axis turns to Taipei's clock, 回到現在 shows, the seconds it lacks are asked with from=); 回到現在 returns to
+    the five minutes ending now. A stretch asked shows its calls under the pointer, and before where the log began
+    the card says from when it holds, never a quiet line."""
+    end = 1700000000  # 2023-11-15 06:13:20 in Taipei
+    ids = ["vs-data", "vs-day", "vs-ecg", "vs-ecg-none", "vs-ecg-quiet", "vs-ecg-tip", "vs-now", "vs-rps", "vs-60", "vs-peak"]
+    data = {"days": {}, "pick": "", "dates": [], "calls": [], "labels": [], "today": "2023-11-15", "slots": 4}
+    answers = {"/api/usage/live": {"read": True, "end": end, "per_sec": [0] * 330, "poll_ms": 3000},
+               "span": {"from": end - 1230, "to": end - 330, "calls": [[end - 500, 7]], "read": True, "whole": False,
+                        "began": end - 560}}
+    out = run_layer(tmp_path, ids=ids, vsData=data, answers=answers,
+                    actions=[{"type": "wheel", "deltaY": 462, "x": 150},  # e^(462 * 0.0015) = 2: ten minutes
+                             {"type": "hover", "x": 77.5},  # the frame's now is end + 1 (a second after the answer): end - 500
+                             {"type": "drag", "from": 100, "to": 226},  # half the width: five minutes back
+                             {"type": "now"},
+                             {"type": "key", "key": "-"}])
+    zoomed, hovered, back, home, wider = out["steps"]
+    assert "-10 分" in zoomed["texts"] and "-2 分" in zoomed["texts"] and "現在" in zoomed["texts"]
+    assert zoomed["now"] is False  # away from the five minutes: 回到現在 shows
+    assert any("?from=" in u for u in out["asked"])
+    assert hovered["tip"] and "這一秒 7 次" in hovered["tip"] and "06:05:00" in hovered["tip"]
+    assert "06:04 以前沒有紀錄" in (hovered["quiet"] or "")  # the log began at end - 560
+    assert "現在" not in back["texts"] and any(":" in x for x in back["texts"]) and back["now"] is False
+    assert home["now"] is True and "-5 分" in home["texts"] and "現在" in home["texts"]
+    assert "-6 分" in wider["texts"] and "-8 分" not in wider["texts"] and wider["now"] is False  # 7.5 minutes, 2 a step
 
 
 def test_a_day_still_to_come_says_so_not_no_record(tmp_path):

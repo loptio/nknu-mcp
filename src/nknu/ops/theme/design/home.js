@@ -162,23 +162,102 @@
     };
     const dayLoop = () => { if (vs.dataset.v === 'day' && !document.hidden) refresh(); setTimeout(dayLoop, 60000); };
     setTimeout(dayLoop, 60000);
-    // 即時: requests a second over the last five minutes, each point a 30-second weighted average, sliding left
-    const cv = $('vs-ecg'), cx = cv ? cv.getContext('2d') : null, WIN = 300, SM = 30;
-    const S = new Map();
+    // 即時: requests a second, each point a 30-second weighted average, sliding left: five minutes ending now at first.
+    // The wheel (or + and −) zooms from a minute to BACK, a drag (or ← and →) looks back as far as BACK, 回到現在 (or a
+    // double click) returns (owner 11-24: 「可以滑动回看之前的走线以及放大缩小时间范围吗」). Past the seconds
+    // /api/usage/live sends, the stretch is asked of it with from= and to=; before the log began nothing is drawn,
+    // never a quiet line. Past FINE seconds a point is the plain average of its stretch of seconds.
+    const cv = $('vs-ecg'), cx = cv ? cv.getContext('2d') : null, WIN = 300, SM = 30, MINS = 60, BACK = 86400, FINE = 900;
+    const S = new Map();  // second -> calls; a second not in it had none (when it is held: from lo on)
     let end = 0, got = 0, read = true, poll = 3000, lastCall = null, serve = null;
+    let span = WIN, follow = true, R0 = 0, headNow = 0;  // the seconds shown; following now, else the right edge
+    let lo = Infinity, known = -Infinity, spanAsking = false, retry = 0, unread = false;  // the first second held; the log's first second
     const stamp = t => { const m = /^\d{4}-(\d\d)-(\d\d)T(\d\d:\d\d)/.exec(t || ''); return m ? `${+m[1]}/${+m[2]} ${m[3]}` : ''; };
     const at = i => S.get(i) || 0;
     const rate = i => { let s = 0, w = 0; for (let k = 0; k < SM; k++) { const q = SM - k; s += at(i - k) * q; w += q; } return s / w; };
-    // the pointer over the line (owner 11-24: 每日 says a day under the mouse, 即時 said nothing): the second under it,
-    // a guide down to the line and a card with that second's time, its calls and the smoothed rate the line draws
+    // Taipei's clock (no summer time: UTC + 8 h)
+    const tp = s => new Date((s + 28800) * 1000), p2 = x => String(x).padStart(2, '0');
+    const hm = s => { const d = tp(s); return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`; };
+    const hms = s => `${hm(s)}:${p2(tp(s).getUTCSeconds())}`;
+    const md = s => { const d = tp(s); return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
+    const when = (s, f = hms) => (md(s) === md(headNow) ? f(s) : `${md(s)} ${f(s)}`);
+    const ago = s => (s < 60 ? `-${s} 秒` : s < 3600 ? `-${s / 60} 分` : `-${Math.floor(s / 3600)} 小時` + (s % 3600 ? ` ${s % 3600 / 60} 分` : ''));
+    const long = s => (s < 120 ? `${Math.round(s)} 秒` : s < 7200 ? `${Math.round(s / 60)} 分鐘` : `${+(s / 3600).toFixed(1)} 小時`);
+    const STEPS = [10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
+    const stepOf = w => STEPS.find(s => w / s <= 6) || 21600;
+    const PAD = {l: 36, r: 12, t: 14, b: 22};
+    const width = () => Math.max(1, (cv ? cv.clientWidth : 0) - PAD.l - PAD.r);
+    const edges = () => { const R = follow ? headNow : R0; return [R - span, R]; };
+    const nowBtn = $('vs-now');
+    const settle = () => {  // the view kept inside a minute .. BACK, back no further than BACK, and 回到現在 shown when away
+      span = Math.round(Math.max(MINS, Math.min(BACK, span)));  // whole seconds: the axis steps land on its ends
+      if (!follow) { R0 = Math.max(headNow - BACK + span, R0); if (R0 >= headNow - 0.5) follow = true; }
+      if (nowBtn) nowBtn.hidden = follow && span === WIN;
+    };
+    // the seconds before what is held, a screen more than the view needs (the next drag), asked once at a time
+    const need = async () => {
+      const [L] = edges(), floor = Math.floor(headNow) - BACK;
+      if (spanAsking || !end || !read || performance.now() < retry || L - SM >= lo || lo <= known || lo <= floor) return;
+      spanAsking = true;
+      try {
+        const from = Math.max(Math.floor(L - SM - span), floor);
+        const r = await fetch(`/api/usage/live?from=${from}&to=${lo - 1}`, {cache: 'no-store'});
+        const j = r.ok ? await r.json() : null;
+        if (j && Array.isArray(j.calls) && j.read !== false && j.from != null) {
+          j.calls.forEach(([s, n]) => { if (n) S.set(s, n); });
+          lo = Math.min(lo, j.from);
+          if (!j.whole && j.began != null) known = Math.max(known, j.began);
+          unread = false;
+        } else { retry = performance.now() + 10000; unread = true; }
+      } catch (e) { retry = performance.now() + 10000; unread = true; } finally { spanAsking = false; }
+      need();  // a zoom past one screen asks on
+    };
+    const zoom = (f, px) => {  // px: the pixel kept still when looking back (null: the middle); following keeps now
+      const ns = Math.max(MINS, Math.min(BACK, span * f));
+      if (!follow) {
+        const [L] = edges(), a = px == null ? .5 : Math.max(0, Math.min(1, (px - PAD.l) / width())), t0 = L + a * span;
+        R0 = t0 + (1 - a) * ns;
+      }
+      span = ns; settle(); need();
+    };
+    const pan = dt => { const [, R] = edges(); follow = false; R0 = Math.min(headNow, R - dt); settle(); need(); };
+    const home = () => { follow = true; span = WIN; settle(); };
+    // the pointer over the line (owner 11-24: 每日 says a day under the mouse, 即時 said nothing): the second (or the
+    // stretch) under it, a guide down to the line and a card with its time, its calls and the rate the line draws
     const tipEl = $('vs-ecg-tip');
-    let hx = null, hy = 0, tipHtml = '';
+    let hx = null, hy = 0, tipHtml = '', drag = null;
     const hideTip = () => { if (tipEl) tipEl.hidden = true; };
-    const clock = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
     if (cv) {
-      cv.addEventListener('pointermove', ev => { hx = ev.offsetX; hy = ev.offsetY; });
+      cv.addEventListener('pointerdown', ev => {
+        drag = {x: ev.offsetX, R: edges()[1], moved: false};
+        if (cv.setPointerCapture && ev.pointerId != null) try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* gone */ }
+      });
+      cv.addEventListener('pointermove', ev => {
+        hx = ev.offsetX; hy = ev.offsetY;
+        if (!drag) return;
+        const dx = ev.offsetX - drag.x;
+        if (!drag.moved && Math.abs(dx) < 3) return;  // a click is no drag
+        drag.moved = true;
+        if (cv.classList) cv.classList.add('dragging');
+        follow = false; R0 = Math.min(headNow, drag.R - dx / width() * span); settle(); need();
+      });
+      const done = () => { drag = null; if (cv.classList) cv.classList.remove('dragging'); };
+      cv.addEventListener('pointerup', done);
+      cv.addEventListener('pointercancel', done);
       cv.addEventListener('pointerleave', () => { hx = null; hideTip(); });
+      cv.addEventListener('wheel', ev => {
+        ev.preventDefault();
+        if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) pan(-ev.deltaX / width() * span);  // a sideways swipe moves
+        else zoom(Math.exp(ev.deltaY * 0.0015), ev.offsetX);
+      }, {passive: false});
+      cv.addEventListener('dblclick', home);
+      cv.addEventListener('keydown', ev => {
+        const k = ev.key, act = {ArrowLeft: () => pan(span * .2), ArrowRight: () => pan(-span * .2), '+': () => zoom(1 / 1.5, null),
+          '=': () => zoom(1 / 1.5, null), '-': () => zoom(1.5, null), Home: home, Escape: home}[k];
+        if (act) { ev.preventDefault(); act(); }
+      });
     }
+    if (nowBtn) nowBtn.addEventListener('click', home);
     // the log unread, the address not answering or answering wrong: said on the card, never a flat line of 0
     const lost = () => { read = false; const none = $('vs-ecg-none'); if (none) none.hidden = false; };
     const pull = async () => {
@@ -190,10 +269,14 @@
             const j = await r.json();
             read = j.read !== false; poll = j.poll_ms || 3000; lastCall = j.last || null; serve = j.serve || null;
             const per = j.per_sec || [], first = j.end - per.length + 1;
-            per.forEach((v, k) => S.set(first + k, v));
-            for (const k of [...S.keys()]) if (k < first) S.delete(k);
+            per.forEach((v, k) => { if (v) S.set(first + k, v); else S.delete(first + k); });
+            if (per.length) lo = Math.min(lo, first);
+            const cut = j.end - BACK - SM - 60;
+            for (const k of [...S.keys()]) if (k < cut) S.delete(k);
+            if (lo < cut) lo = cut;
             end = j.end; got = performance.now();
             const none = $('vs-ecg-none'); if (none) none.hidden = read;
+            need();
           }
         } catch (e) { lost(); }  // the next ask tries again
       }
@@ -207,9 +290,25 @@
       if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
       cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, W, H);
       const head = end ? end + Math.min((now - got) / 1000, poll / 1000 + 1) : 0, last = Math.min(Math.floor(head), end);
-      const padL = 36, padR = 12, padT = 14, padB = 22, iw = W - padL - padR, ih = H - padT - padB;
-      const pts = []; if (end && read) for (let i = last - WIN; i <= last; i++) pts.push([i, rate(i)]);
-      const top = Math.max(0.5, ...pts.map(p => p[1])) * 1.25, X = i => padL + (i - (head - WIN)) / WIN * iw, Y = v => padT + ih - v / top * ih;
+      headNow = head;
+      if (!follow && R0 < head - BACK + span) R0 = head - BACK + span;  // the oldest edge moves on with the clock
+      const R = follow ? head : R0, L = R - span, start = Math.max(lo, known);  // nothing before what is held or recorded
+      const padL = PAD.l, padR = PAD.r, padT = PAD.t, padB = PAD.b, iw = W - padL - padR, ih = H - padT - padB;
+      const live = !!(end && read), fine = span <= FINE, b = fine ? 1 : Math.ceil(span / 150);
+      const pts = [];  // [x time, requests a second, first second, last second]
+      if (live) {
+        if (fine) {
+          for (let i = Math.max(Math.floor(L) - 1, start); i <= Math.min(Math.ceil(R) + 1, last); i++) pts.push([i, rate(i), i, i]);
+        } else {
+          const sums = new Map();
+          for (const [s, n] of S) if (s >= L - b && s <= R + b) { const k = Math.floor(s / b); sums.set(k, (sums.get(k) || 0) + n); }
+          for (let k = Math.floor(L / b) - 1; k * b <= Math.min(R + b, last); k++) {
+            const a = Math.max(k * b, start), z = Math.min(k * b + b - 1, last);
+            if (z >= a) pts.push([(a + z) / 2, (sums.get(k) || 0) / (z - a + 1), a, z]);
+          }
+        }
+      }
+      const top = Math.max(0.5, ...pts.map(p => p[1])) * 1.25, X = t => padL + (t - L) / span * iw, Y = v => padT + ih - v / top * ih;
       const ink3 = css('--ink3'), line = css('--line'), q4 = css('--q4');
       cx.font = '11px ' + (css('--font') || 'system-ui'); cx.fillStyle = ink3; cx.strokeStyle = line; cx.lineWidth = 1;
       for (const f of [0, .5, 1]) {
@@ -217,37 +316,57 @@
         cx.beginPath(); cx.moveTo(padL, y + .5); cx.lineTo(W - padR, y + .5); cx.stroke();
         cx.textAlign = 'right'; cx.fillText(String(+v.toFixed(2)), padL - 6, y + 4);  // 0.25 as it is, never 「0.3」
       }
-      cx.textAlign = 'center'; for (let m = 5; m >= 1; m--) { const x = padL + (WIN - m * 60) / WIN * iw; cx.fillText(`-${m} 分`, x, H - 6); }
-      cx.textAlign = 'right'; cx.fillText('現在', W - padR, H - 6);
-      const quiet = $('vs-ecg-quiet');
-      if (!pts.length) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); if (quiet) quiet.hidden = true; hideTip(); return; }  // nothing measured yet, or unread
+      // the time axis: following, how long ago (-1 分 … 現在); looking back, Taipei's clock
+      const step = stepOf(span);
+      cx.textAlign = 'center';
+      if (follow) {
+        for (let m = step; m <= span + .001; m += step) { const x = X(head - m); if (x >= padL - 1) cx.fillText(ago(m), x, H - 6); }
+        cx.textAlign = 'right'; cx.fillText('現在', W - padR, H - 6);
+      } else {
+        const f = step < 60 ? hms : hm;
+        for (let t = Math.ceil(L / step) * step; t <= R; t += step) { const x = X(t); if (x > padL + 16 && x < W - padR - 16) cx.fillText(when(t, f), x, H - 6); }
+      }
+      const quiet = $('vs-ecg-quiet'), stats = ['vs-rps', 'vs-60', 'vs-peak'];
+      if (!live) { stats.forEach(id => { $(id).textContent = '—'; }); if (quiet) quiet.hidden = true; hideTip(); return; }  // nothing measured yet, or unread
       // the public service down at its last check (查詢服務's reading): said, never 「沒有人查」 (its log stops too);
-      // else a window nobody called in says so, with when the last call was (a flat line alone reads as broken)
+      // else a view nobody called in says so (following: with when the last call was), a view reaching before the
+      // record says from when it holds, and one still being asked says so (a flat line alone reads as broken)
       const down = !!(serve && serve.up === false);
       if (quiet) {
-        const none = pts.every(([i]) => !at(i));
-        quiet.hidden = !(down || none);
-        if (down) quiet.textContent = '對外服務沒有回應' + (stamp(serve.at) ? `（${stamp(serve.at)} 檢查）` : '') + (serve.words ? '：' + serve.words : '');
-        else if (none) quiet.textContent = '最近 5 分鐘沒有人查' + (stamp(lastCall) ? ' · 最後一次 ' + stamp(lastCall) : '');
+        const none = pts.every(p => !p[1]), loading = spanAsking && L - SM < lo, before = L < start && (known > -Infinity || start <= Math.floor(head) - BACK + 1);
+        const said = down ? '對外服務沒有回應' + (stamp(serve.at) ? `（${stamp(serve.at)} 檢查）` : '') + (serve.words ? '：' + serve.words : '')
+          : loading ? '讀取中…'
+            : [none ? (follow ? `最近 ${long(span)}沒有人查` + (stamp(lastCall) ? ' · 最後一次 ' + stamp(lastCall) : '') : '這段時間沒有人查') : '',
+              before ? `${when(start, hm)} 以前沒有紀錄` : L < start && unread ? `${when(start, hm)} 以前的讀不到` : ''].filter(Boolean).join(' · ');
+        quiet.hidden = !said; if (said) quiet.textContent = said;
       }
-      if (down) { ['vs-rps', 'vs-60', 'vs-peak'].forEach(id => { $(id).textContent = '—'; }); hideTip(); return; }
-      const curve = () => { cx.beginPath(); pts.forEach(([i, v], k) => { const x = X(i), y = Y(v); if (!k) { cx.moveTo(x, y); return; } const [pi, pv] = pts[k - 1], px = X(pi), py = Y(pv); cx.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2); }); };
-      cx.save(); cx.beginPath(); cx.rect(padL, 0, iw, H); cx.clip();
-      const g = cx.createLinearGradient(0, padT, 0, padT + ih); g.addColorStop(0, q4 + '55'); g.addColorStop(1, q4 + '00');
-      curve(); cx.lineTo(X(last), padT + ih); cx.lineTo(X(last - WIN), padT + ih); cx.closePath(); cx.fillStyle = g; cx.fill();
-      curve(); cx.strokeStyle = q4; cx.lineWidth = 2; cx.lineJoin = 'round'; cx.stroke(); cx.restore();
-      const cur = rate(last), xc = X(last), yc = Y(cur); cx.fillStyle = q4; cx.beginPath(); cx.arc(xc, yc, 3.5, 0, 7); cx.fill();
-      const lastMin = pts.slice(-60), qpm = lastMin.reduce((a, [i]) => a + at(i), 0), peak = Math.max(...lastMin.map(([i]) => at(i)));
-      $('vs-rps').textContent = cur.toFixed(1); $('vs-60').textContent = qpm; $('vs-peak').textContent = peak;
+      if (down) { stats.forEach(id => { $(id).textContent = '—'; }); hideTip(); return; }
+      if (pts.length) {
+        const curve = () => { cx.beginPath(); pts.forEach(([t, v], k) => { const x = X(t), y = Y(v); if (!k) { cx.moveTo(x, y); return; } const [pt, pv] = pts[k - 1], px = X(pt), py = Y(pv); cx.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2); }); };
+        cx.save(); cx.beginPath(); cx.rect(padL, 0, iw, H); cx.clip();
+        const g = cx.createLinearGradient(0, padT, 0, padT + ih); g.addColorStop(0, q4 + '55'); g.addColorStop(1, q4 + '00');
+        curve(); cx.lineTo(X(pts[pts.length - 1][0]), padT + ih); cx.lineTo(X(pts[0][0]), padT + ih); cx.closePath(); cx.fillStyle = g; cx.fill();
+        curve(); cx.strokeStyle = q4; cx.lineWidth = 2; cx.lineJoin = 'round'; cx.stroke(); cx.restore();
+        if (follow && fine) { const xc = X(last), yc = Y(rate(last)); cx.fillStyle = q4; cx.beginPath(); cx.arc(xc, yc, 3.5, 0, 7); cx.fill(); }
+      }
+      // the three numbers are now's whatever the view: the last 30 s weighted, the last 60 s, its busiest second
+      let qpm = 0, peak = 0;
+      for (let i = last - 59; i <= last; i++) { const n = at(i); qpm += n; peak = Math.max(peak, n); }
+      $('vs-rps').textContent = rate(last).toFixed(1); $('vs-60').textContent = qpm; $('vs-peak').textContent = peak;
       if (!tipEl) return;
-      if (hx == null || hx < padL || hx > W - padR) { hideTip(); return; }
-      // the second under the pointer, read again every frame: the line slides under a still pointer
-      const i = Math.max(last - WIN, Math.min(last, Math.round(head - WIN + (hx - padL) / iw * WIN))), x = X(i), v = rate(i);
+      if (hx == null || hx < padL || hx > W - padR || !pts.length) { hideTip(); return; }
+      // the point under the pointer, read again every frame: the line slides under a still pointer
+      let best = null;
+      for (const p of pts) { const d = Math.abs(X(p[0]) - hx); if (!best || d < best.d) best = {p, d}; }
+      if (!best || best.d > Math.max(6, iw / pts.length)) { hideTip(); return; }  // before the record: nothing to say
+      const [t, v, a, z] = best.p, x = X(t);
       cx.save(); cx.strokeStyle = ink3; cx.lineWidth = 1; cx.setLineDash([3, 3]);
       cx.beginPath(); cx.moveTo(Math.round(x) + .5, padT); cx.lineTo(Math.round(x) + .5, padT + ih); cx.stroke(); cx.restore();
       cx.fillStyle = css('--surface') || '#fff'; cx.beginPath(); cx.arc(x, Y(v), 5.5, 0, 7); cx.fill();
       cx.fillStyle = q4; cx.beginPath(); cx.arc(x, Y(v), 3.5, 0, 7); cx.fill();
-      const html = `<b>${clock.format(new Date(i * 1000))}</b><br>這一秒 ${at(i)} 次<br>每秒請求 ${v.toFixed(2)}`;
+      const f = z - a + 1 < 60 ? hms : hm;
+      const html = a === z ? `<b>${when(a)}</b><br>這一秒 ${at(a)} 次<br>每秒請求 ${v.toFixed(2)}`
+        : `<b>${when(a, f)}–${f(z)}</b><br>這段 ${Math.round(v * (z - a + 1))} 次<br>平均每秒 ${v.toFixed(2)}`;
       if (html !== tipHtml) { tipEl.innerHTML = html; tipHtml = html; }
       tipEl.hidden = false;
       const tw = tipEl.offsetWidth || 0, th = tipEl.offsetHeight || 0;
