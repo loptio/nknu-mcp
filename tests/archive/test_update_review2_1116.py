@@ -201,6 +201,25 @@ def test_a_second_maintenance_night_still_holds_the_site(w):
     assert SITE in n2.alarms and n2.sites_changed == []
 
 
+def test_one_page_at_several_addresses_changing_together_is_no_maintenance_page(w):
+    """Live 11-25: id.nknu.edu.tw's 學術活動 category page is reached at six nested addresses
+    (/linkezypmdtp/category/<x>/category/link01UPIECR answers what /linkezypmdtp/category/link01UPIECR answers). The
+    page changed once; the six addresses changed with it to one body, which read as a maintenance page: the site's
+    export waited, and its rows, judged the next night against the answer before the alarm, would have raised it every
+    night. A maintenance page turns different pages into one body; addresses that answered one body already did not
+    turn into it. A body counts the different answers the pages held before, so the one page is one; different pages
+    turning into one body still hold the site."""
+    old = _html("<p>學術活動：十月講座</p>")
+    same = [_answer(w, f"https://{SITE}/cat/x{i}/cat/events", old) for i in range(6)]
+    watch.night(w.f, w.root, time.time() - 5, now=time.time())
+    n = _alarm_night(w, same, _html("<p>學術活動：十一月講座</p>"))
+    assert SITE not in n.alarms and SITE in n.sites_changed
+    assert w.f.meta(watch.HELD_KEY) is None  # nothing held: the next night judges them as usual
+    pages = [_answer(w, f"https://{SITE}/q{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    watch.night(w.f, w.root, time.time() - 5, now=time.time())
+    assert SITE in _alarm_night(w, pages + same).alarms  # different pages into one body: still a maintenance page
+
+
 def test_the_rows_an_alarm_held_are_judged_against_the_answer_before_it_and_let_go(w):
     ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())

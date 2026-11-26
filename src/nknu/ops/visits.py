@@ -28,8 +28,10 @@ from nknu.ops.pipeline import TAIPEI
 WINDOW = 300  # seconds the live line shows
 SMOOTH = 30  # seconds each point averages (weights 30..1, the newest heaviest)
 POLL_MS = 3000  # how often the page asks again
+BACK = 24 * 3600  # how far back 即時 can be dragged, in seconds (the log rotates at 20 MB: span() says where it began)
 DAYS = 30  # the days 每日 draws, ending today
-HELP = ("對外服務（MCP、網頁、接口）收到的查詢，分不出是學生還是我們在測試。即時：最近 5 分鐘每秒的請求數（30 秒平滑）。"
+HELP = ("對外服務（MCP、網頁、接口）收到的查詢，分不出是學生還是我們在測試。即時：最近 5 分鐘每秒的請求數（30 秒平滑）；"
+        "滾輪或 +、− 縮放，拖曳或 ←、→ 往回看（最多 24 小時），按「回到現在」回到即時。"
         "每日：每天的查詢次數，可以縮放、左右拖；點一天看那天的負荷率（P95）、峰值 QPM、最大並發、P90 延遲、錯誤率。")
 
 
@@ -83,9 +85,43 @@ def _last_call(path: Path, lines: list[dict]) -> str | None:
     return None
 
 
+def span(public_log: Path | None, since: int, until: int, now: datetime | None = None) -> dict:
+    """The calls of each second from `since` to `until` (epoch seconds, kept inside the last BACK seconds up to the
+    last whole one), for 即時 dragged back or zoomed out (owner 11-24: 「可以滑动回看之前的走线以及放大缩小时间范围吗」):
+    {'from', 'to', 'calls' ([second, n] for each second with calls, oldest first: a quiet stretch is long and sent as
+    nothing), 'read' (the log could be read), 'whole' (the log reaches back past 'from'), 'began' (not whole: the
+    log's first second, or 'to' + 1 when it holds no line at all; nothing before it is known, never a quiet stretch)}.
+    Never a query's words."""
+    now = now or pl.now_tpe()
+    last = int(now.timestamp()) - 1
+    lo, hi = max(int(since), last - BACK), min(int(until), last)
+    path = Path(public_log) if public_log else None
+    out = {"from": lo, "to": hi, "calls": [], "read": bool(path and path.exists()), "whole": False, "began": None}
+    if not out["read"] or hi < lo:
+        return out
+    lines, whole = pl.lines_since(path, datetime.fromtimestamp(lo, TAIPEI))
+    seconds = [int(x["_at"].timestamp()) for x in lines if isinstance(x.get("_at"), datetime)]
+    counts: dict[int, int] = {}
+    for s in seconds:
+        if lo <= s <= hi:
+            counts[s] = counts.get(s, 0) + 1
+    out.update(calls=[[s, n] for s, n in sorted(counts.items())], whole=whole,
+               began=None if whole else (seconds[0] if seconds else hi + 1))
+    return out
+
+
 def live_api(where, params=None, *, flow=None) -> dict:
-    """GET /api/usage/live: live(), and 'serve' (serve_of: whether the public service answered its last check)."""
-    return {**live(getattr(where, "public_log", None)), "serve": serve_of(flow)}
+    """GET /api/usage/live: live(), and 'serve' (serve_of: whether the public service answered its last check). With
+    from= and to= (epoch seconds): span() of that stretch instead, what 即時 asks when it is dragged back or zoomed
+    out past what it holds."""
+    log = getattr(where, "public_log", None)
+    if params is not None and params.get("from") is not None:
+        try:
+            since, until = int(params.get("from")), int(params.get("to") or 2**40)
+        except (TypeError, ValueError):
+            return {"error": "bad_args", "read": False, "calls": []}
+        return span(log, since, until)
+    return {**live(log), "serve": serve_of(flow)}
 
 
 def serve_of(flow) -> dict | None:
@@ -213,9 +249,12 @@ def card_html(data: dict) -> str:
         "aria-pressed='true'>即時</button><button type='button' data-v='day' aria-pressed='false'>每日</button></div>"
         f"{helpb}</div></div>"
         "<div class='vs-body vs-live'>"
-        "<div class='vs-ecg'><canvas id='vs-ecg' aria-label='最近 5 分鐘每秒請求數'></canvas>"
+        "<div class='vs-ecg'><canvas id='vs-ecg' tabindex='0' aria-label='最近 5 分鐘每秒請求數；滾輪或 +、− 縮放，"
+        "拖曳或 ←、→ 往回看'></canvas>"
+        "<button type='button' class='vs-now' id='vs-now' hidden>回到現在</button>"
         "<div class='vs-ecg-none' id='vs-ecg-none' hidden>讀不到查詢紀錄</div>"
-        "<div class='vs-ecg-quiet' id='vs-ecg-quiet' hidden></div></div>"
+        "<div class='vs-ecg-quiet' id='vs-ecg-quiet' hidden></div>"
+        "<div class='vs-ecg-tip' id='vs-ecg-tip' role='tooltip' hidden></div></div>"
         "<div class='vs-load'>"
         "<div class='vs-main' tabindex='0' data-tip-h='每秒請求數' data-tip='每秒請求數（最近 30 秒加權平均）'>"
         "<span class='vs-sl'>每秒請求</span><span class='vs-pct'><b id='vs-rps'>—</b></span></div>"
