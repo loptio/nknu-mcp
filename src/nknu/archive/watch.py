@@ -22,7 +22,8 @@ run changed.
   their site. page_watch keeps each page's last fingerprint, when it last changed and how many checks in a row, and
   since when (and how many times in a row) it answered gone. A site is an alarm when ALARM_MIN or more of its rows
   that were good turned bad and they are ALARM_SHARE or more of its re-fetched rows, or when SAME_BODY_MIN of its
-  changed pages answer one body (a maintenance page; the host's known not-found page aside): its export waits, its
+  changed pages that answered different bodies before answer one body now (a maintenance page; the host's known
+  not-found page aside; one page at several addresses changing together counts once, live 11-25): its export waits, its
   page_watch is not written, and its re-fetched rows go back the next night (Night.again) 【Claude's thresholds】.
 """
 
@@ -292,7 +293,7 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
     """The night's review (the module's docstring)."""
     since_iso = _iso(since)
     out = Night()
-    stats: dict[str, dict] = defaultdict(lambda: {"n": 0, "bad": 0, "bodies": Counter()})
+    stats: dict[str, dict] = defaultdict(lambda: {"n": 0, "bad": 0, "bodies": defaultdict(set)})
     lists = list_pages(frontier)
     chains = postback.Chains(frontier, root)
     probe = {r[0]: r[1] for r in frontier.q("SELECT host, probe_sha FROM host WHERE probe_sha IS NOT NULL")}
@@ -348,10 +349,13 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
             s = stats[site]
             s["n"] += 1
             s["bad"] += int(not now_good)
-            # one body over many pages that answered anew (a maintenance page), lists too; the host's not-found aside
+            # one body over many pages that answered anew (a maintenance page), lists too; the host's not-found aside.
+            # A body counts the different answers its pages held before (live 11-25: one page at six nested addresses
+            # of id.nknu.edu.tw changed once, six addresses together): a maintenance page turns different pages into
+            # one body, addresses that answered one body already did not turn into it
             if (now_good and r["kind"] == "page" and not _redirect(r) and r["sha256"] != prev["sha256"]
                     and r["sha256"] != probe.get(r["host"])):
-                s["bodies"][r["sha256"]] += 1
+                s["bodies"][r["sha256"]].add(prev["sha256"])
         changes = ((w["changes"] if w else 0) + 1) if change == "changed" else (0 if change == "same" else
                                                                                  (w["changes"] if w else 0))
         watched.append((site, (r["id"], fp_now, now, now if change in ("new", "changed", "back") else None,
@@ -365,8 +369,8 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
     for site, s in stats.items():
         if s["bad"] >= ALARM_MIN and s["bad"] / s["n"] >= ALARM_SHARE:
             out.alarms[site] = f"{s['bad']} of {s['n']} pages read again did not come back well"
-        elif s["bodies"] and max(s["bodies"].values()) >= SAME_BODY_MIN:
-            out.alarms[site] = f"{max(s['bodies'].values())} pages answered one identical body"
+        elif s["bodies"] and max(map(len, s["bodies"].values())) >= SAME_BODY_MIN:
+            out.alarms[site] = f"{max(map(len, s['bodies'].values()))} pages answered one identical body"
     for site, values in watched:
         if site not in out.alarms:
             frontier.x("INSERT INTO page_watch(url_id, fp, checked_at, changed_at, changes, gone_at, gone) VALUES "
