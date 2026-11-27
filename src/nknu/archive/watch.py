@@ -22,8 +22,9 @@ run changed.
   their site. page_watch keeps each page's last fingerprint, when it last changed and how many checks in a row, and
   since when (and how many times in a row) it answered gone. A site is an alarm when ALARM_MIN or more of its rows
   that were good turned bad and they are ALARM_SHARE or more of its re-fetched rows, or when SAME_BODY_MIN of its
-  changed pages that answered different bodies before answer one body now (a maintenance page; the host's known
-  not-found page aside; one page at several addresses changing together counts once, live 11-25): its export waits, its
+  changed pages that were different pages before answer one body now (a maintenance page; the host's known
+  not-found page aside; one page at several addresses changing together counts once, live 11-25, its copies alike
+  but for their numbers too, live 11-27: _shape): its export waits, its
   page_watch is not written, and its re-fetched rows go back the next night (Night.again) 【Claude's thresholds】.
 """
 
@@ -47,6 +48,7 @@ _DROP = "script, style, noscript, template"
 _TEMPLATE = "header, nav, footer, aside"
 _WS = re.compile(r"\s+")
 _NUMBER = re.compile(r"[\d,.\s]+")
+_DIGITS = re.compile(r"\d+")
 
 
 _COUNTER_ATTR = re.compile(r"counter|(?:read|click|hit|view|visit|browse|download)s?_?(?:count|num|times)", re.IGNORECASE)
@@ -251,6 +253,19 @@ def _print(root: Path, r, *, as_list: bool = False, site: str | None = None) -> 
     return list_print(html, url, site) if as_list else fingerprint(html, url)
 
 
+def _shape(root: Path, r) -> str:
+    """Which page an answer was, for the one-body alarm only: its own text (text_lines) with every number taken out,
+    so copies of one page read at different moments are one (a visit counter no counter rule knows, live 11-27
+    elec.nknu.edu.tw: 總訪問量：6675640); its sha256 when the WARC cannot be read. Never a change's fingerprint: there
+    digits stay (the module's docstring)."""
+    try:
+        url, _status, headers, body = postback.read_response(root, r["warc"], r["warc_offset"])
+    except (OSError, ValueError):
+        return r["sha256"]
+    text = "\n".join(text_lines(postback.as_text(body, headers.get("content-type")), url))
+    return hashlib.sha256(_DIGITS.sub("", text).encode("utf-8")).hexdigest()
+
+
 def _before(frontier: Frontier, uid: int, since: float):
     """The answer a row held when the window opened (the module's docstring); None when its first answer came inside
     the window (a copy of an answer fetched in a later second than the window's start is the window's own)."""
@@ -350,12 +365,13 @@ def night(frontier: Frontier, root: Path, since: float, *, now: float) -> Night:
             s["n"] += 1
             s["bad"] += int(not now_good)
             # one body over many pages that answered anew (a maintenance page), lists too; the host's not-found aside.
-            # A body counts the different answers its pages held before (live 11-25: one page at six nested addresses
-            # of id.nknu.edu.tw changed once, six addresses together): a maintenance page turns different pages into
-            # one body, addresses that answered one body already did not turn into it
+            # A body counts the different pages its pages were before (live 11-25: one page at six nested addresses
+            # of id.nknu.edu.tw changed once, six addresses together; live 11-27: elec.nknu.edu.tw's old home page at
+            # five addresses, bytes apart by a visit counter, all answered by the new site's home page): a maintenance
+            # page turns different pages into one body, addresses of one page did not turn into it
             if (now_good and r["kind"] == "page" and not _redirect(r) and r["sha256"] != prev["sha256"]
                     and r["sha256"] != probe.get(r["host"])):
-                s["bodies"][r["sha256"]].add(prev["sha256"])
+                s["bodies"][r["sha256"]].add(_shape(root, prev))
         changes = ((w["changes"] if w else 0) + 1) if change == "changed" else (0 if change == "same" else
                                                                                  (w["changes"] if w else 0))
         watched.append((site, (r["id"], fp_now, now, now if change in ("new", "changed", "back") else None,

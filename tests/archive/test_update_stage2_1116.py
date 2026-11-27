@@ -127,7 +127,8 @@ def test_a_file_is_changed_by_its_bytes(world):
 
 
 def test_a_site_answering_one_body_everywhere_is_an_alarm(world):
-    uids = [_answer(world, f"https://{SITE}/p{i}.aspx", _html(f"<p>公告 {i}</p>")) for i in range(6)]
+    # pages apart by their words: the one-body alarm reads pages apart only by numbers as one page (watch._shape)
+    uids = [_answer(world, f"https://{SITE}/p{i}.aspx", _html(f"<p>公告{'甲乙丙丁戊己'[i]}</p>")) for i in range(6)]
     since = time.time()
     for i in range(6):
         _answer(world, f"https://{SITE}/p{i}.aspx", "<html><body>系統維護中</body></html>")

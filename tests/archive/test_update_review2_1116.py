@@ -27,6 +27,7 @@ from tests.archive.test_update_select_1116 import R1, _site, _url, _walk
 from tests.archive.test_update_stage2_1116 import SCRIPT, SITE, _answer, _fake_python, _html
 
 DAY = 86400.0
+WORDS = "甲乙丙丁戊己庚辛"  # pages apart by their words: the one-body alarm reads numbers alike (watch._shape)
 
 
 @pytest.fixture
@@ -97,7 +98,7 @@ def test_a_page_never_good_is_never_deleted_by_the_school(w):
 # ---------------------------------------------------------------- what the window takes
 
 def test_a_server_down_all_night_is_no_answer_and_an_alarm(w):
-    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{WORDS[i]}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     since = _second()
     for uid in ids:  # taken (its copy kept), no answer: crawler._failed with tries left
@@ -168,12 +169,12 @@ MAINT = "<html><body><h1>系統維護中，請稍後再試</h1></body></html>"
 
 
 def test_a_maintenance_page_on_every_list_holds_the_site(w):
-    lists = [_answer(w, f"https://{SITE}/list{i}.aspx", _html(f"<p>列表 {i}</p>")) for i in range(8)]
+    lists = [_answer(w, f"https://{SITE}/list{i}.aspx", _html(f"<p>列表{WORDS[i]}</p>")) for i in range(8)]
     for i in lists:
         _walk(w.f, i, "last_page", 10)
         w.chains._keep_rows(i, SimpleNamespace(rows=[_row(i)], walk="postback"), f"https://{SITE}/list{i}.aspx",
                             time.time() - 30 * DAY, put_back=False)  # rows read: judged by its rows
-    standing = [_answer(w, f"https://{SITE}/about{i}.htm", _html(f"<p>簡介 {i}</p>")) for i in range(3)]
+    standing = [_answer(w, f"https://{SITE}/about{i}.htm", _html(f"<p>簡介{WORDS[i]}</p>")) for i in range(3)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     since = _second()
     for uid in lists + standing:
@@ -190,7 +191,7 @@ def _alarm_night(w, ids, body=MAINT):
 
 
 def test_a_second_maintenance_night_still_holds_the_site(w):
-    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{WORDS[i]}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     assert SITE in _alarm_night(w, ids).alarms
     since = _second()
@@ -215,19 +216,36 @@ def test_one_page_at_several_addresses_changing_together_is_no_maintenance_page(
     n = _alarm_night(w, same, _html("<p>學術活動：十一月講座</p>"))
     assert SITE not in n.alarms and SITE in n.sites_changed
     assert w.f.meta(watch.HELD_KEY) is None  # nothing held: the next night judges them as usual
-    pages = [_answer(w, f"https://{SITE}/q{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    pages = [_answer(w, f"https://{SITE}/q{i}.htm", _html(f"<p>{WORDS[i]}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     assert SITE in _alarm_night(w, pages + same).alarms  # different pages into one body: still a maintenance page
 
 
+def test_one_page_whose_copies_differ_only_by_numbers_is_no_maintenance_page(w):
+    """Live 11-27: elec.nknu.edu.tw moved to a new site. Its old home page was reached at /index.html and at
+    /?id=5&page=N, each copy with the visit counter of the second it was read (總訪問量：6675640 本月訪問：84289);
+    the new home page answers all those addresses with one body. Six copies of one page, bytes apart by a counter,
+    read as six different pages turning into one: a maintenance page. Pages differing only by their numbers are one
+    page here; pages whose words differ still hold the site."""
+    same = [_answer(w, f"https://{SITE}/?id=5&page={i}", _html(f"<p>最新消息</p><p>總訪問量：{6675640 + i}</p>"))
+            for i in range(6)]
+    watch.night(w.f, w.root, time.time() - 5, now=time.time())
+    n = _alarm_night(w, same, _html("<h1>創新電機科技</h1><p>最新消息</p>"))
+    assert SITE not in n.alarms and SITE in n.sites_changed
+    assert w.f.meta(watch.HELD_KEY) is None
+    pages = [_answer(w, f"https://{SITE}/n{i}.htm", _html(f"<p>公告{'甲乙丙丁戊己'[i]}</p>")) for i in range(6)]
+    watch.night(w.f, w.root, time.time() - 5, now=time.time())
+    assert SITE in _alarm_night(w, pages).alarms  # different words into one body: still a maintenance page
+
+
 def test_the_rows_an_alarm_held_are_judged_against_the_answer_before_it_and_let_go(w):
-    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{WORDS[i]}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     assert SITE in _alarm_night(w, ids).alarms
     assert set(ids) <= set(json.loads(w.f.meta(watch.HELD_KEY))["ids"])
     since = _second()
     for k, i in enumerate(ids):
-        _answer(w, w.f.row_by_id(i)["url"], _html(f"<p>{k}</p>"))  # as it was before the maintenance
+        _answer(w, w.f.row_by_id(i)["url"], _html(f"<p>{WORDS[k]}</p>"))  # as it was before the maintenance
     n2 = watch.night(w.f, w.root, since, now=time.time() + DAY)
     assert [_change(n2, i) for i in ids] == ["same"] * 6 and not n2.alarms
     assert all(w.f.q("SELECT changes FROM page_watch WHERE url_id=?", (i,))[0][0] == 0 for i in ids)
@@ -235,7 +253,7 @@ def test_the_rows_an_alarm_held_are_judged_against_the_answer_before_it_and_let_
 
 
 def test_an_alarmed_sites_new_rows_are_held_too(w):
-    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{i}</p>")) for i in range(6)]
+    ids = [_answer(w, f"https://{SITE}/p{i}.htm", _html(f"<p>{WORDS[i]}</p>")) for i in range(6)]
     watch.night(w.f, w.root, time.time() - 5, now=time.time())
     since = _second()
     for i in ids:
